@@ -3638,6 +3638,7 @@ static void ath10k_reg_notifier(struct wiphy *wiphy,
 {
 	struct ieee80211_hw *hw = wiphy_to_ieee80211_hw(wiphy);
 	struct ath10k *ar = hw->priv;
+	struct regulatory_request user_request;
 	const struct ieee80211_regdomain *wiphy_regd;
 	bool result;
 	int ret;
@@ -3654,7 +3655,19 @@ static void ath10k_reg_notifier(struct wiphy *wiphy,
 				ar->ath_common.regulatory.regpair->reg_domain : 0,
 			    ar->hw->wiphy->regulatory_flags);
 
-	ath_reg_notifier_apply(wiphy, request, &ar->ath_common.regulatory);
+	if (ar->hw_regdom_from_world && request &&
+	    request->initiator == NL80211_REGDOM_SET_BY_DRIVER &&
+	    request->alpha2[0] != '0' && request->alpha2[1] != '0' &&
+	    ar->ath_common.regulatory.alpha2[0] == '0' &&
+	    ar->ath_common.regulatory.alpha2[1] == '0') {
+		user_request = *request;
+		user_request.initiator = NL80211_REGDOM_SET_BY_USER;
+		ath_reg_notifier_apply(wiphy, &user_request,
+				       &ar->ath_common.regulatory);
+	} else {
+		ath_reg_notifier_apply(wiphy, request,
+				       &ar->ath_common.regulatory);
+	}
 
 	if (IS_ENABLED(CONFIG_ATH10K_DFS_CERTIFIED) && ar->dfs_detector) {
 		ath10k_dbg(ar, ATH10K_DBG_REGULATORY, "dfs region 0x%x\n",
@@ -3676,17 +3689,19 @@ static void ath10k_reg_notifier(struct wiphy *wiphy,
 					       ar->hw->wiphy->bands[NL80211_BAND_5GHZ]);
 
 	if (ar->hw_regdom_from_world && request &&
-	    request->initiator == NL80211_REGDOM_SET_BY_USER &&
-	    request->alpha2[0] != '0' && request->alpha2[1] != '0') {
+	    ar->ath_common.regulatory.alpha2[0] != '0' &&
+	    ar->ath_common.regulatory.alpha2[1] != '0') {
 		wiphy_regd = get_wiphy_regdom(wiphy);
 		if (!wiphy_regd ||
-		    memcmp(wiphy_regd->alpha2, request->alpha2, 2)) {
-			ret = regulatory_hint(wiphy, request->alpha2);
+		    memcmp(wiphy_regd->alpha2,
+			   ar->ath_common.regulatory.alpha2, 2)) {
+			ret = regulatory_hint(wiphy,
+					      ar->ath_common.regulatory.alpha2);
 			if (ret)
 				ath10k_warn(ar,
 					    "failed to sync wiphy regdomain to %c%c: %d\n",
-					    request->alpha2[0],
-					    request->alpha2[1],
+					    ar->ath_common.regulatory.alpha2[0],
+					    ar->ath_common.regulatory.alpha2[1],
 					    ret);
 		}
 	}
