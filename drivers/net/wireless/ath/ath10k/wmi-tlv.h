@@ -111,6 +111,14 @@ enum wmi_tlv_cmd_id {
 	WMI_TLV_VDEV_IPSEC_NATKEEPALIVE_FILTER_CMDID,
 	WMI_TLV_VDEV_PLMREQ_START_CMDID,
 	WMI_TLV_VDEV_PLMREQ_STOP_CMDID,
+	WMI_TLV_VDEV_TSF_TSTAMP_ACTION_CMDID,
+	WMI_TLV_VDEV_SET_IE_CMDID,
+	WMI_TLV_VDEV_RATEMASK_CMDID,
+	WMI_TLV_VDEV_ATF_REQUEST_CMDID,
+	WMI_TLV_VDEV_SET_DSCP_TID_MAP_CMDID,
+	WMI_TLV_VDEV_FILTER_NEIGHBOR_RX_PACKETS_CMDID,
+	WMI_TLV_VDEV_SET_QUIET_MODE_CMDID,
+	WMI_TLV_VDEV_SET_CUSTOM_AGGR_SIZE_CMDID,
 	WMI_TLV_PEER_CREATE_CMDID = WMI_TLV_CMD(WMI_TLV_GRP_PEER),
 	WMI_TLV_PEER_DELETE_CMDID,
 	WMI_TLV_PEER_FLUSH_TIDS_CMDID,
@@ -2680,4 +2688,25 @@ struct wmi_tlv_mgmt_tx_cmd {
 	__le32 frame_len;
 	__le32 buf_len;
 } __packed;
+
+/* WMI_VDEV_SET_CUSTOM_AGGR_SIZE_CMDID */
+int ath10k_wmi_tlv_set_custom_aggr_size(struct ath10k *ar, u32 vdev_id,
+					u32 tx_aggr_size, u32 rx_aggr_size,
+					u32 aggr_type);
+
+enum wmi_vdev_custom_aggr_type {
+	WMI_VDEV_CUSTOM_AGGR_TYPE_AMPDU = 0,
+	WMI_VDEV_CUSTOM_AGGR_TYPE_AMSDU = 1,
+};
+
+struct wmi_vdev_set_custom_aggr_size_cmd {
+	__le32 vdev_id;
+	/* max number of subframes in TX A-MPDU (or A-MSDU) */
+	__le32 tx_aggr_size;
+	/* max number of subframes in RX A-MPDU (or A-MSDU) */
+	__le32 rx_aggr_size;
+	/* enum wmi_vdev_custom_aggr_type */
+	__le32 aggr_type;
+} __packed;
+
 #endif

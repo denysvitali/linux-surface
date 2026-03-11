@@ -636,6 +636,12 @@ struct ath10k_hw_params {
 
 	bool delay_unmap_buffer;
 
+	/* Send TX frame data inline through CE instead of using DMA fragment
+	 * descriptors.  Required for HL firmware on SNOC (e.g. WCN3990) to
+	 * enable firmware-side A-MPDU aggregation.
+	 */
+	bool tx_data_inline;
+
 	/* The hardware support multicast frame registrations */
 	bool mcast_frame_registration;
 };
