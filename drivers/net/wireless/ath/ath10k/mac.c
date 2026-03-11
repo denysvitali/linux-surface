@@ -3638,7 +3638,9 @@ static void ath10k_reg_notifier(struct wiphy *wiphy,
 {
 	struct ieee80211_hw *hw = wiphy_to_ieee80211_hw(wiphy);
 	struct ath10k *ar = hw->priv;
+	const struct ieee80211_regdomain *wiphy_regd;
 	bool result;
+	int ret;
 
 	if (QCA_REV_WCN3990(ar) && ar->hif.bus == ATH10K_BUS_SNOC && request)
 		ath10k_info(ar,
@@ -3672,6 +3674,22 @@ static void ath10k_reg_notifier(struct wiphy *wiphy,
 	if (ar->phy_capability & WHAL_WLAN_11A_CAPABILITY)
 		ath10k_mac_update_channel_list(ar,
 					       ar->hw->wiphy->bands[NL80211_BAND_5GHZ]);
+
+	if (ar->hw_regdom_from_world && request &&
+	    request->initiator == NL80211_REGDOM_SET_BY_USER &&
+	    request->alpha2[0] != '0' && request->alpha2[1] != '0') {
+		wiphy_regd = get_wiphy_regdom(wiphy);
+		if (!wiphy_regd ||
+		    memcmp(wiphy_regd->alpha2, request->alpha2, 2)) {
+			ret = regulatory_hint(wiphy, request->alpha2);
+			if (ret)
+				ath10k_warn(ar,
+					    "failed to sync wiphy regdomain to %c%c: %d\n",
+					    request->alpha2[0],
+					    request->alpha2[1],
+					    ret);
+		}
+	}
 
 	if (QCA_REV_WCN3990(ar) && ar->hif.bus == ATH10K_BUS_SNOC)
 		ath10k_info(ar,
@@ -10497,8 +10515,12 @@ int ath10k_mac_register(struct ath10k *ar)
 	if (ar->hw_regdom_from_world) {
 		/* Preserve the userspace-selected regdomain when the device has
 		 * no programmed country/regpair and we had to synthesize a
-		 * world regdomain fallback.
+		 * world regdomain fallback. In this case the device should
+		 * follow cfg80211's global/user regdomain instead of staying
+		 * pinned to a custom per-phy "99" regdomain.
 		 */
+		ar->hw->wiphy->regulatory_flags &= ~(REGULATORY_CUSTOM_REG |
+						     REGULATORY_STRICT_REG);
 		ar->hw->wiphy->regulatory_flags |= REGULATORY_COUNTRY_IE_IGNORE;
 	}
 
