@@ -10288,6 +10288,8 @@ int ath10k_mac_register(struct ath10k *ar)
 		if (QCA_REV_WCN3990(ar) && ar->hif.bus == ATH10K_BUS_SNOC) {
 			ath10k_info(ar,
 				    "leaving 802.11 station power save disabled on WCN3990 SNOC\n");
+			ar->hw->uapsd_queues = 0;
+			ar->hw->uapsd_max_sp_len = 0;
 		} else {
 			ieee80211_hw_set(ar->hw, SUPPORTS_PS);
 			ieee80211_hw_set(ar->hw, SUPPORTS_DYNAMIC_PS);

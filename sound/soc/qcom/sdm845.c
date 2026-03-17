@@ -621,6 +621,7 @@ static const struct of_device_id sdm845_snd_device_id[]  = {
 	/* Do not grow the list for compatible devices */
 	{ .compatible = "qcom,db845c-sndcard" },
 	{ .compatible = "lenovo,yoga-c630-sndcard" },
+	{ .compatible = "qcom,sc8180x-sndcard" },
 	{},
 };
 MODULE_DEVICE_TABLE(of, sdm845_snd_device_id);

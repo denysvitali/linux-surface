@@ -1947,6 +1947,8 @@ retry:
 		if (qcadev->bdaddr_property_broken)
 			hci_set_quirk(hdev, HCI_QUIRK_BDADDR_PROPERTY_BROKEN);
 
+		hci_set_quirk(hdev, HCI_QUIRK_USE_BDADDR_PROPERTY);
+
 		hci_set_aosp_capable(hdev);
 
 		ret = qca_read_soc_version(hdev, &ver, soc_type);
