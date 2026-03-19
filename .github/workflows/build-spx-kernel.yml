@@ -56,43 +56,33 @@ jobs:
             echo "Checked out commit: $(git log -1 --oneline)"
           fi
 
-      - name: Install Nix
+      - name: Install Micromamba
         run: |
           export HOME=/home/runner
-          # Install Nix without sudo (single-user mode)
-          if ! command -v nix &> /dev/null; then
-            echo "Installing Nix..."
-            curl -L https://nixos.org/nix/install | sh -s -- --no-daemon --yes
+          # Install micromamba to user directory without sudo
+          if ! command -v micromamba &> /dev/null; then
+            echo "Installing Micromamba..."
+            curl -Ls https://micro.mamba.pm/api/micromamba/linux-arm64/latest | \
+              tar -xvj -C $HOME/.local/bin/ bin/micromamba 2>/dev/null
+            chmod +x $HOME/.local/bin/micromamba
           fi
-          # Source nix
-          if [ -f "$HOME/.nix-profile/etc/profile.d/nix.sh" ]; then
-            source "$HOME/.nix-profile/etc/profile.d/nix.sh"
-          fi
-          export PATH="$HOME/.nix-profile/bin:$PATH"
-          echo "Nix installed: $(nix --version)"
-          echo "NIX_PATH=$NIX_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          export MAMBA_ROOT_PREFIX="$HOME/.mamba"
+          echo "Micromamba installed: $(micromamba --version)"
 
-      - name: Install build dependencies with Nix
+      - name: Install build dependencies with Micromamba
         run: |
           export HOME=/home/runner
-          export PATH="$HOME/.nix-profile/bin:$PATH"
-          source "$HOME/.nix-profile/etc/profile.d/nix.sh" 2>/dev/null || true
+          export PATH="$HOME/.local/bin:$PATH"
+          export MAMBA_ROOT_PREFIX="$HOME/.mamba"
 
-          echo "Installing build dependencies via Nix..."
-          nix profile install \
-            nixpkgs#flex \
-            nixpkgs#bison \
-            nixpkgs#libelf \
-            nixpkgs#openssl \
-            nixpkgs#python3 \
-            nixpkgs#rsync \
-            nixpkgs#ccache \
-            nixpkgs#pkgsCross.aarch64-multiplatform.u-bootTools \
-            nixpkgs#dwarves \
-            --accept-flake-config
+          echo "Installing build dependencies via Micromamba..."
+          micromamba install -y -p $HOME/.local \
+            flex bison libelf openssl python3 rsync ccache \
+            dwarves u-boot-tools
 
           echo "Verifying installations..."
-          which flex bison libelf openssl python3 rsync ccache mkimage dwarves || true
+          which flex bison python3 rsync ccache mkimage dwarves || true
 
           # Set USE_CCACHE based on whether ccache is available
           export USE_CCACHE=0
