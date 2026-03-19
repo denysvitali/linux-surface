@@ -115,40 +115,6 @@ jobs:
 
           echo "Build dependency check complete. USE_CCACHE=$USE_CCACHE"
 
-      - name: Build dwarves (pahole) from source
-        run: |
-          export HOME=/home/runner
-          export PATH="$HOME/.local/bin:$CONDA_ROOT/bin:$PATH"
-          export CONDA_ROOT=$HOME/miniforge
-          source "$CONDA_ROOT/etc/profile.d/conda.sh"
-          conda activate base
-
-          # Check if dwarves/pahole is available
-          if command -v pahole &> /dev/null; then
-            echo "dwarves/pahole already available"
-          else
-            echo "=== Building dwarves from source ==="
-            # Install cmake via conda if needed
-            conda install -y cmake ninja 2>/dev/null || true
-
-            # Clone and build dwarves
-            cd /tmp
-            if [ -d "dwarves" ]; then
-              rm -rf dwarves
-            fi
-            git clone https://github.com/acmel/dwarves --depth=1
-            cd dwarves
-            mkdir -p build && cd build
-            cmake -DBUILD_SHARED_LIBS=ON ..
-            make -j$(nproc)
-            make install
-            ldconfig
-            cd /tmp
-            rm -rf dwarves
-          fi
-
-          pahole --version 2>/dev/null || echo "dwarves installation failed"
-
       - name: Cache ccache
         uses: actions/cache@v4
         with:
