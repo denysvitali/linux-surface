@@ -14,11 +14,19 @@ echo "✓ Created directories:"
 echo "  - ~/kernel-builds (for source and build artifacts)"
 echo "  - ~/.cache/ccache (for compiler cache)"
 
+# Install ccache if not present
+echo ""
+echo "Installing ccache..."
+if ! command -v ccache &> /dev/null; then
+    sudo apt-get update
+    sudo apt-get install -y ccache
+fi
+echo "✓ ccache installed: $(ccache --version)"
+
 # Configure ccache
 echo ""
 echo "Configuring ccache with 50GB cache..."
 ccache -M 50G
-ccache -s
 
 echo ""
 echo "✓ Ccache configured with 50GB max cache size"
@@ -40,6 +48,20 @@ else
     echo "✓ Ccache already configured in .bashrc"
 fi
 
+# Install gh CLI if not present
+echo ""
+echo "Checking for gh CLI..."
+if command -v gh &> /dev/null; then
+    echo "✓ gh CLI already installed: $(gh --version)"
+else
+    echo "Installing gh CLI..."
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+    sudo apt-get update
+    sudo apt-get install -y gh
+    echo "✓ gh CLI installed: $(gh --version)"
+fi
+
 echo ""
 echo "=== Setup Complete ==="
 echo ""
@@ -47,20 +69,6 @@ echo "Persistent storage locations:"
 echo "  Source:     ~/kernel-builds/linux-surface-src"
 echo "  Build:      ~/kernel-builds/linux-surface-build"
 echo "  Ccache:     $CCACHE_DIR"
-echo ""
-echo "Optional: Pre-clone repository to save bandwidth on first run"
-echo "  This will download ~3-4GB now, but save bandwidth later."
-echo ""
-read -p "Pre-clone repository now? (y/N) " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    read -p "Enter repository URL (e.g., https://github.com/user/linux-surface): " REPO_URL
-    if [ -n "$REPO_URL" ]; then
-        echo "Cloning repository..."
-        git clone --depth=1 "$REPO_URL" ~/kernel-builds/linux-surface-src
-        echo "✓ Repository cloned to ~/kernel-builds/linux-surface-src"
-    fi
-fi
 echo ""
 echo "Next steps:"
 echo "  1. Ensure this machine is registered as a self-hosted runner with label 'arm64'"

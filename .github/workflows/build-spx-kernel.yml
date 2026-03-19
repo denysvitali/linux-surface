@@ -42,7 +42,8 @@ jobs:
             git fetch origin
             git checkout -f "$SHA"
             git reset --hard "$SHA"
-            git clean -fdx
+            # Only clean source files, not build artifacts in KERNEL_BUILD_DIR
+            git clean -fdx --exclude=modules_install
             echo "Checked out commit: $(git log -1 --oneline)"
           else
             echo "Cloning repository (first time)..."
@@ -53,52 +54,53 @@ jobs:
             echo "Checked out commit: $(git log -1 --oneline)"
           fi
 
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-arm64-spx-${{ github.sha }}
+          restore-keys: |
+            ccache-arm64-spx-
+
       - name: Setup ccache
         run: |
           ccache -M 50G
-          ccache -s
+          ccache -z
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y bc bison build-essential ccache \
-            flex git libelf-dev libssl-dev make openssl \
-            python3 python3-pip rsync u-boot-tools
+      - name: Cache apt packages
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: bc bison flex libelf-dev libssl-dev python3 rsync u-boot-tools dwarves ccache
+          version: 1.0
 
       - name: Configure kernel
-        working-directory: ${{ env.KERNEL_SRC_DIR }}
         run: |
           # Only reconfigure if .config doesn't exist or makefile changed
-          if [ ! -f .config ] || [ Makefile -nt .config ]; then
-            make ARCH=arm64 defconfig
-            # Enable Surface-specific options if needed
-            # scripts/config --set-val CONFIG_SURFACE_AGGREGATOR y
+          if [ ! -f $KERNEL_BUILD_DIR/.config ] || [ $KERNEL_SRC_DIR/Makefile -nt $KERNEL_BUILD_DIR/.config ]; then
+            make -C $KERNEL_SRC_DIR O=$KERNEL_BUILD_DIR ARCH=arm64 defconfig
           fi
-          # Save config for debugging
-          cp .config config.log
 
       - name: Build kernel
-        working-directory: ${{ env.KERNEL_SRC_DIR }}
         run: |
           export CCACHE_DIR=$CCACHE_DIR
-          make ARCH=arm64 CC="ccache gcc" -j$(nproc) Image.gz modules
+          make -C $KERNEL_SRC_DIR O=$KERNEL_BUILD_DIR ARCH=arm64 CC="ccache gcc" -j$(nproc) Image.gz modules
 
       - name: Package artifacts
         run: |
           mkdir -p artifacts
 
           # Copy kernel image
-          cp $KERNEL_SRC_DIR/arch/arm64/boot/Image.gz artifacts/ || echo "Image.gz not found"
+          cp $KERNEL_BUILD_DIR/arch/arm64/boot/Image.gz artifacts/ || echo "Image.gz not found"
 
           # Copy device tree blob
-          cp $KERNEL_SRC_DIR/arch/arm64/boot/dts/qcom/sc8180x-surface-pro-x.dtb artifacts/ 2>/dev/null || echo "DTB not found"
+          cp $KERNEL_BUILD_DIR/arch/arm64/boot/dts/qcom/sc8180x-surface-pro-x.dtb artifacts/ 2>/dev/null || echo "DTB not found"
 
           # Copy config
-          cp $KERNEL_SRC_DIR/config.log artifacts/
+          cp $KERNEL_BUILD_DIR/.config artifacts/config.log
 
-          # Package modules
-          make ARCH=arm64 INSTALL_MOD_PATH=$KERNEL_SRC_DIR/modules_install -C $KERNEL_SRC_DIR modules_install
-          tar -czf artifacts/modules.tar.gz -C $KERNEL_SRC_DIR/modules_install .
+          # Package modules to build dir (not source dir)
+          make -C $KERNEL_SRC_DIR O=$KERNEL_BUILD_DIR ARCH=arm64 INSTALL_MOD_PATH=$KERNEL_BUILD_DIR/modules_install modules_install
+          tar -czf artifacts/modules.tar.gz -C $KERNEL_BUILD_DIR/modules_install .
 
           # Create build info
           {
@@ -159,12 +161,10 @@ jobs:
       - name: Cleanup old releases (keep last 5)
         if: success()
         run: |
-          # Install gh CLI if not present
+          # gh CLI should be pre-installed on runner; fail fast if missing
           if ! command -v gh &> /dev/null; then
-            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
-            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
-            sudo apt-get update
-            sudo apt-get install -y gh
+            echo "ERROR: gh CLI not installed on runner. Please install it via runner-setup.sh"
+            exit 1
           fi
 
           # Delete old pre-releases, keep last 5
