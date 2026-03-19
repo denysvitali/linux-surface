@@ -14,6 +14,7 @@ env:
   CCACHE_DIR: /home/runner/.cache/ccache
   KERNEL_SRC_DIR: /home/runner/kernel-builds/linux-surface-src
   KERNEL_BUILD_DIR: /home/runner/kernel-builds/linux-surface-build
+  CONDA_ROOT: /home/runner/miniforge
 
 jobs:
   build:
@@ -53,78 +54,74 @@ jobs:
             echo "Checked out commit: $(git log -1 --oneline)"
           fi
 
-      - name: Install Nix (static rootless)
+      - name: Install Miniforge3
         run: |
           export HOME=/home/runner
           export PATH="$HOME/.local/bin:$PATH"
+          export CONDA_ROOT=$HOME/miniforge
 
-          echo "=== Installing static Nix binary (rootless) ==="
-
-          # Set up environment
-          export NIX_CONF_DIR=$HOME/.config/nix
-          export NIX_LOCALSTATE_DIR=$HOME/.local/state/nix
-          export NIX_LOG_DIR=$HOME/.local/log/nix
-          export NIX_CACHE_DIR=$HOME/.cache/nix
-          export NIX_GC_ROOT=$HOME/.nix-gc
-
-          mkdir -p $NIX_CONF_DIR $NIX_LOCALSTATE_DIR $NIX_LOG_DIR $NIX_CACHE_DIR $NIX_GC_ROOT
-
-          # Create nix.conf for rootless operation
-          printf '%s\n' \
-            "experimental-features = nix-command flakes" \
-            "extra-experimental-features = auto-allocate-uids" \
-            "substituters = https://cache.nixos.org https://nix-community.cachix.org" \
-            "trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs=" \
-            "builders =" \
-            > $NIX_CONF_DIR/nix.conf
-
-          # Try to download static Nix from Hydra for aarch64
-          echo "=== Downloading static Nix binary for aarch64 ==="
-          STATIC_NIX_URL="https://hydra.nixos.org/job/nix/master/buildStatic.aarch64-linux/latest/download-by-type/file/binary-dist"
-
-          if curl -fsSL "$STATIC_NIX_URL" -o /tmp/nix-static; then
-            chmod +x /tmp/nix-static
-            cp /tmp/nix-static $HOME/.local/bin/nix
-            rm /tmp/nix-static
-            # Test if it runs
-            if $HOME/.local/bin/nix --version; then
-              echo "Nix installed successfully"
-            else
-              echo "Nix binary failed to execute"
-              exit 1
-            fi
+          if [ -d "$CONDA_ROOT" ]; then
+            echo "Miniforge already installed at $CONDA_ROOT"
           else
-            echo "Failed to download static Nix from Hydra"
-            exit 1
+            echo "=== Installing Miniforge3 ==="
+            curl -fsSL https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh -o /tmp/miniforge.sh
+            bash /tmp/miniforge.sh -b -p "$CONDA_ROOT"
+            rm /tmp/miniforge.sh
           fi
+
+          source "$CONDA_ROOT/etc/profile.d/conda.sh"
+          conda activate base
+          echo "Conda version: $(conda --version)"
 
       - name: Install build dependencies
         run: |
           export HOME=/home/runner
-          export PATH="$HOME/.local/bin:$PATH"
-          export NIX_CONF_DIR=$HOME/.config/nix
-          export NIX_LOCALSTATE_DIR=$HOME/.local/state/nix
-          export NIX_LOG_DIR=$HOME/.local/log/nix
-          export NIX_CACHE_DIR=$HOME/.cache/nix
-          export NIX_GC_ROOT=$HOME/.nix-gc
+          export PATH="$HOME/.local/bin:$CONDA_ROOT/bin:$PATH"
+          export CONDA_ROOT=$HOME/miniforge
+          source "$CONDA_ROOT/etc/profile.d/conda.sh"
+          conda activate base
 
-          echo "=== Installing build dependencies via Nix ==="
+          echo "=== Installing base packages via Conda ==="
+          conda install -y \
+            m4 \
+            python \
+            rsync \
+            elfutils \
+            openssl \
+            ccache \
+            pkg-config \
+            2>&1 || echo "Conda install had issues, continuing..."
 
-          # Install packages - Nix will use binary cache
-          nix-env -iA \
-            nixpkgs.flex \
-            nixpkgs.bison \
-            nixpkgs.elfutils \
-            nixpkgs.openssl \
-            nixpkgs.python3 \
-            nixpkgs.rsync \
-            nixpkgs.ccache \
-            nixpkgs.dwarves
+          echo "=== Building flex from source ==="
+          cd /tmp
+          if ! command -v flex &> /dev/null; then
+            curl -fsSL https://github.com/westes/flex/releases/download/v2.6.4/flex-2.6.4.tar.gz -o flex.tar.gz
+            tar -xzf flex.tar.gz
+            cd flex-2.6.4
+            ./configure --prefix=$HOME/.local
+            make -j$(nproc)
+            make install
+            cd /tmp && rm -rf flex-2.6.4 flex.tar.gz
+          fi
+
+          echo "=== Building bison from source ==="
+          cd /tmp
+          if ! command -v bison &> /dev/null; then
+            curl -fsSL https://ftp.gnu.org/gnu/bison/bison-3.8.tar.gz -o bison.tar.gz
+            tar -xzf bison.tar.gz
+            cd bison-3.8
+            ./configure --prefix=$HOME/.local
+            make -j$(nproc)
+            make install
+            cd /tmp && rm -rf bison-3.8 bison.tar.gz
+          fi
+
+          export PATH="$HOME/.local/bin:$CONDA_ROOT/bin:$PATH"
 
           echo "=== Verifying installations ==="
-          which flex bison python3 rsync ccache mkimage dwarves || echo "Some tools not found in PATH"
-          flex --version 2>/dev/null || echo "flex not found"
-          bison --version 2>/dev/null || echo "bison not found"
+          which flex bison python rsync ccache || echo "Some tools not found in PATH"
+          flex --version
+          bison --version
 
           # Set USE_CCACHE
           export USE_CCACHE=0
@@ -146,7 +143,11 @@ jobs:
       - name: Setup ccache
         run: |
           export HOME=/home/runner
-          export PATH="$HOME/.local/bin:$PATH"
+          export PATH="$HOME/.local/bin:$CONDA_ROOT/bin:$PATH"
+          export CONDA_ROOT=$HOME/miniforge
+          source "$CONDA_ROOT/etc/profile.d/conda.sh" 2>/dev/null || true
+          conda activate base 2>/dev/null || true
+
           if command -v ccache &> /dev/null; then
             ccache -M 50G
             ccache -z
@@ -157,8 +158,10 @@ jobs:
       - name: Configure kernel
         run: |
           export HOME=/home/runner
-          export PATH="$HOME/.local/bin:$PATH"
-          export NIX_CONF_DIR=$HOME/.config/nix
+          export PATH="$HOME/.local/bin:$CONDA_ROOT/bin:$PATH"
+          export CONDA_ROOT=$HOME/miniforge
+          source "$CONDA_ROOT/etc/profile.d/conda.sh" 2>/dev/null || true
+          conda activate base 2>/dev/null || true
 
           if [ ! -f $KERNEL_BUILD_DIR/.config ] || [ $KERNEL_SRC_DIR/Makefile -nt $KERNEL_BUILD_DIR/.config ]; then
             make -C $KERNEL_SRC_DIR O=$KERNEL_BUILD_DIR ARCH=arm64 defconfig
@@ -167,9 +170,11 @@ jobs:
       - name: Build kernel
         run: |
           export HOME=/home/runner
-          export PATH="$HOME/.local/bin:$PATH"
+          export PATH="$HOME/.local/bin:$CONDA_ROOT/bin:$PATH"
+          export CONDA_ROOT=$HOME/miniforge
           export CCACHE_DIR=$CCACHE_DIR
-          export NIX_CONF_DIR=$HOME/.config/nix
+          source "$CONDA_ROOT/etc/profile.d/conda.sh" 2>/dev/null || true
+          conda activate base 2>/dev/null || true
 
           if [ "${USE_CCACHE:-0}" = "1" ]; then
             echo "Building with ccache..."
@@ -182,8 +187,10 @@ jobs:
       - name: Package artifacts
         run: |
           export HOME=/home/runner
-          export PATH="$HOME/.local/bin:$PATH"
-          export NIX_CONF_DIR=$HOME/.config/nix
+          export PATH="$HOME/.local/bin:$CONDA_ROOT/bin:$PATH"
+          export CONDA_ROOT=$HOME/miniforge
+          source "$CONDA_ROOT/etc/profile.d/conda.sh" 2>/dev/null || true
+          conda activate base 2>/dev/null || true
 
           mkdir -p artifacts
           cp $KERNEL_BUILD_DIR/arch/arm64/boot/Image.gz artifacts/ || echo "Image.gz not found"
