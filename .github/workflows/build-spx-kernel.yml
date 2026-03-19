@@ -61,19 +61,14 @@ jobs:
           export HOME=/home/runner
           export PATH="$HOME/.local/bin:$PATH"
 
-          # Pre-create nix directory structure manually (avoiding sudo)
-          mkdir -p $HOME/.nix-store/{bin,etc,var/nix/{daemon-socket,profiles,gcpace,sets,store-path,temp,userpool},profiles/per-user/runner}
-
           # Download and extract Nix binary directly to user directory
           if ! command -v nix &> /dev/null; then
-            echo "Installing Nix (single-user mode to user directory)..."
-            curl -Ls https://releases.nixos.org/nix/nix-2.34.1/nix-2.34.1-aarch64-linux.tar.xz | tar -xJ -C $HOME
-            # Use the extracted nix binary
-            if [ -x $HOME/nix-2.34.1-aarch64-linux/bin/nix ]; then
-              ln -sf $HOME/nix-2.34.1-aarch64-linux/bin/nix $HOME/.local/bin/nix
-              ln -sf $HOME/nix-2.34.1-aarch64-linux/bin/nix-daemon $HOME/.local/bin/nix-daemon 2>/dev/null || true
-              ln -sf $HOME/nix-2.34.1-aarch64-linux/bin/nix-env $HOME/.local/bin/nix-env 2>/dev/null || true
-            fi
+            echo "Downloading Nix..."
+            curl -fL https://releases.nixos.org/nix/nix-2.34.1/nix-2.34.1-aarch64-linux.tar.xz -o /tmp/nix.tar.xz
+            echo "Extracting Nix..."
+            tar -xJ -f /tmp/nix.tar.xz -C $HOME
+            ls -la $HOME/
+            ls -la $HOME/nix-2.34.1-aarch64-linux/bin/ 2>/dev/null || echo "Directory not found"
           fi
 
           # Set up Nix environment
@@ -86,11 +81,9 @@ jobs:
           # Initialize Nix
           if command -v nix &> /dev/null; then
             nix --version
-            # Create the required socket directory
-            mkdir -p $HOME/var/nix/daemon-socket
             echo "Nix installed successfully"
           else
-            echo "Nix installation failed"
+            echo "Nix installation failed - binary not found"
             exit 1
           fi
 
