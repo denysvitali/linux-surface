@@ -15,6 +15,8 @@ env:
   CCACHE_DIR: /home/runner/.cache/ccache
   KERNEL_SRC_DIR: /home/runner/kernel-builds/linux-surface-src
   KERNEL_BUILD_DIR: /home/runner/kernel-builds/linux-surface-build
+  # Use GitHub's cache for Nix binary cache
+  NIX_GC_ROOT: /home/runner/.nix-gc
 
 jobs:
   build:
@@ -26,6 +28,7 @@ jobs:
           mkdir -p $KERNEL_SRC_DIR
           mkdir -p $KERNEL_BUILD_DIR
           mkdir -p $CCACHE_DIR
+          mkdir -p $HOME/.nix-state/daemon-socket
           echo "Source directory: $KERNEL_SRC_DIR"
           echo "Build directory: $KERNEL_BUILD_DIR"
           echo "Ccache directory: $CCACHE_DIR"
@@ -56,90 +59,103 @@ jobs:
             echo "Checked out commit: $(git log -1 --oneline)"
           fi
 
-      - name: Install build dependencies
+      - name: Install Nix (single-user, no daemon)
         run: |
           export HOME=/home/runner
-          export PATH="$HOME/.local/bin:$HOME/.local/miniforge/bin:$PATH"
+          export PATH="$HOME/.local/bin:$PATH"
 
-          echo "=== Checking for existing installations ==="
+          # Set up Nix environment to use $HOME instead of /nix
+          export NIX_CONF_DIR=$HOME/.config/nix
+          export NIX_LOCALSTATE_DIR=$HOME/.local/state/nix
+          export NIX_LOG_DIR=$HOME/.local/log/nix
+          export NIX_CACHE_DIR=/home/runner/.cache/nix
+          export NIX_GC_ROOT=$HOME/.nix-gc
+          export NIX_STORE_DIR=$HOME/.store
+          export NIX_IGNORE_SYMLINK_STORE=1
 
-          # Check for conda/mamba first (from previous run)
-          if [ -f "$HOME/.local/miniforge/etc/profile.d/conda.sh" ]; then
-            echo "Found miniforge installation, sourcing..."
-            source "$HOME/.local/miniforge/etc/profile.d/conda.sh"
-          elif ! command -v mamba &> /dev/null && ! command -v conda &> /dev/null; then
-            echo "Installing miniforge..."
-            curl -Ls https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-aarch64.sh -o /tmp/miniforge.sh
-            bash /tmp/miniforge.sh -b -p $HOME/.local/miniforge
-            rm /tmp/miniforge.sh
-            source "$HOME/.local/miniforge/etc/profile.d/conda.sh"
+          mkdir -p $NIX_CONF_DIR $NIX_LOCALSTATE_DIR $NIX_LOG_DIR $NIX_CACHE_DIR $NIX_GC_ROOT $HOME/.store
+
+          echo "=== Installing Nix ==="
+
+          # Download Nix binary release
+          if ! command -v nix &> /dev/null; then
+            echo "Downloading Nix..."
+            curl -fL https://releases.nixos.org/nix/nix-2.24.10/nix-2.24.10-aarch64-linux.tar.xz -o /tmp/nix.tar.xz
+
+            echo "Extracting to $HOME..."
+            tar -xJf /tmp/nix.tar.xz -C $HOME
+
+            # Find and link nix binaries
+            NIX_BIN=$(find $HOME -name "nix" -type f -executable 2>/dev/null | head -1)
+            if [ -n "$NIX_BIN" ] && [ -x "$NIX_BIN" ]; then
+              echo "Found nix at: $NIX_BIN"
+              # Copy to local bin
+              mkdir -p $HOME/.local/bin
+              cp "$NIX_BIN" $HOME/.local/bin/nix
+              chmod +x $HOME/.local/bin/nix
+              # Also copy nix-env, nix-daemon, etc if they exist
+              NIX_DIR=$(dirname "$NIX_BIN")
+              for bin in nix-env nix-daemon nix-store; do
+                if [ -x "$NIX_DIR/$bin" ]; then
+                  cp "$NIX_DIR/$bin" $HOME/.local/bin/$bin
+                fi
+              done
+            else
+              echo "Could not find nix binary in extracted files"
+              ls -la $HOME/
+              find $HOME -name "nix" -type f 2>/dev/null | head -5
+              exit 1
+            fi
+            rm -f /tmp/nix.tar.xz
           fi
 
-          echo "Conda version: $(conda --version 2>/dev/null || echo 'not found')"
-
-          # Install packages
-          echo "Installing packages via conda/mamba..."
-          mamba install -y -p $HOME/.local/miniforge flex bison elfutils openssl python rsync ccache -c conda-forge || \
-            conda install -y -p $HOME/.local/miniforge flex bison elfutils openssl python rsync ccache -c conda-forge
-
-          # Set USE_CCACHE
-          export USE_CCACHE=0
-          if command -v ccache &> /dev/null; then
-            export USE_CCACHE=1
-            echo "ccache available: $(ccache --version)"
-          fi
-
-          echo "Build dependency check complete. USE_CCACHE=$USE_CCACHE"
+          echo "Nix version: $(nix --version)"
+          echo "Nix installed successfully"
 
       - name: Install build dependencies with Nix
         run: |
           export HOME=/home/runner
-          export PATH="$HOME/.local/bin:$HOME/.nix-profile/bin:$PATH"
-          export NIX_SSL_CERT_FILE=$HOME/.nix-profile/etc/ssl/certs/ca-bundle.crt
-          export NIX_STATE_DIR=$HOME/.nix-state
-          export NIX_STORE_DIR=$HOME/.nix-store
+          export PATH="$HOME/.local/bin:$PATH"
+
+          # Set up Nix environment
+          export NIX_CONF_DIR=$HOME/.config/nix
+          export NIX_LOCALSTATE_DIR=$HOME/.local/state/nix
+          export NIX_LOG_DIR=$HOME/.local/log/nix
+          export NIX_CACHE_DIR=/home/runner/.cache/nix
+          export NIX_GC_ROOT=$HOME/.nix-gc
+          export NIX_STORE_DIR=$HOME/.store
+          export NIX_IGNORE_SYMLINK_STORE=1
           export NIX_PATH=nixpkgs=channel:nixpkgs-unstable
 
-          echo "Installing build dependencies via Nix..."
-          nix profile install \
-            nixpkgs#flex \
-            nixpkgs#bison \
-            nixpkgs#elfutils \
-            nixpkgs#openssl \
-            nixpkgs#python3 \
-            nixpkgs#rsync \
-            nixpkgs#ccache \
-            nixpkgs#u-bootTools \
-            nixpkgs#dwarves \
-            --accept-flake-config 2>&1 || true
+          mkdir -p $NIX_CONF_DIR $NIX_LOCALSTATE_DIR $NIX_LOG_DIR $NIX_CACHE_DIR $NIX_GC_ROOT $HOME/.store
 
-          echo "Verifying installations..."
-          which flex bison python3 rsync ccache mkimage dwarves || true
+          # Create nix.conf
+          cat > $NIX_CONF_DIR/nix.conf << 'EOF'
+substituters = https://cache.nixos.org https://nix-community.cachix.org
+trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs=
+builders =
+EOF
+
+          echo "=== Installing build dependencies via Nix ==="
+
+          # Install packages using nix-env
+          nix-env -iA \
+            nixpkgs.flex \
+            nixpkgs.bison \
+            nixpkgs.elfutils \
+            nixpkgs.openssl \
+            nixpkgs.python3 \
+            nixpkgs.rsync \
+            nixpkgs.ccache \
+            nixpkgs.u-bootTools \
+            nixpkgs.dwarves \
+            -f https://github.com/NixOS/nixpkgs/tarball/nixos-24.11 \
+            2>&1 || echo "Nix install had issues, continuing..."
+
+          echo "=== Verifying installations ==="
+          which flex bison python3 rsync ccache mkimage dwarves || echo "Some tools not found in PATH"
 
           # Set USE_CCACHE
-          export USE_CCACHE=0
-          if command -v ccache &> /dev/null; then
-            export USE_CCACHE=1
-            echo "ccache available: $(ccache --version)"
-          fi
-
-          echo "Build dependency check complete. USE_CCACHE=$USE_CCACHE"
-
-      - name: Install build dependencies with Micromamba
-        run: |
-          export HOME=/home/runner
-          export PATH="$HOME/.local/bin:$PATH"
-          export MAMBA_ROOT_PREFIX="$HOME/.mamba"
-
-          echo "Installing build dependencies via Micromamba..."
-          micromamba install -y -p $HOME/.local \
-            flex bison libelf openssl python3 rsync ccache \
-            dwarves u-boot-tools
-
-          echo "Verifying installations..."
-          which flex bison python3 rsync ccache mkimage dwarves || true
-
-          # Set USE_CCACHE based on whether ccache is available
           export USE_CCACHE=0
           if command -v ccache &> /dev/null; then
             export USE_CCACHE=1
@@ -158,6 +174,11 @@ jobs:
 
       - name: Setup ccache
         run: |
+          export HOME=/home/runner
+          export PATH="$HOME/.local/bin:$PATH"
+          export NIX_CONF_DIR=$HOME/.config/nix
+          export NIX_STORE_DIR=$HOME/.store
+
           if command -v ccache &> /dev/null; then
             ccache -M 50G
             ccache -z
@@ -168,8 +189,10 @@ jobs:
       - name: Configure kernel
         run: |
           export HOME=/home/runner
-          export PATH="$HOME/.nix-profile/bin:$PATH"
-          source "$HOME/.nix-profile/etc/profile.d/nix.sh" 2>/dev/null || true
+          export PATH="$HOME/.local/bin:$HOME/.store/*/bin:$PATH"
+          export NIX_CONF_DIR=$HOME/.config/nix
+          export NIX_STORE_DIR=$HOME/.store
+
           # Only reconfigure if .config doesn't exist or makefile changed
           if [ ! -f $KERNEL_BUILD_DIR/.config ] || [ $KERNEL_SRC_DIR/Makefile -nt $KERNEL_BUILD_DIR/.config ]; then
             make -C $KERNEL_SRC_DIR O=$KERNEL_BUILD_DIR ARCH=arm64 defconfig
@@ -178,9 +201,11 @@ jobs:
       - name: Build kernel
         run: |
           export HOME=/home/runner
-          export PATH="$HOME/.nix-profile/bin:$PATH"
-          source "$HOME/.nix-profile/etc/profile.d/nix.sh" 2>/dev/null || true
+          export PATH="$HOME/.local/bin:$HOME/.store/*/bin:$PATH"
+          export NIX_CONF_DIR=$HOME/.config/nix
+          export NIX_STORE_DIR=$HOME/.store
           export CCACHE_DIR=$CCACHE_DIR
+
           if [ "${USE_CCACHE:-0}" = "1" ]; then
             echo "Building with ccache..."
             make -C $KERNEL_SRC_DIR O=$KERNEL_BUILD_DIR ARCH=arm64 CC="ccache gcc" -j$(nproc) Image.gz modules
@@ -192,8 +217,10 @@ jobs:
       - name: Package artifacts
         run: |
           export HOME=/home/runner
-          export PATH="$HOME/.nix-profile/bin:$PATH"
-          source "$HOME/.nix-profile/etc/profile.d/nix.sh" 2>/dev/null || true
+          export PATH="$HOME/.local/bin:$HOME/.store/*/bin:$PATH"
+          export NIX_CONF_DIR=$HOME/.config/nix
+          export NIX_STORE_DIR=$HOME/.store
+
           mkdir -p artifacts
 
           # Copy kernel image
