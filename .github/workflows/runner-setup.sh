@@ -4,6 +4,15 @@
 
 set -e
 
+# Configure passwordless sudo for the runner user (needed for GitHub Actions)
+echo "Configuring passwordless sudo for runner user..."
+RUNNER_USER=$(whoami)
+if ! grep -q "^$RUNNER_USER.*NOPASSWD" /etc/sudoers 2>/dev/null; then
+    echo "$RUNNER_USER ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/$RUNNER_USER > /dev/null
+    sudo chmod 0440 /etc/sudoers.d/$RUNNER_USER
+    echo "✓ Passwordless sudo configured for $RUNNER_USER"
+fi
+
 echo "Setting up persistent directories for kernel builds..."
 
 # Create persistent directories
