@@ -56,40 +56,44 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          set -e
+          echo "Checking build dependencies..."
 
-          # Check if ccache is available anywhere
+          # Check for ccache
+          export USE_CCACHE=0
           if command -v ccache &> /dev/null; then
-            echo "ccache already available: $(ccache --version)"
-            exit 0
+            echo "ccache available: $(ccache --version)"
+            export USE_CCACHE=1
+          else
+            echo "ccache not found, attempting to install..."
+            # Try apt-get with sudo
+            if sudo apt-get install -y -qq ccache 2>/dev/null; then
+              echo "ccache installed via sudo apt-get"
+              export USE_CCACHE=1
+            else
+              # Try downloading Ubuntu deb package and extracting manually
+              echo "Trying to extract ccache from Ubuntu package..."
+              if curl -sL "http://archive.ubuntu.com/ubuntu/pool/universe/c/ccache/ccache_4.9.1-1_arm64.deb" -o /tmp/ccache.deb 2>/dev/null; then
+                dpkg -x /tmp/ccache.deb ~/ 2>/dev/null || true
+                if [ -x "$HOME/usr/bin/ccache" ]; then
+                  export PATH="$HOME/usr/bin:$PATH"
+                  export USE_CCACHE=1
+                  echo "ccache extracted from deb: $(ccache --version)"
+                fi
+              fi
+            fi
           fi
 
-          # Try to find ccache in common locations
-          for p in /usr/bin/ccache /usr/local/bin/ccache /opt/ccache/bin/ccache; do
-            if [ -x "$p" ]; then
-              echo "ccache found at $p"
-              export PATH="$(dirname $p):$PATH"
-              exit 0
+          # Install other essential dependencies if missing
+          for pkg in bc bison flex libelf-dev libssl-dev python3 rsync u-boot-tools dwarves; do
+            if ! dpkg -l "$pkg" 2>/dev/null | grep -q "^ii"; then
+              echo "Installing $pkg..."
+              sudo apt-get install -y -qq "$pkg" 2>/dev/null || echo "WARNING: Could not install $pkg"
+            else
+              echo "$pkg already installed"
             fi
           done
 
-          echo "ccache not found, installing..."
-
-          # Try apt-get with sudo first
-          if sudo apt-get update -qq && sudo apt-get install -y -qq ccache; then
-            echo "ccache installed via sudo apt-get"
-            exit 0
-          fi
-
-          # Fallback: download ccache binary release
-          echo "Trying to download ccache binary..."
-          CCACHE_VERSION="4.9.1"
-          wget -q "https://github.com/ccache/ccache/releases/download/v${CCACHE_VERSION}/ccache-${CCACHE_VERSION}-linux-arm64.tar.xz" -O /tmp/ccache.tar.xz
-          mkdir -p ~/.local
-          tar -xf /tmp/ccache.tar.xz -C ~/.local --strip-components=1
-          rm /tmp/ccache.tar.xz
-          export PATH="$HOME/.local/bin:$PATH"
-          echo "ccache installed from binary: $(ccache --version)"
+          echo "Build dependency check complete. USE_CCACHE=$USE_CCACHE"
 
       - name: Cache ccache
         uses: actions/cache@v4
@@ -101,8 +105,12 @@ jobs:
 
       - name: Setup ccache
         run: |
-          ccache -M 50G
-          ccache -z
+          if command -v ccache &> /dev/null; then
+            ccache -M 50G
+            ccache -z
+          else
+            echo "ccache not available, skipping setup"
+          fi
 
       - name: Configure kernel
         run: |
@@ -114,7 +122,13 @@ jobs:
       - name: Build kernel
         run: |
           export CCACHE_DIR=$CCACHE_DIR
-          make -C $KERNEL_SRC_DIR O=$KERNEL_BUILD_DIR ARCH=arm64 CC="ccache gcc" -j$(nproc) Image.gz modules
+          if [ "${USE_CCACHE:-0}" = "1" ]; then
+            echo "Building with ccache..."
+            make -C $KERNEL_SRC_DIR O=$KERNEL_BUILD_DIR ARCH=arm64 CC="ccache gcc" -j$(nproc) Image.gz modules
+          else
+            echo "Building without ccache..."
+            make -C $KERNEL_SRC_DIR O=$KERNEL_BUILD_DIR ARCH=arm64 -j$(nproc) Image.gz modules
+          fi
 
       - name: Package artifacts
         run: |
@@ -139,8 +153,12 @@ jobs:
             echo "Branch: ${{ github.ref_name }}"
             echo "Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
             echo ""
-            echo "=== Ccache Statistics ==="
-            ccache -s
+            if command -v ccache &> /dev/null; then
+              echo "=== Ccache Statistics ==="
+              ccache -s
+            else
+              echo "=== Ccache: not available ==="
+            fi
           } > artifacts/build-info.txt
 
       - name: Upload to GitHub artifacts
