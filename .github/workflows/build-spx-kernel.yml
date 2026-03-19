@@ -56,66 +56,68 @@ jobs:
             echo "Checked out commit: $(git log -1 --oneline)"
           fi
 
-      - name: Check available packages and install dependencies
+      - name: Install Nix (single-user mode)
         run: |
           export HOME=/home/runner
-          echo "=== Checking available packages ==="
-
-          # Check what tools are already available
-          for cmd in flex bison gcc make python3 rsync; do
-            if command -v $cmd &> /dev/null; then
-              echo "$cmd: $(command -v $cmd)"
-            else
-              echo "$cmd: NOT FOUND"
-            fi
-          done
-
-          # Check for libelf
-          if pkg-config --exists libelf 2>/dev/null; then
-            echo "libelf: found (pkg-config)"
-          elif [ -f /usr/lib/aarch64-linux-gnu/libelf.so ]; then
-            echo "libelf: found at /usr/lib/aarch64-linux-gnu/libelf.so"
-          else
-            echo "libelf: NOT FOUND"
-          fi
-
-          # Check for SSL
-          for lib in libssl libssl.so; do
-            if [ -f "/usr/lib/aarch64-linux-gnu/$lib" ]; then
-              echo "openssl: found at /usr/lib/aarch64-linux-gnu/$lib"
-              break
-            fi
-          done
-
-          echo "=== Attempting to install missing packages ==="
-
-          # Install miniforge (conda) to user directory without sudo
           export PATH="$HOME/.local/bin:$PATH"
-          export MAMBA_ROOT_PREFIX="$HOME/.mamba"
 
-          if ! command -v conda &> /dev/null && ! command -v mamba &> /dev/null; then
-            echo "Installing Miniforge..."
-            curl -Ls https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-aarch64.sh -o /tmp/miniforge.sh
-            bash /tmp/miniforge.sh -b -p $HOME/.local/miniforge
-            rm /tmp/miniforge.sh
+          # Pre-create nix directory structure manually (avoiding sudo)
+          mkdir -p $HOME/.nix-store/{bin,etc,var/nix/{daemon-socket,profiles,gcpace,sets,store-path,temp,userpool},profiles/per-user/runner}
+
+          # Download and extract Nix binary directly to user directory
+          if ! command -v nix &> /dev/null; then
+            echo "Installing Nix (single-user mode to user directory)..."
+            curl -Ls https://releases.nixos.org/nix/nix-2.34.1/nix-2.34.1-aarch64-linux.tar.xz | tar -xJ -C $HOME
+            # Use the extracted nix binary
+            if [ -x $HOME/nix-2.34.1-aarch64-linux/bin/nix ]; then
+              ln -sf $HOME/nix-2.34.1-aarch64-linux/bin/nix $HOME/.local/bin/nix
+              ln -sf $HOME/nix-2.34.1-aarch64-linux/bin/nix-daemon $HOME/.local/bin/nix-daemon 2>/dev/null || true
+              ln -sf $HOME/nix-2.34.1-aarch64-linux/bin/nix-env $HOME/.local/bin/nix-env 2>/dev/null || true
+            fi
           fi
 
-          # Source conda
-          if [ -f "$HOME/.local/miniforge/etc/profile.d/conda.sh" ]; then
-            source "$HOME/.local/miniforge/etc/profile.d/conda.sh"
-            export PATH="$HOME/.local/miniforge/bin:$PATH"
+          # Set up Nix environment
+          export NIX_SSL_CERT_FILE=$HOME/.nix-profile/etc/ssl/certs/ca-bundle.crt
+          export NIX_PATH=nixpkgs=channel:nixpkgs-unstable
+          export NIX_STATE_DIR=$HOME/.nix-state
+          export NIX_STORE_DIR=$HOME/.nix-store
+          export HOME=/home/runner
+
+          # Initialize Nix
+          if command -v nix &> /dev/null; then
+            nix --version
+            # Create the required socket directory
+            mkdir -p $HOME/var/nix/daemon-socket
+            echo "Nix installed successfully"
+          else
+            echo "Nix installation failed"
+            exit 1
           fi
 
-          echo "Conda version: $(conda --version 2>/dev/null || echo 'not found')"
+      - name: Install build dependencies with Nix
+        run: |
+          export HOME=/home/runner
+          export PATH="$HOME/.local/bin:$HOME/.nix-profile/bin:$PATH"
+          export NIX_SSL_CERT_FILE=$HOME/.nix-profile/etc/ssl/certs/ca-bundle.crt
+          export NIX_STATE_DIR=$HOME/.nix-state
+          export NIX_STORE_DIR=$HOME/.nix-store
+          export NIX_PATH=nixpkgs=channel:nixpkgs-unstable
 
-          # Install packages via mamba/conda
-          if command -v mamba &> /dev/null; then
-            echo "Installing packages via mamba..."
-            mamba install -y -p $HOME/.local/miniforge flex bison "libelf>=1.0" openssl python3 rsync ccache dwarves
-          elif command -v conda &> /dev/null; then
-            echo "Installing packages via conda..."
-            conda install -y -p $HOME/.local/miniforge flex bison libelf openssl python3 rsync ccache dwarves -c conda-forge
-          fi
+          echo "Installing build dependencies via Nix..."
+          nix profile install \
+            nixpkgs#flex \
+            nixpkgs#bison \
+            nixpkgs#elfutils \
+            nixpkgs#openssl \
+            nixpkgs#python3 \
+            nixpkgs#rsync \
+            nixpkgs#ccache \
+            nixpkgs#u-bootTools \
+            nixpkgs#dwarves \
+            --accept-flake-config 2>&1 || true
+
+          echo "Verifying installations..."
+          which flex bison python3 rsync ccache mkimage dwarves || true
 
           # Set USE_CCACHE
           export USE_CCACHE=0
