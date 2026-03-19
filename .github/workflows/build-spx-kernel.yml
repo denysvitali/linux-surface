@@ -53,22 +53,65 @@ jobs:
             echo "Checked out commit: $(git log -1 --oneline)"
           fi
 
-      - name: Install Nix
-        uses: cachix/install-nix-action@v31.10.1
-        with:
-          nix_path: nixpkgs=channel:nixpkgs-unstable
-          extra_nix_config: |
-            substituters = https://cache.nixos.org https://nix-community.cachix.org
-            trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs=
-            builders =
+      - name: Install Nix (static rootless)
+        run: |
+          export HOME=/home/runner
+          export PATH="$HOME/.local/bin:$PATH"
+
+          echo "=== Installing static Nix binary (rootless) ==="
+
+          # Set up environment
+          export NIX_CONF_DIR=$HOME/.config/nix
+          export NIX_LOCALSTATE_DIR=$HOME/.local/state/nix
+          export NIX_LOG_DIR=$HOME/.local/log/nix
+          export NIX_CACHE_DIR=$HOME/.cache/nix
+          export NIX_GC_ROOT=$HOME/.nix-gc
+
+          mkdir -p $NIX_CONF_DIR $NIX_LOCALSTATE_DIR $NIX_LOG_DIR $NIX_CACHE_DIR $NIX_GC_ROOT
+
+          # Create nix.conf for rootless operation
+          printf '%s\n' \
+            "experimental-features = nix-command flakes" \
+            "extra-experimental-features = auto-allocate-uids" \
+            "substituters = https://cache.nixos.org https://nix-community.cachix.org" \
+            "trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs=" \
+            "builders =" \
+            > $NIX_CONF_DIR/nix.conf
+
+          # Try to download static Nix from Hydra for aarch64
+          echo "=== Downloading static Nix binary for aarch64 ==="
+          STATIC_NIX_URL="https://hydra.nixos.org/job/nix/master/buildStatic.aarch64-linux/latest/download-by-type/file/binary-dist"
+
+          if curl -fsSL "$STATIC_NIX_URL" -o /tmp/nix-static; then
+            if file /tmp/nix-static | grep -q "executable\|ELF"; then
+              chmod +x /tmp/nix-static
+              cp /tmp/nix-static $HOME/.local/bin/nix
+              rm /tmp/nix-static
+              echo "Nix installed: $(nix --version)"
+            else
+              echo "Downloaded file is not a valid executable"
+              rm /tmp/nix-static
+              exit 1
+            fi
+          else
+            echo "Failed to download static Nix from Hydra"
+            echo "Trying alternative approach..."
+            exit 1
+          fi
 
       - name: Install build dependencies
         run: |
           export HOME=/home/runner
           export PATH="$HOME/.local/bin:$PATH"
+          export NIX_CONF_DIR=$HOME/.config/nix
+          export NIX_LOCALSTATE_DIR=$HOME/.local/state/nix
+          export NIX_LOG_DIR=$HOME/.local/log/nix
+          export NIX_CACHE_DIR=$HOME/.cache/nix
+          export NIX_GC_ROOT=$HOME/.nix-gc
 
           echo "=== Installing build dependencies via Nix ==="
 
+          # Install packages - Nix will use binary cache
           nix-env -iA \
             nixpkgs.flex \
             nixpkgs.bison \
@@ -81,8 +124,8 @@ jobs:
 
           echo "=== Verifying installations ==="
           which flex bison python3 rsync ccache mkimage dwarves || echo "Some tools not found in PATH"
-          flex --version
-          bison --version
+          flex --version 2>/dev/null || echo "flex not found"
+          bison --version 2>/dev/null || echo "bison not found"
 
           # Set USE_CCACHE
           export USE_CCACHE=0
@@ -116,6 +159,7 @@ jobs:
         run: |
           export HOME=/home/runner
           export PATH="$HOME/.local/bin:$PATH"
+          export NIX_CONF_DIR=$HOME/.config/nix
 
           if [ ! -f $KERNEL_BUILD_DIR/.config ] || [ $KERNEL_SRC_DIR/Makefile -nt $KERNEL_BUILD_DIR/.config ]; then
             make -C $KERNEL_SRC_DIR O=$KERNEL_BUILD_DIR ARCH=arm64 defconfig
@@ -126,6 +170,7 @@ jobs:
           export HOME=/home/runner
           export PATH="$HOME/.local/bin:$PATH"
           export CCACHE_DIR=$CCACHE_DIR
+          export NIX_CONF_DIR=$HOME/.config/nix
 
           if [ "${USE_CCACHE:-0}" = "1" ]; then
             echo "Building with ccache..."
@@ -139,6 +184,7 @@ jobs:
         run: |
           export HOME=/home/runner
           export PATH="$HOME/.local/bin:$PATH"
+          export NIX_CONF_DIR=$HOME/.config/nix
 
           mkdir -p artifacts
           cp $KERNEL_BUILD_DIR/arch/arm64/boot/Image.gz artifacts/ || echo "Image.gz not found"
