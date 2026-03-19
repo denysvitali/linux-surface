@@ -130,11 +130,11 @@ jobs:
           mkdir -p $NIX_CONF_DIR $NIX_LOCALSTATE_DIR $NIX_LOG_DIR $NIX_CACHE_DIR $NIX_GC_ROOT $HOME/.store
 
           # Create nix.conf
-          cat > $NIX_CONF_DIR/nix.conf <<'NIXCONF'
-substituters = https://cache.nixos.org https://nix-community.cachix.org
-trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs=
-builders =
-NIXCONF
+          printf '%s\n' \
+            "substituters = https://cache.nixos.org https://nix-community.cachix.org" \
+            "trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs=" \
+            "builders =" \
+            > $NIX_CONF_DIR/nix.conf
 
           echo "=== Installing build dependencies via Nix ==="
 
