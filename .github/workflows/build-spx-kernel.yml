@@ -56,36 +56,40 @@ jobs:
             echo "Checked out commit: $(git log -1 --oneline)"
           fi
 
-      - name: Install Nix (single-user mode)
+      - name: Install build dependencies
         run: |
           export HOME=/home/runner
-          export PATH="$HOME/.local/bin:$PATH"
+          export PATH="$HOME/.local/bin:$HOME/.local/miniforge/bin:$PATH"
 
-          # Download and extract Nix binary directly to user directory
-          if ! command -v nix &> /dev/null; then
-            echo "Downloading Nix..."
-            curl -fL https://releases.nixos.org/nix/nix-2.34.1/nix-2.34.1-aarch64-linux.tar.xz -o /tmp/nix.tar.xz
-            echo "Extracting Nix..."
-            tar -xJ -f /tmp/nix.tar.xz -C $HOME
-            ls -la $HOME/
-            ls -la $HOME/nix-2.34.1-aarch64-linux/bin/ 2>/dev/null || echo "Directory not found"
+          echo "=== Checking for existing installations ==="
+
+          # Check for conda/mamba first (from previous run)
+          if [ -f "$HOME/.local/miniforge/etc/profile.d/conda.sh" ]; then
+            echo "Found miniforge installation, sourcing..."
+            source "$HOME/.local/miniforge/etc/profile.d/conda.sh"
+          elif ! command -v mamba &> /dev/null && ! command -v conda &> /dev/null; then
+            echo "Installing miniforge..."
+            curl -Ls https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-aarch64.sh -o /tmp/miniforge.sh
+            bash /tmp/miniforge.sh -b -p $HOME/.local/miniforge
+            rm /tmp/miniforge.sh
+            source "$HOME/.local/miniforge/etc/profile.d/conda.sh"
           fi
 
-          # Set up Nix environment
-          export NIX_SSL_CERT_FILE=$HOME/.nix-profile/etc/ssl/certs/ca-bundle.crt
-          export NIX_PATH=nixpkgs=channel:nixpkgs-unstable
-          export NIX_STATE_DIR=$HOME/.nix-state
-          export NIX_STORE_DIR=$HOME/.nix-store
-          export HOME=/home/runner
+          echo "Conda version: $(conda --version 2>/dev/null || echo 'not found')"
 
-          # Initialize Nix
-          if command -v nix &> /dev/null; then
-            nix --version
-            echo "Nix installed successfully"
-          else
-            echo "Nix installation failed - binary not found"
-            exit 1
+          # Install packages
+          echo "Installing packages via conda/mamba..."
+          mamba install -y -p $HOME/.local/miniforge flex bison elfutils openssl python rsync ccache -c conda-forge || \
+            conda install -y -p $HOME/.local/miniforge flex bison elfutils openssl python rsync ccache -c conda-forge
+
+          # Set USE_CCACHE
+          export USE_CCACHE=0
+          if command -v ccache &> /dev/null; then
+            export USE_CCACHE=1
+            echo "ccache available: $(ccache --version)"
           fi
+
+          echo "Build dependency check complete. USE_CCACHE=$USE_CCACHE"
 
       - name: Install build dependencies with Nix
         run: |
