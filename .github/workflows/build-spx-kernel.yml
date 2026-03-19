@@ -89,17 +89,51 @@ jobs:
 
           echo "=== Installing build dependencies via Conda ==="
 
-          # Install packages - using correct conda package names
+          # Install only packages that work with conda-forge aarch64
           conda install -y \
-            flex \
-            bison \
-            elfutils \
-            openssl \
             python \
             rsync \
-            uboot-tools \
+            elfutils \
+            openssl \
             ccache \
             2>&1 || echo "Conda install had issues, continuing..."
+
+          echo "=== Building flex from source ==="
+          cd /tmp
+          if ! command -v flex &> /dev/null; then
+            curl -fsSL https://github.com/westes/flex/releases/download/v2.6.4/flex-2.6.4.tar.gz -o flex.tar.gz
+            tar -xzf flex.tar.gz
+            cd flex-2.6.4
+            ./configure --prefix=$HOME/.local
+            make -j$(nproc)
+            make install
+            cd /tmp && rm -rf flex-2.6.4 flex.tar.gz
+          fi
+
+          echo "=== Building bison from source ==="
+          cd /tmp
+          if ! command -v bison &> /dev/null; then
+            curl -fsSL https://ftp.gnu.org/gnu/bison/bison-3.8.tar.gz -o bison.tar.gz
+            tar -xzf bison.tar.gz
+            cd bison-3.8
+            ./configure --prefix=$HOME/.local
+            make -j$(nproc)
+            make install
+            cd /tmp && rm -rf bison-3.8 bison.tar.gz
+          fi
+
+          echo "=== Building mkimage from u-boot source ==="
+          if ! command -v mkimage &> /dev/null; then
+            cd /tmp
+            git clone https://github.com/u-boot/u-boot --depth=1 --branch=v2024.01
+            cd u-boot
+            make CROSS_COMPILE=aarch64-linux-gnu- vexpress_ca9x4_defconfig
+            make CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) tools/mkimage
+            install -D -m 755 tools/mkimage $HOME/.local/bin/mkimage
+            cd /tmp && rm -rf u-boot
+          fi
+
+          export PATH="$HOME/.local/bin:$CONDA_ROOT/bin:$PATH"
 
           echo "=== Verifying installations ==="
           which flex bison python rsync mkimage ccache || echo "Some tools not found in PATH"
