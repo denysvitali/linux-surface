@@ -56,20 +56,75 @@ jobs:
             echo "Checked out commit: $(git log -1 --oneline)"
           fi
 
-      - name: Install Micromamba
+      - name: Check available packages and install dependencies
         run: |
           export HOME=/home/runner
-          mkdir -p $HOME/.local/bin
-          # Install micromamba to user directory without sudo
-          if ! command -v micromamba &> /dev/null; then
-            echo "Installing Micromamba..."
-            # Try downloading the binary directly
-            curl -fLs https://github.com/mamba-org/micromamba/releases/latest/download/micromamba-linux-arm64 -o $HOME/.local/bin/micromamba
-            chmod +x $HOME/.local/bin/micromamba
+          echo "=== Checking available packages ==="
+
+          # Check what tools are already available
+          for cmd in flex bison gcc make python3 rsync; do
+            if command -v $cmd &> /dev/null; then
+              echo "$cmd: $(command -v $cmd)"
+            else
+              echo "$cmd: NOT FOUND"
+            fi
+          done
+
+          # Check for libelf
+          if pkg-config --exists libelf 2>/dev/null; then
+            echo "libelf: found (pkg-config)"
+          elif [ -f /usr/lib/aarch64-linux-gnu/libelf.so ]; then
+            echo "libelf: found at /usr/lib/aarch64-linux-gnu/libelf.so"
+          else
+            echo "libelf: NOT FOUND"
           fi
+
+          # Check for SSL
+          for lib in libssl libssl.so; do
+            if [ -f "/usr/lib/aarch64-linux-gnu/$lib" ]; then
+              echo "openssl: found at /usr/lib/aarch64-linux-gnu/$lib"
+              break
+            fi
+          done
+
+          echo "=== Attempting to install missing packages ==="
+
+          # Install miniforge (conda) to user directory without sudo
           export PATH="$HOME/.local/bin:$PATH"
           export MAMBA_ROOT_PREFIX="$HOME/.mamba"
-          echo "Micromamba installed: $(micromamba --version)"
+
+          if ! command -v conda &> /dev/null && ! command -v mamba &> /dev/null; then
+            echo "Installing Miniforge..."
+            curl -Ls https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-aarch64.sh -o /tmp/miniforge.sh
+            bash /tmp/miniforge.sh -b -p $HOME/.local/miniforge
+            rm /tmp/miniforge.sh
+          fi
+
+          # Source conda
+          if [ -f "$HOME/.local/miniforge/etc/profile.d/conda.sh" ]; then
+            source "$HOME/.local/miniforge/etc/profile.d/conda.sh"
+            export PATH="$HOME/.local/miniforge/bin:$PATH"
+          fi
+
+          echo "Conda version: $(conda --version 2>/dev/null || echo 'not found')"
+
+          # Install packages via mamba/conda
+          if command -v mamba &> /dev/null; then
+            echo "Installing packages via mamba..."
+            mamba install -y -p $HOME/.local/miniforge flex bison "libelf>=1.0" openssl python3 rsync ccache dwarves
+          elif command -v conda &> /dev/null; then
+            echo "Installing packages via conda..."
+            conda install -y -p $HOME/.local/miniforge flex bison libelf openssl python3 rsync ccache dwarves -c conda-forge
+          fi
+
+          # Set USE_CCACHE
+          export USE_CCACHE=0
+          if command -v ccache &> /dev/null; then
+            export USE_CCACHE=1
+            echo "ccache available: $(ccache --version)"
+          fi
+
+          echo "Build dependency check complete. USE_CCACHE=$USE_CCACHE"
 
       - name: Install build dependencies with Micromamba
         run: |
