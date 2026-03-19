@@ -24,16 +24,29 @@ jobs:
           echo "Build directory: $KERNEL_BUILD_DIR"
           echo "Ccache directory: $CCACHE_DIR"
 
-      - name: Checkout to persistent location
-        uses: actions/checkout@v6
-        with:
-          path: linux-surface-src
-
-      - name: Move source to persistent location
+      - name: Checkout to persistent location (zero-bandwidth incremental)
         run: |
-          # Use rsync to preserve existing build artifacts
-          rsync -a --delete linux-surface-src/ $KERNEL_SRC_DIR/
-          rm -rf linux-surface-src
+          REPO_URL="${{ github.server_url }}/${{ github.repository }}.git"
+          REF="${{ github.ref_name }}"
+          SHA="${{ github.sha }}"
+
+          if [ -d "$KERNEL_SRC_DIR/.git" ]; then
+            echo "Repository exists, fetching updates..."
+            cd "$KERNEL_SRC_DIR"
+            git remote set-url origin "$REPO_URL"
+            git fetch origin
+            git checkout -f "$SHA"
+            git reset --hard "$SHA"
+            git clean -fdx
+            echo "Checked out commit: $(git log -1 --oneline)"
+          else
+            echo "Cloning repository (first time)..."
+            git clone --depth=1 --branch="$REF" "$REPO_URL" "$KERNEL_SRC_DIR"
+            cd "$KERNEL_SRC_DIR"
+            git fetch origin "$SHA"
+            git checkout -f "$SHA"
+            echo "Checked out commit: $(git log -1 --oneline)"
+          fi
 
       - name: Setup ccache
         run: |

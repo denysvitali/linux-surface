@@ -7,6 +7,7 @@ This directory contains GitHub Actions workflows for automated kernel building f
 The `build-spx-kernel.yml` workflow automatically builds the Linux kernel for Surface Pro X whenever code is pushed to `spx/*` branches. It uses:
 
 - **Self-hosted arm64 runner** for native cross-compilation
+- **Persistent git repository** - Zero re-clone bandwidth, only fetches deltas
 - **Persistent ccache** (50GB) for fast incremental builds
 - **Persistent source/build directories** to avoid full rebuilds
 - **Automated pre-releases** with build artifacts
@@ -91,10 +92,38 @@ The aggressive caching strategy provides significant speed improvements:
 
 ### Caching Strategy
 
+- **Git repository**: Persistent clone in `~/kernel-builds/linux-surface-src` - only fetches deltas (~MB instead of ~4GB per run)
 - **Ccache**: 50GB persistent cache in `~/.cache/ccache`
-- **Source**: Persistent checkout in `~/kernel-builds/linux-surface-src`
-- **Build objects**: Preserved between runs
-- **No network overhead**: Zero upload/download of cache
+- **Build objects**: Preserved between runs for true incremental builds
+- **No network overhead**: Zero upload/download of cache from GitHub Actions
+
+## Bandwidth Savings
+
+The Linux kernel repository is ~3-4GB. This workflow optimizes bandwidth usage:
+
+| Approach | Bandwidth per run | 10 runs total |
+|----------|------------------|---------------|
+| Full clone each time | ~4GB | ~40GB |
+| This workflow (first run) | ~4GB | ~4GB |
+| This workflow (subsequent) | ~1-50MB | ~400MB |
+
+**Savings**: After the first run, each subsequent run uses only 1-50MB of bandwidth (just the git delta), instead of re-downloading the entire 4GB repository.
+
+This is achieved by:
+1. **Persistent git repository**: The repo is cloned once to `~/kernel-builds/linux-surface-src` and reused
+2. **Incremental fetches**: Each run only fetches the new commits, not the full history
+3. **Local operations**: All checkout/reset operations happen locally with no network transfer
+
+### Optional Pre-clone
+
+To save even more bandwidth on the first workflow run, you can pre-clone the repository when running the setup script:
+
+```bash
+bash .github/workflows/runner-setup.sh
+# Answer 'y' when prompted to pre-clone
+```
+
+This downloads the repository once during setup, so the first workflow run doesn't need to clone it.
 
 ## Maintenance
 

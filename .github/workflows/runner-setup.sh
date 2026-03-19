@@ -48,6 +48,20 @@ echo "  Source:     ~/kernel-builds/linux-surface-src"
 echo "  Build:      ~/kernel-builds/linux-surface-build"
 echo "  Ccache:     $CCACHE_DIR"
 echo ""
+echo "Optional: Pre-clone repository to save bandwidth on first run"
+echo "  This will download ~3-4GB now, but save bandwidth later."
+echo ""
+read -p "Pre-clone repository now? (y/N) " -n 1 -r
+echo
+if [[ $REPLY =~ ^[Yy]$ ]]; then
+    read -p "Enter repository URL (e.g., https://github.com/user/linux-surface): " REPO_URL
+    if [ -n "$REPO_URL" ]; then
+        echo "Cloning repository..."
+        git clone --depth=1 "$REPO_URL" ~/kernel-builds/linux-surface-src
+        echo "✓ Repository cloned to ~/kernel-builds/linux-surface-src"
+    fi
+fi
+echo ""
 echo "Next steps:"
 echo "  1. Ensure this machine is registered as a self-hosted runner with label 'arm64'"
 echo "  2. Push to an 'spx/*' branch to trigger the workflow"
