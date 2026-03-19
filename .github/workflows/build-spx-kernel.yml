@@ -83,19 +83,18 @@ jobs:
           STATIC_NIX_URL="https://hydra.nixos.org/job/nix/master/buildStatic.aarch64-linux/latest/download-by-type/file/binary-dist"
 
           if curl -fsSL "$STATIC_NIX_URL" -o /tmp/nix-static; then
-            if file /tmp/nix-static | grep -q "executable\|ELF"; then
-              chmod +x /tmp/nix-static
-              cp /tmp/nix-static $HOME/.local/bin/nix
-              rm /tmp/nix-static
-              echo "Nix installed: $(nix --version)"
+            chmod +x /tmp/nix-static
+            cp /tmp/nix-static $HOME/.local/bin/nix
+            rm /tmp/nix-static
+            # Test if it runs
+            if $HOME/.local/bin/nix --version; then
+              echo "Nix installed successfully"
             else
-              echo "Downloaded file is not a valid executable"
-              rm /tmp/nix-static
+              echo "Nix binary failed to execute"
               exit 1
             fi
           else
             echo "Failed to download static Nix from Hydra"
-            echo "Trying alternative approach..."
             exit 1
           fi
 
