@@ -6,6 +6,11 @@ on:
       - 'spx/**'
   workflow_dispatch:
 
+# Cancel previous runs of the same workflow to save resources
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CCACHE_DIR: $HOME/.cache/ccache
   KERNEL_SRC_DIR: $HOME/kernel-builds/linux-surface-src

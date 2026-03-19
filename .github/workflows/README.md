@@ -155,6 +155,17 @@ gh release list | grep "spx-build-" | awk '{print $3}' | xargs -I {} gh release 
 - Push to `spx/**` branches
 - Manual trigger via `workflow_dispatch`
 
+### Automatic Cancellation
+
+The workflow automatically cancels previous runs of the same branch when a new commit is pushed. This:
+- Saves runner resources and time
+- Ensures only the latest code is built
+- Prevents queue buildup from rapid commits
+
+**Example**: If you push 3 commits in quick succession to `spx/v6.18`, only the 3rd commit will complete its build. The first 2 will be cancelled.
+
+Note: Different branches run in parallel. Pushes to `spx/v6.18` and `spx/v6.19` will not cancel each other.
+
 ### Runner Requirements
 
 - Self-hosted runner labeled `arm64`
