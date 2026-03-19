@@ -12,9 +12,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  CCACHE_DIR: $HOME/.cache/ccache
-  KERNEL_SRC_DIR: $HOME/kernel-builds/linux-surface-src
-  KERNEL_BUILD_DIR: $HOME/kernel-builds/linux-surface-build
+  CCACHE_DIR: /home/runner/.cache/ccache
+  KERNEL_SRC_DIR: /home/runner/kernel-builds/linux-surface-src
+  KERNEL_BUILD_DIR: /home/runner/kernel-builds/linux-surface-build
 
 jobs:
   build:
@@ -22,12 +22,14 @@ jobs:
     steps:
       - name: Setup environment
         run: |
+          export HOME=/home/runner
           mkdir -p $KERNEL_SRC_DIR
           mkdir -p $KERNEL_BUILD_DIR
           mkdir -p $CCACHE_DIR
           echo "Source directory: $KERNEL_SRC_DIR"
           echo "Build directory: $KERNEL_BUILD_DIR"
           echo "Ccache directory: $CCACHE_DIR"
+          echo "HOME: $HOME"
 
       - name: Checkout to persistent location (zero-bandwidth incremental)
         run: |
@@ -56,6 +58,7 @@ jobs:
 
       - name: Install build dependencies
         run: |
+          export HOME=/home/runner
           echo "Checking build dependencies..."
 
           # Check for ccache
@@ -74,8 +77,8 @@ jobs:
               echo "Trying to extract ccache from Ubuntu package..."
               if curl -sL "http://archive.ubuntu.com/ubuntu/pool/universe/c/ccache/ccache_4.9.1-1_arm64.deb" -o /tmp/ccache.deb 2>/dev/null; then
                 dpkg -x /tmp/ccache.deb ~/ 2>/dev/null || true
-                if [ -x "$HOME/usr/bin/ccache" ]; then
-                  export PATH="$HOME/usr/bin:$PATH"
+                if [ -x "/home/runner/usr/bin/ccache" ]; then
+                  export PATH="/home/runner/usr/bin:$PATH"
                   export USE_CCACHE=1
                   echo "ccache extracted from deb: $(ccache --version)"
                 fi
