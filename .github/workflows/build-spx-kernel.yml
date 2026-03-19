@@ -6,7 +6,6 @@ on:
       - 'spx/**'
   workflow_dispatch:
 
-# Cancel previous runs of the same workflow to save resources
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -29,9 +28,8 @@ jobs:
           echo "Source directory: $KERNEL_SRC_DIR"
           echo "Build directory: $KERNEL_BUILD_DIR"
           echo "Ccache directory: $CCACHE_DIR"
-          echo "HOME: $HOME"
 
-      - name: Checkout to persistent location (zero-bandwidth incremental)
+      - name: Checkout to persistent location
         run: |
           REPO_URL="${{ github.server_url }}/${{ github.repository }}.git"
           REF="${{ github.ref_name }}"
@@ -44,7 +42,6 @@ jobs:
             git fetch origin
             git checkout -f "$SHA"
             git reset --hard "$SHA"
-            # Only clean source files, not build artifacts in KERNEL_BUILD_DIR
             git clean -fdx --exclude=modules_install
             echo "Checked out commit: $(git log -1 --oneline)"
           else
@@ -56,136 +53,45 @@ jobs:
             echo "Checked out commit: $(git log -1 --oneline)"
           fi
 
-      - name: Install Nix (static binary)
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31.10.1
+        with:
+          nix_path: nixpkgs=channel:nixpkgs-unstable
+          extra_nix_config: |
+            substituters = https://cache.nixos.org https://nix-community.cachix.org
+            trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs=
+            builders =
+
+      - name: Install build dependencies
         run: |
           export HOME=/home/runner
           export PATH="$HOME/.local/bin:$PATH"
-
-          echo "=== Installing static Nix binary ==="
-
-          # Set up environment
-          export NIX_CONF_DIR=$HOME/.config/nix
-          export NIX_LOCALSTATE_DIR=$HOME/.local/state/nix
-          export NIX_LOG_DIR=$HOME/.local/log/nix
-          export NIX_CACHE_DIR=$HOME/.cache/nix
-          export NIX_GC_ROOT=$HOME/.nix-gc
-          export NIX_STORE_DIR=$HOME/.store
-
-          mkdir -p $NIX_CONF_DIR $NIX_LOCALSTATE_DIR $NIX_LOG_DIR $NIX_CACHE_DIR $NIX_GC_ROOT $HOME/.store
-
-          # Create nix.conf for single-user operation with flakes
-          printf '%s\n' \
-            "experimental-features = nix-command flakes" \
-            "extra-experimental-features = auto-allocate-uids" \
-            "substituters = https://cache.nixos.org https://nix-community.cachix.org" \
-            "trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs=" \
-            "builders =" \
-            > $NIX_CONF_DIR/nix.conf
-
-          # Try to download static Nix from Hydra (may not exist for aarch64)
-          echo "=== Downloading static Nix binary ==="
-          curl -fsSL "https://hydra.nixos.org/job/nix/maintenance-2.24/buildStatic.aarch64-linux/latest/download-by-type/file/binary-dist" -o /tmp/nix-static 2>/dev/null || \
-          curl -fsSL "https://hydra.nixos.org/job/nix/master/buildStatic.aarch64-linux/latest/download-by-type/file/binary-dist" -o /tmp/nix-static 2>/dev/null || \
-          echo "No static aarch64 binary found, trying official release..."
-
-          if [ -s /tmp/nix-static ] && file /tmp/nix-static | grep -q "executable"; then
-            chmod +x /tmp/nix-static
-            mkdir -p $HOME/.local/bin
-            cp /tmp/nix-static $HOME/.local/bin/nix
-            chmod +x $HOME/.local/bin/nix
-            rm /tmp/nix-static
-            echo "Nix installed: $(nix --version)"
-          else
-            echo "=== Downloading official Nix release ==="
-            curl -fsSL https://nixos.org/releases/nix/nix-2.24.10/nix-2.24.10-aarch64-linux.tar.xz -o /tmp/nix.tar.xz
-            tar -xJf /tmp/nix.tar.xz -C $HOME
-            NIX_BIN=$(find $HOME -name "nix" -type f -executable 2>/dev/null | head -1)
-            if [ -n "$NIX_BIN" ] && [ -x "$NIX_BIN" ]; then
-              echo "Found nix at: $NIX_BIN"
-              mkdir -p $HOME/.local/bin
-              for bin in nix nix-env nix-store nix-daemon; do
-                if [ -x "$(dirname $NIX_BIN)/$bin" ]; then
-                  cp "$(dirname $NIX_BIN)/$bin" $HOME/.local/bin/$bin
-                  chmod +x $HOME/.local/bin/$bin
-                fi
-              done
-            fi
-            rm -f /tmp/nix.tar.xz
-            echo "Nix version: $(nix --version 2>/dev/null || echo 'failed')"
-          fi
-
-      - name: Install build dependencies with Nix
-        run: |
-          export HOME=/home/runner
-          export PATH="$HOME/.local/bin:$PATH"
-          export NIX_CONF_DIR=$HOME/.config/nix
-          export NIX_LOCALSTATE_DIR=$HOME/.local/state/nix
-          export NIX_LOG_DIR=$HOME/.local/log/nix
-          export NIX_CACHE_DIR=$HOME/.cache/nix
-          export NIX_GC_ROOT=$HOME/.nix-gc
 
           echo "=== Installing build dependencies via Nix ==="
 
-          $HOME/.local/bin/nix shell \
-            -I nixpkgs=channel:nixpkgs-unstable \
-            nixpkgs#flex \
-            nixpkgs#bison \
-            nixpkgs#elfutils \
-            nixpkgs#openssl \
-            nixpkgs#python3 \
-            nixpkgs#rsync \
-            nixpkgs#ccache \
-            nixpkgs#pkg-config \
-            --command \
-            bash -c '
-              echo "=== Verifying installations ==="
-              which flex bison python3 rsync ccache pkg-config || echo "Some tools not found in PATH"
-              flex --version
-              bison --version
+          nix-env -iA \
+            nixpkgs.flex \
+            nixpkgs.bison \
+            nixpkgs.elfutils \
+            nixpkgs.openssl \
+            nixpkgs.python3 \
+            nixpkgs.rsync \
+            nixpkgs.ccache \
+            nixpkgs.dwarves
 
-              # Set USE_CCACHE
-              export USE_CCACHE=0
-              if command -v ccache &> /dev/null; then
-                export USE_CCACHE=1
-                echo "ccache available: $(ccache --version)"
-              fi
+          echo "=== Verifying installations ==="
+          which flex bison python3 rsync ccache mkimage dwarves || echo "Some tools not found in PATH"
+          flex --version
+          bison --version
 
-              echo "Build dependency check complete. USE_CCACHE=$USE_CCACHE"
+          # Set USE_CCACHE
+          export USE_CCACHE=0
+          if command -v ccache &> /dev/null; then
+            export USE_CCACHE=1
+            echo "ccache available: $(ccache --version)"
+          fi
 
-              # Run the rest of the build steps with Nix packages in PATH
-              export PATH="$HOME/.local/bin:$PATH"
-
-              echo "=== Configuring kernel ==="
-              if [ ! -f $KERNEL_BUILD_DIR/.config ] || [ $KERNEL_SRC_DIR/Makefile -nt $KERNEL_BUILD_DIR/.config ]; then
-                make -C $KERNEL_SRC_DIR O=$KERNEL_BUILD_DIR ARCH=arm64 defconfig
-              fi
-
-              echo "=== Building kernel ==="
-              if [ "${USE_CCACHE:-0}" = "1" ]; then
-                echo "Building with ccache..."
-                make -C $KERNEL_SRC_DIR O=$KERNEL_BUILD_DIR ARCH=arm64 CC="ccache gcc" -j$(nproc) Image.gz modules
-              else
-                echo "Building without ccache..."
-                make -C $KERNEL_SRC_DIR O=$KERNEL_BUILD_DIR ARCH=arm64 -j$(nproc) Image.gz modules
-              fi
-
-              echo "=== Packaging artifacts ==="
-              mkdir -p artifacts
-              cp $KERNEL_BUILD_DIR/arch/arm64/boot/Image.gz artifacts/ || echo "Image.gz not found"
-              cp $KERNEL_BUILD_DIR/arch/arm64/boot/dts/qcom/sc8180x-surface-pro-x.dtb artifacts/ 2>/dev/null || echo "DTB not found"
-              cp $KERNEL_BUILD_DIR/.config artifacts/config.log
-              make -C $KERNEL_SRC_DIR O=$KERNEL_BUILD_DIR ARCH=arm64 INSTALL_MOD_PATH=$KERNEL_BUILD_DIR/modules_install modules_install
-              tar -czf artifacts/modules.tar.gz -C $KERNEL_BUILD_DIR/modules_install .
-              {
-                echo "Commit: ${{ github.sha }}"
-                echo "Branch: ${{ github.ref_name }}"
-                echo "Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-                if command -v ccache &> /dev/null; then
-                  echo "=== Ccache Statistics ==="
-                  ccache -s
-                fi
-              } > artifacts/build-info.txt
-            '
+          echo "Build dependency check complete. USE_CCACHE=$USE_CCACHE"
 
       - name: Cache ccache
         uses: actions/cache@v4
@@ -194,6 +100,61 @@ jobs:
           key: ccache-arm64-spx-${{ github.sha }}
           restore-keys: |
             ccache-arm64-spx-
+
+      - name: Setup ccache
+        run: |
+          export HOME=/home/runner
+          export PATH="$HOME/.local/bin:$PATH"
+          if command -v ccache &> /dev/null; then
+            ccache -M 50G
+            ccache -z
+          else
+            echo "ccache not available, skipping setup"
+          fi
+
+      - name: Configure kernel
+        run: |
+          export HOME=/home/runner
+          export PATH="$HOME/.local/bin:$PATH"
+
+          if [ ! -f $KERNEL_BUILD_DIR/.config ] || [ $KERNEL_SRC_DIR/Makefile -nt $KERNEL_BUILD_DIR/.config ]; then
+            make -C $KERNEL_SRC_DIR O=$KERNEL_BUILD_DIR ARCH=arm64 defconfig
+          fi
+
+      - name: Build kernel
+        run: |
+          export HOME=/home/runner
+          export PATH="$HOME/.local/bin:$PATH"
+          export CCACHE_DIR=$CCACHE_DIR
+
+          if [ "${USE_CCACHE:-0}" = "1" ]; then
+            echo "Building with ccache..."
+            make -C $KERNEL_SRC_DIR O=$KERNEL_BUILD_DIR ARCH=arm64 CC="ccache gcc" -j$(nproc) Image.gz modules
+          else
+            echo "Building without ccache..."
+            make -C $KERNEL_SRC_DIR O=$KERNEL_BUILD_DIR ARCH=arm64 -j$(nproc) Image.gz modules
+          fi
+
+      - name: Package artifacts
+        run: |
+          export HOME=/home/runner
+          export PATH="$HOME/.local/bin:$PATH"
+
+          mkdir -p artifacts
+          cp $KERNEL_BUILD_DIR/arch/arm64/boot/Image.gz artifacts/ || echo "Image.gz not found"
+          cp $KERNEL_BUILD_DIR/arch/arm64/boot/dts/qcom/sc8180x-surface-pro-x.dtb artifacts/ 2>/dev/null || echo "DTB not found"
+          cp $KERNEL_BUILD_DIR/.config artifacts/config.log
+          make -C $KERNEL_SRC_DIR O=$KERNEL_BUILD_DIR ARCH=arm64 INSTALL_MOD_PATH=$KERNEL_BUILD_DIR/modules_install modules_install
+          tar -czf artifacts/modules.tar.gz -C $KERNEL_BUILD_DIR/modules_install .
+          {
+            echo "Commit: ${{ github.sha }}"
+            echo "Branch: ${{ github.ref_name }}"
+            echo "Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+            if command -v ccache &> /dev/null; then
+              echo "=== Ccache Statistics ==="
+              ccache -s
+            fi
+          } > artifacts/build-info.txt
 
       - name: Upload to GitHub artifacts
         if: success()
@@ -224,22 +185,6 @@ jobs:
             - `modules.tar.gz` - Kernel modules
             - `config.log` - Kernel configuration
             - `build-info.txt` - Build metadata and ccache stats
-
-            ## Installation
-            ```bash
-            # Download artifacts from the Assets section below
-
-            # Install kernel image
-            sudo cp Image.gz /boot/vmlinuz-linux-spx
-
-            # Install modules
-            sudo tar -xzf modules.tar.gz -C /
-
-            # Update initramfs (adjust for your distro)
-            sudo update-initramfs -c -k linux-spx  # Debian/Ubuntu
-            # or
-            sudo mkinitcpio -p linux-spx  # Arch
-            ```
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -247,11 +192,10 @@ jobs:
         if: success()
         run: |
           if ! command -v gh &> /dev/null; then
-            echo "ERROR: gh CLI not installed on runner"
+            echo "ERROR: gh CLI not installed"
             exit 1
           fi
           gh release list --limit 100 | grep "spx-build-" | tail -n +6 | awk '{print $3}' | while read tag; do
-            echo "Deleting old release: $tag"
             gh release delete "$tag" --yes
           done
         env:
