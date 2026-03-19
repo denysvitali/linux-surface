@@ -1,0 +1,158 @@
+name: Build Surface Pro X (SC8180X) Kernel
+
+on:
+  push:
+    branches:
+      - 'spx/**'
+  workflow_dispatch:
+
+env:
+  CCACHE_DIR: $HOME/.cache/ccache
+  KERNEL_SRC_DIR: $HOME/kernel-builds/linux-surface-src
+  KERNEL_BUILD_DIR: $HOME/kernel-builds/linux-surface-build
+
+jobs:
+  build:
+    runs-on: [self-hosted, arm64]
+    steps:
+      - name: Setup environment
+        run: |
+          mkdir -p $KERNEL_SRC_DIR
+          mkdir -p $KERNEL_BUILD_DIR
+          mkdir -p $CCACHE_DIR
+          echo "Source directory: $KERNEL_SRC_DIR"
+          echo "Build directory: $KERNEL_BUILD_DIR"
+          echo "Ccache directory: $CCACHE_DIR"
+
+      - name: Checkout to persistent location
+        uses: actions/checkout@v6
+        with:
+          path: linux-surface-src
+
+      - name: Move source to persistent location
+        run: |
+          # Use rsync to preserve existing build artifacts
+          rsync -a --delete linux-surface-src/ $KERNEL_SRC_DIR/
+          rm -rf linux-surface-src
+
+      - name: Setup ccache
+        run: |
+          ccache -M 50G
+          ccache -s
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bc bison build-essential ccache \
+            flex git libelf-dev libssl-dev make openssl \
+            python3 python3-pip rsync u-boot-tools
+
+      - name: Configure kernel
+        working-directory: ${{ env.KERNEL_SRC_DIR }}
+        run: |
+          # Only reconfigure if .config doesn't exist or makefile changed
+          if [ ! -f .config ] || [ Makefile -nt .config ]; then
+            make ARCH=arm64 defconfig
+            # Enable Surface-specific options if needed
+            # scripts/config --set-val CONFIG_SURFACE_AGGREGATOR y
+          fi
+          # Save config for debugging
+          cp .config config.log
+
+      - name: Build kernel
+        working-directory: ${{ env.KERNEL_SRC_DIR }}
+        run: |
+          export CCACHE_DIR=$CCACHE_DIR
+          make ARCH=arm64 CC="ccache gcc" -j$(nproc) Image.gz modules
+
+      - name: Package artifacts
+        run: |
+          mkdir -p artifacts
+
+          # Copy kernel image
+          cp $KERNEL_SRC_DIR/arch/arm64/boot/Image.gz artifacts/ || echo "Image.gz not found"
+
+          # Copy device tree blob
+          cp $KERNEL_SRC_DIR/arch/arm64/boot/dts/qcom/sc8180x-surface-pro-x.dtb artifacts/ 2>/dev/null || echo "DTB not found"
+
+          # Copy config
+          cp $KERNEL_SRC_DIR/config.log artifacts/
+
+          # Package modules
+          make ARCH=arm64 INSTALL_MOD_PATH=$KERNEL_SRC_DIR/modules_install -C $KERNEL_SRC_DIR modules_install
+          tar -czf artifacts/modules.tar.gz -C $KERNEL_SRC_DIR/modules_install .
+
+          # Create build info
+          {
+            echo "Commit: ${{ github.sha }}"
+            echo "Branch: ${{ github.ref_name }}"
+            echo "Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+            echo ""
+            echo "=== Ccache Statistics ==="
+            ccache -s
+          } > artifacts/build-info.txt
+
+      - name: Upload to GitHub artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: surface-pro-x-kernel-${{ github.sha }}
+          path: artifacts/
+          retention-days: 7
+
+      - name: Create GitHub Pre-Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: spx-build-${{ github.sha }}
+          name: Surface Pro X Kernel - ${{ github.ref_name }} - ${{ github.sha }}
+          prerelease: true
+          files: artifacts/*
+          body: |
+            Automated kernel build for Surface Pro X (SC8180X/SQ2)
+
+            **Commit:** ${{ github.sha }}
+            **Branch:** ${{ github.ref_name }}
+            **Workflow Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            ## Build Artifacts
+            - `Image.gz` - Compressed kernel image
+            - `sc8180x-surface-pro-x.dtb` - Device tree blob
+            - `modules.tar.gz` - Kernel modules
+            - `config.log` - Kernel configuration
+            - `build-info.txt` - Build metadata and ccache stats
+
+            ## Installation
+            ```bash
+            # Download artifacts from the Assets section below
+
+            # Install kernel image
+            sudo cp Image.gz /boot/vmlinuz-linux-spx
+
+            # Install modules
+            sudo tar -xzf modules.tar.gz -C /
+
+            # Update initramfs (adjust for your distro)
+            sudo update-initramfs -c -k linux-spx  # Debian/Ubuntu
+            # or
+            sudo mkinitcpio -p linux-spx  # Arch
+            ```
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cleanup old releases (keep last 5)
+        if: success()
+        run: |
+          # Install gh CLI if not present
+          if ! command -v gh &> /dev/null; then
+            curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+            sudo apt-get update
+            sudo apt-get install -y gh
+          fi
+
+          # Delete old pre-releases, keep last 5
+          gh release list --limit 100 | grep "spx-build-" | tail -n +6 | awk '{print $3}' | while read tag; do
+            echo "Deleting old release: $tag"
+            gh release delete "$tag" --yes
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

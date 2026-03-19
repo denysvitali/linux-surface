@@ -109,6 +109,7 @@ modules.order
 !.clippy.toml
 !.cocciconfig
 !.editorconfig
+!.github/
 !.get_maintainer.ignore
 !.gitattributes
 !.gitignore
