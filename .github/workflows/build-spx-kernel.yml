@@ -56,14 +56,14 @@ jobs:
             echo "Checked out commit: $(git log -1 --oneline)"
           fi
 
-      - name: Install Nix (single-user, local store)
+      - name: Install Nix (static binary)
         run: |
           export HOME=/home/runner
           export PATH="$HOME/.local/bin:$PATH"
 
-          echo "=== Installing Nix (single-user mode) ==="
+          echo "=== Installing static Nix binary ==="
 
-          # Set up environment for single-user Nix to local directory
+          # Set up environment
           export NIX_CONF_DIR=$HOME/.config/nix
           export NIX_LOCALSTATE_DIR=$HOME/.local/state/nix
           export NIX_LOG_DIR=$HOME/.local/log/nix
@@ -73,7 +73,7 @@ jobs:
 
           mkdir -p $NIX_CONF_DIR $NIX_LOCALSTATE_DIR $NIX_LOG_DIR $NIX_CACHE_DIR $NIX_GC_ROOT $HOME/.store
 
-          # Create nix.conf for single-user operation
+          # Create nix.conf for single-user operation with flakes
           printf '%s\n' \
             "experimental-features = nix-command flakes" \
             "extra-experimental-features = auto-allocate-uids" \
@@ -82,27 +82,37 @@ jobs:
             "builders =" \
             > $NIX_CONF_DIR/nix.conf
 
-          # Download Nix installer
-          curl -fsSL https://nixos.org/releases/nix/nix-2.24.10/nix-2.24.10-aarch64-linux.tar.xz -o /tmp/nix.tar.xz
+          # Try to download static Nix from Hydra (may not exist for aarch64)
+          echo "=== Downloading static Nix binary ==="
+          curl -fsSL "https://hydra.nixos.org/job/nix/maintenance-2.24/buildStatic.aarch64-linux/latest/download-by-type/file/binary-dist" -o /tmp/nix-static 2>/dev/null || \
+          curl -fsSL "https://hydra.nixos.org/job/nix/master/buildStatic.aarch64-linux/latest/download-by-type/file/binary-dist" -o /tmp/nix-static 2>/dev/null || \
+          echo "No static aarch64 binary found, trying official release..."
 
-          # Extract to local directory
-          tar -xJf /tmp/nix.tar.xz -C $HOME
-
-          # Find nix binaries
-          NIX_BIN=$(find $HOME -name "nix" -type f -executable 2>/dev/null | head -1)
-          if [ -n "$NIX_BIN" ] && [ -x "$NIX_BIN" ]; then
-            echo "Found nix at: $NIX_BIN"
+          if [ -s /tmp/nix-static ] && file /tmp/nix-static | grep -q "executable"; then
+            chmod +x /tmp/nix-static
             mkdir -p $HOME/.local/bin
-            for bin in nix nix-env nix-store nix-daemon; do
-              if [ -x "$(dirname $NIX_BIN)/$bin" ]; then
-                cp "$(dirname $NIX_BIN)/$bin" $HOME/.local/bin/$bin
-                chmod +x $HOME/.local/bin/$bin
-              fi
-            done
+            cp /tmp/nix-static $HOME/.local/bin/nix
+            chmod +x $HOME/.local/bin/nix
+            rm /tmp/nix-static
+            echo "Nix installed: $(nix --version)"
+          else
+            echo "=== Downloading official Nix release ==="
+            curl -fsSL https://nixos.org/releases/nix/nix-2.24.10/nix-2.24.10-aarch64-linux.tar.xz -o /tmp/nix.tar.xz
+            tar -xJf /tmp/nix.tar.xz -C $HOME
+            NIX_BIN=$(find $HOME -name "nix" -type f -executable 2>/dev/null | head -1)
+            if [ -n "$NIX_BIN" ] && [ -x "$NIX_BIN" ]; then
+              echo "Found nix at: $NIX_BIN"
+              mkdir -p $HOME/.local/bin
+              for bin in nix nix-env nix-store nix-daemon; do
+                if [ -x "$(dirname $NIX_BIN)/$bin" ]; then
+                  cp "$(dirname $NIX_BIN)/$bin" $HOME/.local/bin/$bin
+                  chmod +x $HOME/.local/bin/$bin
+                fi
+              done
+            fi
+            rm -f /tmp/nix.tar.xz
+            echo "Nix version: $(nix --version 2>/dev/null || echo 'failed')"
           fi
-          rm -f /tmp/nix.tar.xz
-
-          echo "Nix version: $(nix --version)"
 
       - name: Install build dependencies with Nix
         run: |
