@@ -54,11 +54,42 @@ jobs:
             echo "Checked out commit: $(git log -1 --oneline)"
           fi
 
-      - name: Cache apt packages
-        uses: awalsh128/cache-apt-pkgs-action@latest
-        with:
-          packages: bc bison flex libelf-dev libssl-dev python3 rsync u-boot-tools dwarves ccache
-          version: 1.0
+      - name: Install build dependencies
+        run: |
+          set -e
+
+          # Check if ccache is available anywhere
+          if command -v ccache &> /dev/null; then
+            echo "ccache already available: $(ccache --version)"
+            exit 0
+          fi
+
+          # Try to find ccache in common locations
+          for p in /usr/bin/ccache /usr/local/bin/ccache /opt/ccache/bin/ccache; do
+            if [ -x "$p" ]; then
+              echo "ccache found at $p"
+              export PATH="$(dirname $p):$PATH"
+              exit 0
+            fi
+          done
+
+          echo "ccache not found, installing..."
+
+          # Try apt-get with sudo first
+          if sudo apt-get update -qq && sudo apt-get install -y -qq ccache; then
+            echo "ccache installed via sudo apt-get"
+            exit 0
+          fi
+
+          # Fallback: download ccache binary release
+          echo "Trying to download ccache binary..."
+          CCACHE_VERSION="4.9.1"
+          wget -q "https://github.com/ccache/ccache/releases/download/v${CCACHE_VERSION}/ccache-${CCACHE_VERSION}-linux-arm64.tar.xz" -O /tmp/ccache.tar.xz
+          mkdir -p ~/.local
+          tar -xf /tmp/ccache.tar.xz -C ~/.local --strip-components=1
+          rm /tmp/ccache.tar.xz
+          export PATH="$HOME/.local/bin:$PATH"
+          echo "ccache installed from binary: $(ccache --version)"
 
       - name: Cache ccache
         uses: actions/cache@v4
