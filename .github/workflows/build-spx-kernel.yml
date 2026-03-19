@@ -89,8 +89,9 @@ jobs:
 
           echo "=== Installing build dependencies via Conda ==="
 
-          # Install only packages that work with conda-forge aarch64
+          # Install m4 first (needed to build flex), plus other packages
           conda install -y \
+            m4 \
             python \
             rsync \
             elfutils \
