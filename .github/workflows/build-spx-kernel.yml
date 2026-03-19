@@ -59,40 +59,63 @@ jobs:
       - name: Install build dependencies
         run: |
           export HOME=/home/runner
+          export PATH="/home/runner/usr/bin:/home/runner/.local/bin:$PATH"
           echo "Checking build dependencies..."
 
-          # Check for ccache
+          # Function to extract deb without sudo
+          extract_deb() {
+            local deb="$1"
+            local dest="$2"
+            mkdir -p "$dest"
+            (cd "$dest" && ar x "$deb" 2>/dev/null || true)
+            if [ -d "$dest/data.tar.xz" ] || [ -d "$dest/data.tar.zst" ] || [ -d "$dest/data.tar.gz" ]; then
+              local data_file=$(ls "$dest"/data.tar.* 2>/dev/null | head -1)
+              if [ -n "$data_file" ]; then
+                tar -xf "$data_file" -C "$dest" 2>/dev/null || true
+              fi
+            fi
+          }
+
+          # Install ccache
           export USE_CCACHE=0
           if command -v ccache &> /dev/null; then
             echo "ccache available: $(ccache --version)"
             export USE_CCACHE=1
           else
-            echo "ccache not found, attempting to install..."
-            # Try apt-get with sudo
+            echo "Trying to install ccache..."
             if sudo apt-get install -y -qq ccache 2>/dev/null; then
-              echo "ccache installed via sudo apt-get"
               export USE_CCACHE=1
             else
-              # Try downloading Ubuntu deb package and extracting manually
-              echo "Trying to extract ccache from Ubuntu package..."
-              if curl -sL "http://archive.ubuntu.com/ubuntu/pool/universe/c/ccache/ccache_4.9.1-1_arm64.deb" -o /tmp/ccache.deb 2>/dev/null; then
-                dpkg -x /tmp/ccache.deb ~/ 2>/dev/null || true
-                if [ -x "/home/runner/usr/bin/ccache" ]; then
-                  export PATH="/home/runner/usr/bin:$PATH"
-                  export USE_CCACHE=1
-                  echo "ccache extracted from deb: $(ccache --version)"
-                fi
+              # Try downloading and extracting ccache deb
+              curl -sL "http://archive.ubuntu.com/ubuntu/pool/universe/c/ccache/ccache_4.9.1-1_arm64.deb" -o /tmp/ccache.deb 2>/dev/null && \
+                (mkdir -p /home/runner/usr && cd /home/runner/usr && ar x /tmp/ccache.deb && tar -xf data.tar.xz 2>/dev/null) || true
+              if [ -x "/home/runner/usr/bin/ccache" ]; then
+                export USE_CCACHE=1
               fi
             fi
           fi
 
-          # Install other essential dependencies if missing
-          for pkg in bc bison flex libelf-dev libssl-dev python3 rsync u-boot-tools dwarves; do
+          # Install flex (needed for kernel config)
+          if ! command -v flex &> /dev/null && ! dpkg -l flex 2>/dev/null | grep -q "^ii"; then
+            echo "Installing flex..."
+            if ! sudo apt-get install -y -qq flex 2>/dev/null; then
+              # Try extracting flex from deb
+              curl -sL "http://archive.ubuntu.com/ubuntu/pool/main/f/flex/flex_2.6.4-8.2build1_arm64.deb" -o /tmp/flex.deb 2>/dev/null && \
+                (mkdir -p /home/runner/usr && cd /home/runner/usr && ar x /tmp/flex.deb && tar -xf data.tar.xz 2>/dev/null) || true
+            fi
+          fi
+
+          # Install bison (needed for kernel config)
+          if ! command -v bison &> /dev/null && ! dpkg -l bison 2>/dev/null | grep -q "^ii"; then
+            echo "Installing bison..."
+            sudo apt-get install -y -qq bison 2>/dev/null || echo "WARNING: bison not installed"
+          fi
+
+          # Install other essential dependencies
+          for pkg in libelf-dev libssl-dev python3 rsync u-boot-tools dwarves; do
             if ! dpkg -l "$pkg" 2>/dev/null | grep -q "^ii"; then
               echo "Installing $pkg..."
               sudo apt-get install -y -qq "$pkg" 2>/dev/null || echo "WARNING: Could not install $pkg"
-            else
-              echo "$pkg already installed"
             fi
           done
 
