@@ -54,6 +54,12 @@ jobs:
             echo "Checked out commit: $(git log -1 --oneline)"
           fi
 
+      - name: Cache apt packages
+        uses: awalsh128/cache-apt-pkgs-action@latest
+        with:
+          packages: bc bison flex libelf-dev libssl-dev python3 rsync u-boot-tools dwarves ccache
+          version: 1.0
+
       - name: Cache ccache
         uses: actions/cache@v4
         with:
@@ -66,12 +72,6 @@ jobs:
         run: |
           ccache -M 50G
           ccache -z
-
-      - name: Cache apt packages
-        uses: awalsh128/cache-apt-pkgs-action@latest
-        with:
-          packages: bc bison flex libelf-dev libssl-dev python3 rsync u-boot-tools dwarves ccache
-          version: 1.0
 
       - name: Configure kernel
         run: |
