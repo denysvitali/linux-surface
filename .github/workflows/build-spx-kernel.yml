@@ -59,11 +59,12 @@ jobs:
       - name: Install Micromamba
         run: |
           export HOME=/home/runner
+          mkdir -p $HOME/.local/bin
           # Install micromamba to user directory without sudo
           if ! command -v micromamba &> /dev/null; then
             echo "Installing Micromamba..."
-            curl -Ls https://micro.mamba.pm/api/micromamba/linux-arm64/latest | \
-              tar -xvj -C $HOME/.local/bin/ bin/micromamba 2>/dev/null
+            # Try downloading the binary directly
+            curl -fLs https://github.com/mamba-org/micromamba/releases/latest/download/micromamba-linux-arm64 -o $HOME/.local/bin/micromamba
             chmod +x $HOME/.local/bin/micromamba
           fi
           export PATH="$HOME/.local/bin:$PATH"
