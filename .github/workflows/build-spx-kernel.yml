@@ -130,27 +130,16 @@ jobs:
           mkdir -p $NIX_CONF_DIR $NIX_LOCALSTATE_DIR $NIX_LOG_DIR $NIX_CACHE_DIR $NIX_GC_ROOT $HOME/.store
 
           # Create nix.conf
-          cat > $NIX_CONF_DIR/nix.conf << 'EOF'
+          cat > $NIX_CONF_DIR/nix.conf <<'NIXCONF'
 substituters = https://cache.nixos.org https://nix-community.cachix.org
 trusted-public-keys = cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY= nix-community.cachix.org-1:mB9FSh9qf2dCimDSUo8Zy7bkq5CX+/rkCWyvRCYg3Fs=
 builders =
-EOF
+NIXCONF
 
           echo "=== Installing build dependencies via Nix ==="
 
           # Install packages using nix-env
-          nix-env -iA \
-            nixpkgs.flex \
-            nixpkgs.bison \
-            nixpkgs.elfutils \
-            nixpkgs.openssl \
-            nixpkgs.python3 \
-            nixpkgs.rsync \
-            nixpkgs.ccache \
-            nixpkgs.u-bootTools \
-            nixpkgs.dwarves \
-            -f https://github.com/NixOS/nixpkgs/tarball/nixos-24.11 \
-            2>&1 || echo "Nix install had issues, continuing..."
+          nix-env -iA nixpkgs.flex nixpkgs.bison nixpkgs.elfutils nixpkgs.openssl nixpkgs.python3 nixpkgs.rsync nixpkgs.ccache nixpkgs.u-bootTools nixpkgs.dwarves -f https://github.com/NixOS/nixpkgs/tarball/nixos-24.11 2>&1 || echo "Nix install had issues, continuing..."
 
           echo "=== Verifying installations ==="
           which flex bison python3 rsync ccache mkimage dwarves || echo "Some tools not found in PATH"
