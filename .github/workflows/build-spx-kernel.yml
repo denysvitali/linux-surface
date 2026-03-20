@@ -6,6 +6,9 @@ on:
       - 'spx/**'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -247,8 +250,11 @@ jobs:
             echo "ERROR: gh CLI not installed"
             exit 1
           fi
-          gh release list --limit 100 | grep "spx-build-" | tail -n +6 | awk '{print $3}' | while read tag; do
-            gh release delete "$tag" --yes
-          done
+          gh release list --limit 100 --json tagName,name | \
+            jq -r '.[] | select(.tagName | startswith("spx-build-")) | .tagName' | \
+            tail -n +6 | \
+            while read tag; do
+              gh release delete "$tag" --yes
+            done
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
