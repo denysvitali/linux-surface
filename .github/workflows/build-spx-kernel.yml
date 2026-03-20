@@ -181,10 +181,10 @@ jobs:
 
           if [ "${USE_CCACHE:-0}" = "1" ]; then
             echo "Building with ccache..."
-            make -C $KERNEL_SRC_DIR O=$KERNEL_BUILD_DIR ARCH=arm64 CC="ccache gcc" -j$(nproc) Image.gz modules
+            make -C $KERNEL_SRC_DIR O=$KERNEL_BUILD_DIR ARCH=arm64 CC="ccache gcc" -j$(nproc) Image.gz modules dtbs
           else
             echo "Building without ccache..."
-            make -C $KERNEL_SRC_DIR O=$KERNEL_BUILD_DIR ARCH=arm64 -j$(nproc) Image.gz modules
+            make -C $KERNEL_SRC_DIR O=$KERNEL_BUILD_DIR ARCH=arm64 -j$(nproc) Image.gz modules dtbs
           fi
 
       - name: Package artifacts
@@ -197,7 +197,7 @@ jobs:
 
           mkdir -p artifacts
           cp $KERNEL_BUILD_DIR/arch/arm64/boot/Image.gz artifacts/ || echo "Image.gz not found"
-          cp $KERNEL_BUILD_DIR/arch/arm64/boot/dts/qcom/sc8180x-surface-pro-x.dtb artifacts/ 2>/dev/null || echo "DTB not found"
+          cp $KERNEL_BUILD_DIR/arch/arm64/boot/dts/qcom/sc8180x-surface-pro-x.dtb artifacts/ || { echo "DTB not found, listing available DTBs:"; ls -la $KERNEL_BUILD_DIR/arch/arm64/boot/dts/qcom/ 2>/dev/null || ls -la $KERNEL_BUILD_DIR/arch/arm64/boot/dts/ 2>/dev/null; exit 1; }
           cp $KERNEL_BUILD_DIR/.config artifacts/config.log
           make -C $KERNEL_SRC_DIR O=$KERNEL_BUILD_DIR ARCH=arm64 INSTALL_MOD_PATH=$KERNEL_BUILD_DIR/modules_install modules_install
           tar -czf artifacts/modules.tar.gz -C $KERNEL_BUILD_DIR/modules_install .
