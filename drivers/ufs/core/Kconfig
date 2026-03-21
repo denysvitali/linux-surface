@@ -50,3 +50,29 @@ config SCSI_UFS_HWMON
 	  a hardware monitoring device will be created for the UFS device.
 
 	  If unsure, say N.
+
+config SCSI_UFS_HPB
+	bool "UFS Host Performance Booster (HPB) support"
+	depends on SCSI_UFSHCD
+	help
+	  Enable Host Performance Booster (HPB) support for UFS 3.1 devices.
+
+	  HPB is a JEDEC UFS 3.1 feature (HPB version 2.0) that caches logical
+	  block address (LBA) to physical page number (PPN) mappings in host
+	  memory. By supplying the PPN directly in the HPB READ command CDB
+	  (opcode 0xF8), the device can skip its internal L2P table lookup,
+	  improving random read IOPS by 2-3x on supported hardware.
+
+	  The feature is enabled per host controller via UFSHCD_CAP_HPB_EN
+	  in the host driver. HPB is automatically disabled for devices that
+	  do not report UFS_DEV_HPB_SUPPORT in their device descriptor.
+
+	  This option is required for full storage performance on the Microsoft
+	  Surface Pro X (Qualcomm SC8180X) whose UFS 3.1 device supports HPB.
+
+	  NOTE: This implementation is currently a scaffolding stub. The data
+	  structures, Kconfig entry, and module skeleton are in place but the
+	  HPB READ command injection and region-management logic are not yet
+	  complete. See drivers/ufs/core/ufshpb.c for details.
+
+	  If unsure, say N.
