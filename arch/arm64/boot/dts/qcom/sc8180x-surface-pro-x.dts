@@ -1419,26 +1419,22 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&i2c2_active>, <&i2c2_als_active>;
 
-	als@39 {
+	color-sensor@39 {
 		/*
-		 * RE analysis of SurfaceLightSensor.sys (internally named
-		 * SurfaceColorSensor.sys, version 1.37.139.0) reveals this is
-		 * an AMS TCS3430 4-channel XYZ+IR color/ALS sensor.
+		 * AMS TCS3430 4-channel XYZ+IR color/ALS sensor.
 		 *
-		 * The TCS3430 shares I2C address 0x39 and a broadly compatible
-		 * register map with the APDS9960 (both are I2C ALS sensors at
-		 * the same address with similar register layouts). The TCS3430
-		 * chip ID register (0x92) returns 0xDC. The Windows driver uses:
+		 * Identified by RE analysis of SurfaceLightSensor.sys (internally
+		 * named SurfaceColorSensor.sys, version 1.37.139.0). The chip ID
+		 * register (0x92) returns 0xDC. The Windows driver uses:
 		 *   - DMF_VirtualHidAmbientLightSensor for lux output
 		 *   - DMF_VirtualHidAmbientColorSensor for XYZ chromaticity
 		 *   - DMF_SpbTarget for I2C (SPB framework)
 		 *   - UsingGoldenCalibration for factory cal compensation
 		 *
-		 * TODO: Replace with ams,tcs3430 once a dedicated driver exists.
-		 * The apds9960 driver provides basic ALS functionality in the
-		 * interim since the chip ID check is not enforced during probe.
+		 * I2C2 (QUP2): GPIO126=SDA, GPIO127=SCL, 400kHz Fast Mode.
+		 * Interrupt: GPIO24, active-low, level-triggered.
 		 */
-		compatible = "avago,apds9960";
+		compatible = "ams,tcs3430";
 		reg = <0x39>;
 
 		interrupts-extended = <&tlmm 24 IRQ_TYPE_LEVEL_LOW>;
