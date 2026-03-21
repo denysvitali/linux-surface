@@ -252,6 +252,8 @@ static int qce_crypto_probe(struct platform_device *pdev)
 static const struct of_device_id qce_crypto_of_match[] = {
 	{ .compatible = "qcom,crypto-v5.1", },
 	{ .compatible = "qcom,crypto-v5.4", },
+	{ .compatible = "qcom,sm8150-qce", },
+	{ .compatible = "qcom,sc8180x-qce", },
 	{ .compatible = "qcom,qce", },
 	{}
 };

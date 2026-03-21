@@ -2201,7 +2201,7 @@
 		};
 
 		crypto: crypto@1dfa000 {
-			compatible = "qcom,sm8150-qce", "qcom,qce";
+			compatible = "qcom,sc8180x-qce", "qcom,sm8150-qce", "qcom,qce";
 			reg = <0 0x01dfa000 0 0x6000>;
 			dmas = <&cryptobam 4>, <&cryptobam 5>;
 			dma-names = "rx", "tx";
