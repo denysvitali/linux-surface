@@ -369,17 +369,22 @@ static u32 spwr_notify_bat(struct ssam_event_notifier *nf, const struct ssam_eve
 
 	case SAM_EVENT_CID_BAT_PROT:
 		/*
-		 * TODO: Implement support for battery protection status change
-		 *       event.
+		 * Battery protection (charge limit) state has changed. This
+		 * event fires when the UEFI battery-limit feature activates or
+		 * deactivates, which modifies last_full_charge_cap in BIX.
+		 * Re-read the full static info and re-initialize the alarm.
 		 */
-		status = 0;
+		status = spwr_battery_recheck_full(bat);
 		break;
 
 	case SAM_EVENT_CID_BAT_DPTF:
 		/*
-		 * TODO: Implement support for DPTF event.
+		 * DPTF (Dynamic Platform Thermal Framework) power budget has
+		 * changed. The SAM EC adjusts charge/discharge rates when
+		 * thermal limits are hit; re-read BST to pick up the new
+		 * present_rate and state values.
 		 */
-		status = 0;
+		status = spwr_battery_recheck_status(bat);
 		break;
 
 	default:
