@@ -162,52 +162,39 @@ static bool ufshpb_check_device_support(struct ufs_hba *hba, int lun)
  * ======================================================================== */
 
 /**
- * ufshpb_alloc_subregion - Allocate a single subregion descriptor
- * @hpb:          HPB LU context.
- * @region_id:    Parent region index.
+ * ufshpb_init_subregion - Initialize a subregion descriptor in place
+ * @sr:           Subregion to initialize (already allocated in region array).
  * @subregion_id: Subregion index within the region.
  *
- * Allocates a struct ufshpb_subregion and initialises its spinlock.
+ * Initialises the spinlock and fields of a pre-allocated subregion.
  * The PPN table is NOT allocated here; it is allocated on first activation.
- *
- * Returns pointer on success, ERR_PTR on failure.
  *
  * TODO: implement PPN table lazy allocation in ufshpb_activate_region().
  */
-static struct ufshpb_subregion *ufshpb_alloc_subregion(struct ufshpb_lu *hpb,
-							u8 region_id,
-							u8 subregion_id)
+static void ufshpb_init_subregion(struct ufshpb_subregion *sr,
+				  u8 subregion_id)
 {
-	struct ufshpb_subregion *sr;
-
-	sr = kzalloc(sizeof(*sr), GFP_KERNEL);
-	if (!sr)
-		return ERR_PTR(-ENOMEM);
-
 	sr->subregion_id = subregion_id;
 	sr->state        = HPB_REGION_INACTIVE;
 	sr->dirty        = false;
 	sr->ppn_table    = NULL;
 	spin_lock_init(&sr->lock);
-
-	return sr;
 }
 
 /**
- * ufshpb_free_subregion - Release a subregion descriptor and its PPN table
- * @sr: Subregion to free (may be NULL).
+ * ufshpb_cleanup_subregion - Free a subregion's PPN table resources
+ * @sr: Subregion to clean up.
+ *
+ * Frees the PPN table if allocated.  The subregion struct itself lives
+ * in the parent region's kcalloc'd array and is freed with it.
  */
-static void ufshpb_free_subregion(struct ufshpb_subregion *sr)
+static void ufshpb_cleanup_subregion(struct ufshpb_subregion *sr)
 {
-	if (!sr)
-		return;
-
 	if (sr->ppn_table) {
 		kfree(sr->ppn_table->ppn);
 		kfree(sr->ppn_table);
 		sr->ppn_table = NULL;
 	}
-	kfree(sr);
 }
 
 /**
@@ -242,19 +229,8 @@ static int ufshpb_alloc_regions(struct ufshpb_lu *hpb)
 		if (!r->subregions)
 			goto err_free;
 
-		for (j = 0; j < hpb->subregion_count; j++) {
-			struct ufshpb_subregion *sr;
-
-			sr = ufshpb_alloc_subregion(hpb, i, j);
-			if (IS_ERR(sr)) {
-				/* Free the subregions allocated so far */
-				while (j--)
-					ufshpb_free_subregion(r->subregions[j]);
-				kfree(r->subregions);
-				goto err_free;
-			}
-			r->subregions[j] = sr;
-		}
+		for (j = 0; j < hpb->subregion_count; j++)
+			ufshpb_init_subregion(&r->subregions[j], j);
 	}
 	return 0;
 
@@ -282,7 +258,7 @@ static void ufshpb_free_regions(struct ufshpb_lu *hpb)
 			continue;
 
 		for (j = 0; j < r->subregion_count; j++)
-			ufshpb_free_subregion(r->subregions[j]);
+			ufshpb_cleanup_subregion(&r->subregions[j]);
 
 		kfree(r->subregions);
 		r->subregions = NULL;
