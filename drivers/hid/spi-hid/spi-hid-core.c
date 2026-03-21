@@ -1311,13 +1311,29 @@ static struct hid_ll_driver spi_hid_ll_driver = {
 
 static const struct of_device_id spi_hid_of_match[] = {
 	{ .compatible = "hid-over-spi" },
+	{ .compatible = "microsoft,hid-over-spi" },
 	{},
 };
 MODULE_DEVICE_TABLE(of, spi_hid_of_match);
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id spi_hid_acpi_match[] = {
-	{ "PNP0C51" },
+	/*
+	 * PNP0C51 - Microsoft "SPI HID Device"
+	 *
+	 * Confirmed via reverse engineering of Windows ARM64 drivers:
+	 *   - hidspi_km.inf: "%hidspi.DeviceDesc%=hidspi_Device, ACPI\PNP0C51"
+	 *   - hidspi.sys: SPI HID Miniport Driver (client driver)
+	 *   - HidSpiCx.sys: HidSpi KMDF Class Extension (protocol engine)
+	 *
+	 * Used on Microsoft Surface Pro X (Qualcomm SQ1/SQ2) for SPI-attached
+	 * touchscreen and keyboard cover HID devices. Both Windows driver
+	 * binaries use ACPI _DSM for device-specific configuration and GCTL
+	 * for GPIO-based reset control.
+	 *
+	 * Reference: drivers/HIDSPI_RE_ANALYSIS.md in linux-surface/spx-drivers
+	 */
+	{ "PNP0C51", 0 },
 	{ },
 };
 MODULE_DEVICE_TABLE(acpi, spi_hid_acpi_match);
