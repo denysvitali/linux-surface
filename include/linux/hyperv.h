@@ -644,6 +644,26 @@ struct vmbus_channel_tl_connect_request {
 	guid_t host_service_id;
 } __packed;
 
+/*
+ * Hyper-V socket: host's response to guest's connect() request.
+ *
+ * Sent by the host as CHANNELMSG_TL_CONNECT_RESULT (msg type 23) after the
+ * guest posts a CHANNELMSG_TL_CONNECT_REQUEST.  A non-zero status indicates
+ * the host rejected the connection (e.g., no listener for host_service_id).
+ *
+ * On success the host also sends a CHANNELMSG_OFFER_CHANNEL with the
+ * VMBUS_CHANNEL_TLNPI_PROVIDER_OFFER flag set, which is what actually
+ * establishes the VMBus channel used by hv_sock.  The result message is
+ * therefore informational: it lets the guest detect early failures without
+ * waiting for the 30-second VMBus rescind timeout.
+ */
+struct vmbus_channel_tl_connect_result {
+	struct vmbus_channel_message_header header;
+	guid_t guest_endpoint_id;
+	guid_t host_service_id;
+	__u32  status;		/* 0 = success, NT error code otherwise */
+} __packed;
+
 /* Modify Channel parameters, cf. vmbus_send_modifychannel() */
 struct vmbus_channel_modifychannel {
 	struct vmbus_channel_message_header header;

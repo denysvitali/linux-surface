@@ -309,6 +309,24 @@ TRACE_EVENT(vmbus_send_tl_connect_request,
 		    )
 	);
 
+TRACE_EVENT(vmbus_ontl_connect_result,
+	    TP_PROTO(const struct vmbus_channel_tl_connect_result *msg),
+	    TP_ARGS(msg),
+	    TP_STRUCT__entry(
+		    __array(char, guest_id, 16)
+		    __array(char, host_id, 16)
+		    __field(u32, status)
+		    ),
+	    TP_fast_assign(
+		    export_guid(__entry->guest_id, &msg->guest_endpoint_id);
+		    export_guid(__entry->host_id, &msg->host_service_id);
+		    __entry->status = msg->status;
+		    ),
+	    TP_printk("guest_endpoint_id %pUl, host_service_id %pUl, status 0x%x",
+		      __entry->guest_id, __entry->host_id, __entry->status
+		    )
+	);
+
 TRACE_EVENT(vmbus_send_modifychannel,
 	    TP_PROTO(const struct vmbus_channel_modifychannel *msg,
 		     int ret),

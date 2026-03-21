@@ -360,20 +360,21 @@ static const struct software_node *ssam_node_group_sp7[] = {
 	NULL,
 };
 
-/* Devices for Surface Pro 7 and Surface Pro 7+. */
+/* Devices for Surface Pro X (SQ1/SQ2, ARM64/Qualcomm). */
 static const struct software_node *ssam_node_group_spx[] = {
 	&ssam_node_root,
 	&ssam_node_hub_kip,
 	&ssam_node_sam_rtc,
 	&ssam_node_bat_ac,
 	&ssam_node_bat_main,
-	// TODO: platform profile
+	// TODO: platform profile (TMP performance profiles need SPX EC verification)
 	&ssam_node_tmp_sensors,
 	&ssam_node_kip_tablet_switch,
 	&ssam_node_hid_kip_keyboard,
 	&ssam_node_hid_kip_penstash,
 	&ssam_node_hid_kip_touchpad,
 	&ssam_node_hid_kip_fwupd,
+	&ssam_node_hid_sam_sensors,
 	NULL,
 };
 
