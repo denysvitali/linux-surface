@@ -157,6 +157,23 @@ static const guid_t srv_id_template =
 
 static bool hvs_check_transport(struct vsock_sock *vsk);
 
+/*
+ * is_valid_srv_id - validate that a VMBus offer service GUID uses the hv_sock
+ * AF_VSOCK template format.
+ *
+ * Linux maps AF_VSOCK ports to service GUIDs using a fixed template:
+ *   <port>-facb-11e6-bd58-64006a7986d3
+ * where the first 4 bytes encode the 32-bit port number.
+ *
+ * This means only service GUIDs that match the template suffix are routed to
+ * hv_sock from Linux.  Well-known Windows AF_HYPERV service GUIDs (e.g., the
+ * WSL2 service GUIDs 976e0000-0011-0bac-0b0c-7ac0c0d0d00[0-2]) do NOT match
+ * this template and will be rejected here.
+ *
+ * A native AF_HYPERV implementation would maintain a GUID-keyed lookup table
+ * (analogous to Windows' HvSocketUpdateServiceTable / AVL tree) instead of
+ * constraining valid GUIDs to this template format.
+ */
 static bool is_valid_srv_id(const guid_t *id)
 {
 	return !memcmp(&id->b[4], &srv_id_template.b[4], sizeof(guid_t) - 4);
@@ -455,6 +472,23 @@ static int hvs_sock_init(struct vsock_sock *vsk, struct vsock_sock *psk)
 	return 0;
 }
 
+/*
+ * hvs_connect - initiate a Hyper-V socket connection to the host.
+ *
+ * Maps the AF_VSOCK port numbers to service GUIDs using the hv_sock template
+ * format (<port>-facb-11e6-bd58-64006a7986d3) and sends a VMBus
+ * CHANNELMSG_TL_CONNECT_REQUEST to the host.
+ *
+ * On success the host responds with CHANNELMSG_TL_CONNECT_RESULT (which
+ * vmbus_ontl_connect_result() now logs) and a CHANNELMSG_OFFER_CHANNEL that
+ * triggers hvs_open_connection() to complete the handshake.
+ *
+ * On failure (no listener for the requested service GUID) the host sends
+ * CHANNELMSG_TL_CONNECT_RESULT with a non-zero status and does NOT send an
+ * OFFER_CHANNEL.  Without a handler for that result message, a failed
+ * connect() would block until sk_sndtimeo expires (or indefinitely if
+ * SO_SNDTIMEO is not set), which matches the pre-existing behaviour.
+ */
 static int hvs_connect(struct vsock_sock *vsk)
 {
 	union hvs_service_id vm, host;

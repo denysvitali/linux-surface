@@ -1405,6 +1405,39 @@ static void vmbus_ongpadl_created(struct vmbus_channel_message_header *hdr)
 }
 
 /*
+ * vmbus_ontl_connect_result - Hyper-V socket TL connect result handler.
+ *
+ * The host sends CHANNELMSG_TL_CONNECT_RESULT (msg type 23) after the guest
+ * posts a CHANNELMSG_TL_CONNECT_REQUEST from vmbus_send_tl_connect_request().
+ *
+ * A non-zero status means the host rejected the connection request, e.g.
+ * because no hv_sock listener is bound to the requested service GUID.  On
+ * success the host will also deliver a CHANNELMSG_OFFER_CHANNEL that carries
+ * the VMBUS_CHANNEL_TLNPI_PROVIDER_OFFER flag, which is what actually opens
+ * the VMBus ring-buffer channel used by hv_sock.
+ *
+ * For now we log the result so it is visible in ftrace/debugfs.  A full
+ * implementation would look up the pending hv_sock connect() by
+ * guest_endpoint_id and wake it with the appropriate error code when status
+ * is non-zero, avoiding the 30-second VMBus rescind timeout on failure.
+ */
+static void vmbus_ontl_connect_result(struct vmbus_channel_message_header *hdr)
+{
+	struct vmbus_channel_tl_connect_result *result;
+
+	result = (struct vmbus_channel_tl_connect_result *)hdr;
+
+	trace_vmbus_ontl_connect_result(result);
+
+	if (result->status)
+		pr_debug("hv_sock: TL connect rejected: guest_endpoint %pUl, "
+			 "host_service %pUl, status 0x%x\n",
+			 &result->guest_endpoint_id,
+			 &result->host_service_id,
+			 result->status);
+}
+
+/*
  * vmbus_onmodifychannel_response - Modify Channel response handler.
  *
  * This is invoked when we received a response to our channel modify request.
@@ -1560,7 +1593,8 @@ channel_message_table[CHANNELMSG_COUNT] = {
 	{ CHANNELMSG_20,			0, NULL, 0},
 	{ CHANNELMSG_TL_CONNECT_REQUEST,	0, NULL, 0},
 	{ CHANNELMSG_MODIFYCHANNEL,		0, NULL, 0},
-	{ CHANNELMSG_TL_CONNECT_RESULT,		0, NULL, 0},
+	{ CHANNELMSG_TL_CONNECT_RESULT,		1, vmbus_ontl_connect_result,
+		sizeof(struct vmbus_channel_tl_connect_result)},
 	{ CHANNELMSG_MODIFYCHANNEL_RESPONSE,	1, vmbus_onmodifychannel_response,
 		sizeof(struct vmbus_channel_modifychannel_response)},
 };
