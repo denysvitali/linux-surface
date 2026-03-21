@@ -1069,8 +1069,17 @@ static const struct adreno_info a6xx_gpus[] = {
 			[ADRENO_FW_GMU] = "a680_gmu.bin",
 		},
 		.gmem = SZ_2M,
+		/*
+		 * A680 supports GPU preemption. This was confirmed via
+		 * reverse-engineering of the Windows dxgkrnl.sys driver
+		 * (DxgkDdiPreemptCommand maps to a6xx_preempt_*) which shows
+		 * the A680 uses context-level preemption in Windows. The
+		 * a6xx_preempt.c infrastructure handles the trigger/complete
+		 * flow generically for all A6xx chips.
+		 */
 		.quirks = ADRENO_QUIRK_HAS_CACHED_COHERENT |
-			  ADRENO_QUIRK_4GB_VA,
+			  ADRENO_QUIRK_4GB_VA |
+			  ADRENO_QUIRK_PREEMPTION,
 		.inactive_period = DRM_MSM_INACTIVE_PERIOD,
 		.init = a6xx_gpu_init,
 		.zapfw = "a640_zap.mdt",
@@ -1080,6 +1089,12 @@ static const struct adreno_info a6xx_gpus[] = {
 			.gmu_cgc_mode = 0x00020202,
 			.prim_fifo_threshold = 0x00200200,
 		},
+		/*
+		 * Preemption record size for A680 (A6xx GEN2). Uses the
+		 * standard A6xx preemption record size. This covers the
+		 * per-ring save/restore area used during context switching.
+		 */
+		.preempt_record_size = 4192 * SZ_1K,
 	}, {
 		.chip_ids = ADRENO_CHIP_IDS(0x06090000),
 		.family = ADRENO_6XX_GEN4,

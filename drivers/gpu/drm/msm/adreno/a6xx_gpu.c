@@ -316,6 +316,46 @@ static void a6xx_set_pagetable(struct a6xx_gpu *a6xx_gpu,
 	}
 }
 
+static void a6xx_emit_set_pseudo_reg(struct msm_ringbuffer *ring,
+		struct a6xx_gpu *a6xx_gpu, struct msm_gpu_submitqueue *queue)
+{
+	u64 preempt_postamble;
+
+	OUT_PKT7(ring, CP_SET_PSEUDO_REG, 12);
+
+	OUT_RING(ring, SMMU_INFO);
+	/* don't save SMMU, we write the record from the kernel instead */
+	OUT_RING(ring, 0);
+	OUT_RING(ring, 0);
+
+	/* privileged and non secure buffer save */
+	OUT_RING(ring, NON_SECURE_SAVE_ADDR);
+	OUT_RING(ring, lower_32_bits(
+		a6xx_gpu->preempt_iova[ring->id]));
+	OUT_RING(ring, upper_32_bits(
+		a6xx_gpu->preempt_iova[ring->id]));
+
+	/* user context buffer save, seems to be unnused by fw */
+	OUT_RING(ring, NON_PRIV_SAVE_ADDR);
+	OUT_RING(ring, 0);
+	OUT_RING(ring, 0);
+
+	OUT_RING(ring, COUNTER);
+	/* seems OK to set to 0 to disable it */
+	OUT_RING(ring, 0);
+	OUT_RING(ring, 0);
+
+	/* Emit postamble to clear perfcounters */
+	preempt_postamble = a6xx_gpu->preempt_postamble_iova;
+
+	OUT_PKT7(ring, CP_SET_AMBLE, 3);
+	OUT_RING(ring, lower_32_bits(preempt_postamble));
+	OUT_RING(ring, upper_32_bits(preempt_postamble));
+	OUT_RING(ring, CP_SET_AMBLE_2_DWORDS(
+				 a6xx_gpu->preempt_postamble_len) |
+			 CP_SET_AMBLE_2_TYPE(KMD_AMBLE_TYPE));
+}
+
 static void a6xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 {
 	unsigned int index = submit->seqno % MSM_GPU_SUBMIT_STATS_COUNT;
@@ -327,6 +367,15 @@ static void a6xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 	adreno_check_and_reenable_stall(adreno_gpu);
 
 	a6xx_set_pagetable(a6xx_gpu, ring, submit);
+
+	/*
+	 * If preemption is enabled, emit the pseudo-register packet that tells
+	 * the CP where to save/restore context state on preemption. This must
+	 * be done per submission so the CP always has the correct addresses for
+	 * the active ring.
+	 */
+	if (gpu->nr_rings > 1)
+		a6xx_emit_set_pseudo_reg(ring, a6xx_gpu, submit->queue);
 
 	get_stats_counter(ring, REG_A6XX_RBBM_PERFCTR_CP(0),
 		rbmemptr_stats(ring, index, cpcycles_start));
@@ -395,49 +444,24 @@ static void a6xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 	OUT_RING(ring, upper_32_bits(rbmemptr(ring, fence)));
 	OUT_RING(ring, submit->seqno);
 
+	/* If preemption is enabled, yield the floor so the CP can switch rings */
+	if (gpu->nr_rings > 1) {
+		OUT_PKT7(ring, CP_CONTEXT_SWITCH_YIELD, 4);
+		/*
+		 * dword[2:1]: address for CP to write on preemption complete,
+		 * zero to skip the write.
+		 */
+		OUT_RING(ring, 0x00);
+		OUT_RING(ring, 0x00);
+		/* Data value - not used if the address above is 0 */
+		OUT_RING(ring, 0x01);
+		/* generate interrupt on preemption completion */
+		OUT_RING(ring, 0x00);
+	}
+
 	trace_msm_gpu_submit_flush(submit, read_gmu_ao_counter(a6xx_gpu));
 
 	a6xx_flush(gpu, ring);
-}
-
-static void a6xx_emit_set_pseudo_reg(struct msm_ringbuffer *ring,
-		struct a6xx_gpu *a6xx_gpu, struct msm_gpu_submitqueue *queue)
-{
-	u64 preempt_postamble;
-
-	OUT_PKT7(ring, CP_SET_PSEUDO_REG, 12);
-
-	OUT_RING(ring, SMMU_INFO);
-	/* don't save SMMU, we write the record from the kernel instead */
-	OUT_RING(ring, 0);
-	OUT_RING(ring, 0);
-
-	/* privileged and non secure buffer save */
-	OUT_RING(ring, NON_SECURE_SAVE_ADDR);
-	OUT_RING(ring, lower_32_bits(
-		a6xx_gpu->preempt_iova[ring->id]));
-	OUT_RING(ring, upper_32_bits(
-		a6xx_gpu->preempt_iova[ring->id]));
-
-	/* user context buffer save, seems to be unnused by fw */
-	OUT_RING(ring, NON_PRIV_SAVE_ADDR);
-	OUT_RING(ring, 0);
-	OUT_RING(ring, 0);
-
-	OUT_RING(ring, COUNTER);
-	/* seems OK to set to 0 to disable it */
-	OUT_RING(ring, 0);
-	OUT_RING(ring, 0);
-
-	/* Emit postamble to clear perfcounters */
-	preempt_postamble = a6xx_gpu->preempt_postamble_iova;
-
-	OUT_PKT7(ring, CP_SET_AMBLE, 3);
-	OUT_RING(ring, lower_32_bits(preempt_postamble));
-	OUT_RING(ring, upper_32_bits(preempt_postamble));
-	OUT_RING(ring, CP_SET_AMBLE_2_DWORDS(
-				 a6xx_gpu->preempt_postamble_len) |
-			 CP_SET_AMBLE_2_TYPE(KMD_AMBLE_TYPE));
 }
 
 static void a7xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
@@ -2679,9 +2703,18 @@ struct msm_gpu *a6xx_gpu_init(struct drm_device *dev)
 	}
 
 	if ((enable_preemption == 1) || (enable_preemption == -1 &&
-	    (config->info->quirks & ADRENO_QUIRK_PREEMPTION)))
-		ret = adreno_gpu_init(dev, pdev, adreno_gpu, &funcs_a7xx, 4);
-	else if (is_a7xx)
+	    (config->info->quirks & ADRENO_QUIRK_PREEMPTION))) {
+		/*
+		 * A7xx chips use funcs_a7xx (a7xx_submit) for preemption as
+		 * they have the concurrent binning (BR/BV) architecture.
+		 * A6xx chips use the standard funcs (a6xx_submit) which has been
+		 * extended to emit preemption packets when nr_rings > 1.
+		 */
+		if (is_a7xx)
+			ret = adreno_gpu_init(dev, pdev, adreno_gpu, &funcs_a7xx, 4);
+		else
+			ret = adreno_gpu_init(dev, pdev, adreno_gpu, &funcs, 4);
+	} else if (is_a7xx)
 		ret = adreno_gpu_init(dev, pdev, adreno_gpu, &funcs_a7xx, 1);
 	else if (adreno_has_gmu_wrapper(adreno_gpu))
 		ret = adreno_gpu_init(dev, pdev, adreno_gpu, &funcs_gmuwrapper, 1);
