@@ -70,6 +70,106 @@
 	chosen {
 	};
 
+	/*
+	 * UCSI / USB-C / DP Alt Mode via Qualcomm PMIC GLINK
+	 *
+	 * The Surface Pro X has two USB-C ports, each connected to a
+	 * primary and secondary USB3+DP combo PHY. The PMIC firmware
+	 * manages Type-C CC detection, power delivery (PD), and UCSI
+	 * commands over the GLINK transport to the ADSP.
+	 *
+	 * Windows uses:
+	 *   - UcmUcsiAcpiClient.sys / UcmUcsiCx.sys for UCSI over ACPI
+	 *   - ucsi_glink (Linux) via pmic-glink for the Qualcomm path
+	 *   - UcmTcpciCx.sys for TCPCI register-level port control
+	 *
+	 * RE findings:
+	 *   - UCSI transport uses "UCSI" tag in ACPI mailbox region
+	 *   - Windows UCSI ACPI HID: "PNP0CA0" (same as Linux ucsi_acpi)
+	 *   - Qualcomm GLINK uses UC_UCSI_READ_BUF_REQ (0x11) /
+	 *     UC_UCSI_WRITE_BUF_REQ (0x12) / UC_UCSI_USBC_NOTIFY_IND (0x13)
+	 *
+	 * TODO: Verify orientation GPIO numbers against board schematics.
+	 *   The Lenovo Flex 5G (same SoC) uses GPIO 38 and 58.
+	 *   Surface Pro X orientation GPIOs are currently unconfirmed.
+	 */
+	pmic-glink {
+		compatible = "qcom,sc8180x-pmic-glink", "qcom,pmic-glink";
+
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		/*
+		 * USB-C orientation GPIOs - need verification against
+		 * Surface Pro X hardware schematics. Using Flex 5G values
+		 * as placeholder; these may need to change.
+		 */
+		/* orientation-gpios = <&tlmm XX GPIO_ACTIVE_HIGH>,
+		 *                     <&tlmm YY GPIO_ACTIVE_HIGH>; */
+
+		connector@0 {
+			compatible = "usb-c-connector";
+			reg = <0>;
+			power-role = "dual";
+			data-role = "dual";
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+
+					pmic_glink_con0_hs: endpoint {
+						remote-endpoint = <&usb_prim_dwc3_hs>;
+					};
+				};
+
+				port@1 {
+					reg = <1>;
+
+					pmic_glink_con0_ss: endpoint {
+						remote-endpoint = <&usb_prim_qmpphy_out>;
+					};
+				};
+
+				/*
+				 * port@2 for SBU mux would go here if a
+				 * GPIO SBU mux chip is present on SPX.
+				 * Needs hardware verification.
+				 */
+			};
+		};
+
+		connector@1 {
+			compatible = "usb-c-connector";
+			reg = <1>;
+			power-role = "dual";
+			data-role = "dual";
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+
+					pmic_glink_con1_hs: endpoint {
+						remote-endpoint = <&usb_sec_dwc3_hs>;
+					};
+				};
+
+				port@1 {
+					reg = <1>;
+
+					pmic_glink_con1_ss: endpoint {
+						remote-endpoint = <&usb_sec_qmpphy_out>;
+					};
+				};
+			};
+		};
+	};
+
 	reserved-memory {
 		// Sources for memory regions:
 		// - Windows Device Manager/ACPI
@@ -194,6 +294,56 @@
 	};
 
 	thermal-zones {
+		/*
+		 * The Surface Pro X has a fanless passive cooling design.
+		 * Add passive trip points and CPU cooling maps for the cluster
+		 * thermal zones so the kernel throttles CPU frequency before
+		 * reaching the critical shutdown temperature. The base sc8180x.dtsi
+		 * only defines critical trips for CPU zones.
+		 *
+		 * cluster0-thermal (tsens0:5) covers cpu0-cpu3 (efficiency cluster)
+		 * cluster1-thermal (tsens0:6) covers cpu4-cpu7 (performance cluster)
+		 */
+		cluster0-thermal {
+			trips {
+				cluster0_alert: trip-point0 {
+					temperature = <85000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&cluster0_alert>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu1 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu2 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu3 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		cluster1-thermal {
+			trips {
+				cluster1_alert: trip-point0 {
+					temperature = <85000>;
+					hysteresis = <2000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&cluster1_alert>;
+					cooling-device = <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu5 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu6 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>,
+							 <&cpu7 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
 		pmc8180a-thermal {
 			polling-delay-passive = <100>;
 			polling-delay = <0>;
@@ -999,6 +1149,45 @@
 	vdda-phy-supply = <&vreg_l3c_1p2>;
 };
 
+/*
+ * DP Alt Mode for external display over USB-C.
+ *
+ * The SC8180X has two DP controllers (dp0, dp1) tied to the primary
+ * and secondary USB3+DP combo PHYs respectively. Enabling these
+ * allows DisplayPort output over the USB-C connector.
+ *
+ * The MSM DP driver (drivers/gpu/drm/msm/dp/) handles HPD signalling
+ * and link training. UCSI (via pmic-glink) handles Alt Mode entry.
+ *
+ * Windows DP Alt Mode flow (from UcmTcpciCx/UcmUcsiCx RE):
+ *   1. UCSI GET_ALTERNATE_MODES -> discover DP SVID (0xFF01)
+ *   2. UCSI SET_NEW_CAM -> enter DP Alt Mode
+ *   3. QMP PHY switches from USB3 to DP signalling (4 or 2 lanes)
+ *   4. DP controller drives video; HPD handled via CC interrupt
+ */
+&mdss_dp0 {
+	status = "okay";
+};
+
+&mdss_dp0_out {
+	/*
+	 * Pin Assignment C/D/E: 2 DP lanes (multi-function with USB 3.x).
+	 * Pin Assignment A/B: 4 DP lanes (DP-only mode, no USB 3.x SS).
+	 * Use 2-lane config as default since SPX has USB 3.x functionality.
+	 */
+	data-lanes = <0 1>;
+	remote-endpoint = <&usb_prim_qmpphy_dp_in>;
+};
+
+&mdss_dp1 {
+	status = "okay";
+};
+
+&mdss_dp1_out {
+	data-lanes = <0 1>;
+	remote-endpoint = <&usb_sec_qmpphy_dp_in>;
+};
+
 
 &usb_prim_hsphy {
 	status = "okay";
@@ -1011,6 +1200,9 @@
 	status = "okay";
 	vdda-phy-supply = <&vreg_l3c_1p2>;
 	vdda-pll-supply = <&vreg_l9e_0p88>;
+
+	/* Required for USB-C orientation switching and DP Alt Mode */
+	orientation-switch;
 };
 
 &usb_prim {
@@ -1018,7 +1210,25 @@
 };
 
 &usb_prim_dwc3 {
-	dr_mode = "host";
+	/*
+	 * USB-C port supports dual-role (host and device).
+	 * Set to "otg" to allow role switching via pmic-glink UCSI.
+	 * Windows uses UCSI over PMIC GLINK for role management.
+	 */
+	dr_mode = "otg";
+	usb-role-switch;
+};
+
+&usb_prim_dwc3_hs {
+	remote-endpoint = <&pmic_glink_con0_hs>;
+};
+
+&usb_prim_qmpphy_dp_in {
+	remote-endpoint = <&mdss_dp0_out>;
+};
+
+&usb_prim_qmpphy_out {
+	remote-endpoint = <&pmic_glink_con0_ss>;
 };
 
 &usb_sec_hsphy {
@@ -1032,6 +1242,9 @@
 	status = "okay";
 	vdda-phy-supply = <&vreg_l3c_1p2>;
 	vdda-pll-supply = <&vreg_l9e_0p88>;
+
+	/* Required for USB-C orientation switching and DP Alt Mode */
+	orientation-switch;
 };
 
 &usb_sec {
@@ -1039,7 +1252,24 @@
 };
 
 &usb_sec_dwc3 {
-	dr_mode = "host";
+	/*
+	 * Second USB-C port supports dual-role via UCSI.
+	 * Set to "otg" to allow role switching via pmic-glink UCSI.
+	 */
+	dr_mode = "otg";
+	usb-role-switch;
+};
+
+&usb_sec_dwc3_hs {
+	remote-endpoint = <&pmic_glink_con1_hs>;
+};
+
+&usb_sec_qmpphy_dp_in {
+	remote-endpoint = <&mdss_dp1_out>;
+};
+
+&usb_sec_qmpphy_out {
+	remote-endpoint = <&pmic_glink_con1_ss>;
 };
 
 &usb_mp_hsphy0 {
@@ -1190,7 +1420,24 @@
 	pinctrl-0 = <&i2c2_active>, <&i2c2_als_active>;
 
 	als@39 {
-		// TODO: this should actually be a TCS3430
+		/*
+		 * RE analysis of SurfaceLightSensor.sys (internally named
+		 * SurfaceColorSensor.sys, version 1.37.139.0) reveals this is
+		 * an AMS TCS3430 4-channel XYZ+IR color/ALS sensor.
+		 *
+		 * The TCS3430 shares I2C address 0x39 and a broadly compatible
+		 * register map with the APDS9960 (both are I2C ALS sensors at
+		 * the same address with similar register layouts). The TCS3430
+		 * chip ID register (0x92) returns 0xDC. The Windows driver uses:
+		 *   - DMF_VirtualHidAmbientLightSensor for lux output
+		 *   - DMF_VirtualHidAmbientColorSensor for XYZ chromaticity
+		 *   - DMF_SpbTarget for I2C (SPB framework)
+		 *   - UsingGoldenCalibration for factory cal compensation
+		 *
+		 * TODO: Replace with ams,tcs3430 once a dedicated driver exists.
+		 * The apds9960 driver provides basic ALS functionality in the
+		 * interim since the chip ID check is not enforced during probe.
+		 */
 		compatible = "avago,apds9960";
 		reg = <0x39>;
 
@@ -1209,6 +1456,28 @@
 
 	pinctrl-names = "default";
 	pinctrl-0 = <&i2c9_active>;
+
+	/*
+	 * TODO: SAR (Specific Absorption Rate) proximity sensor.
+	 *
+	 * RE analysis indicates this bus (100kHz clock, GPIO39/GPIO40) is
+	 * the candidate for a SAR sensor used for RF power backoff when the
+	 * device is near the human body. Based on similar Qualcomm SC8180X
+	 * platforms, this is likely a Semtech SX9310 or SX9324 capacitive
+	 * proximity sensor (I2C address 0x28).
+	 *
+	 * Physical chip identification requires I2C bus scanning on a live
+	 * system: i2cdetect -y 9
+	 *
+	 * Once confirmed, add a node such as:
+	 *   sar@28 {
+	 *       compatible = "semtech,sx9310";  // or "semtech,sx9324"
+	 *       reg = <0x28>;
+	 *       interrupts-extended = <&tlmm XX IRQ_TYPE_LEVEL_LOW>;
+	 *       svdd-supply = <&vreg_...>;
+	 *       svddio-supply = <&vreg_...>;
+	 *   };
+	 */
 };
 
 
