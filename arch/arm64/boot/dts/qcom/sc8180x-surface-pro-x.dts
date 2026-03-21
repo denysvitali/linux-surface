@@ -1254,3 +1254,26 @@
 	vdd-3.3-ch0-supply = <&vreg_l11c_3p3>;
 	vdd-3.3-ch1-supply = <&vreg_l10c_3p3>;
 };
+
+&ufs_mem_hc {
+	status = "okay";
+
+	/*
+	 * UFS reset GPIO - GPIO 190 on sc8180x platforms.
+	 * Surface Pro X may use a different GPIO; verify against board schematics.
+	 */
+	reset-gpios = <&tlmm 190 GPIO_ACTIVE_LOW>;
+
+	vcc-supply = <&vreg_l16e_3p1>;
+	vcc-max-microamp = <600000>;
+
+	vccq2-supply = <&vreg_s4a_1p8>;
+	vccq2-max-microamp = <600000>;
+};
+
+&ufs_mem_phy {
+	status = "okay";
+
+	vdda-phy-supply = <&vreg_l5e_0p88>;
+	vdda-pll-supply = <&vreg_l3c_1p2>;
+};
