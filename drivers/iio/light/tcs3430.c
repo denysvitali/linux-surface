@@ -127,14 +127,19 @@ static const struct iio_event_spec tcs3430_events[] = {
 };
 
 /*
- * Channel 0 is X (with threshold events tied to the ALS interrupt).
- * Channels 1-3 are Y, Z, IR.
+ * TCS3430 reports CIE X/Y/Z tristimulus values.  The IIO subsystem has
+ * no IIO_MOD_LIGHT_X/Y/Z, so we map to the closest existing modifiers:
+ *   X → IIO_MOD_LIGHT_RED   (channel 0)
+ *   Y → IIO_MOD_LIGHT_GREEN (channel 1, ≈ luminance)
+ *   Z → IIO_MOD_LIGHT_BLUE  (channel 2)
+ *   IR → IIO_MOD_LIGHT_IR   (channel 3)
+ * Userspace can identify the actual meaning via the device compatible.
  */
 #define TCS3430_CHANNEL(_mod, _si, _addr, _ev, _nev)		\
 {								\
 	.type = IIO_INTENSITY,					\
 	.modified = 1,						\
-	.channel2 = IIO_MOD_LIGHT_##_mod,			\
+	.channel2 = _mod,					\
 	.address = _addr,					\
 	.scan_index = _si,					\
 	.scan_type = {						\
@@ -152,14 +157,14 @@ static const struct iio_event_spec tcs3430_events[] = {
 
 static const struct iio_chan_spec tcs3430_channels[] = {
 	/* X tristimulus - also used for ALS threshold interrupts */
-	TCS3430_CHANNEL(X, 0, TCS3430_REG_CH0DATAL,
+	TCS3430_CHANNEL(IIO_MOD_LIGHT_RED, 0, TCS3430_REG_CH0DATAL,
 			tcs3430_events, ARRAY_SIZE(tcs3430_events)),
 	/* Y tristimulus (correlates to CIE Y / luminance) */
-	TCS3430_CHANNEL(Y, 1, TCS3430_REG_CH1DATAL, NULL, 0),
+	TCS3430_CHANNEL(IIO_MOD_LIGHT_GREEN, 1, TCS3430_REG_CH1DATAL, NULL, 0),
 	/* Z tristimulus */
-	TCS3430_CHANNEL(Z, 2, TCS3430_REG_CH2DATAL, NULL, 0),
+	TCS3430_CHANNEL(IIO_MOD_LIGHT_BLUE, 2, TCS3430_REG_CH2DATAL, NULL, 0),
 	/* Infrared */
-	TCS3430_CHANNEL(IR, 3, TCS3430_REG_CH3DATAL, NULL, 0),
+	TCS3430_CHANNEL(IIO_MOD_LIGHT_IR, 3, TCS3430_REG_CH3DATAL, NULL, 0),
 	IIO_CHAN_SOFT_TIMESTAMP(4),
 };
 
