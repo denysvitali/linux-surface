@@ -13,6 +13,7 @@
 #include <dt-bindings/regulator/qcom,rpmh-regulator.h>
 #include <dt-bindings/spmi/spmi.h>
 #include <dt-bindings/iio/qcom,spmi-vadc.h>
+#include <dt-bindings/sound/qcom,q6asm.h>
 #include "sc8180x.dtsi"
 
 
@@ -1560,4 +1561,283 @@
 
 	vdda-phy-supply = <&vreg_l5e_0p88>;
 	vdda-pll-supply = <&vreg_l3c_1p2>;
+};
+
+
+/*
+ * Audio subsystem: WCD9380 codec + LPASS macros + SoundWire buses
+ *
+ * The Surface Pro X uses a Qualcomm WCD9380 (WCD938x family) audio codec
+ * connected over two SoundWire buses (RX on swr1, TX on swr2).  Speakers
+ * are driven via the WSA SoundWire bus (swr0).  The LPASS macros (VA, RX,
+ * TX, WSA) are instantiated in the ADSP address space and clocked through
+ * the Q6AFE clock controller (q6afecc).
+ *
+ * The machine driver used is qcom,sm8250-sndcard (sm8250.c), which handles
+ * the older APR/Q6AFE transport used by SC8180X (as opposed to the APM
+ * transport used by SC8280XP).
+ *
+ * TODO items that require physical hardware verification:
+ *   - WCD9380 reset GPIO number (search ACPI DSDT for QCOM0425 _CRS)
+ *   - Speaker model (WSA8810/WSA8830) and SoundWire device addresses
+ *   - DMIC pin assignments for built-in microphones (GPIO numbers)
+ *   - Exact micbias voltages
+ *
+ * Reference: sm8250-mtp.dts (same APR/Q6AFE audio stack)
+ */
+
+/*
+ * WCD9380 codec top-level node.
+ *
+ * The WCD9380 is a SoundWire multi-function device; the top-level
+ * "qcom,wcd9380-codec" node ties together the RX and TX SoundWire
+ * slave devices enumerated on swr1 and swr2 respectively.
+ *
+ * Supply names are taken directly from wcd938x.c:
+ *   static const char * const wcd938x_supplies[] = {
+ *       "vdd-rxtx", "vdd-io", "vdd-buck", "vdd-mic-bias",
+ *   };
+ *
+ * vreg_s4a_1p8 (1.8 V) is used for vdd-buck, vdd-rxtx, and vdd-io.
+ * vreg_bob (3.3 V) is used for vdd-mic-bias (headset mic bias).
+ *
+ * TODO: reset-gpios — GPIO number needs ACPI DSDT verification.
+ *       On SM8250-MTP this is GPIO 32; on ThinkPad X13s it is GPIO 106.
+ *       Until confirmed, leave commented out to avoid a hard fault at
+ *       probe time.
+ */
+&sound {
+	compatible = "qcom,sm8250-sndcard";
+	model = "SC8180X-SURFACE-PRO-X";
+
+	audio-routing =
+		"SpkrLeft IN", "WSA_SPK1 OUT",
+		"SpkrRight IN", "WSA_SPK2 OUT",
+		"IN1_HPHL", "HPHL_OUT",
+		"IN2_HPHR", "HPHR_OUT",
+		"AMIC2", "MIC BIAS2",
+		"TX SWR_ADC1", "ADC2_OUTPUT";
+
+	mm1-dai-link {
+		link-name = "MultiMedia1";
+		cpu {
+			sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA1>;
+		};
+	};
+
+	mm2-dai-link {
+		link-name = "MultiMedia2";
+		cpu {
+			sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA2>;
+		};
+	};
+
+	mm3-dai-link {
+		link-name = "MultiMedia3";
+		cpu {
+			sound-dai = <&q6asmdai MSM_FRONTEND_DAI_MULTIMEDIA3>;
+		};
+	};
+
+	wcd-playback-dai-link {
+		link-name = "WCD Playback";
+		cpu {
+			sound-dai = <&q6afedai RX_CODEC_DMA_RX_0>;
+		};
+
+		codec {
+			sound-dai = <&wcd938x 0>, <&swr1 0>, <&rxmacro 0>;
+		};
+
+		platform {
+			sound-dai = <&q6routing>;
+		};
+	};
+
+	wcd-capture-dai-link {
+		link-name = "WCD Capture";
+		cpu {
+			sound-dai = <&q6afedai TX_CODEC_DMA_TX_3>;
+		};
+
+		codec {
+			sound-dai = <&wcd938x 1>, <&swr2 0>, <&txmacro 0>;
+		};
+
+		platform {
+			sound-dai = <&q6routing>;
+		};
+	};
+
+	wsa-dai-link {
+		link-name = "WSA Playback";
+		cpu {
+			sound-dai = <&q6afedai WSA_CODEC_DMA_RX_0>;
+		};
+
+		codec {
+			sound-dai = <&left_spkr>, <&right_spkr>,
+				    <&swr0 0>, <&wsamacro 0>;
+		};
+
+		platform {
+			sound-dai = <&q6routing>;
+		};
+	};
+
+	va-dai-link {
+		link-name = "VA Capture";
+		cpu {
+			sound-dai = <&q6afedai VA_CODEC_DMA_TX_0>;
+		};
+
+		platform {
+			sound-dai = <&q6routing>;
+		};
+
+		codec {
+			sound-dai = <&vamacro 0>;
+		};
+	};
+};
+
+/*
+ * WSA SoundWire bus — speaker amplifiers.
+ *
+ * TODO: The exact WSA speaker model (WSA8810 vs WSA8830) and the
+ * SoundWire device addresses need verification against board schematics
+ * or ACPI DSDT enumeration.  The compatible strings below are for
+ * WSA8810 (sdw10217211000).  For WSA8830 use sdw10217020200.
+ *
+ * powerdown-gpios also needs confirmation; the GPIO numbers here are
+ * placeholders and MUST be verified before enabling the speaker path.
+ */
+&swr0 {
+	status = "okay";
+
+	left_spkr: speaker@0,3 {
+		compatible = "sdw10217211000";
+		reg = <0 3>;
+		/* TODO: verify powerdown GPIO number against board schematics */
+		/* powerdown-gpios = <&tlmm XX GPIO_ACTIVE_LOW>; */
+		#thermal-sensor-cells = <0>;
+		sound-name-prefix = "SpkrLeft";
+		#sound-dai-cells = <0>;
+	};
+
+	right_spkr: speaker@0,4 {
+		compatible = "sdw10217211000";
+		reg = <0 4>;
+		/* TODO: verify powerdown GPIO number against board schematics */
+		/* powerdown-gpios = <&tlmm XX GPIO_ACTIVE_LOW>; */
+		#thermal-sensor-cells = <0>;
+		sound-name-prefix = "SpkrRight";
+		#sound-dai-cells = <0>;
+	};
+};
+
+/*
+ * RX SoundWire bus — WCD9380 playback (headphone, earpiece).
+ *
+ * The WCD9380 RX slave is always at SoundWire address (link=0, dev=4).
+ * qcom,rx-port-mapping matches the five RX ports on WCD938x.
+ */
+&swr1 {
+	status = "okay";
+
+	wcd_rx: wcd9380-rx@0,4 {
+		compatible = "sdw20217010d00";
+		reg = <0 4>;
+		qcom,rx-port-mapping = <1 2 3 4 5>;
+	};
+};
+
+/*
+ * TX SoundWire bus — WCD9380 capture (microphone).
+ *
+ * The WCD9380 TX slave is always at SoundWire address (link=0, dev=3).
+ * qcom,tx-port-mapping matches the four TX ports on WCD938x.
+ */
+&swr2 {
+	status = "okay";
+
+	wcd_tx: wcd9380-tx@0,3 {
+		compatible = "sdw20217010d00";
+		reg = <0 3>;
+		qcom,tx-port-mapping = <2 3 4 5>;
+	};
+};
+
+/*
+ * LPASS macro enables.
+ *
+ * All four LPASS codec macros (VA, RX, TX, WSA) must be enabled for
+ * the audio stack to function.  They are clocked through q6afecc and
+ * are defined as disabled in sc8180x.dtsi.
+ *
+ * vamacro: VA macro — digital microphone (DMIC) capture path.
+ *   TODO: add dmic01/dmic23 pinctrl states once GPIO assignments are
+ *   confirmed via ACPI DSDT analysis.
+ */
+&vamacro {
+	status = "okay";
+};
+
+&rxmacro {
+	status = "okay";
+};
+
+&txmacro {
+	status = "okay";
+};
+
+&wsamacro {
+	status = "okay";
+};
+
+/*
+ * WCD9380 top-level codec node.
+ *
+ * This is the parent device that binds the RX slave (wcd_rx on swr1) and
+ * TX slave (wcd_tx on swr2) together into a single codec component.
+ *
+ * Supply names are required by wcd938x.c (vdd-rxtx, vdd-io, vdd-buck,
+ * vdd-mic-bias).  vreg_s4a_1p8 is the 1.8 V always-on rail; vreg_bob is
+ * the 3.3 V BOB regulator used for mic-bias.
+ *
+ * reset-gpios is intentionally left commented out pending hardware
+ * verification of the GPIO number (see TODO above).
+ */
+/ {
+	wcd938x: audio-codec {
+		compatible = "qcom,wcd9380-codec";
+
+		/*
+		 * TODO: reset-gpios needs hardware verification.
+		 * On SM8250-MTP: gpio32.  On ThinkPad X13s: gpio106.
+		 * Search ACPI DSDT for device "QCOM0425" and inspect _CRS
+		 * to find the GPIO resource used for codec reset.
+		 */
+		/* reset-gpios = <&tlmm XX GPIO_ACTIVE_LOW>; */
+
+		vdd-buck-supply = <&vreg_s4a_1p8>;
+		vdd-rxtx-supply = <&vreg_s4a_1p8>;
+		vdd-io-supply = <&vreg_s4a_1p8>;
+		vdd-mic-bias-supply = <&vreg_bob>;
+
+		qcom,micbias1-microvolt = <1800000>;
+		qcom,micbias2-microvolt = <1800000>;
+		qcom,micbias3-microvolt = <1800000>;
+		qcom,micbias4-microvolt = <1800000>;
+
+		qcom,mbhc-buttons-vthreshold-microvolt = <75000 150000 237000 500000
+							   500000 500000 500000 500000>;
+		qcom,mbhc-headset-vthreshold-microvolt = <1700000>;
+		qcom,mbhc-headphone-vthreshold-microvolt = <50000>;
+
+		qcom,rx-device = <&wcd_rx>;
+		qcom,tx-device = <&wcd_tx>;
+
+		#sound-dai-cells = <1>;
+	};
 };
