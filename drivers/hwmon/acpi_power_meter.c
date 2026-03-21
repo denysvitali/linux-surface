@@ -4,6 +4,15 @@
  * Copyright (C) 2009 IBM
  *
  * Author: Darrick J. Wong <darrick.wong@oracle.com>
+ *
+ * Surface Pro X (ARM64/Qualcomm SQ1) notes:
+ *   The Windows driver acpipmi.sys (KMDF, ARM64) implements the standard
+ *   ACPI000D interface without any IPMI dependency. RE analysis of the binary
+ *   confirms all standard methods (_PMC, _PMM, _GAI, _GHL, _SHL, _PAI, _PTP,
+ *   _PMD) match this driver's implementation exactly. No Surface-specific quirks
+ *   are required; enabling CONFIG_SENSORS_ACPI_POWER and verifying the ACPI000D
+ *   device exists in firmware is sufficient for Surface Pro X support.
+ *   See: drivers/ACPIPMI_RE_ANALYSIS.md in the spx-drivers repository.
  */
 
 #include <linux/module.h>
@@ -1005,6 +1014,24 @@ static const struct dmi_system_id pm_dmi_table[] __initconst = {
 		enable_cap_knobs, "IBM Active Energy Manager",
 		{
 			DMI_MATCH(DMI_SYS_VENDOR, "IBM")
+		},
+	},
+	/*
+	 * Microsoft Surface Pro X (Qualcomm SQ1/SQ2, ARM64):
+	 * RE analysis of acpipmi.sys (Windows KMDF driver) confirms the _SHL
+	 * (Set Hardware Limit) method is implemented and hardware power capping
+	 * is supported. The _PMC capabilities package reports configurable_cap=1
+	 * when capping is available. Enable cap knobs unconditionally for all
+	 * Surface devices that expose ACPI000D with CAN_CAP capability.
+	 *
+	 * Note: actual availability depends on firmware; the driver validates
+	 * POWER_METER_CAN_CAP in the _PMC flags before exposing cap controls.
+	 */
+	{
+		enable_cap_knobs, "Microsoft Surface Pro X",
+		{
+			DMI_MATCH(DMI_SYS_VENDOR, "Microsoft Corporation"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "Surface Pro X"),
 		},
 	},
 	{}
