@@ -166,8 +166,26 @@ jobs:
           source "$CONDA_ROOT/etc/profile.d/conda.sh" 2>/dev/null || true
           conda activate base 2>/dev/null || true
 
-          if [ ! -f $KERNEL_BUILD_DIR/.config ] || [ $KERNEL_SRC_DIR/Makefile -nt $KERNEL_BUILD_DIR/.config ]; then
+          # Always regenerate the config when the Makefile or the SPX
+          # config fragment is newer than the existing .config, or when
+          # no .config exists yet.
+          SPX_FRAG="$KERNEL_SRC_DIR/arch/arm64/configs/surface_pro_x.config"
+          if [ ! -f $KERNEL_BUILD_DIR/.config ] \
+             || [ $KERNEL_SRC_DIR/Makefile -nt $KERNEL_BUILD_DIR/.config ] \
+             || [ "$SPX_FRAG" -nt $KERNEL_BUILD_DIR/.config ]; then
+            # Step 1: generate the base generic arm64 defconfig
             make -C $KERNEL_SRC_DIR O=$KERNEL_BUILD_DIR ARCH=arm64 defconfig
+
+            # Step 2: merge the Surface Pro X hardware-specific fragment on
+            # top, enabling all SPX drivers without touching anything else.
+            KCONFIG_CONFIG=$KERNEL_BUILD_DIR/.config \
+              $KERNEL_SRC_DIR/scripts/kconfig/merge_config.sh \
+              -m -O $KERNEL_BUILD_DIR \
+              $KERNEL_BUILD_DIR/.config \
+              "$SPX_FRAG"
+
+            # Step 3: resolve any new symbols introduced by the merge
+            make -C $KERNEL_SRC_DIR O=$KERNEL_BUILD_DIR ARCH=arm64 olddefconfig
           fi
 
       - name: Build kernel

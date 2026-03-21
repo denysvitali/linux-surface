@@ -1488,14 +1488,12 @@
 	pinctrl-0 = <&uart13_state>;
 
 	bluetooth {
-		// Note: For some reason, the ROM version is given as 0x01
-		//       whereas it should be 0x21. This prevents the firmware
-		//       from being found, as these file names depend on the
-		//       rom version. Symlinking
-		//        - qca/crbtfw01.tlv to qca/crbtfw21.tlv
-		//        - qca/crnv01.bin to qca/crnv21.bin
-		//       fixes them. Windows is confirmed to use the 0x21
-		//       files.
+		// Note: The WCN3998 on Surface Pro X reports ROM version 0x01
+		//       but the actual firmware files use version 0x21 (e.g.,
+		//       crbtfw21.tlv and crnv21.bin extracted from Windows).
+		//       We override the firmware file names here using the
+		//       firmware-name DT property to avoid the mismatch.
+		//       firmware-name[0] = NVM config, firmware-name[1] = rampatch.
 
 		compatible = "qcom,wcn3998-bt";
 
@@ -1505,6 +1503,8 @@
 		vddch0-supply = <&vreg_l11c_3p3>;
 
 		max-speed = <3200000>;
+
+		firmware-name = "crnv21.bin", "crbtfw21.tlv";
 	};
 };
 
