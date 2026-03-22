@@ -17,6 +17,77 @@
 #include "sc8180x.dtsi"
 
 
+/*
+ * DTS Completeness Audit (2026-03-22)
+ * ====================================
+ *
+ * Every status = "okay" node and its corresponding kernel CONFIG entry:
+ *
+ *  Node              Driver / Kconfig symbol
+ *  ----------------  ---------------------------------------------------
+ *  dispcc            CONFIG_CLK_SC8180X (built-in via dtsi, no fragment needed)
+ *  gpu               CONFIG_DRM_MSM (=m/=y in surface_pro_x.config)
+ *  mdss              CONFIG_DRM_MSM
+ *  mdss_edp          CONFIG_DRM_MSM (eDP output path)
+ *  edp_phy           CONFIG_PHY_QCOM_EDP (built into defconfig for arm64)
+ *  mdss_dp0          CONFIG_DRM_MSM (DP Alt Mode port 0)
+ *  mdss_dp1          CONFIG_DRM_MSM (DP Alt Mode port 1)
+ *  usb_prim_hsphy    CONFIG_PHY_QCOM_USB_HS (part of defconfig)
+ *  usb_prim_qmpphy   CONFIG_PHY_QCOM_QMP_COMBO (surface_pro_x.config)
+ *  usb_prim          CONFIG_USB_DWC3 / CONFIG_USB_DWC3_QCOM
+ *  usb_sec_hsphy     CONFIG_PHY_QCOM_USB_HS
+ *  usb_sec_qmpphy    CONFIG_PHY_QCOM_QMP_COMBO
+ *  usb_sec           CONFIG_USB_DWC3 / CONFIG_USB_DWC3_QCOM
+ *  usb_mp_hsphy0/1   CONFIG_PHY_QCOM_USB_HS
+ *  usb_mp_qmpphy0/1  CONFIG_PHY_QCOM_QMP_USB (surface_pro_x.config)
+ *  usb_mp            CONFIG_USB_DWC3 / CONFIG_USB_DWC3_QCOM
+ *  pcie2             CONFIG_PCIE_QCOM (part of defconfig)
+ *  pcie2_phy         CONFIG_PHY_QCOM_QMP_PCIE (defconfig)
+ *  remoteproc_adsp   CONFIG_QCOM_Q6V5_ADSP (defconfig)
+ *  remoteproc_cdsp   CONFIG_QCOM_Q6V5_CDSP (defconfig)
+ *  remoteproc_mpss   CONFIG_QCOM_Q6V5_MSS (defconfig)
+ *  qupv3_id_0/1/2    CONFIG_QCOM_GENI_SE (defconfig)
+ *  spi1 / hid@0      CONFIG_SPI_HID (surface_pro_x.config)
+ *  i2c2 / tcs3430    CONFIG_TCS3430 (surface_pro_x.config)
+ *  i2c9              placeholder (SAR sensor — see TODO below)
+ *  uart13 / wcn3998  CONFIG_BT_HCIUART + CONFIG_BT_HCIUART_QCA
+ *  uart15 / ssam     CONFIG_SURFACE_AGGREGATOR (surface_pro_x.config)
+ *  wifi              CONFIG_ATH10K_SNOC (surface_pro_x.config)
+ *  ufs_mem_hc        CONFIG_SCSI_UFS_QCOM (surface_pro_x.config)
+ *  ufs_mem_phy       CONFIG_PHY_QCOM_QMP_UFS (surface_pro_x.config)
+ *  swr0/swr1/swr2    CONFIG_SOUNDWIRE_QCOM (surface_pro_x.config)
+ *  vamacro/rxmacro   CONFIG_SND_SOC_QDSP6 (surface_pro_x.config)
+ *  txmacro/wsamacro  CONFIG_SND_SOC_QDSP6
+ *  sound             CONFIG_SND_SOC_QCOM + CONFIG_SND_SOC_SC8280XP
+ *
+ * Endpoint graph completeness:
+ *   edp_panel_in      <-> mdss_edp_out          PAIRED
+ *   mdss_dp0_out      <-> usb_prim_qmpphy_dp_in PAIRED
+ *   mdss_dp1_out      <-> usb_sec_qmpphy_dp_in  PAIRED
+ *   usb_prim_dwc3_hs  <-> pmic_glink_con0_hs    PAIRED
+ *   usb_prim_qmpphy_out <-> pmic_glink_con0_ss  PAIRED
+ *   usb_sec_dwc3_hs   <-> pmic_glink_con1_hs    PAIRED
+ *   usb_sec_qmpphy_out <-> pmic_glink_con1_ss   PAIRED
+ *   All remote-endpoint references are bidirectionally consistent.
+ *
+ * Audit-identified issues fixed in this file:
+ *   1. edp_phy: added missing status = "okay" (supplies were present but
+ *      the node inherited disabled status from sc8180x.dtsi).
+ *
+ * Outstanding TODOs requiring physical hardware verification:
+ *   - pmic-glink orientation-gpios: GPIO numbers for USB-C port orientation
+ *     switching are unknown. Lenovo Flex 5G uses GPIOs 38 and 58; SPX TBD.
+ *   - vph_pwr voltage: needs oscilloscope measurement (nominally 3.3–3.8 V).
+ *   - i2c9 SAR sensor: likely Semtech SX9310/SX9324 at 0x28; needs i2cdetect.
+ *   - WCD9380 reset GPIO: search ACPI DSDT for "QCOM0425" _CRS resource.
+ *   - WSA speaker model and powerdown GPIOs: WSA8810 vs WSA8830 TBD.
+ *   - DMIC pin assignments for vamacro: GPIO numbers from DSDT.
+ *   - pcie3: pinctrl state pcie3_default_state is defined but &pcie3 is not
+ *     enabled (hot-plug commands time out). Leave disabled until resolved.
+ *   - pcie1_phy: commented out pending multi-lane PHY support (Johan Hovold WIP).
+ *   - UFS reset GPIO 190: confirm against SPX board schematics.
+ */
+
 / {
 	model = "Microsoft Surface Pro X (SQ2)";
 	compatible = "microsoft,surface-pro-x", "qcom,sc8180x";
@@ -1146,6 +1217,14 @@
 };
 
 &edp_phy {
+	/*
+	 * Audit fix: edp_phy is disabled in sc8180x.dtsi by default.
+	 * Must be enabled here so the eDP PHY powers up alongside mdss_edp.
+	 * Missing status = "okay" was an oversight; supply nodes were already
+	 * correct.
+	 */
+	status = "okay";
+
 	vdda-pll-supply = <&vreg_l5e_0p88>;
 	vdda-phy-supply = <&vreg_l3c_1p2>;
 };

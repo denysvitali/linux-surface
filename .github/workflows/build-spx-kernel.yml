@@ -22,15 +22,26 @@ env:
 jobs:
   build:
     runs-on: [self-hosted, arm64]
+    strategy:
+      matrix:
+        variant:
+          - name: modular
+            # Uses =m for most SPX drivers (development / distro style).
+            # Requires initramfs / modules to be installed.
+            extra_fragment: ""
+          - name: builtin
+            # ALL SPX-specific drivers compiled into the kernel image.
+            # Boot by flashing Image.gz + DTB only; no initramfs needed.
+            extra_fragment: "arch/arm64/configs/surface_pro_x_builtin.config"
     steps:
       - name: Setup environment
         run: |
           export HOME=/home/runner
           mkdir -p $KERNEL_SRC_DIR
-          mkdir -p $KERNEL_BUILD_DIR
+          mkdir -p ${KERNEL_BUILD_DIR}-${{ matrix.variant.name }}
           mkdir -p $CCACHE_DIR
           echo "Source directory: $KERNEL_SRC_DIR"
-          echo "Build directory: $KERNEL_BUILD_DIR"
+          echo "Build directory: ${KERNEL_BUILD_DIR}-${{ matrix.variant.name }}"
           echo "Ccache directory: $CCACHE_DIR"
 
       - name: Checkout to persistent location
@@ -139,9 +150,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: ccache-arm64-spx-${{ github.sha }}
+          key: ccache-arm64-spx-${{ matrix.variant.name }}-${{ github.sha }}
           restore-keys: |
-            ccache-arm64-spx-
+            ccache-arm64-spx-${{ matrix.variant.name }}-
 
       - name: Setup ccache
         run: |
@@ -158,7 +169,7 @@ jobs:
             echo "ccache not available, skipping setup"
           fi
 
-      - name: Configure kernel
+      - name: Configure kernel (${{ matrix.variant.name }})
         run: |
           export HOME=/home/runner
           export PATH="$HOME/.local/bin:$CONDA_ROOT/bin:$PATH"
@@ -166,29 +177,53 @@ jobs:
           source "$CONDA_ROOT/etc/profile.d/conda.sh" 2>/dev/null || true
           conda activate base 2>/dev/null || true
 
-          # Always regenerate the config when the Makefile or the SPX
-          # config fragment is newer than the existing .config, or when
-          # no .config exists yet.
+          BUILD_DIR="${KERNEL_BUILD_DIR}-${{ matrix.variant.name }}"
           SPX_FRAG="$KERNEL_SRC_DIR/arch/arm64/configs/surface_pro_x.config"
-          if [ ! -f $KERNEL_BUILD_DIR/.config ] \
-             || [ $KERNEL_SRC_DIR/Makefile -nt $KERNEL_BUILD_DIR/.config ] \
-             || [ "$SPX_FRAG" -nt $KERNEL_BUILD_DIR/.config ]; then
-            # Step 1: generate the base generic arm64 defconfig
-            make -C $KERNEL_SRC_DIR O=$KERNEL_BUILD_DIR ARCH=arm64 defconfig
+          BUILTIN_FRAG="${{ matrix.variant.extra_fragment }}"
 
-            # Step 2: merge the Surface Pro X hardware-specific fragment on
-            # top, enabling all SPX drivers without touching anything else.
-            KCONFIG_CONFIG=$KERNEL_BUILD_DIR/.config \
-              $KERNEL_SRC_DIR/scripts/kconfig/merge_config.sh \
-              -m -O $KERNEL_BUILD_DIR \
-              $KERNEL_BUILD_DIR/.config \
-              "$SPX_FRAG"
-
-            # Step 3: resolve any new symbols introduced by the merge
-            make -C $KERNEL_SRC_DIR O=$KERNEL_BUILD_DIR ARCH=arm64 olddefconfig
+          # Regenerate the config when any relevant fragment is newer than
+          # the existing .config, or when no .config exists yet.
+          NEED_REGEN=0
+          if [ ! -f "$BUILD_DIR/.config" ]; then
+            NEED_REGEN=1
+          elif [ "$KERNEL_SRC_DIR/Makefile" -nt "$BUILD_DIR/.config" ]; then
+            NEED_REGEN=1
+          elif [ "$SPX_FRAG" -nt "$BUILD_DIR/.config" ]; then
+            NEED_REGEN=1
+          elif [ -n "$BUILTIN_FRAG" ] && [ "$KERNEL_SRC_DIR/$BUILTIN_FRAG" -nt "$BUILD_DIR/.config" ]; then
+            NEED_REGEN=1
           fi
 
-      - name: Build kernel
+          if [ "$NEED_REGEN" = "1" ]; then
+            echo "=== Generating config for variant: ${{ matrix.variant.name }} ==="
+
+            # Step 1: generate the base generic arm64 defconfig
+            make -C $KERNEL_SRC_DIR O="$BUILD_DIR" ARCH=arm64 defconfig
+
+            # Step 2: merge the Surface Pro X hardware-specific fragment
+            KCONFIG_CONFIG="$BUILD_DIR/.config" \
+              $KERNEL_SRC_DIR/scripts/kconfig/merge_config.sh \
+              -m -O "$BUILD_DIR" \
+              "$BUILD_DIR/.config" \
+              "$SPX_FRAG"
+
+            # Step 3 (built-in variant only): overlay the =y override fragment
+            if [ -n "$BUILTIN_FRAG" ]; then
+              echo "=== Merging built-in override fragment ==="
+              KCONFIG_CONFIG="$BUILD_DIR/.config" \
+                $KERNEL_SRC_DIR/scripts/kconfig/merge_config.sh \
+                -m -O "$BUILD_DIR" \
+                "$BUILD_DIR/.config" \
+                "$KERNEL_SRC_DIR/$BUILTIN_FRAG"
+            fi
+
+            # Step 4: resolve any new symbols introduced by the merge(s)
+            make -C $KERNEL_SRC_DIR O="$BUILD_DIR" ARCH=arm64 olddefconfig
+          else
+            echo "=== Config up-to-date for variant: ${{ matrix.variant.name }}, skipping regeneration ==="
+          fi
+
+      - name: Build kernel (${{ matrix.variant.name }})
         run: |
           export HOME=/home/runner
           export PATH="$HOME/.local/bin:$CONDA_ROOT/bin:$PATH"
@@ -197,15 +232,23 @@ jobs:
           source "$CONDA_ROOT/etc/profile.d/conda.sh" 2>/dev/null || true
           conda activate base 2>/dev/null || true
 
-          if [ "${USE_CCACHE:-0}" = "1" ]; then
-            echo "Building with ccache..."
-            make -C $KERNEL_SRC_DIR O=$KERNEL_BUILD_DIR ARCH=arm64 CC="ccache gcc" -j$(nproc) Image.gz modules dtbs
-          else
-            echo "Building without ccache..."
-            make -C $KERNEL_SRC_DIR O=$KERNEL_BUILD_DIR ARCH=arm64 -j$(nproc) Image.gz modules dtbs
+          BUILD_DIR="${KERNEL_BUILD_DIR}-${{ matrix.variant.name }}"
+
+          # The built-in variant does not need to build loadable modules
+          MAKE_TARGETS="Image.gz dtbs"
+          if [ "${{ matrix.variant.name }}" = "modular" ]; then
+            MAKE_TARGETS="Image.gz modules dtbs"
           fi
 
-      - name: Package artifacts
+          if [ "${USE_CCACHE:-0}" = "1" ]; then
+            echo "Building with ccache..."
+            make -C $KERNEL_SRC_DIR O="$BUILD_DIR" ARCH=arm64 CC="ccache gcc" -j$(nproc) $MAKE_TARGETS
+          else
+            echo "Building without ccache..."
+            make -C $KERNEL_SRC_DIR O="$BUILD_DIR" ARCH=arm64 -j$(nproc) $MAKE_TARGETS
+          fi
+
+      - name: Package artifacts (${{ matrix.variant.name }})
         run: |
           export HOME=/home/runner
           export PATH="$HOME/.local/bin:$CONDA_ROOT/bin:$PATH"
@@ -213,13 +256,27 @@ jobs:
           source "$CONDA_ROOT/etc/profile.d/conda.sh" 2>/dev/null || true
           conda activate base 2>/dev/null || true
 
-          mkdir -p artifacts
-          cp $KERNEL_BUILD_DIR/arch/arm64/boot/Image.gz artifacts/ || echo "Image.gz not found"
-          cp $KERNEL_BUILD_DIR/arch/arm64/boot/dts/qcom/sc8180x-surface-pro-x.dtb artifacts/ || { echo "DTB not found, listing available DTBs:"; ls -la $KERNEL_BUILD_DIR/arch/arm64/boot/dts/qcom/ 2>/dev/null || ls -la $KERNEL_BUILD_DIR/arch/arm64/boot/dts/ 2>/dev/null; exit 1; }
-          cp $KERNEL_BUILD_DIR/.config artifacts/config.log
-          make -C $KERNEL_SRC_DIR O=$KERNEL_BUILD_DIR ARCH=arm64 INSTALL_MOD_PATH=$KERNEL_BUILD_DIR/modules_install modules_install
-          tar -czf artifacts/modules.tar.gz -C $KERNEL_BUILD_DIR/modules_install .
+          BUILD_DIR="${KERNEL_BUILD_DIR}-${{ matrix.variant.name }}"
+          ARTIFACT_DIR="artifacts-${{ matrix.variant.name }}"
+
+          mkdir -p "$ARTIFACT_DIR"
+          cp "$BUILD_DIR/arch/arm64/boot/Image.gz" "$ARTIFACT_DIR/" || echo "Image.gz not found"
+          cp "$BUILD_DIR/arch/arm64/boot/dts/qcom/sc8180x-surface-pro-x.dtb" "$ARTIFACT_DIR/" || {
+            echo "DTB not found, listing available DTBs:"
+            ls -la "$BUILD_DIR/arch/arm64/boot/dts/qcom/" 2>/dev/null || \
+              ls -la "$BUILD_DIR/arch/arm64/boot/dts/" 2>/dev/null
+            exit 1
+          }
+          cp "$BUILD_DIR/.config" "$ARTIFACT_DIR/config.log"
+
+          if [ "${{ matrix.variant.name }}" = "modular" ]; then
+            make -C $KERNEL_SRC_DIR O="$BUILD_DIR" ARCH=arm64 \
+              INSTALL_MOD_PATH="$BUILD_DIR/modules_install" modules_install
+            tar -czf "$ARTIFACT_DIR/modules.tar.gz" -C "$BUILD_DIR/modules_install" .
+          fi
+
           {
+            echo "Variant: ${{ matrix.variant.name }}"
             echo "Commit: ${{ github.sha }}"
             echo "Branch: ${{ github.ref_name }}"
             echo "Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
@@ -227,24 +284,52 @@ jobs:
               echo "=== Ccache Statistics ==="
               ccache -s
             fi
-          } > artifacts/build-info.txt
+          } > "$ARTIFACT_DIR/build-info.txt"
 
-      - name: Upload to GitHub artifacts
+      - name: Upload to GitHub artifacts (${{ matrix.variant.name }})
         if: success()
         uses: actions/upload-artifact@v7
         with:
-          name: surface-pro-x-kernel-${{ github.sha }}
-          path: artifacts/
+          name: surface-pro-x-kernel-${{ matrix.variant.name }}-${{ github.sha }}
+          path: artifacts-${{ matrix.variant.name }}/
           retention-days: 7
 
+  release:
+    needs: build
+    runs-on: [self-hosted, arm64]
+    if: success()
+    steps:
+      - name: Download modular artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: surface-pro-x-kernel-modular-${{ github.sha }}
+          path: release-modular/
+
+      - name: Download built-in artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: surface-pro-x-kernel-builtin-${{ github.sha }}
+          path: release-builtin/
+
+      - name: Prefix artifact filenames with variant name
+        run: |
+          # Rename files so both variants can coexist in a single release.
+          for f in release-modular/*; do
+            mv "$f" "release-modular/modular-$(basename $f)"
+          done
+          for f in release-builtin/*; do
+            mv "$f" "release-builtin/builtin-$(basename $f)"
+          done
+
       - name: Create GitHub Pre-Release
-        if: success()
         uses: softprops/action-gh-release@v2
         with:
           tag_name: spx-build-${{ github.sha }}
           name: Surface Pro X Kernel - ${{ github.ref_name }} - ${{ github.sha }}
           prerelease: true
-          files: artifacts/*
+          files: |
+            release-modular/*
+            release-builtin/*
           body: |
             Automated kernel build for Surface Pro X (SC8180X/SQ2)
 
@@ -252,17 +337,28 @@ jobs:
             **Branch:** ${{ github.ref_name }}
             **Workflow Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
-            ## Build Artifacts
-            - `Image.gz` - Compressed kernel image
-            - `sc8180x-surface-pro-x.dtb` - Device tree blob
-            - `modules.tar.gz` - Kernel modules
-            - `config.log` - Kernel configuration
-            - `build-info.txt` - Build metadata and ccache stats
+            ## Build Variants
+
+            ### Modular (`modular-*`)
+            Standard kernel with SPX drivers as loadable modules (`=m`).
+            Suitable for distribution-style installs with an initramfs.
+            - `modular-Image.gz` - Compressed kernel image
+            - `modular-sc8180x-surface-pro-x.dtb` - Device tree blob
+            - `modular-modules.tar.gz` - Kernel modules (extract to rootfs)
+            - `modular-config.log` - Kernel configuration
+            - `modular-build-info.txt` - Build metadata
+
+            ### Built-in (`builtin-*`)
+            All SPX-specific drivers compiled into the kernel image (`=y`).
+            **No initramfs required** — flash Image.gz + DTB and boot directly.
+            - `builtin-Image.gz` - Compressed kernel image (self-contained)
+            - `builtin-sc8180x-surface-pro-x.dtb` - Device tree blob
+            - `builtin-config.log` - Kernel configuration
+            - `builtin-build-info.txt` - Build metadata
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Cleanup old releases (keep last 5)
-        if: success()
         run: |
           if ! command -v gh &> /dev/null; then
             echo "ERROR: gh CLI not installed"
