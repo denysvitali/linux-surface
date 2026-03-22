@@ -30,9 +30,9 @@ jobs:
             # Requires initramfs / modules to be installed.
             extra_fragment: ""
           - name: builtin
-            # ALL SPX-specific drivers compiled into the kernel image.
+            # ALL drivers compiled into the kernel image (every =m → =y).
             # Boot by flashing Image.gz + DTB only; no initramfs needed.
-            extra_fragment: "arch/arm64/configs/surface_pro_x_builtin.config"
+            extra_fragment: "builtin"
     steps:
       - name: Setup environment
         run: |
@@ -179,7 +179,7 @@ jobs:
 
           BUILD_DIR="${KERNEL_BUILD_DIR}-${{ matrix.variant.name }}"
           SPX_FRAG="$KERNEL_SRC_DIR/arch/arm64/configs/surface_pro_x.config"
-          BUILTIN_FRAG="${{ matrix.variant.extra_fragment }}"
+          IS_BUILTIN="${{ matrix.variant.extra_fragment }}"
 
           # Regenerate the config when any relevant fragment is newer than
           # the existing .config, or when no .config exists yet.
@@ -189,8 +189,6 @@ jobs:
           elif [ "$KERNEL_SRC_DIR/Makefile" -nt "$BUILD_DIR/.config" ]; then
             NEED_REGEN=1
           elif [ "$SPX_FRAG" -nt "$BUILD_DIR/.config" ]; then
-            NEED_REGEN=1
-          elif [ -n "$BUILTIN_FRAG" ] && [ "$KERNEL_SRC_DIR/$BUILTIN_FRAG" -nt "$BUILD_DIR/.config" ]; then
             NEED_REGEN=1
           fi
 
@@ -207,14 +205,14 @@ jobs:
               "$BUILD_DIR/.config" \
               "$SPX_FRAG"
 
-            # Step 3 (built-in variant only): overlay the =y override fragment
-            if [ -n "$BUILTIN_FRAG" ]; then
-              echo "=== Merging built-in override fragment ==="
-              KCONFIG_CONFIG="$BUILD_DIR/.config" \
-                $KERNEL_SRC_DIR/scripts/kconfig/merge_config.sh \
-                -m -O "$BUILD_DIR" \
-                "$BUILD_DIR/.config" \
-                "$KERNEL_SRC_DIR/$BUILTIN_FRAG"
+            # Step 3 (built-in variant only): convert every =m to =y so
+            # the kernel image is fully self-contained (no initramfs needed).
+            # A static fragment cannot achieve this because olddefconfig
+            # demotes =y back to =m whenever a parent framework dependency
+            # (DRM, CFG80211, SND, BT, TYPEC, …) is still =m.
+            if [ -n "$IS_BUILTIN" ]; then
+              echo "=== Converting all =m to =y for built-in variant ==="
+              sed -i 's/=m$/=y/' "$BUILD_DIR/.config"
             fi
 
             # Step 4: resolve any new symbols introduced by the merge(s)
@@ -349,7 +347,7 @@ jobs:
             - `modular-build-info.txt` - Build metadata
 
             ### Built-in (`builtin-*`)
-            All SPX-specific drivers compiled into the kernel image (`=y`).
+            Every `=m` converted to `=y` — all drivers compiled into the kernel image.
             **No initramfs required** — flash Image.gz + DTB and boot directly.
             - `builtin-Image.gz` - Compressed kernel image (self-contained)
             - `builtin-sc8180x-surface-pro-x.dtb` - Device tree blob
