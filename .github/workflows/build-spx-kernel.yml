@@ -258,6 +258,7 @@ jobs:
           BUILD_DIR="${KERNEL_BUILD_DIR}-${{ matrix.variant.name }}"
           ARTIFACT_DIR="artifacts-${{ matrix.variant.name }}"
 
+          rm -rf "$ARTIFACT_DIR"
           mkdir -p "$ARTIFACT_DIR"
           cp "$BUILD_DIR/arch/arm64/boot/Image.gz" "$ARTIFACT_DIR/" || echo "Image.gz not found"
           cp "$BUILD_DIR/arch/arm64/boot/dts/qcom/sc8180x-surface-pro-x.dtb" "$ARTIFACT_DIR/" || {
@@ -298,6 +299,10 @@ jobs:
     runs-on: [self-hosted, arm64]
     if: success()
     steps:
+      - name: Clean stale release directories
+        run: |
+          rm -rf release-modular release-builtin
+
       - name: Download modular artifacts
         uses: actions/download-artifact@v7
         with:
