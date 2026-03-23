@@ -16,7 +16,6 @@
 #include <dt-bindings/iio/qcom,spmi-vadc.h>
 #include <dt-bindings/sound/qcom,q6asm.h>
 #include "sc8180x.dtsi"
-#include "sc8180x-pmics.dtsi"
 
 
 /*
@@ -1032,6 +1031,16 @@
 			};
 		};
 
+		pmc8180_adc_tm: adc-tm@3500 {
+			compatible = "qcom,spmi-adc-tm5";
+			reg = <0x3500>;
+			interrupts = <0x0 0x35 0x0 IRQ_TYPE_EDGE_RISING>;
+			#thermal-sensor-cells = <1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
 		pmc8180a_gpios: gpio@c000 {
 			compatible = "qcom,pmc8180-gpio";
 			reg = <0xc000>;
@@ -1122,6 +1131,16 @@
 				qcom,hw-settle-time = <200>;
 				label = "pa_therm1";
 			};
+		};
+
+		pmc8180c_adc_tm: adc-tm@3500 {
+			compatible = "qcom,spmi-adc-tm5";
+			reg = <0x3500>;
+			interrupts = <0x4 0x35 0x0 IRQ_TYPE_EDGE_RISING>;
+			#thermal-sensor-cells = <1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
 		};
 
 		pmc8180c_gpios: gpio@c000 {
