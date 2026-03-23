@@ -169,7 +169,7 @@ enum sam_event_cid_bat {
 	SAM_EVENT_CID_BAT_BST  = 0x16,
 	SAM_EVENT_CID_BAT_ADP  = 0x17,
 	SAM_EVENT_CID_BAT_PROT = 0x18,
-	SAM_EVENT_CID_BAT_DPTF = 0x4f,
+	SAM_EVENT_CID_BAT_DPTF = 0x53,
 };
 
 enum sam_event_cid_tmp {
@@ -311,7 +311,7 @@ static bool san_evt_bat(const struct ssam_event *event, struct device *dev)
 		 * TODO: Implement support for battery protection status change
 		 *       event.
 		 */
-		return true;
+		return false;
 
 	case SAM_EVENT_CID_BAT_DPTF:
 		status = san_evt_bat_dptf(dev, event);

@@ -7,6 +7,7 @@
 #define _SNOC_H_
 
 #include <linux/notifier.h>
+#include <linux/interconnect.h>
 
 #include "hw.h"
 #include "ce.h"
@@ -59,6 +60,8 @@ struct ath10k_snoc {
 	struct platform_device *dev;
 	struct ath10k *ar;
 	unsigned int use_tz;
+	/* ICC path for WiFi DMA bandwidth voting; NULL if DT has no property */
+	struct icc_path *icc_path;
 	struct ath10k_firmware {
 		struct device *dev;
 		dma_addr_t fw_start_addr;
@@ -81,6 +84,7 @@ struct ath10k_snoc {
 	struct notifier_block nb;
 	void *notifier;
 	unsigned long flags;
+	/* xo_cal fields below */
 	bool xo_cal_supported;
 	u32 xo_cal_data;
 	DECLARE_BITMAP(pending_ce_irqs, CE_COUNT_MAX);

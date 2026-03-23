@@ -404,6 +404,16 @@
 			reg = <0x0 0x9a400000 0x0 0x5000>;
 			no-map;
 		};
+
+		/*
+		 * Venus video codec firmware memory.
+		 * Size 0x500000 (5 MB) matches Windows reservation.
+		 * Placed before SLPI to avoid fragmenting the address space.
+		 */
+		venus_mem: memory@96900000 {
+			reg = <0x0 0x96900000 0x0 0x500000>;
+			no-map;
+		};
 	};
 
 	thermal-zones {
@@ -1776,9 +1786,64 @@
 	firmware-name = "qcom/msft/surface/pro-x-sq2/qcmpss8180.mbn";
 };
 
+&remoteproc_slpi {
+	status = "okay";
+	memory-region = <&scss_mem>;
+	firmware-name = "qcom/msft/surface/pro-x-sq2/qcslpi8180.mbn";
+};
+
+&venus {
+	status = "okay";
+	memory-region = <&venus_mem>;
+	firmware-name = "qcom/msft/surface/pro-x-sq2/qcvss8180.mbn";
+};
+
 
 &qupv3_id_0 {
 	status = "okay";
+};
+
+&i2c4 {
+	/*
+	 * Four MAX34417 quad-channel power accumulators (Maxim MAX34417).
+	 *
+	 * Identified by cross-referencing ACPI DSDT: four instances of
+	 * "MSHW0012" on I2C5 (ACPI resource base 0x890000 = QUP0_SE4 =
+	 * DTS &i2c4) at slave addresses 0x14, 0x16, 0x18 and 0x1A.
+	 *
+	 * Each MAX34417 measures up to four voltage/current channel pairs
+	 * and accumulates power (V * I) in internal registers.  Windows
+	 * reads the accumulators via SurfacePowerMeter.sys to implement
+	 * the DPTF (Dynamic Platform and Thermal Framework) power budget.
+	 *
+	 * I2C4 (QUP0_SE4): GPIO51=SDA, GPIO52=SCL, 400 kHz Fast Mode.
+	 * No interrupt lines; the driver polls the accumulator registers.
+	 */
+	status = "okay";
+	clock-frequency = <400000>;
+
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c4_active>;
+
+	power-meter@14 {
+		compatible = "maxim,max34417";
+		reg = <0x14>;
+	};
+
+	power-meter@16 {
+		compatible = "maxim,max34417";
+		reg = <0x16>;
+	};
+
+	power-meter@18 {
+		compatible = "maxim,max34417";
+		reg = <0x18>;
+	};
+
+	power-meter@1a {
+		compatible = "maxim,max34417";
+		reg = <0x1a>;
+	};
 };
 
 &spi1 {
@@ -1849,24 +1914,27 @@
 	pinctrl-0 = <&i2c9_active>;
 
 	/*
-	 * TODO: SAR (Specific Absorption Rate) proximity sensor.
+	 * TODO: Fingerprint sensor (MSHW0125 / Microsoft Surface fingerprint).
 	 *
-	 * RE analysis indicates this bus (100kHz clock, GPIO39/GPIO40) is
-	 * the candidate for a SAR sensor used for RF power backoff when the
-	 * device is near the human body. Based on similar Qualcomm SC8180X
-	 * platforms, this is likely a Semtech SX9310 or SX9324 capacitive
-	 * proximity sensor (I2C address 0x28).
+	 * DSDT cross-reference: Device "MSHW0125" (_HID) on I2C9 (QUP1_SE1,
+	 * GPIO39=SDA, GPIO40=SCL, 100 kHz Standard Mode).
 	 *
-	 * Physical chip identification requires I2C bus scanning on a live
-	 * system: i2cdetect -y 9
+	 * DSDT _CRS resources:
+	 *   I2CSerialBusV2: 0x3e (primary), 0x44, 0x66, 0x50 (secondary addrs)
+	 *   GpioInt:  TLMM GPIO 166, edge-triggered, active-low  (interrupt)
+	 *   GpioIo:   TLMM GPIO 5, output-only                   (reset)
 	 *
-	 * Once confirmed, add a node such as:
-	 *   sar@28 {
-	 *       compatible = "semtech,sx9310";  // or "semtech,sx9324"
-	 *       reg = <0x28>;
-	 *       interrupts-extended = <&tlmm XX IRQ_TYPE_LEVEL_LOW>;
-	 *       svdd-supply = <&vreg_...>;
-	 *       svddio-supply = <&vreg_...>;
+	 * There is no upstream Linux driver for this proprietary fingerprint
+	 * controller as of 2026-03.  A driver node cannot be added until a
+	 * compatible binding is upstreamed.  The node is intentionally left
+	 * absent to avoid binding an unrecognised compatible string.
+	 *
+	 * When a driver becomes available, add a node such as:
+	 *   fingerprint@3e {
+	 *       compatible = "microsoft,mshw0125";
+	 *       reg = <0x3e>;
+	 *       interrupts-extended = <&tlmm 166 IRQ_TYPE_EDGE_FALLING>;
+	 *       reset-gpios = <&tlmm 5 GPIO_ACTIVE_LOW>;
 	 *   };
 	 */
 };
@@ -1875,6 +1943,39 @@
 &qupv3_id_2 {
 	status = "okay";
 };
+
+/*
+ * Camera sensors — MIPI-CSI to Qualcomm Spectra 390 ISP.
+ *
+ * Three camera sensors identified in the ACPI DSDT.  None have upstream
+ * Device Tree nodes yet; CAMSS / IFE support for SC8180X is a work in
+ * progress.  Documented here for future driver enablement.
+ *
+ * 1. OV13858 — 13 MP rear RGB camera
+ *    DSDT: Device "OVTI13B8" (_HID), I2C address 0x10
+ *    MIPI: 4-lane MIPI-CSI2 @ 1.2 Gbps/lane (4800 Mbps aggregate)
+ *    Clock: MCLK0 (gpio144), 24 MHz from camcc
+ *    Controls: reset GPIO 78 (active-low), VANA/VDIG/VIO via RPMh
+ *
+ * 2. OV5693 — 5 MP front RGB camera
+ *    DSDT: Device "OVTI5693" (_HID), I2C address 0x36
+ *    MIPI: 2-lane MIPI-CSI2 @ 1.2 Gbps/lane
+ *    Clock: MCLK1 (gpio145), 24 MHz from camcc
+ *    Controls: reset GPIO 87 (active-low)
+ *
+ * 3. OV7251 — IR depth / Windows Hello camera
+ *    DSDT: Device "OVTI7251" (_HID), I2C address 0x60
+ *    MIPI: 1-lane MIPI-CSI2 @ 800 Mbps/lane
+ *    Clock: MCLK2 (gpio146), 24 MHz from camcc
+ *    Controls: reset GPIO 88 (active-low)
+ *
+ * All three sensors share an I2C bus on QUP2_SE0 (i2c16 in sc8180x.dtsi)
+ * via GPIO140 (SDA) / GPIO141 (SCL).  Windows uses CameraSensor*.sys
+ * (WDM kernel-mode driver stack via AvsCam.sys / QcomCamera.sys).
+ *
+ * TODO: Add CAMSS node for SC8180X IFE/VFE, then add sensor sub-nodes
+ * with port/endpoint graphs tied to the appropriate CSI PHY.
+ */
 
 &uart13 {
 	status = "okay";

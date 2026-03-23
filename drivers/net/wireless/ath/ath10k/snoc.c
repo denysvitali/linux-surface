@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: ISC
 /*
  * Copyright (c) 2018 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2026 linux-surface maintainers
  */
 
 #include <linux/bits.h>
@@ -8,6 +9,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/interconnect.h>
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/property.h>
@@ -26,6 +28,26 @@
 #define ATH10K_SNOC_RX_POST_RETRY_MS 50
 #define CE_POLL_PIPE 4
 #define ATH10K_SNOC_WAKE_IRQ 2
+
+/*
+ * Interconnect bandwidth votes for the WiFi DMA path.
+ *
+ * The WCN3990 DMA engine sits behind aggre2_noc on SC8180X.  These
+ * figures cover the theoretical peak of 802.11ac VHT80 2x2 (~867 Mbps
+ * PHY = ~108 MB/s) with ~8% headroom on the peak vote.
+ *
+ * avg  = 80 MB/s  — sustainable throughput across a traffic burst
+ * peak = 100 MB/s — instantaneous ceiling; keeps fabric out of
+ *                   power-collapse while the interface is up
+ *
+ * When the interface is brought down both votes are set to 0 so the
+ * interconnect fabric can enter its lowest power state.
+ *
+ * MBps_to_icc(x) converts MB/s -> kBps (multiplies by 1000), which is
+ * the unit expected by icc_set_bw().
+ */
+#define ATH10K_SNOC_WIFI_DMA_AVG_BW  MBps_to_icc(80)
+#define ATH10K_SNOC_WIFI_DMA_PEAK_BW MBps_to_icc(100)
 
 static char *const ce_name[] = {
 	"WLAN_CE_0",
@@ -1068,6 +1090,20 @@ static void ath10k_snoc_hif_power_down(struct ath10k *ar)
 {
 	ath10k_dbg(ar, ATH10K_DBG_BOOT, "boot hif power down\n");
 
+	/*
+	 * Vote 0/0 bandwidth when the interface goes down so the
+	 * interconnect fabric is free to enter its idle power state.
+	 * Errors are non-fatal: log a warning but continue teardown.
+	 */
+	if (ath10k_snoc_priv(ar)->icc_path) {
+		int ret = icc_set_bw(ath10k_snoc_priv(ar)->icc_path, 0, 0);
+
+		if (ret)
+			ath10k_warn(ar,
+				    "failed to clear interconnect bandwidth: %d\n",
+				    ret);
+	}
+
 	ath10k_snoc_wlan_disable(ar);
 	ath10k_ce_free_rri(ar);
 	ath10k_hw_power_off(ar);
@@ -1077,6 +1113,7 @@ static int ath10k_snoc_hif_power_up(struct ath10k *ar,
 				    enum ath10k_firmware_mode fw_mode)
 {
 	int ret;
+	struct ath10k_snoc *ar_snoc = ath10k_snoc_priv(ar);
 
 	ath10k_dbg(ar, ATH10K_DBG_SNOC, "%s:WCN3990 driver state = %d\n",
 		   __func__, ar->state);
@@ -1085,6 +1122,22 @@ static int ath10k_snoc_hif_power_up(struct ath10k *ar,
 	if (ret) {
 		ath10k_err(ar, "failed to power on device: %d\n", ret);
 		return ret;
+	}
+
+	/*
+	 * Vote the interconnect fabric up before DMA can start.  This
+	 * prevents the aggre2_noc path from staying in a throttled
+	 * power state during active WiFi traffic.
+	 */
+	if (ar_snoc->icc_path) {
+		ret = icc_set_bw(ar_snoc->icc_path,
+				 ATH10K_SNOC_WIFI_DMA_AVG_BW,
+				 ATH10K_SNOC_WIFI_DMA_PEAK_BW);
+		if (ret) {
+			ath10k_warn(ar, "failed to vote interconnect bandwidth: %d\n",
+				    ret);
+			goto err_hw_power_off;
+		}
 	}
 
 	ret = ath10k_snoc_wlan_enable(ar, fw_mode);
@@ -1710,7 +1763,8 @@ static int ath10k_snoc_probe(struct platform_device *pdev)
 	const struct ath10k_snoc_drv_priv *drv_data;
 	struct ath10k_snoc *ar_snoc;
 	struct device *dev;
-	struct ath10k *ar;
+	struct ath10k  *ar;
+	struct icc_path *icc;
 	u32 msa_size;
 	int ret;
 	u32 i;
@@ -1741,6 +1795,10 @@ static int ath10k_snoc_probe(struct platform_device *pdev)
 	ar_snoc->ar = ar;
 	ar_snoc->ce.bus_ops = &ath10k_snoc_bus_ops;
 	ar->ce_priv = &ar_snoc->ce;
+
+	/* ar_snoc->icc_path is initialised below; NULL-init is implicit via
+	 * ath10k_core_create() zeroing the drv_priv allocation. */
+
 	msa_size = drv_data->msa_size;
 
 	ath10k_snoc_quirks_init(ar);
@@ -1761,6 +1819,31 @@ static int ath10k_snoc_probe(struct platform_device *pdev)
 		ath10k_warn(ar, "failed to request irqs: %d\n", ret);
 		goto err_release_resource;
 	}
+
+	/*
+	 * Obtain the interconnect path for the WiFi DMA bus.
+	 *
+	 * of_icc_get() returns ERR_PTR(-ENODATA) when the DT node has no
+	 * interconnects property (i.e. on platforms that have not yet been
+	 * updated).  In that case we silently continue without ICC support
+	 * to preserve backwards compatibility.
+	 *
+	 * Any other error (e.g. -EPROBE_DEFER from a not-yet-registered
+	 * interconnect provider) is treated as fatal so probe is retried.
+	 */
+	icc = of_icc_get(dev, "wifi-dma");
+	if (IS_ERR(icc)) {
+		if (PTR_ERR(icc) == -ENODATA) {
+			ath10k_dbg(ar, ATH10K_DBG_SNOC,
+				   "no interconnect path in DT, continuing without ICC\n");
+			icc = NULL;
+		} else {
+			ret = dev_err_probe(dev, PTR_ERR(icc),
+					    "failed to get wifi-dma interconnect path\n");
+			goto err_core_destroy;
+		}
+	}
+	ar_snoc->icc_path = icc;
 
 	ar_snoc->num_vregs = ARRAY_SIZE(ath10k_regulators);
 	ar_snoc->vregs = devm_kcalloc(&pdev->dev, ar_snoc->num_vregs,
@@ -1848,6 +1931,8 @@ static int ath10k_snoc_free_resources(struct ath10k *ar)
 	ath10k_core_unregister(ar);
 	ath10k_fw_deinit(ar);
 	ath10k_snoc_free_irq(ar);
+	icc_put(ar_snoc->icc_path);
+	ar_snoc->icc_path = NULL;
 	ath10k_snoc_release_resource(ar);
 	ath10k_modem_deinit(ar);
 	ath10k_qmi_deinit(ar);
