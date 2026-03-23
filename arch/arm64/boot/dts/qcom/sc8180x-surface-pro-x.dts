@@ -8,6 +8,7 @@
 /dts-v1/;
 
 #include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/gpio-keys.h>
 #include <dt-bindings/input/linux-event-codes.h>
 #include <dt-bindings/interrupt-controller/irq.h>
 #include <dt-bindings/regulator/qcom,rpmh-regulator.h>
@@ -49,7 +50,8 @@
  *  qupv3_id_0/1/2    CONFIG_QCOM_GENI_SE (defconfig)
  *  spi1 / hid@0      CONFIG_SPI_HID (surface_pro_x.config)
  *  i2c2 / tcs3430    CONFIG_TCS3430 (surface_pro_x.config)
- *  i2c9              placeholder (SAR sensor — see TODO below)
+ *  i2c4 / max34417   CONFIG_SENSORS_MAX34417 (surface_pro_x.config)
+ *  i2c9              fingerprint sensor placeholder (MSHW0125, no upstream driver)
  *  uart13 / wcn3998  CONFIG_BT_HCIUART + CONFIG_BT_HCIUART_QCA
  *  uart15 / ssam     CONFIG_SURFACE_AGGREGATOR (surface_pro_x.config)
  *  wifi              CONFIG_ATH10K_SNOC (surface_pro_x.config)
@@ -1150,6 +1152,21 @@
 		pins = "gpio10";
 		function = "edp_hot";
 	};
+
+	wcd938x_reset_default: wcd938x-reset-default-state {
+		/*
+		 * WCD9380 reset line — TLMM GPIO 143, active-low.
+		 * Confirmed via ACPI DSDT: Device "QCOM0425" _CRS exposes
+		 * GpioIo(Exclusive, ..., OutputOnly) { 143 }.
+		 * Drive high (deasserted) as the default pinctrl state;
+		 * the wcd938x driver pulses it low during codec probe.
+		 */
+		pins = "gpio143";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+		output-high;
+	};
 };
 
 &pmc8180a_gpios {
@@ -1819,32 +1836,30 @@
 /*
  * WSA SoundWire bus — speaker amplifiers.
  *
- * TODO: The exact WSA speaker model (WSA8810 vs WSA8830) and the
- * SoundWire device addresses need verification against board schematics
- * or ACPI DSDT enumeration.  The compatible strings below are for
- * WSA8810 (sdw10217211000).  For WSA8830 use sdw10217020200.
+ * DSDT confirms WSA8810 at SDW addresses 0x3 (left) and 0x4 (right).
+ * Compatible string sdw20217020100 matches the upstream wsa881x driver
+ * (sound/soc/codecs/wsa881x.c) and the DSDT _ADR encoding.
  *
- * powerdown-gpios also needs confirmation; the GPIO numbers here are
- * placeholders and MUST be verified before enabling the speaker path.
+ * There is NO powerdown GPIO: WSA power sequencing is managed by the
+ * ADSP firmware over the SoundWire control port.  The DSDT _CRS for
+ * both WSA8810 devices contains no GpioIo resource.
  */
 &swr0 {
 	status = "okay";
 
 	left_spkr: speaker@0,3 {
-		compatible = "sdw10217211000";
+		compatible = "sdw20217020100";
 		reg = <0 3>;
-		/* TODO: verify powerdown GPIO number against board schematics */
-		/* powerdown-gpios = <&tlmm XX GPIO_ACTIVE_LOW>; */
+		/* WSA power is managed by ADSP firmware over SoundWire — no GPIO needed. */
 		#thermal-sensor-cells = <0>;
 		sound-name-prefix = "SpkrLeft";
 		#sound-dai-cells = <0>;
 	};
 
 	right_spkr: speaker@0,4 {
-		compatible = "sdw10217211000";
+		compatible = "sdw20217020100";
 		reg = <0 4>;
-		/* TODO: verify powerdown GPIO number against board schematics */
-		/* powerdown-gpios = <&tlmm XX GPIO_ACTIVE_LOW>; */
+		/* WSA power is managed by ADSP firmware over SoundWire — no GPIO needed. */
 		#thermal-sensor-cells = <0>;
 		sound-name-prefix = "SpkrRight";
 		#sound-dai-cells = <0>;
@@ -1913,27 +1928,18 @@
 /*
  * WCD9380 top-level codec node.
  *
- * This is the parent device that binds the RX slave (wcd_rx on swr1) and
- * TX slave (wcd_tx on swr2) together into a single codec component.
- *
- * Supply names are required by wcd938x.c (vdd-rxtx, vdd-io, vdd-buck,
- * vdd-mic-bias).  vreg_s4a_1p8 is the 1.8 V always-on rail; vreg_bob is
- * the 3.3 V BOB regulator used for mic-bias.
- *
- * reset-gpios is intentionally left commented out pending hardware
- * verification of the GPIO number (see TODO above).
+ * Binds the RX slave (wcd_rx / swr1) and TX slave (wcd_tx / swr2).
+ * Supply names match wcd938x.c; vreg_s4a_1p8 is the 1.8 V always-on
+ * rail and vreg_bob provides 3.3 V for mic-bias.
+ * reset-gpios confirmed as TLMM GPIO 143 via DSDT QCOM0425 _CRS.
  */
 / {
 	wcd938x: audio-codec {
 		compatible = "qcom,wcd9380-codec";
 
-		/*
-		 * TODO: reset-gpios needs hardware verification.
-		 * On SM8250-MTP: gpio32.  On ThinkPad X13s: gpio106.
-		 * Search ACPI DSDT for device "QCOM0425" and inspect _CRS
-		 * to find the GPIO resource used for codec reset.
-		 */
-		/* reset-gpios = <&tlmm XX GPIO_ACTIVE_LOW>; */
+		reset-gpios = <&tlmm 143 GPIO_ACTIVE_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&wcd938x_reset_default>;
 
 		vdd-buck-supply = <&vreg_s4a_1p8>;
 		vdd-rxtx-supply = <&vreg_s4a_1p8>;
