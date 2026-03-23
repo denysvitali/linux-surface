@@ -2658,7 +2658,8 @@
 		 * The SC8180X video codec IP is similar to SM8150 (Hana architecture).
 		 * Uses the same video clock controller (qcom,sm8150-videocc compatible).
 		 *
-		 * Requires venus_mem reserved region defined in board DTS.
+		 * Board DTS must define venus_mem reserved region and set
+		 * memory-region property when enabling this node.
 		 * Firmware: qcom/vpu-1.0/venus.mbn or similar.
 		 */
 		venus: video-codec@aa00000 {
@@ -2677,7 +2678,6 @@
 			clock-names = "iface", "core", "vcodec0_core";
 
 			iommus = <&apps_smmu 0x2100 0x400>;
-			memory-region = <&venus_mem>;
 
 			interconnects = <&gem_noc MASTER_AMPSS_M0 0 &config_noc SLAVE_VENUS_CFG 0>,
 					<&mmss_noc MASTER_VIDEO_P0 0 &mc_virt SLAVE_EBI_CH0 0>;
