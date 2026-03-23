@@ -2587,7 +2587,8 @@
 		 * The Windows DSDT confirms SCSS (Sensor Core SubSystem) with
 		 * ACPI HID "QCOM0421" and reserved memory at 0x99000000.
 		 *
-		 * Requires scss_mem reserved region defined in board DTS.
+		 * Board DTS must define scss_mem reserved region and set
+		 * memory-region property when enabling this node.
 		 */
 		remoteproc_slpi: remoteproc@2400000 {
 			compatible = "qcom,sc8180x-slpi-pas";
@@ -2607,8 +2608,6 @@
 			power-domains = <&rpmhpd SC8180X_LCX>,
 					<&rpmhpd SC8180X_LMX>;
 			power-domain-names = "lcx", "lmx";
-
-			memory-region = <&scss_mem>;
 
 			qcom,qmp = <&aoss_qmp>;
 
