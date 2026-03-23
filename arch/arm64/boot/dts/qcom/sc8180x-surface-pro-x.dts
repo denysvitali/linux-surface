@@ -16,6 +16,7 @@
 #include <dt-bindings/iio/qcom,spmi-vadc.h>
 #include <dt-bindings/sound/qcom,q6asm.h>
 #include "sc8180x.dtsi"
+#include "sc8180x-pmics.dtsi"
 
 
 /*
