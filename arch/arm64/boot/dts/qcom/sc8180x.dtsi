@@ -2666,14 +2666,14 @@
 			reg = <0 0x0aa00000 0 0x100000>;
 			interrupts = <GIC_SPI 174 IRQ_TYPE_LEVEL_HIGH>;
 
-			power-domains = <&videocc MVS0C_GDSC>,
-					<&videocc MVS0_GDSC>,
+			power-domains = <&videocc VENUS_GDSC>,
+					<&videocc VCODEC0_GDSC>,
 					<&rpmhpd SC8180X_MX>;
 			power-domain-names = "venus", "vcodec0", "mx";
 
 			clocks = <&gcc GCC_VIDEO_AXI0_CLK>,
-				 <&videocc VIDEO_CC_MVS0C_CLK>,
-				 <&videocc VIDEO_CC_MVS0_CLK>;
+				 <&videocc VIDEO_CC_MVSC_CORE_CLK>,
+				 <&videocc VIDEO_CC_MVS0_CORE_CLK>;
 			clock-names = "iface", "core", "vcodec0_core";
 
 			iommus = <&apps_smmu 0x2100 0x400>;
@@ -2683,8 +2683,8 @@
 					<&mmss_noc MASTER_VIDEO_P0 0 &mc_virt SLAVE_EBI_CH0 0>;
 			interconnect-names = "cpu-cfg", "video-mem";
 
-			resets = <&gcc GCC_VIDEO_AXI0_CLK_ARES>,
-				 <&videocc VIDEO_CC_MVS0C_CLK_ARES>;
+			resets = <&gcc GCC_VIDEO_AXI0_CLK_BCR>,
+				 <&videocc VIDEO_CC_MVSC_BCR>;
 			reset-names = "bus", "core";
 
 			status = "disabled";
