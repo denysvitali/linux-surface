@@ -6,10 +6,10 @@
  *
  * The TCS3430 is a 4-channel tristimulus XYZ color sensor with IR channel
  * at I2C address 0x39. It provides:
- *   - Channel 0 (X): CIE XYZ X-channel
- *   - Channel 1 (Y): CIE XYZ Y-channel (correlates to luminance)
- *   - Channel 2 (Z): CIE XYZ Z-channel
- *   - Channel 3 (IR): Infrared channel
+ *   - Channel 0 (Z): CIE XYZ Z-channel (visible)
+ *   - Channel 1 (Y): CIE XYZ Y-channel (photopic / luminance)
+ *   - Channel 2 (IR): Infrared channel
+ *   - Channel 3 (X): CIE XYZ X-channel
  *
  * Datasheet: https://ams.com/tcs3430
  *
@@ -40,19 +40,19 @@
 #define TCS3430_REG_AIHTL	0x86
 #define TCS3430_REG_AIHTH	0x87
 #define TCS3430_REG_PERS	0x8C
-#define TCS3430_REG_CFG0	0x8D
+#define TCS3430_REG_CFG0	0x8F
 #define TCS3430_REG_CFG1	0x90
 #define TCS3430_REG_REVID	0x91
 #define TCS3430_REG_ID		0x92
 #define TCS3430_REG_STATUS	0x93
-#define TCS3430_REG_CH0DATAL	0x94	/* X channel low byte */
-#define TCS3430_REG_CH1DATAL	0x96	/* Y channel low byte */
-#define TCS3430_REG_CH2DATAL	0x98	/* Z channel low byte */
-#define TCS3430_REG_CH3DATAL	0x9A	/* IR channel low byte */
+#define TCS3430_REG_CH0DATAL	0x94	/* Z/visible channel low byte */
+#define TCS3430_REG_CH1DATAL	0x96	/* Y/photopic channel low byte */
+#define TCS3430_REG_CH2DATAL	0x98	/* IR channel low byte */
+#define TCS3430_REG_CH3DATAL	0x9A	/* X channel low byte */
 #define TCS3430_REG_CFG2	0x9F
-#define TCS3430_REG_CFG3	0xAB
-#define TCS3430_REG_AZ_CONFIG	0xD6
-#define TCS3430_REG_INTENAB	0xDD
+#define TCS3430_REG_CFG3	0xA3
+#define TCS3430_REG_AZ_CONFIG	0xA9
+#define TCS3430_REG_INTENAB	0xAB
 
 /* ENABLE register bits */
 #define TCS3430_ENABLE_PON	BIT(0)	/* Power ON */
@@ -129,10 +129,10 @@ static const struct iio_event_spec tcs3430_events[] = {
 /*
  * TCS3430 reports CIE X/Y/Z tristimulus values.  The IIO subsystem has
  * no IIO_MOD_LIGHT_X/Y/Z, so we map to the closest existing modifiers:
- *   X → IIO_MOD_LIGHT_RED   (channel 0)
- *   Y → IIO_MOD_LIGHT_GREEN (channel 1, ≈ luminance)
- *   Z → IIO_MOD_LIGHT_BLUE  (channel 2)
- *   IR → IIO_MOD_LIGHT_IR   (channel 3)
+ *   CH0 (Z/visible)  → IIO_MOD_LIGHT_BLUE  (scan_index 0)
+ *   CH1 (Y/photopic) → IIO_MOD_LIGHT_GREEN (scan_index 1, ≈ luminance)
+ *   CH2 (IR)         → IIO_MOD_LIGHT_IR    (scan_index 2)
+ *   CH3 (X)          → IIO_MOD_LIGHT_RED   (scan_index 3)
  * Userspace can identify the actual meaning via the device compatible.
  */
 #define TCS3430_CHANNEL(_mod, _si, _addr, _ev, _nev)		\
@@ -156,15 +156,15 @@ static const struct iio_event_spec tcs3430_events[] = {
 }
 
 static const struct iio_chan_spec tcs3430_channels[] = {
-	/* X tristimulus - also used for ALS threshold interrupts */
-	TCS3430_CHANNEL(IIO_MOD_LIGHT_RED, 0, TCS3430_REG_CH0DATAL,
+	/* CH0: Z/visible - also used for ALS threshold interrupts */
+	TCS3430_CHANNEL(IIO_MOD_LIGHT_BLUE, 0, TCS3430_REG_CH0DATAL,
 			tcs3430_events, ARRAY_SIZE(tcs3430_events)),
-	/* Y tristimulus (correlates to CIE Y / luminance) */
+	/* CH1: Y/photopic (correlates to CIE Y / luminance) */
 	TCS3430_CHANNEL(IIO_MOD_LIGHT_GREEN, 1, TCS3430_REG_CH1DATAL, NULL, 0),
-	/* Z tristimulus */
-	TCS3430_CHANNEL(IIO_MOD_LIGHT_BLUE, 2, TCS3430_REG_CH2DATAL, NULL, 0),
-	/* Infrared */
-	TCS3430_CHANNEL(IIO_MOD_LIGHT_IR, 3, TCS3430_REG_CH3DATAL, NULL, 0),
+	/* CH2: Infrared */
+	TCS3430_CHANNEL(IIO_MOD_LIGHT_IR, 2, TCS3430_REG_CH2DATAL, NULL, 0),
+	/* CH3: X tristimulus */
+	TCS3430_CHANNEL(IIO_MOD_LIGHT_RED, 3, TCS3430_REG_CH3DATAL, NULL, 0),
 	IIO_CHAN_SOFT_TIMESTAMP(4),
 };
 
@@ -446,7 +446,7 @@ static irqreturn_t tcs3430_trigger_handler(int irq, void *p)
 	iio_for_each_active_channel(indio_dev, i) {
 		/*
 		 * Channels are at 0x94, 0x96, 0x98, 0x9A (2-byte spacing).
-		 * scan_index matches channel order: 0=X, 1=Y, 2=Z, 3=IR.
+		 * scan_index matches channel order: 0=Z, 1=Y, 2=IR, 3=X.
 		 */
 		ret = i2c_smbus_read_word_data(data->client,
 					       TCS3430_REG_CH0DATAL + 2 * i);
