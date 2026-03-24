@@ -911,6 +911,7 @@ static bool csiphy_is_gen2(u32 version)
 	case CAMSS_7280:
 	case CAMSS_8250:
 	case CAMSS_8280XP:
+	case CAMSS_SC8180X:
 	case CAMSS_8300:
 	case CAMSS_845:
 	case CAMSS_8550:
@@ -1005,6 +1006,7 @@ static int csiphy_init(struct csiphy_device *csiphy)
 		regs->lane_array_size = ARRAY_SIZE(lane_regs_sm8250);
 		break;
 	case CAMSS_8280XP:
+	case CAMSS_SC8180X:
 		regs->lane_regs = &lane_regs_sc8280xp[0];
 		regs->lane_array_size = ARRAY_SIZE(lane_regs_sc8280xp);
 		break;
