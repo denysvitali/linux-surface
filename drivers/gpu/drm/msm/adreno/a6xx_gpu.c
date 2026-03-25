@@ -462,6 +462,9 @@ static void a6xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
 	trace_msm_gpu_submit_flush(submit, read_gmu_ao_counter(a6xx_gpu));
 
 	a6xx_flush(gpu, ring);
+
+	/* Check to see if we need to start preemption */
+	a6xx_preempt_trigger(gpu);
 }
 
 static void a7xx_submit(struct msm_gpu *gpu, struct msm_gem_submit *submit)
