@@ -374,7 +374,13 @@ static const struct software_node *ssam_node_group_spx[] = {
 	&ssam_node_hid_kip_penstash,
 	&ssam_node_hid_kip_touchpad,
 	&ssam_node_hid_kip_fwupd,
-	&ssam_node_hid_sam_sensors,
+	/*
+	 * Note: ssam_node_hid_sam_sensors (ssam:01:15:01:06:00) is NOT
+	 * included here. On the Surface Pro X (SQ1/SQ2), the EC firmware does
+	 * not support the HID sensor collection at instance 6 and responds
+	 * with an empty descriptor (length=0, end=1), causing the surface_hid
+	 * driver to fail with -EPROTO during probe.
+	 */
 	NULL,
 };
 
