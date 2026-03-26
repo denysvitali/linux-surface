@@ -44,9 +44,10 @@
  *  usb_mp            CONFIG_USB_DWC3 / CONFIG_USB_DWC3_QCOM
  *  pcie2             CONFIG_PCIE_QCOM (part of defconfig)
  *  pcie2_phy         CONFIG_PHY_QCOM_QMP_PCIE (defconfig)
- *  remoteproc_adsp   CONFIG_QCOM_Q6V5_ADSP (defconfig)
- *  remoteproc_cdsp   CONFIG_QCOM_Q6V5_CDSP (defconfig)
- *  remoteproc_mpss   CONFIG_QCOM_Q6V5_MSS (defconfig)
+ *  remoteproc_adsp   CONFIG_QCOM_Q6V5_ADSP (defconfig); auto_boot=false, userspace-managed
+ *  remoteproc_cdsp   CONFIG_QCOM_Q6V5_CDSP (defconfig); auto_boot=false, userspace-managed
+ *  remoteproc_mpss   CONFIG_QCOM_Q6V5_MSS (defconfig); auto_boot=false, userspace-managed
+ *  remoteproc_slpi   CONFIG_QCOM_Q6V5_ADSP (defconfig); auto_boot=false, userspace-managed
  *  qupv3_id_0/1/2    CONFIG_QCOM_GENI_SE (defconfig)
  *  spi1 / hid@0      CONFIG_SPI_HID (surface_pro_x.config)
  *  i2c2 / tcs3430    CONFIG_TCS3430 (surface_pro_x.config)
@@ -55,8 +56,8 @@
  *  uart13 / wcn3998  CONFIG_BT_HCIUART + CONFIG_BT_HCIUART_QCA
  *  uart15 / ssam     CONFIG_SURFACE_AGGREGATOR (surface_pro_x.config)
  *  wifi              CONFIG_ATH10K_SNOC (surface_pro_x.config)
- *  ufs_mem_hc        CONFIG_SCSI_UFS_QCOM (surface_pro_x.config)
- *  ufs_mem_phy       CONFIG_PHY_QCOM_QMP_UFS (surface_pro_x.config)
+ *  ufs_mem_hc        DISABLED -- Surface Pro X uses PCIe NVMe, not UFS
+ *  ufs_mem_phy       DISABLED -- no UFS device present on this board
  *  ipa               CONFIG_QCOM_IPA (surface_pro_x.config)
  *  swr0/swr1/swr2    CONFIG_SOUNDWIRE_QCOM (surface_pro_x.config)
  *  vamacro/rxmacro   CONFIG_SND_SOC_QDSP6 (surface_pro_x.config)
@@ -76,11 +77,12 @@
  * Audit-identified issues fixed in this file:
  *   1. edp_phy: added missing status = "okay" (supplies were present but
  *      the node inherited disabled status from sc8180x.dtsi).
- *   2. ufs_mem_hc: fixed VCC supply from vreg_l16e_3p1 (3.072V, USB LDO)
- *      to vreg_l10e_2p9 (2.904V) matching Flex 5G / Primus reference
- *      boards. Fixed VCCQ2 from vreg_s4a_1p8 (fixed SMPS) to vreg_l7e_1p8
- *      (RPMh-managed LDO) for proper load scaling. Added missing PMC8180-E
- *      LDO7 and LDO10 regulator definitions with allow-set-load.
+ *   2. ufs_mem_hc/ufs_mem_phy: explicitly disabled. The Surface Pro X SQ2
+ *      uses PCIe NVMe (via pcie2) as its primary storage device; there is
+ *      no UFS flash chip connected to the SoC's UFS controller on this
+ *      board. Enabling ufs_mem_hc caused "link startup failed" errors at
+ *      boot because the UFS PHY could not establish a link with a
+ *      non-existent device.
  *
  * Outstanding TODOs requiring physical hardware verification:
  *   - pmic-glink orientation-gpios: NOT NEEDED. USB-C CC orientation is
@@ -101,7 +103,6 @@
  *   - pcie3: pinctrl state pcie3_default_state is defined but &pcie3 is not
  *     enabled (hot-plug commands time out). Leave disabled until resolved.
  *   - pcie1_phy: commented out pending multi-lane PHY support (Johan Hovold WIP).
- *   - UFS reset GPIO 190: confirm against SPX board schematics.
  */
 
 / {

@@ -82,7 +82,8 @@ static const struct qcom_ubwc_cfg_data sc8180x_data = {
 	.ubwc_dec_version = UBWC_3_0,
 	.ubwc_swizzle = UBWC_SWIZZLE_ENABLE_LVL2 |
 			UBWC_SWIZZLE_ENABLE_LVL3,
-	.highest_bank_bit = 16,
+	/* SC8180X (Snapdragon 8cx Gen 2) uses LPDDR4X, so highest_bank_bit = 15 */
+	.highest_bank_bit = 15,
 	.macrotile_mode = true,
 };
 
