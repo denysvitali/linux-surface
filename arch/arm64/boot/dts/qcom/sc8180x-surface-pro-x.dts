@@ -44,10 +44,10 @@
  *  usb_mp            CONFIG_USB_DWC3 / CONFIG_USB_DWC3_QCOM
  *  pcie2             CONFIG_PCIE_QCOM (part of defconfig)
  *  pcie2_phy         CONFIG_PHY_QCOM_QMP_PCIE (defconfig)
- *  remoteproc_adsp   CONFIG_QCOM_Q6V5_ADSP (defconfig); auto_boot=false, userspace-managed
- *  remoteproc_cdsp   CONFIG_QCOM_Q6V5_CDSP (defconfig); auto_boot=false, userspace-managed
+ *  remoteproc_adsp   CONFIG_QCOM_Q6V5_PAS (defconfig); auto_boot=false, userspace-managed
+ *  remoteproc_cdsp   CONFIG_QCOM_Q6V5_PAS (defconfig); auto_boot=false, userspace-managed
  *  remoteproc_mpss   CONFIG_QCOM_Q6V5_MSS (defconfig); auto_boot=false, userspace-managed
- *  remoteproc_slpi   CONFIG_QCOM_Q6V5_ADSP (defconfig); auto_boot=false, userspace-managed
+ *  remoteproc_slpi   CONFIG_QCOM_Q6V5_PAS (defconfig); auto_boot=false, userspace-managed
  *  qupv3_id_0/1/2    CONFIG_QCOM_GENI_SE (defconfig)
  *  spi1 / hid@0      CONFIG_SPI_HID (surface_pro_x.config)
  *  i2c2 / tcs3430    CONFIG_TCS3430 (surface_pro_x.config)
@@ -2058,40 +2058,19 @@
 	vdd-3.3-ch1-supply = <&vreg_l10c_3p3>;
 };
 
+/*
+ * The Surface Pro X SQ2 does not have a UFS device: primary storage is a
+ * PCIe NVMe SSD attached via pcie2. The SC8180X SoC contains a UFS
+ * controller (ufs_mem_hc at 0x1d84000) but no UFS flash is wired to it on
+ * this board. Leave both the controller and its PHY disabled (the default
+ * from sc8180x.dtsi) to prevent "link startup failed" errors at boot.
+ */
 &ufs_mem_hc {
-	status = "okay";
-
-	/*
-	 * UFS device reset GPIO. GPIO 190 is confirmed on both Flex 5G and
-	 * Primus (the only two other sc8180x boards in mainline). Consistent
-	 * with SC8180X platform design; verify against SPX board schematics.
-	 */
-	reset-gpios = <&tlmm 190 GPIO_ACTIVE_LOW>;
-
-	/*
-	 * VCC: UFS NAND array supply, 2.904 V (PMC8180-E LDO10).
-	 * Both Flex 5G and Primus use vreg_l10e_2p9 at 155 mA max.
-	 * Previous value (vreg_l16e_3p1 / 3.072 V) was incorrect --
-	 * LDO16 is the USB vdda33 supply, not for UFS.
-	 */
-	vcc-supply = <&vreg_l10e_2p9>;
-	vcc-max-microamp = <155000>;
-
-	/*
-	 * VCCQ2: UFS I/O supply, 1.8 V (PMC8180-E LDO7).
-	 * Both Flex 5G and Primus use vreg_l7e_1p8 at 425 mA max.
-	 * Previous value (vreg_s4a_1p8 / fixed SMPS) prevented load
-	 * scaling needed for UFS power management transitions.
-	 */
-	vccq2-supply = <&vreg_l7e_1p8>;
-	vccq2-max-microamp = <425000>;
+	status = "disabled";
 };
 
 &ufs_mem_phy {
-	status = "okay";
-
-	vdda-phy-supply = <&vreg_l5e_0p88>;
-	vdda-pll-supply = <&vreg_l3c_1p2>;
+	status = "disabled";
 };
 
 
