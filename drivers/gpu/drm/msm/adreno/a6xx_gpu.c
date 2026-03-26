@@ -1445,8 +1445,24 @@ static int hw_init(struct msm_gpu *gpu)
 	}
 
 	/* Enable interrupts */
-	gpu_write(gpu, REG_A6XX_RBBM_INT_0_MASK,
-		  adreno_is_a7xx(adreno_gpu) ? A7XX_INT_MASK : A6XX_INT_MASK);
+	if (adreno_is_a7xx(adreno_gpu)) {
+		gpu_write(gpu, REG_A6XX_RBBM_INT_0_MASK, A7XX_INT_MASK);
+	} else {
+		u32 int_mask = A6XX_INT_MASK;
+
+		/*
+		 * When A6xx preemption is enabled (nr_rings > 1), the GPU
+		 * signals preemption completion via the CP_SW interrupt, just
+		 * as A5xx and A7xx do.  Enable it here so a6xx_preempt_irq()
+		 * is called to complete the state machine transition; without
+		 * this the preempt_state stays at PREEMPT_TRIGGERED forever and
+		 * the 10-second watchdog timer fires, causing GPU recovery.
+		 */
+		if (gpu->nr_rings > 1)
+			int_mask |= A6XX_RBBM_INT_0_MASK_CP_SW;
+
+		gpu_write(gpu, REG_A6XX_RBBM_INT_0_MASK, int_mask);
+	}
 
 	ret = adreno_hw_init(gpu);
 	if (ret)
@@ -1535,8 +1551,21 @@ out:
 	if (adreno_has_gmu_wrapper(adreno_gpu))
 		return ret;
 
-	/* Last step - yield the ringbuffer */
-	a7xx_preempt_start(gpu);
+	/*
+	 * Last step for A7xx: yield the ringbuffer to put the CP into the
+	 * initial preemption-ready state via ring packets (CP_SET_PSEUDO_REG +
+	 * CP_CONTEXT_SWITCH_YIELD).
+	 *
+	 * A6xx GPUs (including A680 with preemption enabled) must NOT do this.
+	 * On A6xx, preemption hardware state is fully initialised by
+	 * a6xx_preempt_hw_init() above, which writes the necessary hardware
+	 * registers directly.  Emitting CP_CONTEXT_SWITCH_YIELD on A6xx causes
+	 * the GPU to attempt a GMEM save/restore operation at the yield point,
+	 * keeping RBBM_STATUS (CP_BUSY, VBIF_BUSY, GPU_BUSY_IGN_AHB) asserted
+	 * for over a second and triggering the a6xx_idle() timeout that follows.
+	 */
+	if (adreno_is_a7xx(adreno_gpu))
+		a7xx_preempt_start(gpu);
 
 	/*
 	 * Tell the GMU that we are done touching the GPU and it can start power
