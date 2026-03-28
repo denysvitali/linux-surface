@@ -362,7 +362,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Cleanup old releases (keep last 5)
+      - name: Cleanup old releases (keep last 2)
         run: |
           if ! command -v gh &> /dev/null; then
             echo "ERROR: gh CLI not installed"
@@ -370,7 +370,7 @@ jobs:
           fi
           gh release list --limit 100 --json tagName,name | \
             jq -r '.[] | select(.tagName | startswith("spx-build-")) | .tagName' | \
-            tail -n +6 | \
+            tail -n +3 | \
             while read tag; do
               gh release delete "$tag" --yes
             done
