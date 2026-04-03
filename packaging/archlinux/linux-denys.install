@@ -1,0 +1,7 @@
+post_install() {
+    mkinitcpio -p linux-denys
+}
+
+post_upgrade() {
+    mkinitcpio -p linux-denys
+}

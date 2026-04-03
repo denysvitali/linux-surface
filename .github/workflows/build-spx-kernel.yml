@@ -294,14 +294,64 @@ jobs:
           path: artifacts-${{ matrix.variant.name }}/
           retention-days: 7
 
-  release:
+  archlinux-package:
     needs: build
+    runs-on: [self-hosted, arm64]
+    if: success()
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare PKGBUILD
+        run: |
+          SHA="${{ github.sha }}"
+          PKGVER=$(make -s kernelversion | tr '-' '_')
+
+          mkdir -p archpkg
+          cp packaging/archlinux/PKGBUILD \
+             packaging/archlinux/linux-denys.preset \
+             packaging/archlinux/linux-denys.install \
+             archpkg/
+
+          sed -i "s/@COMMIT@/${SHA}/g" archpkg/PKGBUILD
+          sed -i "s/^pkgver=.*/pkgver=\"${PKGVER}\"/" archpkg/PKGBUILD
+
+          echo "Building linux-denys-${PKGVER} from commit ${SHA}"
+
+      - name: Build package in Arch Linux ARM container
+        run: |
+          # Requires Docker on the self-hosted runner.
+          # Uses menci/archlinuxarm which provides an aarch64 Arch Linux environment.
+          docker run --rm \
+            -v "$(pwd)/archpkg:/build" \
+            menci/archlinuxarm:latest \
+            bash -c "
+              set -e
+              pacman -Syu --noconfirm
+              pacman -S --noconfirm --needed \
+                base-devel git bc kmod inetutils \
+                xmlto docbook-xsl dtc
+
+              useradd -m builder
+              chown -R builder:builder /build
+              su builder -c 'cd /build && makepkg -sf --noconfirm'
+            "
+
+      - name: Upload Arch Linux package artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: archlinux-package-${{ github.sha }}
+          path: archpkg/linux-denys-*.pkg.tar.zst
+          retention-days: 7
+
+  release:
+    needs: [build, archlinux-package]
     runs-on: [self-hosted, arm64]
     if: success()
     steps:
       - name: Clean stale release directories
         run: |
-          rm -rf release-modular release-builtin
+          rm -rf release-modular release-builtin release-archlinux
 
       - name: Download modular artifacts
         uses: actions/download-artifact@v7
@@ -314,6 +364,12 @@ jobs:
         with:
           name: surface-pro-x-kernel-builtin-${{ github.sha }}
           path: release-builtin/
+
+      - name: Download Arch Linux package artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: archlinux-package-${{ github.sha }}
+          path: release-archlinux/
 
       - name: Prefix artifact filenames with variant name
         run: |
@@ -334,6 +390,7 @@ jobs:
           files: |
             release-modular/*
             release-builtin/*
+            release-archlinux/*
           body: |
             Automated kernel build for Surface Pro X (SC8180X/SQ2)
 
@@ -359,6 +416,11 @@ jobs:
             - `builtin-sc8180x-surface-pro-x.dtb` - Device tree blob
             - `builtin-config.log` - Kernel configuration
             - `builtin-build-info.txt` - Build metadata
+
+            ### Arch Linux Package (`linux-denys-*.pkg.tar.zst`)
+            Ready-to-install Arch Linux ARM package built with `makepkg`.
+            Install with: `sudo pacman -U linux-denys-*.pkg.tar.zst`
+            Includes kernel image, modules, DTBs, and mkinitcpio preset.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
