@@ -2207,9 +2207,12 @@ config SENSORS_SURFACE_TEMP
 	tristate "Microsoft Surface Thermal Sensor Driver"
 	depends on SURFACE_AGGREGATOR
 	depends on SURFACE_AGGREGATOR_BUS
+	depends on THERMAL
 	help
 	  Driver for monitoring thermal sensors connected via the Surface
 	  Aggregator Module (embedded controller) on Microsoft Surface devices.
+	  This driver provides both hwmon interface and thermal zone registration
+	  for integration with the Linux thermal framework.
 
 	  This driver can also be built as a module. If so, the module
 	  will be called surface_temp.

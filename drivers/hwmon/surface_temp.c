@@ -9,6 +9,7 @@
 #include <linux/hwmon.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/thermal.h>
 #include <linux/types.h>
 
 #include <linux/surface_aggregator/controller.h>
@@ -108,10 +109,18 @@ static int ssam_tmp_get_name(struct ssam_device *sdev, u8 iid, char *buf, size_t
 
 /* -- Driver.---------------------------------------------------------------- */
 
+struct ssam_temp_sensor {
+	struct ssam_temp *parent;
+	struct thermal_zone_device *tzd;
+	u8 iid;  /* sensor instance id (1-based) */
+	char name[SSAM_TMP_SENSOR_NAME_LENGTH];
+};
+
 struct ssam_temp {
 	struct ssam_device *sdev;
 	s16 sensors;
 	char names[SSAM_TMP_SENSOR_MAX_COUNT][SSAM_TMP_SENSOR_NAME_LENGTH];
+	struct ssam_temp_sensor sensors_data[SSAM_TMP_SENSOR_MAX_COUNT];
 };
 
 static umode_t ssam_temp_hwmon_is_visible(const void *data,
@@ -144,6 +153,36 @@ static int ssam_temp_hwmon_read_string(struct device *dev,
 	*str = ssam_temp->names[channel];
 	return 0;
 }
+
+/* -- Thermal zone interface.------------------------------------------------- */
+
+static int ssam_temp_tzd_get_temp(struct thermal_zone_device *tzd, int *temp)
+{
+	struct ssam_temp_sensor *sensor = thermal_zone_device_priv(tzd);
+
+	return ssam_tmp_get_temperature(sensor->parent->sdev, sensor->iid, (long *)temp);
+}
+
+static int ssam_temp_tzd_get_crit_temp(struct thermal_zone_device *tzd, int *temp)
+{
+	/* Critical temperature at 95°C */
+	*temp = 95000;
+	return 0;
+}
+
+static int ssam_temp_tzd_critical(struct thermal_zone_device *tzd,
+				   enum thermal_trip_type type)
+{
+	dev_warn(&tzd->device, "Critical temperature reached, shutting down\n");
+	orderly_poweroff(true);
+	return 0;
+}
+
+static struct thermal_zone_device_ops ssam_temp_tzd_ops = {
+	.get_temp = ssam_temp_tzd_get_temp,
+	.get_crit_temp = ssam_temp_tzd_get_crit_temp,
+	.critical = ssam_temp_tzd_critical,
+};
 
 static const struct hwmon_channel_info * const ssam_temp_hwmon_info[] = {
 	HWMON_CHANNEL_INFO(chip,
@@ -211,7 +250,89 @@ static int ssam_temp_probe(struct ssam_device *sdev)
 
 	hwmon_dev = devm_hwmon_device_register_with_info(&sdev->dev, "surface_thermal", ssam_temp,
 							 &ssam_temp_hwmon_chip_info, NULL);
-	return PTR_ERR_OR_ZERO(hwmon_dev);
+	if (IS_ERR(hwmon_dev))
+		return PTR_ERR(hwmon_dev);
+
+	/* Register thermal zones for each sensor. */
+	for (channel = 0; channel < SSAM_TMP_SENSOR_MAX_COUNT; channel++) {
+		struct ssam_temp_sensor *sensor;
+		/*
+		 * Trip points aligned with the Surface Pro X device tree:
+		 * sc8180x-surface-pro-x.dts defines 95°C critical for board
+		 * NTC thermistors and 110°C critical for SoC CPU zones.
+		 * Use 95°C critical as these SAM sensors are board-level.
+		 */
+		struct thermal_trip trip_passive = {
+			.type = THERMAL_TRIP_PASSIVE,
+			.temperature = 80000,  /* 80°C passive */
+			.hysteresis = 2000,
+			.flags = THERMAL_TRIP_FLAG_RW_TEMP,
+		};
+		struct thermal_trip trip_hot = {
+			.type = THERMAL_TRIP_HOT,
+			.temperature = 90000,  /* 90°C hot */
+			.hysteresis = 1000,
+			.flags = THERMAL_TRIP_FLAG_RW_TEMP,
+		};
+		struct thermal_trip trip_critical = {
+			.type = THERMAL_TRIP_CRITICAL,
+			.temperature = 95000,  /* 95°C critical */
+			.hysteresis = 0,
+			.flags = THERMAL_TRIP_FLAG_RW_TEMP,
+		};
+		struct thermal_trip trips[] = { trip_passive, trip_hot, trip_critical };
+		char tz_name[32];
+
+		if (!(sensors & BIT(channel)))
+			continue;
+
+		sensor = &ssam_temp->sensors_data[channel];
+		sensor->parent = ssam_temp;
+		sensor->iid = channel + 1;
+		strscpy(sensor->name, ssam_temp->names[channel], sizeof(sensor->name));
+
+		snprintf(tz_name, sizeof(tz_name), "surface_temp_%s", sensor->name);
+		tz_name[sizeof(tz_name) - 1] = '\0';
+
+		sensor->tzd = thermal_zone_device_register_with_trips(
+			tz_name, trips, ARRAY_SIZE(trips),
+			sensor, &ssam_temp_tzd_ops, NULL, 1000, 0);
+		if (IS_ERR(sensor->tzd)) {
+			dev_err(&sdev->dev, "Failed to register thermal zone for %s: %ld\n",
+				sensor->name, PTR_ERR(sensor->tzd));
+			continue;
+		}
+
+		status = thermal_zone_device_enable(sensor->tzd);
+		if (status) {
+			dev_err(&sdev->dev, "Failed to enable thermal zone for %s: %d\n",
+				sensor->name, status);
+			thermal_zone_device_unregister(sensor->tzd);
+			sensor->tzd = NULL;
+		}
+	}
+
+	ssam_device_set_drvdata(sdev, ssam_temp);
+	return 0;
+}
+
+static void ssam_temp_remove(struct ssam_device *sdev)
+{
+	struct ssam_temp *ssam_temp = ssam_device_get_drvdata(sdev);
+	int channel;
+
+	if (!ssam_temp)
+		return;
+
+	/* Unregister all thermal zones. */
+	for (channel = 0; channel < SSAM_TMP_SENSOR_MAX_COUNT; channel++) {
+		struct ssam_temp_sensor *sensor = &ssam_temp->sensors_data[channel];
+
+		if (sensor->tzd) {
+			thermal_zone_device_unregister(sensor->tzd);
+			sensor->tzd = NULL;
+		}
+	}
 }
 
 static const struct ssam_device_id ssam_temp_match[] = {
@@ -222,6 +343,7 @@ MODULE_DEVICE_TABLE(ssam, ssam_temp_match);
 
 static struct ssam_device_driver ssam_temp = {
 	.probe = ssam_temp_probe,
+	.remove = ssam_temp_remove,
 	.match_table = ssam_temp_match,
 	.driver = {
 		.name = "surface_temp",
