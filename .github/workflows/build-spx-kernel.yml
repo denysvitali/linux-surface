@@ -302,46 +302,33 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Prepare PKGBUILD
+      - name: Download modular build artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: surface-pro-x-kernel-modular-${{ github.sha }}
+          path: artifacts-modular/
+
+      - name: Assemble Arch Linux package
         run: |
-          SHA="${{ github.sha }}"
+          export HOME=/home/runner
+          export PATH="$HOME/.local/bin:$CONDA_ROOT/bin:$PATH"
+          export CONDA_ROOT=$HOME/miniforge
+          source "$CONDA_ROOT/etc/profile.d/conda.sh" 2>/dev/null || true
+          conda activate base 2>/dev/null || true
+
           PKGVER=$(make -s kernelversion | tr '-' '_')
+          export PKGVER
+          export PACKAGER="CI <github-actions@github.com>"
 
-          mkdir -p archpkg
-          cp packaging/archlinux/PKGBUILD \
-             packaging/archlinux/linux-denys.preset \
-             packaging/archlinux/linux-denys.install \
-             archpkg/
-
-          sed -i "s/@COMMIT@/${SHA}/g" archpkg/PKGBUILD
-          sed -i "s/^pkgver=.*/pkgver=\"${PKGVER}\"/" archpkg/PKGBUILD
-
-          echo "Building linux-denys-${PKGVER} from commit ${SHA}"
-
-      - name: Build package in Arch Linux ARM container
-        run: |
-          # Requires Docker on the self-hosted runner.
-          # Uses menci/archlinuxarm which provides an aarch64 Arch Linux environment.
-          docker run --rm \
-            -v "$(pwd)/archpkg:/build" \
-            menci/archlinuxarm:latest \
-            bash -c "
-              set -e
-              pacman -Syu --noconfirm
-              pacman -S --noconfirm --needed \
-                base-devel git bc kmod inetutils \
-                xmlto docbook-xsl dtc
-
-              useradd -m builder
-              chown -R builder:builder /build
-              su builder -c 'cd /build && makepkg -sf --noconfirm'
-            "
+          bash packaging/archlinux/make-pkg.sh \
+            artifacts-modular/ \
+            release-archlinux/
 
       - name: Upload Arch Linux package artifact
         uses: actions/upload-artifact@v7
         with:
           name: archlinux-package-${{ github.sha }}
-          path: archpkg/linux-denys-*.pkg.tar.zst
+          path: release-archlinux/linux-denys-*.pkg.tar.zst
           retention-days: 7
 
   release:
