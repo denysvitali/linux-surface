@@ -51,6 +51,7 @@ printf '%s' "${PKGBASE}" | install -Dm644 /dev/stdin "${MODULESDIR}/pkgbase"
 
 # Modules (the tarball is already rooted at the filesystem root)
 tar -xzf "${ARTIFACTS_DIR}/modules.tar.gz" -C "${STAGING}"
+rm -f "${ARTIFACTS_DIR}/modules.tar.gz"
 
 # Remove the build symlink (belongs in -headers, not here)
 rm -f "${MODULESDIR}/build"
@@ -61,6 +62,9 @@ install -Dm644 \
     "${MODULESDIR}/dtb/qcom/sc8180x-surface-pro-x.dtb"
 mkdir -p "${STAGING}/boot/dtb"
 cp -r "${MODULESDIR}/dtb" "${STAGING}/boot/dtb/${PKGBASE}"
+
+# Free up the (now fully consumed) artifacts directory before writing the package
+rm -rf "${ARTIFACTS_DIR}"
 
 # mkinitcpio preset
 PRESET_DEST="${STAGING}/etc/mkinitcpio.d/${PKGBASE}.preset"
