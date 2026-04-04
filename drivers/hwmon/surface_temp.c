@@ -9,6 +9,7 @@
 #include <linux/hwmon.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/reboot.h>
 #include <linux/thermal.h>
 #include <linux/types.h>
 
@@ -170,12 +171,14 @@ static int ssam_temp_tzd_get_crit_temp(struct thermal_zone_device *tzd, int *tem
 	return 0;
 }
 
-static int ssam_temp_tzd_critical(struct thermal_zone_device *tzd,
-				   enum thermal_trip_type type)
+static void ssam_temp_tzd_critical(struct thermal_zone_device *tzd)
 {
-	dev_warn(&tzd->device, "Critical temperature reached, shutting down\n");
+	struct ssam_temp_sensor *sensor = thermal_zone_device_priv(tzd);
+
+	dev_warn(&sensor->parent->sdev->dev,
+		 "Critical temperature reached on %s, shutting down\n",
+		 sensor->name);
 	orderly_poweroff(true);
-	return 0;
 }
 
 static struct thermal_zone_device_ops ssam_temp_tzd_ops = {
