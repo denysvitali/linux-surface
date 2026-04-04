@@ -119,11 +119,25 @@ else
     echo "  [warn] fakeroot not found; archive will use current uid/gid"
 fi
 
-$FAKEROOT tar \
+# Disable pipefail: tar receives SIGPIPE (exit 2) when zstd closes the pipe
+# after consuming all input. This is normal and not an error.
+(set +o pipefail; $FAKEROOT tar \
     --numeric-owner \
     -C "${STAGING}" \
     -cf - \
     . \
-    | zstd -T0 -o "${PKG_FILE}"
+    | zstd -T0 -o "${PKG_FILE}")
+TAR_STATUS=$?
+
+if [ $TAR_STATUS -ne 0 ] && [ $TAR_STATUS -ne 2 ]; then
+    echo "ERROR: tar exited with status ${TAR_STATUS}" >&2
+    exit 1
+fi
+
+# Verify the archive is valid and non-empty
+if [ ! -s "${PKG_FILE}" ]; then
+    echo "ERROR: package file is empty or was not created" >&2
+    exit 1
+fi
 
 echo "==> Done: ${PKG_FILE}"
