@@ -27,7 +27,7 @@ PACKAGER="${PACKAGER:-CI <ci@github>}"
 
 # Derive the kernel release string from the modules directory name
 # (e.g. 6.18.3-1-denys)
-KERNVER="$(tar -tzf "${ARTIFACTS_DIR}/modules.tar.gz" \
+KERNVER="$(set +o pipefail; tar -tzf "${ARTIFACTS_DIR}/modules.tar.gz" \
     | grep -m1 'lib/modules/[^/]*/modules.builtin' \
     | sed 's|lib/modules/||;s|/modules.builtin||')"
 
