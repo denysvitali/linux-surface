@@ -17,6 +17,7 @@ env:
   CCACHE_DIR: /home/runner/.cache/ccache
   KERNEL_SRC_DIR: /home/runner/kernel-builds/linux-surface-src
   KERNEL_BUILD_DIR: /home/runner/kernel-builds/linux-surface-build
+  KERNEL_ARTIFACTS_DIR: /home/runner/kernel-builds/artifacts
   CONDA_ROOT: /home/runner/miniforge
 
 jobs:
@@ -256,7 +257,7 @@ jobs:
           conda activate base 2>/dev/null || true
 
           BUILD_DIR="${KERNEL_BUILD_DIR}-${{ matrix.variant.name }}"
-          ARTIFACT_DIR="artifacts-${{ matrix.variant.name }}"
+          ARTIFACT_DIR="${KERNEL_ARTIFACTS_DIR}-${{ matrix.variant.name }}"
 
           rm -rf "$ARTIFACT_DIR"
           mkdir -p "$ARTIFACT_DIR"
@@ -286,35 +287,16 @@ jobs:
             fi
           } > "$ARTIFACT_DIR/build-info.txt"
 
-      - name: Upload to GitHub artifacts (${{ matrix.variant.name }})
-        if: success()
-        uses: actions/upload-artifact@v7
-        with:
-          name: surface-pro-x-kernel-${{ matrix.variant.name }}-${{ github.sha }}
-          path: artifacts-${{ matrix.variant.name }}/
-          retention-days: 7
+          # Free the build directory now that artifacts are extracted
+          rm -rf "$BUILD_DIR"
 
   archlinux-package:
     needs: build
     runs-on: [self-hosted, arm64]
     if: success()
     steps:
-      - name: Clean stale workspace and free disk space
-        run: |
-          rm -rf artifacts-modular/ release-archlinux/
-          # Remove build directories from the build job — artifacts are already
-          # uploaded so these multi-GB trees are no longer needed.
-          rm -rf /home/runner/kernel-builds/linux-surface-build-modular
-          rm -rf /home/runner/kernel-builds/linux-surface-build-builtin
-
       - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Download modular build artifacts
-        uses: actions/download-artifact@v7
-        with:
-          name: surface-pro-x-kernel-modular-${{ github.sha }}
-          path: artifacts-modular/
 
       - name: Assemble Arch Linux package
         run: |
@@ -329,51 +311,30 @@ jobs:
           export PACKAGER="CI <github-actions@github.com>"
 
           bash packaging/archlinux/make-pkg.sh \
-            artifacts-modular/ \
-            release-archlinux/
-
-      - name: Upload Arch Linux package artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: archlinux-package-${{ github.sha }}
-          path: release-archlinux/linux-denys-*.pkg.tar.zst
-          retention-days: 7
+            "${KERNEL_ARTIFACTS_DIR}-modular" \
+            "${KERNEL_ARTIFACTS_DIR}-archlinux"
 
   release:
     needs: [build, archlinux-package]
     runs-on: [self-hosted, arm64]
     if: success()
     steps:
-      - name: Clean stale release directories
+      - name: Prepare release directories
         run: |
           rm -rf release-modular release-builtin release-archlinux
+          mkdir -p release-modular release-builtin release-archlinux
 
-      - name: Download modular artifacts
-        uses: actions/download-artifact@v7
-        with:
-          name: surface-pro-x-kernel-modular-${{ github.sha }}
-          path: release-modular/
+          # Copy from persistent local paths (same runner, no download needed)
+          cp "${KERNEL_ARTIFACTS_DIR}-modular"/* release-modular/
+          cp "${KERNEL_ARTIFACTS_DIR}-builtin"/* release-builtin/
+          cp "${KERNEL_ARTIFACTS_DIR}-archlinux"/*.pkg.tar.zst release-archlinux/
 
-      - name: Download built-in artifacts
-        uses: actions/download-artifact@v7
-        with:
-          name: surface-pro-x-kernel-builtin-${{ github.sha }}
-          path: release-builtin/
-
-      - name: Download Arch Linux package artifact
-        uses: actions/download-artifact@v7
-        with:
-          name: archlinux-package-${{ github.sha }}
-          path: release-archlinux/
-
-      - name: Prefix artifact filenames with variant name
-        run: |
-          # Rename files so both variants can coexist in a single release.
+          # Prefix filenames so both variants can coexist in a single release
           for f in release-modular/*; do
-            mv "$f" "release-modular/modular-$(basename $f)"
+            mv "$f" "release-modular/modular-$(basename "$f")"
           done
           for f in release-builtin/*; do
-            mv "$f" "release-builtin/builtin-$(basename $f)"
+            mv "$f" "release-builtin/builtin-$(basename "$f")"
           done
 
       - name: Create GitHub Pre-Release
@@ -433,3 +394,11 @@ jobs:
             done
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Free artifact disk space
+        if: always()
+        run: |
+          rm -rf "${KERNEL_ARTIFACTS_DIR}-modular" \
+                 "${KERNEL_ARTIFACTS_DIR}-builtin" \
+                 "${KERNEL_ARTIFACTS_DIR}-archlinux" \
+                 release-modular release-builtin release-archlinux
