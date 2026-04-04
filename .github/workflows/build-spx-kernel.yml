@@ -299,8 +299,13 @@ jobs:
     runs-on: [self-hosted, arm64]
     if: success()
     steps:
-      - name: Clean stale workspace
-        run: rm -rf artifacts-modular/ release-archlinux/
+      - name: Clean stale workspace and free disk space
+        run: |
+          rm -rf artifacts-modular/ release-archlinux/
+          # Remove build directories from the build job — artifacts are already
+          # uploaded so these multi-GB trees are no longer needed.
+          rm -rf /home/runner/kernel-builds/linux-surface-build-modular
+          rm -rf /home/runner/kernel-builds/linux-surface-build-builtin
 
       - name: Checkout repository
         uses: actions/checkout@v4
