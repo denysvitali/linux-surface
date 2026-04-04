@@ -332,6 +332,50 @@ jobs:
             "${KERNEL_ARTIFACTS_DIR}-modular" \
             "${KERNEL_ARTIFACTS_DIR}-archlinux"
 
+      - name: Verify Arch Linux package
+        run: |
+          export HOME=/home/runner
+          export PATH="$HOME/.local/bin:$CONDA_ROOT/bin:$PATH"
+          export CONDA_ROOT=$HOME/miniforge
+          source "$CONDA_ROOT/etc/profile.d/conda.sh" 2>/dev/null || true
+          conda activate base 2>/dev/null || true
+
+          PKG_FILE="${KERNEL_ARTIFACTS_DIR}-archlinux/linux-denys-${PKGVER}-1-aarch64.pkg.tar.zst"
+
+          echo "==> Verifying package: ${PKG_FILE}"
+
+          # Use bsdtar to list contents (bsdtar understands zstd and reports errors properly)
+          if ! command -v bsdtar &>/dev/null; then
+            echo "  [warn] bsdtar not found, installing via conda..."
+            conda install -y bsdtar 2>/dev/null || true
+          fi
+
+          if command -v bsdtar &>/dev/null; then
+            echo "==> Listing package contents with bsdtar..."
+            bsdtar -tf "${PKG_FILE}" | head -30
+
+            echo ""
+            echo "==> Checking for required metadata files..."
+            if bsdtar -tf "${PKG_FILE}" | grep -q '\.PKGINFO'; then
+              echo "  .PKGINFO: FOUND"
+            else
+              echo "  .PKGINFO: MISSING!"
+              exit 1
+            fi
+
+            if bsdtar -tf "${PKG_FILE}" | grep -q '\.INSTALL'; then
+              echo "  .INSTALL: FOUND"
+            else
+              echo "  .INSTALL: MISSING!"
+              exit 1
+            fi
+
+            echo ""
+            echo "==> Package verification passed!"
+          else
+            echo "  [warn] bsdtar not available, skipping verification"
+          fi
+
   release:
     needs: [build, archlinux-package]
     runs-on: [self-hosted, arm64]
