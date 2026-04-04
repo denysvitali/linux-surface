@@ -105,6 +105,10 @@ cp "${SCRIPT_DIR}/linux-denys.install" "${STAGING}/.INSTALL"
 mkdir -p "${OUTPUT_DIR}"
 PKG_FILE="${OUTPUT_DIR}/${PKGBASE}-${PKGVER}-${PKGREL}-${ARCH}.pkg.tar.zst"
 
+echo "==> Disk usage before packaging:"
+df -h / /home/runner 2>/dev/null || df -h /
+echo "==> Staging tree size: $(du -sh "${STAGING}" 2>/dev/null)"
+
 echo "==> Creating ${PKG_FILE}"
 # fakeroot is preferred (sets uid/gid to 0:0 in the archive) but not strictly
 # required for a functional package — fall back gracefully if unavailable.

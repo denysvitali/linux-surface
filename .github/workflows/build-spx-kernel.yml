@@ -298,6 +298,24 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Free disk space
+        run: |
+          df -h / /home/runner
+          echo "--- Cleaning up ---"
+          # Remove stale build dirs from previous runs
+          rm -rf ${KERNEL_BUILD_DIR}-modular \
+                 ${KERNEL_BUILD_DIR}-builtin
+          # Remove stale modules_install trees (can be multi-GB each)
+          rm -rf ${KERNEL_BUILD_DIR}-modular/modules_install \
+                 ${KERNEL_BUILD_DIR}-builtin/modules_install
+          # Remove old artifact dirs from previous runs
+          rm -rf ${KERNEL_ARTIFACTS_DIR}-archlinux
+          # Remove GitHub Actions workspace temp artifacts
+          rm -rf /home/runner/_work/linux-surface/linux-surface/artifacts-*
+          rm -rf /home/runner/_work/linux-surface/linux-surface/release-*
+          echo "--- After cleanup ---"
+          df -h / /home/runner
+
       - name: Assemble Arch Linux package
         run: |
           export HOME=/home/runner
