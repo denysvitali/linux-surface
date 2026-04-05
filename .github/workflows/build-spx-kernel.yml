@@ -340,7 +340,13 @@ jobs:
           source "$CONDA_ROOT/etc/profile.d/conda.sh" 2>/dev/null || true
           conda activate base 2>/dev/null || true
 
-          PKG_FILE="${KERNEL_ARTIFACTS_DIR}-archlinux/linux-denys-${PKGVER}-1-aarch64.pkg.tar.zst"
+          # Find the package file (there should be exactly one)
+          PKG_FILE="$(ls "${KERNEL_ARTIFACTS_DIR}-archlinux/"*.pkg.tar.zst 2>/dev/null | head -1)"
+
+          if [[ -z "${PKG_FILE}" ]]; then
+            echo "ERROR: No .pkg.tar.zst file found in ${KERNEL_ARTIFACTS_DIR}-archlinux/"
+            exit 1
+          fi
 
           echo "==> Verifying package: ${PKG_FILE}"
 
