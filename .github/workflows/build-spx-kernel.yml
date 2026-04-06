@@ -400,6 +400,31 @@ jobs:
             fi
 
             echo ""
+            echo "==> Checking for mkinitcpio preset..."
+            if bsdtar -tf "${PKG_FILE}" | grep -qE '(^|\./)etc/mkinitcpio\.d/linux-denys\.preset$'; then
+              echo "  preset: FOUND"
+            else
+              echo "  preset: MISSING!"
+              echo "  The mkinitcpio preset is required for initramfs generation."
+              exit 1
+            fi
+
+            echo ""
+            echo "==> Checking for kernel image and pkgbase..."
+            if bsdtar -tf "${PKG_FILE}" | grep -qE '(^|\./)usr/lib/modules/[^/]+/vmlinuz$'; then
+              echo "  vmlinuz: FOUND"
+            else
+              echo "  vmlinuz: MISSING!"
+              exit 1
+            fi
+            if bsdtar -tf "${PKG_FILE}" | grep -qE '(^|\./)usr/lib/modules/[^/]+/pkgbase$'; then
+              echo "  pkgbase: FOUND"
+            else
+              echo "  pkgbase: MISSING!"
+              exit 1
+            fi
+
+            echo ""
             echo "==> Package verification passed!"
           else
             echo "  [warn] bsdtar not available, skipping verification"

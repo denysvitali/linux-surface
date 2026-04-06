@@ -1,7 +1,15 @@
 post_install() {
-    mkinitcpio -p linux-denys
+    if [ -f /etc/mkinitcpio.d/linux-denys.preset ]; then
+        mkinitcpio -p linux-denys
+    else
+        echo "WARNING: /etc/mkinitcpio.d/linux-denys.preset not found, skipping initramfs generation"
+    fi
 }
 
 post_upgrade() {
-    mkinitcpio -p linux-denys
+    if [ -f /etc/mkinitcpio.d/linux-denys.preset ]; then
+        mkinitcpio -p linux-denys
+    else
+        echo "WARNING: /etc/mkinitcpio.d/linux-denys.preset not found, skipping initramfs generation"
+    fi
 }
