@@ -26,10 +26,11 @@ BUILDDATE="$(date +%s)"
 PACKAGER="${PACKAGER:-CI <ci@github>}"
 
 # Derive the kernel release string from the modules directory name
-# (e.g. 6.18.3-1-denys)
+# (e.g. 6.18.3-g3376916cf5cd)
+# Anchor with $ to avoid matching modules.builtin.bin or modules.builtin.modinfo
 KERNVER="$(set +o pipefail; tar -tzf "${ARTIFACTS_DIR}/modules.tar.gz" \
-    | grep -m1 'lib/modules/[^/]*/modules.builtin' \
-    | sed 's|.*lib/modules/||;s|/modules.builtin||')"
+    | grep -m1 '/modules\.builtin$' \
+    | sed 's|.*lib/modules/||;s|/modules\.builtin||')"
 
 if [[ -z "$KERNVER" ]]; then
     echo "ERROR: could not determine kernel version from modules.tar.gz" >&2
@@ -49,11 +50,14 @@ MODULESDIR="${STAGING}/usr/lib/modules/${KERNVER}"
 install -Dm644 "${ARTIFACTS_DIR}/Image.gz" "${MODULESDIR}/vmlinuz"
 printf '%s' "${PKGBASE}" | install -Dm644 /dev/stdin "${MODULESDIR}/pkgbase"
 
-# Modules (the tarball is already rooted at the filesystem root)
-tar -xzf "${ARTIFACTS_DIR}/modules.tar.gz" -C "${STAGING}"
+# Modules (the tarball contains lib/modules/...; transform to usr/lib/modules/
+# to match Arch Linux's filesystem layout where /lib → /usr/lib)
+tar -xzf "${ARTIFACTS_DIR}/modules.tar.gz" -C "${STAGING}" \
+    --transform='s,^\./lib/,./usr/lib/,'
 
-# Remove the build symlink (belongs in -headers, not here)
+# Remove the build and source symlinks (belong in -headers, not here)
 rm -f "${MODULESDIR}/build"
+rm -f "${MODULESDIR}/source"
 
 # DTBs
 install -Dm644 \
@@ -119,15 +123,32 @@ else
     echo "  [warn] fakeroot not found; archive will use current uid/gid"
 fi
 
+# Build an ordered file list: metadata files first (like makepkg does),
+# then everything else.  This ensures pacman finds .PKGINFO at the start
+# of the archive rather than having to scan through hundreds of MB of
+# kernel modules.
+{
+    echo ".PKGINFO"
+    echo ".INSTALL"
+    (cd "${STAGING}" && find . -mindepth 1 \
+        -not -name '.PKGINFO' \
+        -not -name '.INSTALL' \
+        -not -name '.' \
+        | LC_ALL=C sort)
+} > "${STAGING}/../filelist.tmp"
+
 # Disable pipefail: tar receives SIGPIPE (exit 2) when zstd closes the pipe
 # after consuming all input. This is normal and not an error.
 (set +o pipefail; $FAKEROOT tar \
     --numeric-owner \
     -C "${STAGING}" \
+    --no-recursion \
     -cf - \
-    . \
+    -T "${STAGING}/../filelist.tmp" \
     | zstd -T0 -o "${PKG_FILE}")
 TAR_STATUS=$?
+
+rm -f "${STAGING}/../filelist.tmp"
 
 if [ $TAR_STATUS -ne 0 ] && [ $TAR_STATUS -ne 2 ]; then
     echo "ERROR: tar exited with status ${TAR_STATUS}" >&2

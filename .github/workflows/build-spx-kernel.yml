@@ -349,6 +349,7 @@ jobs:
           fi
 
           echo "==> Verifying package: ${PKG_FILE}"
+          echo "==> File size: $(du -sh "${PKG_FILE}")"
 
           # Use bsdtar to list contents (bsdtar understands zstd and reports errors properly)
           if ! command -v bsdtar &>/dev/null; then
@@ -359,6 +360,14 @@ jobs:
           if command -v bsdtar &>/dev/null; then
             echo "==> Listing package contents with bsdtar..."
             bsdtar -tf "${PKG_FILE}" | head -30
+
+            echo ""
+            echo "==> Checking that .PKGINFO is the FIRST entry (required by pacman)..."
+            FIRST_ENTRY="$(bsdtar -tf "${PKG_FILE}" | head -1)"
+            echo "  First entry: ${FIRST_ENTRY}"
+            if [[ "${FIRST_ENTRY}" != ".PKGINFO" && "${FIRST_ENTRY}" != "./.PKGINFO" ]]; then
+              echo "  WARNING: .PKGINFO is not the first entry! pacman may reject this package."
+            fi
 
             echo ""
             echo "==> Checking for required metadata files..."
@@ -374,6 +383,20 @@ jobs:
             else
               echo "  .INSTALL: MISSING!"
               exit 1
+            fi
+
+            echo ""
+            echo "==> Dumping .PKGINFO content..."
+            bsdtar -xf "${PKG_FILE}" -O .PKGINFO 2>/dev/null || \
+              bsdtar -xf "${PKG_FILE}" -O ./.PKGINFO 2>/dev/null
+
+            echo ""
+            echo "==> Checking for broken symlinks (build/source)..."
+            if bsdtar -tf "${PKG_FILE}" | grep -qE '(^|\./)usr/lib/modules/[^/]+/(build|source)$'; then
+              echo "  WARNING: build or source symlinks found in modules directory!"
+              bsdtar -tf "${PKG_FILE}" | grep -E '(^|\./)usr/lib/modules/[^/]+/(build|source)$'
+            else
+              echo "  No build/source symlinks: OK"
             fi
 
             echo ""
