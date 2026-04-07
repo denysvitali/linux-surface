@@ -325,35 +325,40 @@ jobs:
           source "$CONDA_ROOT/etc/profile.d/conda.sh" 2>/dev/null || true
           conda activate base 2>/dev/null || true
 
-          rm -rf "${KERNEL_ARTIFACTS_DIR}-archlinux-build" "${KERNEL_ARTIFACTS_DIR}-archlinux"
-          mkdir -p "${KERNEL_ARTIFACTS_DIR}-archlinux"
-
-          if command -v makepkg &>/dev/null && command -v pacman &>/dev/null; then
-            echo "==> Using makepkg on Arch-based runner"
-            PKG_WORKDIR="${KERNEL_ARTIFACTS_DIR}-archlinux-build"
-            mkdir -p "${PKG_WORKDIR}"
-
-            cp packaging/archlinux/PKGBUILD "${PKG_WORKDIR}/"
-            cp packaging/archlinux/linux-denys.preset "${PKG_WORKDIR}/"
-            cp packaging/archlinux/linux-denys.conf "${PKG_WORKDIR}/"
-            cp packaging/archlinux/linux-denys.install "${PKG_WORKDIR}/"
-
-            sed -i "s|@COMMIT@|${GITHUB_SHA}|g" "${PKG_WORKDIR}/PKGBUILD"
-
-            cd "${PKG_WORKDIR}"
-            export PACKAGER="CI <github-actions@github.com>"
-            makepkg -f --noconfirm
-            cp ./*.pkg.tar.zst "${KERNEL_ARTIFACTS_DIR}-archlinux"/
+          if command -v docker &>/dev/null; then
+            CONTAINER_RUNTIME=docker
+          elif command -v podman &>/dev/null; then
+            CONTAINER_RUNTIME=podman
           else
-            echo "==> Arch makepkg environment not available on runner, falling back to packaging/archlinux/make-pkg.sh"
-            PKGVER=$(make -s kernelversion | tr '-' '_')
-            export PKGVER
-            export PACKAGER="CI <github-actions@github.com>"
-
-            bash packaging/archlinux/make-pkg.sh \
-              "${KERNEL_ARTIFACTS_DIR}-modular" \
-              "${KERNEL_ARTIFACTS_DIR}-archlinux"
+            echo "ERROR: neither docker nor podman is available on the runner"
+            exit 1
           fi
+
+          PKG_WORKDIR="${KERNEL_ARTIFACTS_DIR}-archlinux-build"
+          rm -rf "${PKG_WORKDIR}" "${KERNEL_ARTIFACTS_DIR}-archlinux"
+          mkdir -p "${PKG_WORKDIR}" "${KERNEL_ARTIFACTS_DIR}-archlinux"
+
+          cp packaging/archlinux/PKGBUILD "${PKG_WORKDIR}/"
+          cp packaging/archlinux/linux-denys.preset "${PKG_WORKDIR}/"
+          cp packaging/archlinux/linux-denys.conf "${PKG_WORKDIR}/"
+          cp packaging/archlinux/linux-denys.install "${PKG_WORKDIR}/"
+
+          sed -i "s|@COMMIT@|${GITHUB_SHA}|g" "${PKG_WORKDIR}/PKGBUILD"
+
+          ${CONTAINER_RUNTIME} run --rm \
+            -e PACKAGER="CI <github-actions@github.com>" \
+            -v "${PKG_WORKDIR}:/work" \
+            -w /work \
+            archlinux:base-devel \
+            bash -lc '
+              set -euo pipefail
+              pacman -Sy --noconfirm --needed git dtc xmlto inetutils bc kmod
+              useradd -m builder
+              chown -R builder:builder /work
+              su builder -c "cd /work && makepkg -f --noconfirm"
+            '
+
+          cp "${PKG_WORKDIR}"/*.pkg.tar.zst "${KERNEL_ARTIFACTS_DIR}-archlinux"/
 
       - name: Verify Arch Linux package
         run: |
