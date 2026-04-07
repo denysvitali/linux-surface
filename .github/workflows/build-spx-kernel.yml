@@ -338,6 +338,9 @@ jobs:
           PKGVER=$(make -s kernelversion | tr '-' '_')
           sed -i "s|@PKGVER@|${PKGVER}|g" "${PKG_WORKDIR}/PKGBUILD"
 
+          # Override CARCH so the package metadata says aarch64, not x86_64
+          sed -i 's/^CARCH=.*/CARCH="aarch64"/' /etc/makepkg.conf
+
           id -u builder &>/dev/null || useradd -m builder
           chown -R builder:builder "${PKG_WORKDIR}" "${KERNEL_ARTIFACTS_DIR}-archlinux"
           su builder -c "cd '${PKG_WORKDIR}' && PACKAGER='CI <github-actions@github.com>' makepkg -f --nodeps --noconfirm --ignorearch"
