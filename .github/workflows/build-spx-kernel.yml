@@ -287,8 +287,10 @@ jobs:
             fi
           } > "$ARTIFACT_DIR/build-info.txt"
 
-          # Free the build directory now that artifacts are extracted
-          rm -rf "$BUILD_DIR"
+          # Keep the build directory for the next run so Kbuild can reuse
+          # existing objects and perform true incremental rebuilds.
+          # Only the temporary modules_install tree is disposable.
+          rm -rf "$BUILD_DIR/modules_install"
 
   archlinux-package:
     needs: build
@@ -302,10 +304,9 @@ jobs:
         run: |
           df -h / /home/runner
           echo "--- Cleaning up ---"
-          # Remove stale build dirs from previous runs
-          rm -rf ${KERNEL_BUILD_DIR}-modular \
-                 ${KERNEL_BUILD_DIR}-builtin
-          # Remove stale modules_install trees (can be multi-GB each)
+          # Keep the persistent build dirs so the next workflow run can
+          # incrementally rebuild instead of starting from scratch.
+          # Remove only temporary modules_install trees (can be multi-GB each).
           rm -rf ${KERNEL_BUILD_DIR}-modular/modules_install \
                  ${KERNEL_BUILD_DIR}-builtin/modules_install
           # Remove old artifact dirs from previous runs
@@ -316,7 +317,7 @@ jobs:
           echo "--- After cleanup ---"
           df -h / /home/runner
 
-      - name: Assemble Arch Linux package
+      - name: Build Arch Linux package with makepkg
         run: |
           export HOME=/home/runner
           export PATH="$HOME/.local/bin:$CONDA_ROOT/bin:$PATH"
@@ -324,13 +325,27 @@ jobs:
           source "$CONDA_ROOT/etc/profile.d/conda.sh" 2>/dev/null || true
           conda activate base 2>/dev/null || true
 
-          PKGVER=$(make -s kernelversion | tr '-' '_')
-          export PKGVER
-          export PACKAGER="CI <github-actions@github.com>"
+          if ! command -v makepkg &>/dev/null; then
+            echo "ERROR: makepkg is not installed on the runner"
+            exit 1
+          fi
 
-          bash packaging/archlinux/make-pkg.sh \
-            "${KERNEL_ARTIFACTS_DIR}-modular" \
-            "${KERNEL_ARTIFACTS_DIR}-archlinux"
+          PKG_WORKDIR="${KERNEL_ARTIFACTS_DIR}-archlinux-build"
+          rm -rf "${PKG_WORKDIR}" "${KERNEL_ARTIFACTS_DIR}-archlinux"
+          mkdir -p "${PKG_WORKDIR}" "${KERNEL_ARTIFACTS_DIR}-archlinux"
+
+          cp packaging/archlinux/PKGBUILD "${PKG_WORKDIR}/"
+          cp packaging/archlinux/linux-denys.preset "${PKG_WORKDIR}/"
+          cp packaging/archlinux/linux-denys.conf "${PKG_WORKDIR}/"
+          cp packaging/archlinux/linux-denys.install "${PKG_WORKDIR}/"
+
+          sed -i "s|@COMMIT@|${GITHUB_SHA}|g" "${PKG_WORKDIR}/PKGBUILD"
+
+          cd "${PKG_WORKDIR}"
+          export PACKAGER="CI <github-actions@github.com>"
+          makepkg -f --noconfirm
+
+          cp ./*.pkg.tar.zst "${KERNEL_ARTIFACTS_DIR}-archlinux"/
 
       - name: Verify Arch Linux package
         run: |
@@ -375,6 +390,13 @@ jobs:
               echo "  .PKGINFO: FOUND"
             else
               echo "  .PKGINFO: MISSING!"
+              exit 1
+            fi
+
+            if bsdtar -tf "${PKG_FILE}" | grep -q '\.MTREE'; then
+              echo "  .MTREE: FOUND"
+            else
+              echo "  .MTREE: MISSING!"
               exit 1
             fi
 
