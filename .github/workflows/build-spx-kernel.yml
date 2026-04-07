@@ -306,7 +306,7 @@ jobs:
 
   archlinux-package:
     needs: build
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-24.04
     container:
       image: archlinux:base-devel
     if: success()
@@ -319,23 +319,6 @@ jobs:
         with:
           name: modular-artifacts
           path: ${{ env.KERNEL_ARTIFACTS_DIR }}-modular
-
-      - name: Free disk space
-        run: |
-          df -h / /home/runner
-          echo "--- Cleaning up ---"
-          # Keep the persistent build dirs so the next workflow run can
-          # incrementally rebuild instead of starting from scratch.
-          # Remove only temporary modules_install trees (can be multi-GB each).
-          rm -rf ${KERNEL_BUILD_DIR}-modular/modules_install \
-                 ${KERNEL_BUILD_DIR}-builtin/modules_install
-          # Remove old artifact dirs from previous runs
-          rm -rf ${KERNEL_ARTIFACTS_DIR}-archlinux
-          # Remove GitHub Actions workspace temp artifacts
-          rm -rf /home/runner/_work/linux-surface/linux-surface/artifacts-*
-          rm -rf /home/runner/_work/linux-surface/linux-surface/release-*
-          echo "--- After cleanup ---"
-          df -h / /home/runner
 
       - name: Build Arch Linux package
         run: |
@@ -357,17 +340,11 @@ jobs:
 
           id -u builder &>/dev/null || useradd -m builder
           chown -R builder:builder "${PKG_WORKDIR}" "${KERNEL_ARTIFACTS_DIR}-archlinux"
-          su builder -c "cd '${PKG_WORKDIR}' && PACKAGER='CI <github-actions@github.com>' makepkg -f --nodeps --noconfirm"
+          su builder -c "cd '${PKG_WORKDIR}' && PACKAGER='CI <github-actions@github.com>' makepkg -f --nodeps --noconfirm --ignorearch"
           cp "${PKG_WORKDIR}"/*.pkg.tar.zst "${KERNEL_ARTIFACTS_DIR}-archlinux"/
 
       - name: Verify Arch Linux package
         run: |
-          export HOME=/home/runner
-          export PATH="$HOME/.local/bin:$CONDA_ROOT/bin:$PATH"
-          export CONDA_ROOT=$HOME/miniforge
-          source "$CONDA_ROOT/etc/profile.d/conda.sh" 2>/dev/null || true
-          conda activate base 2>/dev/null || true
-
           # Find the package file (there should be exactly one)
           PKG_FILE="$(ls "${KERNEL_ARTIFACTS_DIR}-archlinux/"*.pkg.tar.zst 2>/dev/null | head -1)"
 
@@ -379,101 +356,91 @@ jobs:
           echo "==> Verifying package: ${PKG_FILE}"
           echo "==> File size: $(du -sh "${PKG_FILE}")"
 
-          # Use bsdtar to list contents (bsdtar understands zstd and reports errors properly)
-          if ! command -v bsdtar &>/dev/null; then
-            echo "  [warn] bsdtar not found, installing via conda..."
-            conda install -y bsdtar 2>/dev/null || true
+          echo "==> Listing package contents with bsdtar..."
+          bsdtar -tf "${PKG_FILE}" | head -30
+
+          echo ""
+          echo "==> Checking that .PKGINFO is the FIRST entry (required by pacman)..."
+          FIRST_ENTRY="$(bsdtar -tf "${PKG_FILE}" | head -1)"
+          echo "  First entry: ${FIRST_ENTRY}"
+          if [[ "${FIRST_ENTRY}" != ".PKGINFO" && "${FIRST_ENTRY}" != "./.PKGINFO" ]]; then
+            echo "  WARNING: .PKGINFO is not the first entry! pacman may reject this package."
           fi
 
-          if command -v bsdtar &>/dev/null; then
-            echo "==> Listing package contents with bsdtar..."
-            bsdtar -tf "${PKG_FILE}" | head -30
-
-            echo ""
-            echo "==> Checking that .PKGINFO is the FIRST entry (required by pacman)..."
-            FIRST_ENTRY="$(bsdtar -tf "${PKG_FILE}" | head -1)"
-            echo "  First entry: ${FIRST_ENTRY}"
-            if [[ "${FIRST_ENTRY}" != ".PKGINFO" && "${FIRST_ENTRY}" != "./.PKGINFO" ]]; then
-              echo "  WARNING: .PKGINFO is not the first entry! pacman may reject this package."
-            fi
-
-            echo ""
-            echo "==> Checking for required metadata files..."
-            if bsdtar -tf "${PKG_FILE}" | grep -q '\.PKGINFO'; then
-              echo "  .PKGINFO: FOUND"
-            else
-              echo "  .PKGINFO: MISSING!"
-              exit 1
-            fi
-
-            if bsdtar -tf "${PKG_FILE}" | grep -q '\.MTREE'; then
-              echo "  .MTREE: FOUND"
-            else
-              echo "  .MTREE: MISSING!"
-              exit 1
-            fi
-
-            if bsdtar -tf "${PKG_FILE}" | grep -q '\.INSTALL'; then
-              echo "  .INSTALL: FOUND"
-            else
-              echo "  .INSTALL: MISSING!"
-              exit 1
-            fi
-
-            echo ""
-            echo "==> Dumping .PKGINFO content..."
-            bsdtar -xf "${PKG_FILE}" -O .PKGINFO 2>/dev/null || \
-              bsdtar -xf "${PKG_FILE}" -O ./.PKGINFO 2>/dev/null
-
-            echo ""
-            echo "==> Checking for broken symlinks (build/source)..."
-            if bsdtar -tf "${PKG_FILE}" | grep -qE '(^|\./)usr/lib/modules/[^/]+/(build|source)$'; then
-              echo "  WARNING: build or source symlinks found in modules directory!"
-              bsdtar -tf "${PKG_FILE}" | grep -E '(^|\./)usr/lib/modules/[^/]+/(build|source)$'
-            else
-              echo "  No build/source symlinks: OK"
-            fi
-
-            echo ""
-            echo "==> Checking for mkinitcpio preset..."
-            if bsdtar -tf "${PKG_FILE}" | grep -qE '(^|\./)etc/mkinitcpio\.d/linux-denys\.preset$'; then
-              echo "  preset: FOUND"
-            else
-              echo "  preset: MISSING!"
-              echo "  The mkinitcpio preset is required for initramfs generation."
-              exit 1
-            fi
-
-            echo ""
-            echo "==> Checking for kernel image and pkgbase..."
-            if bsdtar -tf "${PKG_FILE}" | grep -qE '(^|\./)usr/lib/modules/[^/]+/vmlinuz$'; then
-              echo "  vmlinuz: FOUND"
-            else
-              echo "  vmlinuz: MISSING!"
-              exit 1
-            fi
-            if bsdtar -tf "${PKG_FILE}" | grep -qE '(^|\./)usr/lib/modules/[^/]+/pkgbase$'; then
-              echo "  pkgbase: FOUND"
-            else
-              echo "  pkgbase: MISSING!"
-              exit 1
-            fi
-
-            echo ""
-            echo "==> Checking that the package does not own /lib..."
-            if bsdtar -tf "${PKG_FILE}" | grep -qE '^(\\./)?lib(/|$)'; then
-              echo "  /lib ownership detected!"
-              bsdtar -tf "${PKG_FILE}" | grep -E '^(\\./)?lib(/|$)'
-              exit 1
-            else
-              echo "  No /lib entries: OK"
-            fi
-
-            echo ""
-            echo "==> Package verification passed!"
+          echo ""
+          echo "==> Checking for required metadata files..."
+          if bsdtar -tf "${PKG_FILE}" | grep -q '\.PKGINFO'; then
+            echo "  .PKGINFO: FOUND"
           else
-            echo "  [warn] bsdtar not available, skipping verification"
+            echo "  .PKGINFO: MISSING!"
+            exit 1
           fi
+
+          if bsdtar -tf "${PKG_FILE}" | grep -q '\.MTREE'; then
+            echo "  .MTREE: FOUND"
+          else
+            echo "  .MTREE: MISSING!"
+            exit 1
+          fi
+
+          if bsdtar -tf "${PKG_FILE}" | grep -q '\.INSTALL'; then
+            echo "  .INSTALL: FOUND"
+          else
+            echo "  .INSTALL: MISSING!"
+            exit 1
+          fi
+
+          echo ""
+          echo "==> Dumping .PKGINFO content..."
+          bsdtar -xf "${PKG_FILE}" -O .PKGINFO 2>/dev/null || \
+            bsdtar -xf "${PKG_FILE}" -O ./.PKGINFO 2>/dev/null
+
+          echo ""
+          echo "==> Checking for broken symlinks (build/source)..."
+          if bsdtar -tf "${PKG_FILE}" | grep -qE '(^|\./)usr/lib/modules/[^/]+/(build|source)$'; then
+            echo "  WARNING: build or source symlinks found in modules directory!"
+            bsdtar -tf "${PKG_FILE}" | grep -E '(^|\./)usr/lib/modules/[^/]+/(build|source)$'
+          else
+            echo "  No build/source symlinks: OK"
+          fi
+
+          echo ""
+          echo "==> Checking for mkinitcpio preset..."
+          if bsdtar -tf "${PKG_FILE}" | grep -qE '(^|\./)etc/mkinitcpio\.d/linux-denys\.preset$'; then
+            echo "  preset: FOUND"
+          else
+            echo "  preset: MISSING!"
+            echo "  The mkinitcpio preset is required for initramfs generation."
+            exit 1
+          fi
+
+          echo ""
+          echo "==> Checking for kernel image and pkgbase..."
+          if bsdtar -tf "${PKG_FILE}" | grep -qE '(^|\./)usr/lib/modules/[^/]+/vmlinuz$'; then
+            echo "  vmlinuz: FOUND"
+          else
+            echo "  vmlinuz: MISSING!"
+            exit 1
+          fi
+          if bsdtar -tf "${PKG_FILE}" | grep -qE '(^|\./)usr/lib/modules/[^/]+/pkgbase$'; then
+            echo "  pkgbase: FOUND"
+          else
+            echo "  pkgbase: MISSING!"
+            exit 1
+          fi
+
+          echo ""
+          echo "==> Checking that the package does not own /lib..."
+          if bsdtar -tf "${PKG_FILE}" | grep -qE '^(\\./)?lib(/|$)'; then
+            echo "  /lib ownership detected!"
+            bsdtar -tf "${PKG_FILE}" | grep -E '^(\\./)?lib(/|$)'
+            exit 1
+          else
+            echo "  No /lib entries: OK"
+          fi
+
+          echo ""
+          echo "==> Package verification passed!"
 
       - name: Upload Arch Linux package artifact
         uses: actions/upload-artifact@v4
