@@ -12,6 +12,7 @@ arch=("aarch64")
 url="https://github.com/denysvitali/linux-surface"
 license=("GPL-2.0-only")
 options=("!strip")
+noextract=("Image.gz" "modules.tar.gz")
 
 source=(
     "Image.gz"
@@ -47,9 +48,12 @@ package_linux-denys() {
     install -Dm644 "${srcdir}/Image.gz" "${modulesdir}/vmlinuz"
     echo "${pkgbase}" | install -Dm644 /dev/stdin "${modulesdir}/pkgbase"
 
-    bsdtar -xzf "${srcdir}/modules.tar.gz" -C "${pkgdir}" \
-        --transform='s,^\./lib/,./usr/lib/,' \
-        --transform='s,^lib/,./usr/lib/,'
+    bsdtar -xzf "${srcdir}/modules.tar.gz" -C "${pkgdir}"
+    # Move lib/ to usr/lib/ (Arch Linux uses /usr/lib for modules)
+    if [ -d "${pkgdir}/lib" ]; then
+        mkdir -p "${pkgdir}/usr"
+        mv "${pkgdir}/lib" "${pkgdir}/usr/lib"
+    fi
 
     rm -f "${modulesdir}/build" "${modulesdir}/source"
 
