@@ -45,15 +45,16 @@ package_linux-denys() {
 
     local modulesdir="${pkgdir}/usr/lib/modules/${kernver}"
 
-    install -Dm644 "${srcdir}/Image.gz" "${modulesdir}/vmlinuz"
-    echo "${pkgbase}" | install -Dm644 /dev/stdin "${modulesdir}/pkgbase"
-
+    # Extract modules first (before any install creates usr/lib/)
     bsdtar -xzf "${srcdir}/modules.tar.gz" -C "${pkgdir}"
     # Move lib/ to usr/lib/ (Arch Linux uses /usr/lib for modules)
     if [ -d "${pkgdir}/lib" ]; then
         mkdir -p "${pkgdir}/usr"
         mv "${pkgdir}/lib" "${pkgdir}/usr/lib"
     fi
+
+    install -Dm644 "${srcdir}/Image.gz" "${modulesdir}/vmlinuz"
+    echo "${pkgbase}" | install -Dm644 /dev/stdin "${modulesdir}/pkgbase"
 
     rm -f "${modulesdir}/build" "${modulesdir}/source"
 
