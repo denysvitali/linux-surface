@@ -1,6 +1,6 @@
 # mkinitcpio preset file for the '%PKGBASE%' package
 
-ALL_config="/etc/mkinitcpio.conf"
+ALL_config="/etc/mkinitcpio.d/%PKGBASE%.conf"
 ALL_kver="/usr/lib/modules/%KERNVER%/vmlinuz"
 
 PRESETS=('default' 'fallback')

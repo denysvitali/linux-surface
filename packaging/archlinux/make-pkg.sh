@@ -74,6 +74,11 @@ sed \
     "${SCRIPT_DIR}/linux-denys.preset" \
     | install -Dm644 /dev/stdin "${PRESET_DEST}"
 
+# mkinitcpio config
+install -Dm644 \
+    "${SCRIPT_DIR}/linux-denys.conf" \
+    "${STAGING}/etc/mkinitcpio.d/${PKGBASE}.conf"
+
 # ── Compute installed size (in KiB, rounded up) ──────────────────────────────
 
 INSTALLED_SIZE=$(du -sk "${STAGING}" | cut -f1)

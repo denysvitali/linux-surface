@@ -20,8 +20,10 @@ _ref_kernel="@COMMIT@"
 source=(
     "kernel::git+https://github.com/denysvitali/linux-surface.git#commit=${_ref_kernel}"
     "linux-denys.preset"
+    "linux-denys.conf"
 )
 sha256sums=(
+    'SKIP'
     'SKIP'
     'SKIP'
 )
@@ -91,6 +93,10 @@ _package() {
     "
     sed "${_subst}" "${srcdir}/${pkgbase}.preset" |
         install -Dm644 /dev/stdin "${pkgdir}/etc/mkinitcpio.d/${pkgbase}.preset"
+
+    msg2 "Installing mkinitcpio config..."
+    install -Dm644 "${srcdir}/${pkgbase}.conf" \
+        "${pkgdir}/etc/mkinitcpio.d/${pkgbase}.conf"
 }
 
 _package-headers() {
