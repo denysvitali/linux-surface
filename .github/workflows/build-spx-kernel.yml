@@ -455,6 +455,16 @@ jobs:
             fi
 
             echo ""
+            echo "==> Checking that the package does not own /lib..."
+            if bsdtar -tf "${PKG_FILE}" | grep -qE '^(\\./)?lib(/|$)'; then
+              echo "  /lib ownership detected!"
+              bsdtar -tf "${PKG_FILE}" | grep -E '^(\\./)?lib(/|$)'
+              exit 1
+            else
+              echo "  No /lib entries: OK"
+            fi
+
+            echo ""
             echo "==> Package verification passed!"
           else
             echo "  [warn] bsdtar not available, skipping verification"

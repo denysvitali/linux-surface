@@ -51,9 +51,11 @@ install -Dm644 "${ARTIFACTS_DIR}/Image.gz" "${MODULESDIR}/vmlinuz"
 printf '%s' "${PKGBASE}" | install -Dm644 /dev/stdin "${MODULESDIR}/pkgbase"
 
 # Modules (the tarball contains lib/modules/...; transform to usr/lib/modules/
-# to match Arch Linux's filesystem layout where /lib → /usr/lib)
+# to match Arch Linux's filesystem layout where /lib → /usr/lib).
+# Handle both GNU tar-style "./lib/..." and plain "lib/..." entries.
 tar -xzf "${ARTIFACTS_DIR}/modules.tar.gz" -C "${STAGING}" \
-    --transform='s,^\./lib/,./usr/lib/,'
+    --transform='s,^\./lib/,./usr/lib/,' \
+    --transform='s,^lib/,./usr/lib/,'
 
 # Remove the build and source symlinks (belong in -headers, not here)
 rm -f "${MODULESDIR}/build"
