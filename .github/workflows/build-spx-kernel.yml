@@ -328,8 +328,8 @@ jobs:
           rm -rf "${KERNEL_ARTIFACTS_DIR}-archlinux-build" "${KERNEL_ARTIFACTS_DIR}-archlinux"
           mkdir -p "${KERNEL_ARTIFACTS_DIR}-archlinux"
 
-          if command -v makepkg &>/dev/null; then
-            echo "==> Using makepkg"
+          if command -v makepkg &>/dev/null && command -v pacman &>/dev/null; then
+            echo "==> Using makepkg on Arch-based runner"
             PKG_WORKDIR="${KERNEL_ARTIFACTS_DIR}-archlinux-build"
             mkdir -p "${PKG_WORKDIR}"
 
@@ -345,7 +345,7 @@ jobs:
             makepkg -f --noconfirm
             cp ./*.pkg.tar.zst "${KERNEL_ARTIFACTS_DIR}-archlinux"/
           else
-            echo "==> makepkg not available on runner, falling back to packaging/archlinux/make-pkg.sh"
+            echo "==> Arch makepkg environment not available on runner, falling back to packaging/archlinux/make-pkg.sh"
             PKGVER=$(make -s kernelversion | tr '-' '_')
             export PKGVER
             export PACKAGER="CI <github-actions@github.com>"
