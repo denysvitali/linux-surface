@@ -79,6 +79,26 @@ install -Dm644 \
     "${SCRIPT_DIR}/linux-denys.conf" \
     "${STAGING}/etc/mkinitcpio.d/${PKGBASE}.conf"
 
+# Package mtree metadata (mirrors makepkg closely enough for pacman)
+if ! command -v bsdtar &>/dev/null; then
+    echo "ERROR: bsdtar is required to generate .MTREE" >&2
+    exit 1
+fi
+
+MTREE_TMP="$(mktemp)"
+(
+    cd "${STAGING}"
+    bsdtar \
+        --uid 0 \
+        --gid 0 \
+        --numeric-owner \
+        --format=mtree \
+        --options='!all,use-set,type,uid,gid,mode,time,size,sha256,link' \
+        -cf - \
+        . | gzip -n > "${MTREE_TMP}"
+)
+mv "${MTREE_TMP}" "${STAGING}/.MTREE"
+
 # ── Compute installed size (in KiB, rounded up) ──────────────────────────────
 
 INSTALLED_SIZE=$(du -sk "${STAGING}" | cut -f1)
@@ -134,9 +154,11 @@ fi
 # kernel modules.
 {
     echo ".PKGINFO"
+    echo ".MTREE"
     echo ".INSTALL"
     (cd "${STAGING}" && find . -mindepth 1 \
         -not -name '.PKGINFO' \
+        -not -name '.MTREE' \
         -not -name '.INSTALL' \
         -not -name '.' \
         | LC_ALL=C sort)

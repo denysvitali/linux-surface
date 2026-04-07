@@ -317,7 +317,7 @@ jobs:
           echo "--- After cleanup ---"
           df -h / /home/runner
 
-      - name: Build Arch Linux package with makepkg
+      - name: Build Arch Linux package
         run: |
           export HOME=/home/runner
           export PATH="$HOME/.local/bin:$CONDA_ROOT/bin:$PATH"
@@ -325,27 +325,35 @@ jobs:
           source "$CONDA_ROOT/etc/profile.d/conda.sh" 2>/dev/null || true
           conda activate base 2>/dev/null || true
 
-          if ! command -v makepkg &>/dev/null; then
-            echo "ERROR: makepkg is not installed on the runner"
-            exit 1
+          rm -rf "${KERNEL_ARTIFACTS_DIR}-archlinux-build" "${KERNEL_ARTIFACTS_DIR}-archlinux"
+          mkdir -p "${KERNEL_ARTIFACTS_DIR}-archlinux"
+
+          if command -v makepkg &>/dev/null; then
+            echo "==> Using makepkg"
+            PKG_WORKDIR="${KERNEL_ARTIFACTS_DIR}-archlinux-build"
+            mkdir -p "${PKG_WORKDIR}"
+
+            cp packaging/archlinux/PKGBUILD "${PKG_WORKDIR}/"
+            cp packaging/archlinux/linux-denys.preset "${PKG_WORKDIR}/"
+            cp packaging/archlinux/linux-denys.conf "${PKG_WORKDIR}/"
+            cp packaging/archlinux/linux-denys.install "${PKG_WORKDIR}/"
+
+            sed -i "s|@COMMIT@|${GITHUB_SHA}|g" "${PKG_WORKDIR}/PKGBUILD"
+
+            cd "${PKG_WORKDIR}"
+            export PACKAGER="CI <github-actions@github.com>"
+            makepkg -f --noconfirm
+            cp ./*.pkg.tar.zst "${KERNEL_ARTIFACTS_DIR}-archlinux"/
+          else
+            echo "==> makepkg not available on runner, falling back to packaging/archlinux/make-pkg.sh"
+            PKGVER=$(make -s kernelversion | tr '-' '_')
+            export PKGVER
+            export PACKAGER="CI <github-actions@github.com>"
+
+            bash packaging/archlinux/make-pkg.sh \
+              "${KERNEL_ARTIFACTS_DIR}-modular" \
+              "${KERNEL_ARTIFACTS_DIR}-archlinux"
           fi
-
-          PKG_WORKDIR="${KERNEL_ARTIFACTS_DIR}-archlinux-build"
-          rm -rf "${PKG_WORKDIR}" "${KERNEL_ARTIFACTS_DIR}-archlinux"
-          mkdir -p "${PKG_WORKDIR}" "${KERNEL_ARTIFACTS_DIR}-archlinux"
-
-          cp packaging/archlinux/PKGBUILD "${PKG_WORKDIR}/"
-          cp packaging/archlinux/linux-denys.preset "${PKG_WORKDIR}/"
-          cp packaging/archlinux/linux-denys.conf "${PKG_WORKDIR}/"
-          cp packaging/archlinux/linux-denys.install "${PKG_WORKDIR}/"
-
-          sed -i "s|@COMMIT@|${GITHUB_SHA}|g" "${PKG_WORKDIR}/PKGBUILD"
-
-          cd "${PKG_WORKDIR}"
-          export PACKAGER="CI <github-actions@github.com>"
-          makepkg -f --noconfirm
-
-          cp ./*.pkg.tar.zst "${KERNEL_ARTIFACTS_DIR}-archlinux"/
 
       - name: Verify Arch Linux package
         run: |
