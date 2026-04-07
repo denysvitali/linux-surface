@@ -292,6 +292,18 @@ jobs:
           # Only the temporary modules_install tree is disposable.
           rm -rf "$BUILD_DIR/modules_install"
 
+      - name: Upload modular artifacts for packaging
+        if: matrix.variant.name == 'modular'
+        uses: actions/upload-artifact@v4
+        with:
+          name: modular-artifacts
+          path: |
+            ${{ env.KERNEL_ARTIFACTS_DIR }}-modular/Image.gz
+            ${{ env.KERNEL_ARTIFACTS_DIR }}-modular/sc8180x-surface-pro-x.dtb
+            ${{ env.KERNEL_ARTIFACTS_DIR }}-modular/modules.tar.gz
+            ${{ env.KERNEL_ARTIFACTS_DIR }}-modular/config.log
+            ${{ env.KERNEL_ARTIFACTS_DIR }}-modular/build-info.txt
+
   archlinux-package:
     needs: build
     runs-on: ubuntu-24.04-arm
@@ -299,6 +311,12 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Download modular artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: modular-artifacts
+          path: ${{ env.KERNEL_ARTIFACTS_DIR }}-modular
 
       - name: Free disk space
         run: |
