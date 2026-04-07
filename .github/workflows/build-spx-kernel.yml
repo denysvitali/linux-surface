@@ -338,12 +338,16 @@ jobs:
           rm -rf "${PKG_WORKDIR}" "${KERNEL_ARTIFACTS_DIR}-archlinux"
           mkdir -p "${PKG_WORKDIR}" "${KERNEL_ARTIFACTS_DIR}-archlinux"
 
-          cp packaging/archlinux/PKGBUILD "${PKG_WORKDIR}/"
+          cp packaging/archlinux/PKGBUILD.ci "${PKG_WORKDIR}/PKGBUILD"
           cp packaging/archlinux/linux-denys.preset "${PKG_WORKDIR}/"
           cp packaging/archlinux/linux-denys.conf "${PKG_WORKDIR}/"
           cp packaging/archlinux/linux-denys.install "${PKG_WORKDIR}/"
+          cp "${KERNEL_ARTIFACTS_DIR}-modular/Image.gz" "${PKG_WORKDIR}/"
+          cp "${KERNEL_ARTIFACTS_DIR}-modular/sc8180x-surface-pro-x.dtb" "${PKG_WORKDIR}/"
+          cp "${KERNEL_ARTIFACTS_DIR}-modular/modules.tar.gz" "${PKG_WORKDIR}/"
 
-          sed -i "s|@COMMIT@|${GITHUB_SHA}|g" "${PKG_WORKDIR}/PKGBUILD"
+          PKGVER=$(make -s kernelversion | tr '-' '_')
+          sed -i "s|@PKGVER@|${PKGVER}|g" "${PKG_WORKDIR}/PKGBUILD"
 
           ${CONTAINER_RUNTIME} run --rm \
             -e PACKAGER="CI <github-actions@github.com>" \
@@ -352,7 +356,7 @@ jobs:
             archlinux:base-devel \
             bash -lc '
               set -euo pipefail
-              pacman -Sy --noconfirm --needed git dtc xmlto inetutils bc kmod
+              pacman -Sy --noconfirm --needed libarchive gzip
               useradd -m builder
               chown -R builder:builder /work
               su builder -c "cd /work && makepkg -f --noconfirm"

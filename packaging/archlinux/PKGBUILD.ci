@@ -1,0 +1,72 @@
+# Maintainer: Denys Vitali <denys@denv.it>
+#
+# CI-only Arch package recipe for repacking pre-built modular artifacts
+# with makepkg. This avoids rebuilding the kernel inside the packaging job.
+
+pkgbase="linux-denys"
+pkgver="@PKGVER@"
+pkgrel="1"
+
+pkgdesc="Linux Surface Pro X kernel and modules"
+arch=("aarch64")
+url="https://github.com/denysvitali/linux-surface"
+license=("GPL-2.0-only")
+options=("!strip")
+
+source=(
+    "Image.gz"
+    "sc8180x-surface-pro-x.dtb"
+    "modules.tar.gz"
+    "linux-denys.preset"
+    "linux-denys.conf"
+    "linux-denys.install"
+)
+sha256sums=(
+    'SKIP'
+    'SKIP'
+    'SKIP'
+    'SKIP'
+    'SKIP'
+    'SKIP'
+)
+
+package_linux-denys() {
+    depends=("coreutils" "linux-firmware" "kmod" "mkinitcpio>=0.7")
+    optdepends=("crda: to set the correct wireless channels of your country")
+    install="${pkgbase}.install"
+
+    local kernver
+    kernver="$(bsdtar -tf "${srcdir}/modules.tar.gz" | sed -n 's|^\(\./\)\?lib/modules/\([^/]*\)/modules\.builtin$|\2|p' | head -n1)"
+    if [[ -z "${kernver}" ]]; then
+        echo "ERROR: could not determine kernel version from modules.tar.gz" >&2
+        return 1
+    fi
+
+    local modulesdir="${pkgdir}/usr/lib/modules/${kernver}"
+
+    install -Dm644 "${srcdir}/Image.gz" "${modulesdir}/vmlinuz"
+    echo "${pkgbase}" | install -Dm644 /dev/stdin "${modulesdir}/pkgbase"
+
+    bsdtar -xzf "${srcdir}/modules.tar.gz" -C "${pkgdir}" \
+        --transform='s,^\./lib/,./usr/lib/,' \
+        --transform='s,^lib/,./usr/lib/,'
+
+    rm -f "${modulesdir}/build" "${modulesdir}/source"
+
+    install -Dm644 \
+        "${srcdir}/sc8180x-surface-pro-x.dtb" \
+        "${modulesdir}/dtb/qcom/sc8180x-surface-pro-x.dtb"
+    mkdir -p "${pkgdir}/boot/dtb"
+    cp -r "${modulesdir}/dtb" "${pkgdir}/boot/dtb/${pkgbase}"
+
+    sed \
+        -e "s|%PKGBASE%|${pkgbase}|g" \
+        -e "s|%KERNVER%|${kernver}|g" \
+        "${srcdir}/${pkgbase}.preset" \
+        | install -Dm644 /dev/stdin "${pkgdir}/etc/mkinitcpio.d/${pkgbase}.preset"
+
+    install -Dm644 "${srcdir}/${pkgbase}.conf" \
+        "${pkgdir}/etc/mkinitcpio.d/${pkgbase}.conf"
+}
+
+pkgname=("${pkgbase}")
