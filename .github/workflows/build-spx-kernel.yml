@@ -294,7 +294,7 @@ jobs:
 
   archlinux-package:
     needs: build
-    runs-on: [self-hosted, arm64]
+    runs-on: ubuntu-24.04-arm
     if: success()
     steps:
       - name: Checkout repository
@@ -475,6 +475,13 @@ jobs:
             echo "  [warn] bsdtar not available, skipping verification"
           fi
 
+      - name: Upload Arch Linux package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: archlinux-package
+          path: ${{ env.KERNEL_ARTIFACTS_DIR }}-archlinux/*.pkg.tar.zst
+          if-no-files-found: error
+
   release:
     needs: [build, archlinux-package]
     runs-on: [self-hosted, arm64]
@@ -488,9 +495,16 @@ jobs:
           # Copy from persistent local paths (same runner, no download needed)
           cp "${KERNEL_ARTIFACTS_DIR}-modular"/* release-modular/
           cp "${KERNEL_ARTIFACTS_DIR}-builtin"/* release-builtin/
-          cp "${KERNEL_ARTIFACTS_DIR}-archlinux"/*.pkg.tar.zst release-archlinux/
+
+      - name: Download Arch Linux package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: archlinux-package
+          path: release-archlinux
 
           # Prefix filenames so both variants can coexist in a single release
+      - name: Prefix release filenames
+        run: |
           for f in release-modular/*; do
             mv "$f" "release-modular/modular-$(basename "$f")"
           done
