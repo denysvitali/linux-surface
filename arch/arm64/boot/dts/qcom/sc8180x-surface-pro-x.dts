@@ -1526,6 +1526,22 @@
 	status = "okay";
 };
 
+&camss {
+	/*
+	 * Enable the Spectra 390 camera subsystem core on SPX.
+	 *
+	 * The sensor graph is still missing, so this only powers up the CAMSS
+	 * block itself.  Sensor subnodes, CCI buses, reset GPIOs, regulators,
+	 * and CSI endpoint wiring remain to be added once verified on hardware.
+	 *
+	 * Regulator wiring matches the other SC8180X laptop-class boards.
+	 */
+	vdda-phy-supply = <&vreg_l3c_1p2>;
+	vdda-pll-supply = <&vreg_l5e_0p88>;
+
+	status = "okay";
+};
+
 &mdss {
 	status = "okay";
 };
