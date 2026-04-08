@@ -99,8 +99,9 @@
  *     0x3e/0x44/0x66/0x50 plus interrupt GPIO 166 and reset GPIO 5.
  *     The tablet itself appears to rely on Windows Hello face sign-in;
  *     keep this path unbound until the actual hardware role is confirmed.
- *   - WCD9380 reset GPIO: search ACPI DSDT for "QCOM0425" _CRS resource.
- *   - WSA speaker model and powerdown GPIOs: WSA8810 vs WSA8830 TBD.
+ *   - WCD9380 reset GPIO: confirmed as TLMM GPIO 143.
+ *   - WSA speaker model: WSA8810 confirmed; no TLMM powerdown GPIO is
+ *     exposed in DSDT and SoundWire power is firmware-managed.
  *   - DMIC pin assignments for vamacro: GPIO numbers from DSDT.
  *   - pcie3: pinctrl state pcie3_default_state is defined but &pcie3 is not
  *     enabled (hot-plug commands time out). Leave disabled until resolved.
@@ -2137,9 +2138,7 @@
  * the older APR/Q6AFE transport used by SC8180X (as opposed to the APM
  * transport used by SC8280XP).
  *
- * TODO items that require physical hardware verification:
- *   - WCD9380 reset GPIO number (search ACPI DSDT for QCOM0425 _CRS)
- *   - Speaker model (WSA8810/WSA8830) and SoundWire device addresses
+ * Remaining TODO items that still require physical hardware verification:
  *   - DMIC pin assignments for built-in microphones (GPIO numbers)
  *   - Exact micbias voltages
  *
