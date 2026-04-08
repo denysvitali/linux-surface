@@ -91,9 +91,9 @@
  *     ECC0/ECC1 (CC polarity) and EDI0/EDI1 (direction) as in-memory
  *     fields with no GpioIo _CRS resource on UCS0.  pmic_glink_altmode
  *     handles orientation internally; do not add orientation-gpios.
- *   - IPA IOMMU SIDs: 0x720/0x722 carried from SDM845; verify against
- *     SC8180X SMMU SID table before enabling IPA in production.
- *     Requires modem firmware (remoteproc_mpss) to be loaded first.
+ *   - IPA IOMMU SIDs: verified from ACPI IORT as 0x520/0x522 in
+ *     sc8180x.dtsi. End-to-end WWAN data still requires runtime testing
+ *     with modem firmware/userspace.
  *   - vph_pwr voltage: needs oscilloscope measurement (nominally 3.3–3.8 V).
  *   - i2c9 MSHW0125 auxiliary device: ACPI exposes addresses
  *     0x3e/0x44/0x66/0x50 plus interrupt GPIO 166 and reset GPIO 5.
