@@ -1594,8 +1594,10 @@
 	 *   OV5693  uses CAM_CC_MCLK2_CLK (CAM_CC_MCLK2_CLK_SRC = 24 MHz)
 	 *   OV7251  uses CAM_CC_MCLK3_CLK (CAM_CC_MCLK3_CLK_SRC = 24 MHz)
 	 *
-	 * Link frequencies are conservative 2-lane estimates; actual values
-	 * should be verified against sensor datasheet and hardware testing.
+	 * Link frequencies (from upstream sensor drivers):
+	 *   OV13858: 540 MHz (4-lane) or 270 MHz (subsampled)
+	 *   OV5693:  419.2 MHz (2-lane)
+	 *   OV7251:  319.2 MHz or 240 MHz (1-lane)
 	 */
 	vdda-phy-supply = <&vreg_l3c_1p2>;
 	vdda-pll-supply = <&vreg_l5e_0p88>;
@@ -1671,7 +1673,7 @@
 
 			port {
 				ov13858_ep: endpoint {
-					link-frequencies = /bits/ 64 <360000000>;
+					link-frequencies = /bits/ 64 <540000000>, <270000000>;
 					data-lanes = <1 2 3 4>;
 					remote-endpoint = <&csiphy0_ep>;
 				};
@@ -1710,7 +1712,7 @@
 
 			port {
 				ov5693_ep: endpoint {
-					link-frequencies = /bits/ 64 <360000000>;
+					link-frequencies = /bits/ 64 <419200000>;
 					data-lanes = <1 2>;
 					remote-endpoint = <&csiphy2_ep>;
 				};
@@ -1750,7 +1752,7 @@
 
 			port {
 				ov7251_ep: endpoint {
-					link-frequencies = /bits/ 64 <360000000>;
+					link-frequencies = /bits/ 64 <240000000>, <319200000>;
 					data-lanes = <0>;
 					remote-endpoint = <&csiphy3_ep>;
 				};
