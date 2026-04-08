@@ -367,7 +367,7 @@ static const struct software_node *ssam_node_group_spx[] = {
 	&ssam_node_sam_rtc,
 	&ssam_node_bat_ac,
 	&ssam_node_bat_main,
-	// TODO: platform profile (TMP performance profiles need SPX EC verification)
+	&ssam_node_tmp_perf_profile,
 	&ssam_node_tmp_sensors,
 	&ssam_node_kip_tablet_switch,
 	&ssam_node_hid_kip_keyboard,
