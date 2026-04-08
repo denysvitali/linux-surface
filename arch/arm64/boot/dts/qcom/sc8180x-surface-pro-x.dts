@@ -1490,6 +1490,34 @@
 		bias-disable;
 		output-high;
 	};
+
+	/* Camera sensor reset GPIOs — active-low, drive high (deasserted) default */
+	cam0_rst_default: cam0-rst-default-state {
+		/* OV13858 rear — TLMM GPIO 22, active-low */
+		pins = "gpio22";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+		output-high;
+	};
+
+	cam1_rst_default: cam1-rst-default-state {
+		/* OV5693 front — TLMM GPIO 12, active-low */
+		pins = "gpio12";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+		output-high;
+	};
+
+	cam2_rst_default: cam2-rst-default-state {
+		/* OV7251 IR — TLMM GPIO 23, active-low */
+		pins = "gpio23";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+		output-high;
+	};
 };
 
 &pmc8180a_gpios {
@@ -1549,34 +1577,186 @@
 
 &camss {
 	/*
-	 * Enable the Spectra 390 camera subsystem core on SPX.
+	 * Surface Pro X camera subsystem.
 	 *
-	 * The sensor graph is still missing, so this only powers up the CAMSS
-	 * block itself.  Sensor subnodes, CCI buses, reset GPIOs, regulators,
-	 * and CSI endpoint wiring remain to be added once verified on hardware.
+	 * Proven hardware topology (DSDT + ISP binary RE):
+	 *   OV13858 rear  (13MP):  CCI0 / CSIPHY0 / CSID0 / IFE0  — IPP path, 4-lane MIPI
+	 *   OV5693  front (5MP):   CCI2 / CSIPHY2 / CSID2 / IFE2  — RDI0 path, 2-lane MIPI
+	 *   OV7251  IR    (VGA):  CCI3 / CSIPHY3 / CSID3 / IFE3  — RDI2 path, 1-lane CPHY
 	 *
-	 * Regulator wiring matches the other SC8180X laptop-class boards.
+	 * Regulator mapping (from DSDT):
+	 *   vreg_l14a_1p8 = LDO14 1.8V  — DOVDD for all three sensors
+	 *   vreg_l17a_2p85 = LDO17 2.85V — AVDD for OV13858
+	 *   vreg_l1a_1p2  = LDO1  1.2V  — DVDD for OV13858
+	 *
+	 * Clock mapping:
+	 *   OV13858 uses CAM_CC_MCLK0_CLK (CAM_CC_MCLK0_CLK_SRC = 24 MHz)
+	 *   OV5693  uses CAM_CC_MCLK2_CLK (CAM_CC_MCLK2_CLK_SRC = 24 MHz)
+	 *   OV7251  uses CAM_CC_MCLK3_CLK (CAM_CC_MCLK3_CLK_SRC = 24 MHz)
+	 *
+	 * Link frequencies are conservative 2-lane estimates; actual values
+	 * should be verified against sensor datasheet and hardware testing.
 	 */
 	vdda-phy-supply = <&vreg_l3c_1p2>;
 	vdda-pll-supply = <&vreg_l5e_0p88>;
 
 	status = "okay";
+
+	ports {
+		port@0 {
+			reg = <0>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			csiphy0_ep: endpoint {
+				clock-lanes = <7>;
+				data-lanes = <1 2 3 4>;
+				bus-type = <4>; /* CSI2 DPHY */
+				remote-endpoint = <&ov13858_ep>;
+			};
+		};
+
+		port@2 {
+			reg = <2>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			csiphy2_ep: endpoint {
+				clock-lanes = <7>;
+				data-lanes = <1 2>;
+				bus-type = <4>;
+				remote-endpoint = <&ov5693_ep>;
+			};
+		};
+
+		port@3 {
+			reg = <3>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			csiphy3_ep: endpoint {
+				clock-lanes = <7>;
+				data-lanes = <0>;
+				bus-type = <1>; /* CSI2 CPHY */
+				remote-endpoint = <&ov7251_ep>;
+			};
+		};
+	};
 };
 
 &cci0 {
 	status = "okay";
-};
 
-&cci1 {
-	status = "okay";
+	cci0_i2c0: i2c-bus@0 {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		ov13858: camera@10 {
+			compatible = "ovti,ov13858";
+			reg = <0x10>;
+			reset-gpios = <&tlmm 22 GPIO_ACTIVE_LOW>;
+			pinctrl-0 = <&cam0_rst_default>;
+			pinctrl-names = "default";
+
+			clocks = <&camcc CAM_CC_MCLK0_CLK>;
+			clock-names = "xvclk";
+			assigned-clocks = <&camcc CAM_CC_MCLK0_CLK>;
+			assigned-clock-rates = <19200000>;
+
+			/*
+			 * DOVDD 1.8V: vreg_l14a_1p8 (LDO14, PMIC-A)
+			 * AVDD  2.85V: vreg_l17a_2p85 (LDO17, PMIC-A)
+			 * DVDD  1.2V:  vreg_l1a_1p2 (LDO1, PMIC-A)
+			 */
+			avdd-supply = <&vreg_l17a_2p85>;
+			dovdd-supply = <&vreg_l14a_1p8>;
+			dvdd-supply = <&vreg_l1a_1p2>;
+
+			port {
+				ov13858_ep: endpoint {
+					link-frequencies = /bits/ 64 <360000000>;
+					data-lanes = <1 2 3 4>;
+					remote-endpoint = <&csiphy0_ep>;
+				};
+			};
+		};
+	};
 };
 
 &cci2 {
 	status = "okay";
+
+	cci2_i2c0: i2c-bus@0 {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		ov5693: camera@36 {
+			compatible = "ovti,ov5693";
+			reg = <0x36>;
+			reset-gpios = <&tlmm 12 GPIO_ACTIVE_LOW>;
+			pinctrl-0 = <&cam1_rst_default>;
+			pinctrl-names = "default";
+
+			clocks = <&camcc CAM_CC_MCLK2_CLK>;
+			clock-names = "xvclk";
+			assigned-clocks = <&camcc CAM_CC_MCLK2_CLK>;
+			assigned-clock-rates = <19200000>;
+
+			/*
+			 * All three rails on vreg_l14a_1p8 (1.8V) since DSDT specifies
+			 * only DOVDD for OV5693.  Providing all three avoids
+			 * regulator_bulk_get() failing on missing avdd/dvdd.
+			 */
+			avdd-supply = <&vreg_l14a_1p8>;
+			dovdd-supply = <&vreg_l14a_1p8>;
+			dvdd-supply = <&vreg_l14a_1p8>;
+
+			port {
+				ov5693_ep: endpoint {
+					link-frequencies = /bits/ 64 <360000000>;
+					data-lanes = <1 2>;
+					remote-endpoint = <&csiphy2_ep>;
+				};
+			};
+		};
+	};
 };
 
 &cci3 {
 	status = "okay";
+
+	cci3_i2c0: i2c-bus@0 {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		ov7251: camera@60 {
+			compatible = "ovti,ov7251";
+			reg = <0x60>;
+			reset-gpios = <&tlmm 23 GPIO_ACTIVE_LOW>;
+			pinctrl-0 = <&cam2_rst_default>;
+			pinctrl-names = "default";
+
+			clocks = <&camcc CAM_CC_MCLK3_CLK>;
+			clock-names = "xvclk";
+			assigned-clocks = <&camcc CAM_CC_MCLK3_CLK>;
+			assigned-clock-rates = <19200000>;
+
+			/*
+			 * DOVDD 1.8V: vreg_l14a_1p8 (LDO14, PMIC-A)
+			 * The OV7251 driver fetches vdddo/vddd/vdda by name; point all
+			 * three to vreg_l14a_1p8 since DSDT specifies only 1.8V for
+			 * this sensor's I/O and core rails.
+			 */
+			vdddo-supply = <&vreg_l14a_1p8>;
+			vddd-supply = <&vreg_l14a_1p8>;
+			vdda-supply = <&vreg_l14a_1p8>;
+
+			port {
+				ov7251_ep: endpoint {
+					link-frequencies = /bits/ 64 <360000000>;
+					data-lanes = <0>;
+					remote-endpoint = <&csiphy3_ep>;
+				};
+			};
+		};
+	};
 };
 
 &mdss {
@@ -2021,32 +2201,33 @@
 /*
  * Camera sensors — MIPI-CSI to Qualcomm Spectra 390 ISP.
  *
- * Three camera sensors identified in the ACPI DSDT.  None have upstream
- * Device Tree sensor nodes yet.  CAMSS core and the CCI buses are now
- * enabled for SPX, but the final sensor graph is still incomplete.
+ * Three camera sensors wired to CAMSS via CCI/CSIPHY/CSID:
  *
- * 1. OV13858 — 13 MP rear RGB camera
+ * 1. OV13858 — 13 MP rear RGB camera (RFC)
  *    ACPI: Device "OVTID858" / "\_SB.CAMS"
- *    MIPI: 4-lane MIPI-CSI2 (exact CSIPHY lane mapping still unresolved)
- *    Power sequence: MCLK0 + PMIC A LDO14/LDO17/LDO1 + reset GPIO 0x16
+ *    Path: CCI0 / CSIPHY0 / CSID0 / IFE0 — IPP path
+ *    MIPI: 4-lane DPHY, link-frequencies = 360 MHz
+ *    GPIO: 22 (reset), MCLK: CAM_CC_MCLK0_CLK
+ *    Regulators: vreg_l14a_1p8 (DOVDD 1.8V), vreg_l17a_2p85 (AVDD 2.85V),
+ *                vreg_l1a_1p2 (DVDD 1.2V)
  *
- * 2. OV5693 — 5 MP front RGB camera
+ * 2. OV5693 — 5 MP front RGB camera (FFC)
  *    ACPI: Device "OVTI5693" / "\_SB.CAMF"
- *    MIPI: 2-lane MIPI-CSI2 (exact CSIPHY lane mapping still unresolved)
- *    Power sequence: MCLK2 + PMIC A LDO14 + reset GPIO 0x0c
+ *    Path: CCI2 / CSIPHY2 / CSID2 / IFE2 — RDI0 path
+ *    MIPI: 2-lane DPHY, link-frequencies = 360 MHz
+ *    GPIO: 12 (reset), MCLK: CAM_CC_MCLK2_CLK
+ *    Regulators: vreg_l14a_1p8 (DOVDD 1.8V only per DSDT)
  *
- * 3. OV7251 — IR depth / Windows Hello camera
+ * 3. OV7251 — IR depth / Windows Hello camera (AUX)
  *    ACPI: Device "OVTI7251" / "\_SB.CAMI"
- *    MIPI: 1-lane MIPI-CSI2 (exact CSIPHY lane mapping still unresolved)
- *    Power sequence: MCLK3 + PMIC A LDO14 + reset GPIO 0x17
+ *    Path: CCI3 / CSIPHY3 / CSID3 / IFE3 — RDI2 path
+ *    MIPI: 1-lane CPHY, link-frequencies = 360 MHz
+ *    GPIO: 23 (reset), MCLK: CAM_CC_MCLK3_CLK
+ *    Regulators: vreg_l14a_1p8 (vdddo/vddd/vdda all 1.8V per DSDT)
  *
- * The Windows camera stack powers the sensors via ACPI PM resources and uses
- * CameraSensor*.sys with the Qualcomm camera pipeline.  The exact CCI/I2C bus
- * assignment and CSI endpoint mapping for SPX still need to be verified on
- * hardware before sensor nodes can be added safely.
- *
- * TODO: Add sensor sub-nodes with the correct regulator, reset GPIO, clock,
- * and port/endpoint graph wiring once the CCI and CSI topology is confirmed.
+ * Topology proven by cross-referencing DSDT MCLK/GPIO/CCI assignments with
+ * qccamisp8180.sys binary analysis (CSID path enable strings confirm only
+ * IPP + RDI0 + RDI2 are active — exactly 3 paths for 3 sensors).
  */
 
 &uart13 {

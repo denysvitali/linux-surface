@@ -1753,6 +1753,14 @@ static const struct i2c_device_id ov13858_id_table[] = {
 
 MODULE_DEVICE_TABLE(i2c, ov13858_id_table);
 
+#if defined(CONFIG_ACPI) || defined(CONFIG_OF)
+static const struct of_device_id ov13858_of_match[] = {
+	{ .compatible = "ovti,ov13858", },
+	{ /* sentinel */ }
+};
+MODULE_DEVICE_TABLE(of, ov13858_of_match);
+#endif
+
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id ov13858_acpi_ids[] = {
 	{"OVTID858"},
@@ -1765,7 +1773,12 @@ MODULE_DEVICE_TABLE(acpi, ov13858_acpi_ids);
 static struct i2c_driver ov13858_i2c_driver = {
 	.driver = {
 		.name = "ov13858",
+#if defined(CONFIG_ACPI) || defined(CONFIG_OF)
+		.of_match_table = ov13858_of_match,
+#endif
+#ifdef CONFIG_ACPI
 		.acpi_match_table = ACPI_PTR(ov13858_acpi_ids),
+#endif
 	},
 	.probe = ov13858_probe,
 	.remove = ov13858_remove,
