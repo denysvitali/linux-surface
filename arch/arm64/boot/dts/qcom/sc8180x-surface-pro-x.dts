@@ -1542,6 +1542,22 @@
 	status = "okay";
 };
 
+&cci0 {
+	status = "okay";
+};
+
+&cci1 {
+	status = "okay";
+};
+
+&cci2 {
+	status = "okay";
+};
+
+&cci3 {
+	status = "okay";
+};
+
 &mdss {
 	status = "okay";
 };
