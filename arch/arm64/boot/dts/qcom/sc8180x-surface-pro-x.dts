@@ -2160,10 +2160,8 @@
  * vreg_s4a_1p8 (1.8 V) is used for vdd-buck, vdd-rxtx, and vdd-io.
  * vreg_bob (3.3 V) is used for vdd-mic-bias (headset mic bias).
  *
- * TODO: reset-gpios — GPIO number needs ACPI DSDT verification.
- *       On SM8250-MTP this is GPIO 32; on ThinkPad X13s it is GPIO 106.
- *       Until confirmed, leave commented out to avoid a hard fault at
- *       probe time.
+ * reset-gpios is confirmed as TLMM GPIO 143 from the ACPI DSDT _CRS for
+ * QCOM0425 / AUDD. This differs from both SM8250-MTP and ThinkPad X13s.
  */
 &sound {
 	compatible = "qcom,sm8250-sndcard";
