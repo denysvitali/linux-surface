@@ -2309,15 +2309,17 @@
 		 * variant of SDM845 using the same IPA v3.5.1 silicon.  No
 		 * separate qcom,sc8180x-ipa data set exists upstream.
 		 *
-		 * IOMMU SIDs 0x720/0x722 are inherited from SDM845; verify
-		 * against the SC8180X SMMU SID table before enabling on real
-		 * hardware.
+		 * ACPI IORT entry "\_SB.IPA" maps IPA to SMMU stream IDs based
+		 * at 0x520.  IPA on these Qualcomm laptop-class parts uses two
+		 * execution environments, represented in DT as the SID pair
+		 * 0x520 / 0x522 just like other IPA descriptions use base/+2
+		 * SID pairs.
 		 */
 		ipa: ipa@1e40000 {
 			compatible = "qcom,sdm845-ipa";
 
-			iommus = <&apps_smmu 0x720 0x0>,
-				 <&apps_smmu 0x722 0x0>;
+			iommus = <&apps_smmu 0x520 0x0>,
+				 <&apps_smmu 0x522 0x0>;
 			reg = <0 0x01e40000 0 0x7000>,
 			      <0 0x01e47000 0 0x2000>,
 			      <0 0x01e04000 0 0x2c000>;
