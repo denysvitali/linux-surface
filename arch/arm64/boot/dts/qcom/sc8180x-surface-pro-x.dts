@@ -2019,33 +2019,31 @@
  * Camera sensors — MIPI-CSI to Qualcomm Spectra 390 ISP.
  *
  * Three camera sensors identified in the ACPI DSDT.  None have upstream
- * Device Tree nodes yet; CAMSS / IFE support for SC8180X is a work in
- * progress.  Documented here for future driver enablement.
+ * Device Tree sensor nodes yet.  CAMSS core and the CCI buses are now
+ * enabled for SPX, but the final sensor graph is still incomplete.
  *
  * 1. OV13858 — 13 MP rear RGB camera
- *    DSDT: Device "OVTI13B8" (_HID), I2C address 0x10
- *    MIPI: 4-lane MIPI-CSI2 @ 1.2 Gbps/lane (4800 Mbps aggregate)
- *    Clock: MCLK0 (gpio144), 24 MHz from camcc
- *    Controls: reset GPIO 78 (active-low), VANA/VDIG/VIO via RPMh
+ *    ACPI: Device "OVTID858" / "\_SB.CAMS"
+ *    MIPI: 4-lane MIPI-CSI2 (exact CSIPHY lane mapping still unresolved)
+ *    Power sequence: MCLK0 + PMIC A LDO14/LDO17/LDO1 + reset GPIO 0x16
  *
  * 2. OV5693 — 5 MP front RGB camera
- *    DSDT: Device "OVTI5693" (_HID), I2C address 0x36
- *    MIPI: 2-lane MIPI-CSI2 @ 1.2 Gbps/lane
- *    Clock: MCLK1 (gpio145), 24 MHz from camcc
- *    Controls: reset GPIO 87 (active-low)
+ *    ACPI: Device "OVTI5693" / "\_SB.CAMF"
+ *    MIPI: 2-lane MIPI-CSI2 (exact CSIPHY lane mapping still unresolved)
+ *    Power sequence: MCLK2 + PMIC A LDO14 + reset GPIO 0x0c
  *
  * 3. OV7251 — IR depth / Windows Hello camera
- *    DSDT: Device "OVTI7251" (_HID), I2C address 0x60
- *    MIPI: 1-lane MIPI-CSI2 @ 800 Mbps/lane
- *    Clock: MCLK2 (gpio146), 24 MHz from camcc
- *    Controls: reset GPIO 88 (active-low)
+ *    ACPI: Device "OVTI7251" / "\_SB.CAMI"
+ *    MIPI: 1-lane MIPI-CSI2 (exact CSIPHY lane mapping still unresolved)
+ *    Power sequence: MCLK3 + PMIC A LDO14 + reset GPIO 0x17
  *
- * All three sensors share an I2C bus on QUP2_SE0 (i2c16 in sc8180x.dtsi)
- * via GPIO140 (SDA) / GPIO141 (SCL).  Windows uses CameraSensor*.sys
- * (WDM kernel-mode driver stack via AvsCam.sys / QcomCamera.sys).
+ * The Windows camera stack powers the sensors via ACPI PM resources and uses
+ * CameraSensor*.sys with the Qualcomm camera pipeline.  The exact CCI/I2C bus
+ * assignment and CSI endpoint mapping for SPX still need to be verified on
+ * hardware before sensor nodes can be added safely.
  *
- * TODO: Add CAMSS node for SC8180X IFE/VFE, then add sensor sub-nodes
- * with port/endpoint graphs tied to the appropriate CSI PHY.
+ * TODO: Add sensor sub-nodes with the correct regulator, reset GPIO, clock,
+ * and port/endpoint graph wiring once the CCI and CSI topology is confirmed.
  */
 
 &uart13 {
