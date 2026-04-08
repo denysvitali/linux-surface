@@ -52,7 +52,7 @@
  *  spi1 / hid@0      CONFIG_SPI_HID (surface_pro_x.config)
  *  i2c2 / tcs3430    CONFIG_TCS3430 (surface_pro_x.config)
  *  i2c4 / max34417   CONFIG_SENSORS_MAX34417 (surface_pro_x.config)
- *  i2c9              fingerprint sensor placeholder (MSHW0125, no upstream driver)
+ *  i2c9              MSHW0125 auxiliary device placeholder (unbound)
  *  uart13 / wcn3998  CONFIG_BT_HCIUART + CONFIG_BT_HCIUART_QCA
  *  uart15 / ssam     CONFIG_SURFACE_AGGREGATOR (surface_pro_x.config)
  *  wifi              CONFIG_ATH10K_SNOC (surface_pro_x.config)
@@ -95,8 +95,10 @@
  *     SC8180X SMMU SID table before enabling IPA in production.
  *     Requires modem firmware (remoteproc_mpss) to be loaded first.
  *   - vph_pwr voltage: needs oscilloscope measurement (nominally 3.3–3.8 V).
- *   - i2c9 fingerprint sensor: MSHW0125 at addresses 0x3e/0x44/0x66/0x50,
- *     interrupt GPIO 166, reset GPIO 5. No upstream Linux driver yet.
+ *   - i2c9 MSHW0125 auxiliary device: ACPI exposes addresses
+ *     0x3e/0x44/0x66/0x50 plus interrupt GPIO 166 and reset GPIO 5.
+ *     The tablet itself appears to rely on Windows Hello face sign-in;
+ *     keep this path unbound until the actual hardware role is confirmed.
  *   - WCD9380 reset GPIO: search ACPI DSDT for "QCOM0425" _CRS resource.
  *   - WSA speaker model and powerdown GPIOs: WSA8810 vs WSA8830 TBD.
  *   - DMIC pin assignments for vamacro: GPIO numbers from DSDT.
@@ -1985,7 +1987,7 @@
 	pinctrl-0 = <&i2c9_active>;
 
 	/*
-	 * TODO: Fingerprint sensor (MSHW0125 / Microsoft Surface fingerprint).
+	 * TODO: MSHW0125 auxiliary device exposed on ACPI IC10 / i2c9.
 	 *
 	 * DSDT cross-reference: Device "MSHW0125" (_HID) on I2C9 (QUP1_SE1,
 	 * GPIO39=SDA, GPIO40=SCL, 100 kHz Standard Mode).
@@ -1995,13 +1997,13 @@
 	 *   GpioInt:  TLMM GPIO 166, edge-triggered, active-low  (interrupt)
 	 *   GpioIo:   TLMM GPIO 5, output-only                   (reset)
 	 *
-	 * There is no upstream Linux driver for this proprietary fingerprint
-	 * controller as of 2026-03.  A driver node cannot be added until a
-	 * compatible binding is upstreamed.  The node is intentionally left
-	 * absent to avoid binding an unrecognised compatible string.
+	 * Microsoft documents Surface Pro X tablet authentication via Windows
+	 * Hello face sign-in, while fingerprint support is documented on some
+	 * optional keyboards.  Keep this path unbound until the actual hardware
+	 * role on SPX is confirmed and a Linux binding exists.
 	 *
 	 * When a driver becomes available, add a node such as:
-	 *   fingerprint@3e {
+	 *   mshw0125@3e {
 	 *       compatible = "microsoft,mshw0125";
 	 *       reg = <0x3e>;
 	 *       interrupts-extended = <&tlmm 166 IRQ_TYPE_EDGE_FALLING>;
