@@ -53,7 +53,11 @@ package_linux-denys() {
         mv "${pkgdir}/lib" "${pkgdir}/usr/lib"
     fi
 
-    install -Dm644 "${srcdir}/Image.gz" "${modulesdir}/vmlinuz"
+    # Decompress Image.gz — ARM64 UEFI firmware requires an uncompressed
+    # PE/COFF kernel Image.  GRUB handles gzip natively, but systemd-boot
+    # and direct UEFI boot do not.
+    gunzip -k "${srcdir}/Image.gz"
+    install -Dm644 "${srcdir}/Image" "${modulesdir}/vmlinuz"
     echo "${pkgbase}" | install -Dm644 /dev/stdin "${modulesdir}/pkgbase"
 
     rm -f "${modulesdir}/build" "${modulesdir}/source"
