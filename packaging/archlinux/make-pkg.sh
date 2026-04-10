@@ -46,8 +46,9 @@ trap 'rm -rf "$STAGING"' EXIT
 
 MODULESDIR="${STAGING}/usr/lib/modules/${KERNVER}"
 
-# Kernel image + pkgbase marker
-install -Dm644 "${ARTIFACTS_DIR}/Image.gz" "${MODULESDIR}/vmlinuz"
+# Decompress Image.gz: ARM64 UEFI boot expects an uncompressed PE/COFF Image.
+gzip -dc "${ARTIFACTS_DIR}/Image.gz" > "${STAGING}/Image"
+install -Dm644 "${STAGING}/Image" "${MODULESDIR}/vmlinuz"
 printf '%s' "${PKGBASE}" | install -Dm644 /dev/stdin "${MODULESDIR}/pkgbase"
 
 # Modules (the tarball contains lib/modules/...; transform to usr/lib/modules/

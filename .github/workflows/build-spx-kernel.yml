@@ -419,14 +419,22 @@ jobs:
 
           echo ""
           echo "==> Checking for kernel image and pkgbase..."
-          if bsdtar -tf "${PKG_FILE}" | grep -qE '(^|\./)usr/lib/modules/[^/]+/vmlinuz$'; then
-            echo "  vmlinuz: FOUND"
+          KERNEL_ENTRY="$(bsdtar -tf "${PKG_FILE}" | grep -E '(^|\./)usr/lib/modules/[^/]+/vmlinuz$' | head -1 || true)"
+          if [[ -n "${KERNEL_ENTRY}" ]]; then
+            echo "  vmlinuz: FOUND at ${KERNEL_ENTRY}"
+            KERNEL_MAGIC="$(bsdtar -xOf "${PKG_FILE}" "${KERNEL_ENTRY#./}" | od -An -tx1 -N2 | tr -d ' \n')"
+            if [[ "${KERNEL_MAGIC}" == "1f8b" ]]; then
+              echo "  vmlinuz payload is still gzip-compressed!"
+              exit 1
+            fi
+            echo "  vmlinuz payload is not gzip-compressed: OK"
           else
             echo "  vmlinuz: MISSING!"
             exit 1
           fi
-          if bsdtar -tf "${PKG_FILE}" | grep -qE '(^|\./)usr/lib/modules/[^/]+/pkgbase$'; then
-            echo "  pkgbase: FOUND"
+          PKGBASE_ENTRY="$(bsdtar -tf "${PKG_FILE}" | grep -E '(^|\./)usr/lib/modules/[^/]+/pkgbase$' | head -1 || true)"
+          if [[ -n "${PKGBASE_ENTRY}" ]]; then
+            echo "  pkgbase: FOUND at ${PKGBASE_ENTRY}"
           else
             echo "  pkgbase: MISSING!"
             exit 1
