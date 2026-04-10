@@ -95,6 +95,7 @@ The aggressive caching strategy provides significant speed improvements:
 - **Git repository**: Persistent clone in `~/kernel-builds/linux-surface-src` - only fetches deltas (~MB instead of ~4GB per run)
 - **Ccache**: 50GB persistent cache in `~/.cache/ccache`
 - **Build objects**: Preserved between runs for true incremental builds
+- **Temporary install trees**: `modules_install` output is deleted after packaging to reclaim disk without throwing away compiled objects
 - **No network overhead**: Zero upload/download of cache from GitHub Actions
 
 ## Bandwidth Savings
