@@ -59,6 +59,7 @@ package_linux-denys() {
     # Use gzip -dc (stdout) because makepkg symlinks noextract sources and
     # gunzip -k cannot write alongside a symlink.
     gzip -dc "${srcdir}/Image.gz" > "${srcdir}/Image"
+    install -Dm644 "${srcdir}/Image" "${pkgdir}/boot/vmlinuz-${pkgbase}"
     install -Dm644 "${srcdir}/Image" "${modulesdir}/vmlinuz"
     echo "${pkgbase}" | install -Dm644 /dev/stdin "${modulesdir}/pkgbase"
 
