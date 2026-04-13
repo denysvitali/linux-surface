@@ -767,8 +767,6 @@
 		vdd-l3-l4-l5-l18-supply = <&vreg_s7c_0p96>;
 		vdd-l6-l9-supply = <&vreg_s6c_1p37>;
 		vdd-l7-l12-l14-l15-supply = <&vreg_s5a_2p04>;
-		vdd-l13-l16-l17-supply = <&vreg_bob>;
-
 		vreg_s5a_2p04: smps5 {
 			regulator-min-microvolt = <2040000>;
 			regulator-max-microvolt = <2040000>;
@@ -783,12 +781,6 @@
 		vreg_l14a_1p8: ldo14 {
 			regulator-min-microvolt = <1800000>;
 			regulator-max-microvolt = <1800000>;
-		};
-
-		vreg_l17a_2p85: ldo17 {
-			regulator-min-microvolt = <2850000>;
-			regulator-max-microvolt = <2850000>;
-			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
 		vreg_l1a_1p2: ldo1 {
@@ -1610,7 +1602,7 @@
 	 *
 	 * Regulator mapping (from DSDT):
 	 *   vreg_l14a_1p8 = LDO14 1.8V  — DOVDD for all three sensors
-	 *   vreg_l17a_2p85 = LDO17 2.85V — AVDD for OV13858
+	 *   vreg_bob       = BOB 3.3V   — AVDD for OV13858 (LDO17 removed)
 	 *   vreg_l1a_1p2  = LDO1  1.2V  — DVDD for OV13858
 	 *
 	 * Clock mapping:
@@ -1688,10 +1680,12 @@
 
 			/*
 			 * DOVDD 1.8V: vreg_l14a_1p8 (LDO14, PMIC-A)
-			 * AVDD  2.85V: vreg_l17a_2p85 (LDO17, PMIC-A)
+			 * AVDD  2.85V: vreg_bob (3.3V, LDO17/PMC8180A was removed
+			 *              due to EILSEQ cascade failure; vreg_bob is
+			 *              the only available higher-voltage rail)
 			 * DVDD  1.2V:  vreg_l1a_1p2 (LDO1, PMIC-A)
 			 */
-			avdd-supply = <&vreg_l17a_2p85>;
+			avdd-supply = <&vreg_bob>;
 			dovdd-supply = <&vreg_l14a_1p8>;
 			dvdd-supply = <&vreg_l1a_1p2>;
 
@@ -2236,7 +2230,7 @@
  *    Path: CCI0 / CSIPHY0 / CSID0 / IFE0 — IPP path
  *    MIPI: 4-lane DPHY, link-frequencies = 360 MHz
  *    GPIO: 22 (reset), MCLK: CAM_CC_MCLK0_CLK
- *    Regulators: vreg_l14a_1p8 (DOVDD 1.8V), vreg_l17a_2p85 (AVDD 2.85V),
+ *    Regulators: vreg_l14a_1p8 (DOVDD 1.8V), vreg_bob (AVDD 3.3V),
  *                vreg_l1a_1p2 (DVDD 1.2V)
  *
  * 2. OV5693 — 5 MP front RGB camera (FFC)
