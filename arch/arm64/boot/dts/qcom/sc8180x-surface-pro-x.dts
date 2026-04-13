@@ -1602,7 +1602,11 @@
 	 *
 	 * Regulator mapping (from DSDT):
 	 *   vreg_l14a_1p8 = LDO14 1.8V  — DOVDD for all three sensors
-	 *   vreg_bob       = BOB 3.3V   — AVDD for OV13858 (LDO17 removed)
+	 *   vreg_bob       = BOB 3.3V   — AVDD for OV13858 (LDO17 removed
+	 *              due to PMC8180A cascade failure; vreg_bob is the only
+	 *              available higher-voltage rail.  The upstream ov13858
+	 *              driver requests 2.85 V but gets 3.3 V; this is a
+	 *              known gap — sensors may or may not enumerate cleanly.)
 	 *   vreg_l1a_1p2  = LDO1  1.2V  — DVDD for OV13858
 	 *
 	 * Clock mapping:
@@ -1614,6 +1618,16 @@
 	 *   OV13858: 540 MHz (4-lane) or 270 MHz (subsampled)
 	 *   OV5693:  419.2 MHz (2-lane)
 	 *   OV7251:  319.2 MHz or 240 MHz (1-lane)
+	 *
+	 * NOTE: CONFIG_SC_CAMCC_8180X=y must be set in the kernel config so
+	 * that the camcc driver registers the CAMSS GDSC power domains before
+	 * CAMSS probes.  Without it, CAMSS fails with
+	 * "Failed to configure power domains: -517" on every probe attempt.
+	 *
+	 * Remaining gaps (may prevent full camera operation):
+	 *   - OV13858 AVDD 2.85 V vs vreg_bob 3.3 V mismatch
+	 *   - VFE_Lite (vfe_lite0/1) stream IDs unverified on SPX hardware
+	 *   - No ISP/firmware binary for this board variant yet
 	 */
 	vdda-phy-supply = <&vreg_l3c_1p2>;
 	vdda-pll-supply = <&vreg_l5e_0p88>;
