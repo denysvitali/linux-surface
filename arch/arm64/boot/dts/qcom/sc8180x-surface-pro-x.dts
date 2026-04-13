@@ -1789,6 +1789,8 @@
 
 			backlight = <&backlight>;
 
+			power-supply = <&vreg_l11c_3p3>;
+
 			port {
 				edp_panel_in: endpoint {
 					remote-endpoint = <&mdss_edp_out>;
