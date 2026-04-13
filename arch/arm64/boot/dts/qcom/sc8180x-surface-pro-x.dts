@@ -762,6 +762,7 @@
 		vdd-s10-supply = <&vph_pwr>;
 
 		vdd-l1-l8-l11-supply = <&vreg_s6c_1p37>;
+		vdd-l2-l8-l17-supply = <&vph_pwr>;
 		vdd-l2-l10-supply = <&vreg_bob>;
 		vdd-l3-l4-l5-l18-supply = <&vreg_s7c_0p96>;
 		vdd-l6-l9-supply = <&vreg_s6c_1p37>;
@@ -1578,7 +1579,24 @@
 };
 
 &ipa {
-	status = "okay";
+	/*
+	 * NOTE: IPA (Internet Protocol Accelerator) is disabled because the
+	 * SC8180X hardware uses a different GSI/IPA endpoint configuration
+	 * than the SDM845 IPA v3.5.1 data the driver uses.  The "endpoint
+	 * id 9 wrong direction" probe failure cascades into the Wi-Fi data
+	 * path and can prevent wlan0 from appearing.
+	 *
+	 * ath10k (WCN3990) communicates via Copy Engines using the SNOC fabric
+	 * and does not require IPA for basic operation.  With IPA disabled the
+	 * ath10k driver loads, the wlan0 interface appears, and userspace
+	 * services (qrtr-ns, rmtfs, tqftpserv, pd-mapper) manage the firmware
+	 * and modem path independently.
+	 *
+	 * To re-enable IPA: change to status = "okay" and add SC8180X-specific
+	 * IPA endpoint data in drivers/net/ipa/data/ matching the actual GSI
+	 * pipe configuration on this SoC (tx_count, rx_base from FLAVOR_0).
+	 */
+	status = "disabled";
 };
 
 &camss {
