@@ -2342,8 +2342,10 @@
 
 			interconnects =
 				<&aggre2_noc MASTER_IPA 0 &mc_virt SLAVE_EBI_CH0 0>,
+				<&aggre2_noc MASTER_IPA 0 &system_noc SLAVE_OCIMEM 0>,
 				<&gem_noc MASTER_AMPSS_M0 0 &config_noc SLAVE_IPA_CFG 0>;
 			interconnect-names = "memory",
+					     "imem",
 					     "config";
 
 			qcom,smem-states = <&modem_smp2p_ipa_out 0>,
@@ -4650,14 +4652,15 @@
 
 		/*
 		 * LPASS (Low Power Audio SubSystem) — shares IP with SM8250.
-		 * The ADCM firmware confirms LpassAvtimerBase = 0x170F7000
-		 * and LPASS macro layout at 0x3200000-0x3370000 matching SM8250.
+		 * The ADCM firmware confirms LpassAvtimerBase = 0x170F7000.
+		 * The macro block layout matches SM8250, but the SC8180X LPASS
+		 * window is mapped in the 0x17xxxxxx region rather than 0x03xxxxxx.
 		 * SoundWire interrupt numbers are shared with SM8150/SM8250 IP.
 		 * WCD9380 codec details (reset GPIO, supplies) are board-specific.
 		 */
-		vamacro: codec@3370000 {
+		vamacro: codec@17370000 {
 			compatible = "qcom,sm8250-lpass-va-macro";
-			reg = <0 0x03370000 0 0x1000>;
+			reg = <0 0x17370000 0 0x1000>;
 			clocks = <&q6afecc LPASS_CLK_ID_TX_CORE_MCLK
 					LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
 				 <&q6afecc LPASS_HW_MACRO_VOTE
@@ -4671,9 +4674,9 @@
 			status = "disabled";
 		};
 
-		rxmacro: rxmacro@3200000 {
+		rxmacro: rxmacro@17200000 {
 			compatible = "qcom,sm8250-lpass-rx-macro";
-			reg = <0 0x03200000 0 0x1000>;
+			reg = <0 0x17200000 0 0x1000>;
 			clocks = <&q6afecc LPASS_CLK_ID_TX_CORE_MCLK
 					LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
 				 <&q6afecc LPASS_CLK_ID_TX_CORE_NPL_MCLK
@@ -4691,8 +4694,8 @@
 		};
 
 		/* RX SoundWire — WCD9380 RX path */
-		swr1: soundwire@3210000 {
-			reg = <0 0x03210000 0 0x2000>;
+		swr1: soundwire@17210000 {
+			reg = <0 0x17210000 0 0x2000>;
 			compatible = "qcom,soundwire-v1.5.1";
 			/* TODO: verify interrupt number for SC8180X (SM8250 uses SPI 298) */
 			interrupts = <GIC_SPI 298 IRQ_TYPE_LEVEL_HIGH>;
@@ -4725,9 +4728,9 @@
 			status = "disabled";
 		};
 
-		txmacro: txmacro@3220000 {
+		txmacro: txmacro@17220000 {
 			compatible = "qcom,sm8250-lpass-tx-macro";
-			reg = <0 0x03220000 0 0x1000>;
+			reg = <0 0x17220000 0 0x1000>;
 			clocks = <&q6afecc LPASS_CLK_ID_TX_CORE_MCLK
 					LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
 				 <&q6afecc LPASS_CLK_ID_TX_CORE_NPL_MCLK
@@ -4745,8 +4748,8 @@
 		};
 
 		/* TX SoundWire — WCD9380 TX path */
-		swr2: soundwire@3230000 {
-			reg = <0 0x03230000 0 0x2000>;
+		swr2: soundwire@17230000 {
+			reg = <0 0x17230000 0 0x2000>;
 			compatible = "qcom,soundwire-v1.5.1";
 			/* TODO: verify interrupt number for SC8180X (SM8250 uses SPI 297) */
 			interrupts = <GIC_SPI 297 IRQ_TYPE_LEVEL_HIGH>;
@@ -4780,9 +4783,9 @@
 			status = "disabled";
 		};
 
-		wsamacro: codec@3240000 {
+		wsamacro: codec@17240000 {
 			compatible = "qcom,sm8250-lpass-wsa-macro";
-			reg = <0 0x03240000 0 0x1000>;
+			reg = <0 0x17240000 0 0x1000>;
 			clocks = <&q6afecc LPASS_CLK_ID_TX_CORE_MCLK
 					LPASS_CLK_ATTRIBUTE_COUPLE_NO>,
 				 <&q6afecc LPASS_CLK_ID_TX_CORE_NPL_MCLK
@@ -4800,8 +4803,8 @@
 		};
 
 		/* WSA SoundWire — speaker amplifier path */
-		swr0: soundwire@3250000 {
-			reg = <0 0x03250000 0 0x2000>;
+		swr0: soundwire@17250000 {
+			reg = <0 0x17250000 0 0x2000>;
 			compatible = "qcom,soundwire-v1.5.1";
 			/* TODO: verify interrupt number for SC8180X (SM8250 uses SPI 202) */
 			interrupts = <GIC_SPI 202 IRQ_TYPE_LEVEL_HIGH>;
