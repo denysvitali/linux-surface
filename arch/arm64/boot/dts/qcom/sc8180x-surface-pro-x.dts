@@ -1584,7 +1584,8 @@
 	 * provided by the MPSS firmware on the WCN3990 coprocessor.  With MPSS
 	 * disabled (no WiFi firmware available), the ath10k_snoc driver probes
 	 * successfully but cannot complete the QMI handshake, so wlan0 does
-	 * not appear.  Enable MPSS once WiFi firmware is available.
+	 * not appear.  The Wi-Fi DSP (wlanmdsp.mbn) is loaded via the ath10k
+	 * QMI path and is separate from the cellular modem (qcmpss8180.mbn).
 	 *
 	 * To re-enable IPA: change to status = "okay" and add SC8180X-specific
 	 * IPA endpoint data in drivers/net/ipa/data/ matching the actual GSI
@@ -2087,11 +2088,12 @@
 	 * remoteproc to restart every ~108 seconds. The BT side (WCN3998)
 	 * continues to work independently via UART15 firmware loading.
 	 *
-	 * To re-enable WiFi: provide the correct MPSS firmware
-	 * (qcom/msft/surface/pro-x-sq2/qcmpss8180.mbn or equivalent) and
-	 * change status to "okay". The ath10k_snoc driver will then be
-	 * able to complete its QMI handshake once the wlanfw service
-	 * becomes available.
+	 * To re-enable Wi-Fi: install wlanmdsp.mbn in
+	 * /lib/firmware/qcom/msft/surface/pro-x-sq2/ (available from aarch64-firmware)
+	 * and verify the ath10k QMI firmware-loading path includes it.
+	 * IMPORTANT: wlanmdsp.mbn (~4.2 MB) is SEPARATE from qcmpss8180.mbn
+	 * (~72 MB cellular modem). Simply enabling MPSS will NOT enable Wi-Fi.
+	 * The wlanmdsp is loaded via the ath10k QMI path, not via remoteproc_mpss.
 	 */
 	status = "disabled";
 };
