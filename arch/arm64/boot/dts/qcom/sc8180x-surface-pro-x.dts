@@ -55,7 +55,7 @@
  *  i2c9              MSHW0125 auxiliary device placeholder (unbound)
  *  uart13 / wcn3998  CONFIG_BT_HCIUART + CONFIG_BT_HCIUART_QCA
  *  uart15 / ssam     CONFIG_SURFACE_AGGREGATOR (surface_pro_x.config)
- *  wifi              CONFIG_ATH10K_SNOC (surface_pro_x.config); needs MPSS firmware for wlan0
+ *  wifi              CONFIG_ATH10K_SNOC (surface_pro_x.config); MPSS qcmpss8180_nm.mbn boots WCN3990
  *  ufs_mem_hc        DISABLED -- Surface Pro X uses PCIe NVMe, not UFS
  *  ufs_mem_phy       DISABLED -- no UFS device present on this board
  *  ipa               CONFIG_QCOM_IPA (surface_pro_x.config)
@@ -1579,13 +1579,9 @@
 	 * path and can prevent wlan0 from appearing.
 	 *
 	 * ath10k (WCN3990) communicates via Copy Engines using the SNOC fabric
-	 * and does not require IPA for basic operation.  However, the wlanfw
-	 * QMI service must be running for wlan0 to appear; this service is
-	 * provided by the MPSS firmware on the WCN3990 coprocessor.  With MPSS
-	 * disabled (no WiFi firmware available), the ath10k_snoc driver probes
-	 * successfully but cannot complete the QMI handshake, so wlan0 does
-	 * not appear.  The Wi-Fi DSP (wlanmdsp.mbn) is loaded via the ath10k
-	 * QMI path and is separate from the cellular modem (qcmpss8180.mbn).
+	 * and does not require IPA for basic Wi-Fi operation.  The wlanfw
+	 * QMI service is provided by the MPSS qcmpss8180_nm.mbn (WCNSS-only)
+	 * firmware on the WCN3990 coprocessor, loaded via remoteproc_mpss.
 	 *
 	 * To re-enable IPA: change to status = "okay" and add SC8180X-specific
 	 * IPA endpoint data in drivers/net/ipa/data/ matching the actual GSI
@@ -2075,27 +2071,35 @@
 
 &remoteproc_mpss {
 	/*
-	 * MPSS (Modem Processor Subsystem) is disabled to prevent the modem
-	 * crash loop. The Surface Pro X SQ2 does not have a cellular modem,
-	 * so the MPSS is not needed for WWAN. The WCN3990 WiFi+BT chip uses
-	 * the MPSS for its main firmware, but the correct firmware file is
-	 * not available in this build environment (it would come from the
-	 * Windows partition). Without the MPSS firmware, the wlanfw QMI
-	 * service is not registered, so ath10k_snoc cannot complete its
-	 * initialization and wlan0 will not appear.
+	 * MPSS (Modem Processor Subsystem) firmware for WCN3990 Wi-Fi.
 	 *
-	 * Disabling the MPSS stops the crash loop that was causing the
-	 * remoteproc to restart every ~108 seconds. The BT side (WCN3998)
-	 * continues to work independently via UART15 firmware loading.
+	 * The SPX SQ2 has no cellular modem, so the full qcmpss8180.mbn
+	 * (72 MB) crashes on missing modem hardware (every ~108 s).
+	 * The non-modem variant qcmpss8180_nm.mbn (~5.2 MB, "nm" =
+	 * non-modem) contains only the WCNSS (Wireless Chip Subsystem)
+	 * component that boots the integrated WCN3990 Wi-Fi chip.  This
+	 * avoids the crash loop and provides the wlanfw QMI service that
+	 * ath10k_snoc needs to complete its initialization and create wlan0.
 	 *
-	 * To re-enable Wi-Fi: install wlanmdsp.mbn in
-	 * /lib/firmware/qcom/msft/surface/pro-x-sq2/ (available from aarch64-firmware)
-	 * and verify the ath10k QMI firmware-loading path includes it.
-	 * IMPORTANT: wlanmdsp.mbn (~4.2 MB) is SEPARATE from qcmpss8180.mbn
-	 * (~72 MB cellular modem). Simply enabling MPSS will NOT enable Wi-Fi.
-	 * The wlanmdsp is loaded via the ath10k QMI path, not via remoteproc_mpss.
+	 * The WCN3990 coprocessor firmware is loaded from qcmpss8180_nm.mbn
+	 * into the wlan_mem region (0x8bc00000, 1.5 MB).  The ath10k driver
+	 * then loads firmware-5.bin and board-2.bin via QMI on top of the
+	 * running WCN3990 coprocessor.  The wlanmdsp.mbn (~4.2 MB) is a
+	 * separate dynamically-linked ELF that is NOT used on SC8180X — it
+	 * is loaded by the ath10k QMI path on platforms that lack an MPSS
+	 * WCNSS component.
+	 *
+	 * The BT side (WCN3998) continues to work independently via UART15
+	 * firmware loading and does not require the MPSS.
+	 *
+	 * Firmware files needed for Wi-Fi:
+	 *   /lib/firmware/qcom/msft/surface/pro-x-sq2/qcmpss8180_nm.mbn
+	 *   /lib/firmware/ath10k/WCN3990/hw1.0/firmware-5.bin
+	 *   /lib/firmware/ath10k/WCN3990/hw1.0/board-2.bin
 	 */
-	status = "disabled";
+	memory-region = <&mpss_mem>;
+	firmware-name = "qcom/msft/surface/pro-x-sq2/qcmpss8180_nm.mbn";
+	status = "okay";
 };
 
 &remoteproc_slpi {
