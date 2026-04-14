@@ -1,0 +1,85 @@
+# Maintainer: Denys Vitali <denys@denv.it>
+#
+# CI-only Arch package recipe for Surface Pro X proprietary firmware.
+# These files are NOT in the upstream linux-firmware package and must be
+# installed separately for Wi-Fi, Bluetooth, audio, and camera to work.
+#
+# Firmware source: https://github.com/linux-surface/aarch64-firmware
+
+pkgbase="linux-denys-firmware"
+pkgver="@PKGVER@"
+pkgrel="1"
+
+pkgdesc="Proprietary firmware for Microsoft Surface Pro X (SC8180X/SQ2)"
+arch=("aarch64")
+url="https://github.com/linux-surface/aarch64-firmware"
+license=("custom")
+options=("!strip")
+
+source=(
+    "aarch64-firmware.tar.gz"
+)
+sha256sums=(
+    'SKIP'
+)
+
+package_linux-denys-firmware() {
+    pkgdesc="Proprietary firmware for Microsoft Surface Pro X (SC8180X/SQ2)"
+    depends=("linux-firmware")
+
+    local fwdir="${srcdir}/aarch64-firmware/firmware"
+
+    # MPSS modem/WCNSS firmware (required for Wi-Fi via WCN3990)
+    # ath10k SNOC board and firmware files
+    install -Dm644 "${fwdir}/qcom/msft/surface/pro-x-sq2/qcmpss8180_nm.mbn" \
+        "${pkgdir}/usr/lib/firmware/qcom/msft/surface/pro-x-sq2/qcmpss8180_nm.mbn"
+    install -Dm644 "${fwdir}/qcom/msft/surface/pro-x-sq2/qcmpss8180.mbn" \
+        "${pkgdir}/usr/lib/firmware/qcom/msft/surface/pro-x-sq2/qcmpss8180.mbn"
+    install -Dm644 "${fwdir}/qcom/msft/surface/pro-x-sq2/wlanmdsp.mbn" \
+        "${pkgdir}/usr/lib/firmware/qcom/msft/surface/pro-x-sq2/wlanmdsp.mbn"
+    install -Dm644 "${fwdir}/ath10k/WCN3990/hw1.0/board-2.bin" \
+        "${pkgdir}/usr/lib/firmware/ath10k/WCN3990/hw1.0/board-2.bin"
+    install -Dm644 "${fwdir}/ath10k/WCN3990/hw1.0/firmware-5.bin" \
+        "${pkgdir}/usr/lib/firmware/ath10k/WCN3990/hw1.0/firmware-5.bin"
+
+    # ADSP/CDSP/SLPI DSP firmware (audio, compute, sensor)
+    install -Dm644 "${fwdir}/qcom/msft/surface/pro-x-sq2/qcadsp8180.mbn" \
+        "${pkgdir}/usr/lib/firmware/qcom/msft/surface/pro-x-sq2/qcadsp8180.mbn"
+    install -Dm644 "${fwdir}/qcom/msft/surface/pro-x-sq2/qccdsp8180.mbn" \
+        "${pkgdir}/usr/lib/firmware/qcom/msft/surface/pro-x-sq2/qccdsp8180.mbn"
+    install -Dm644 "${fwdir}/qcom/msft/surface/pro-x-sq2/qcdxkmsuc8180.mbn" \
+        "${pkgdir}/usr/lib/firmware/qcom/msft/surface/pro-x-sq2/qcdxkmsuc8180.mbn"
+
+    # Venus video codec firmware
+    install -Dm644 "${fwdir}/qcom/msft/surface/pro-x-sq2/qcvss8180.mbn" \
+        "${pkgdir}/usr/lib/firmware/qcom/msft/surface/pro-x-sq2/qcvss8180.mbn"
+
+    # DSP JSON configuration files
+    for f in adspr.jsn adspua.jsn cdspr.jsn charger.jsn modemr.jsn modemuw.jsn qdsp6m.qdb; do
+        if [ -f "${fwdir}/qcom/msft/surface/pro-x-sq2/${f}" ]; then
+            install -Dm644 "${fwdir}/qcom/msft/surface/pro-x-sq2/${f}" \
+                "${pkgdir}/usr/lib/firmware/qcom/msft/surface/pro-x-sq2/${f}"
+        fi
+    done
+
+    # GPU firmware (Adreno 680)
+    install -Dm644 "${fwdir}/qcom/a680_gmu.bin" \
+        "${pkgdir}/usr/lib/firmware/qcom/a680_gmu.bin"
+    install -Dm644 "${fwdir}/qcom/a680_sqe.fw" \
+        "${pkgdir}/usr/lib/firmware/qcom/a680_sqe.fw"
+
+    # Bluetooth firmware (QCA/WCN3998)
+    if [ -d "${fwdir}/qca" ]; then
+        for f in "${fwdir}/qca/"*; do
+            [ -f "$f" ] && install -Dm644 "$f" "${pkgdir}/usr/lib/firmware/qca/$(basename "$f")"
+        done
+    fi
+
+    # Modem provisioning configs
+    if [ -d "${fwdir}/qcom/msft/surface/pro-x-sq2/modem_pr" ]; then
+        cp -a "${fwdir}/qcom/msft/surface/pro-x-sq2/modem_pr" \
+            "${pkgdir}/usr/lib/firmware/qcom/msft/surface/pro-x-sq2/modem_pr"
+    fi
+}
+
+pkgname=("${pkgbase}")

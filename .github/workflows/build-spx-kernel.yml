@@ -461,15 +461,59 @@ jobs:
           path: ${{ env.KERNEL_ARTIFACTS_DIR }}-archlinux/*.pkg.tar.zst
           if-no-files-found: error
 
+  archlinux-firmware-package:
+    needs: build
+    runs-on: ubuntu-24.04
+    container:
+      image: archlinux:base-devel
+    if: success()
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Clone Surface Pro X firmware
+        run: |
+          git clone --depth=1 https://github.com/linux-surface/aarch64-firmware.git /tmp/aarch64-firmware
+
+      - name: Build firmware Arch Linux package
+        run: |
+          pacman -Sy --noconfirm --needed libarchive gzip shadow
+          PKG_WORKDIR="${KERNEL_ARTIFACTS_DIR}-fw-build"
+          rm -rf "${PKG_WORKDIR}" "${KERNEL_ARTIFACTS_DIR}-firmware"
+          mkdir -p "${PKG_WORKDIR}" "${KERNEL_ARTIFACTS_DIR}-firmware"
+
+          cp packaging/archlinux/PKGBUILD.firmware "${PKG_WORKDIR}/PKGBUILD"
+
+          # Create a tarball of the firmware directory for makepkg
+          tar -czf "${PKG_WORKDIR}/aarch64-firmware.tar.gz" -C /tmp/aarch64-firmware .
+
+          PKGVER=$(make -s kernelversion | tr '-' '_')
+          sed -i "s|@PKGVER@|${PKGVER}|g" "${PKG_WORKDIR}/PKGBUILD"
+
+          # Override CARCH so the package metadata says aarch64, not x86_64
+          sed -i 's/^CARCH=.*/CARCH="aarch64"/' /etc/makepkg.conf
+
+          id -u builder &>/dev/null || useradd -m builder
+          chown -R builder:builder "${PKG_WORKDIR}" "${KERNEL_ARTIFACTS_DIR}-firmware"
+          su builder -c "cd '${PKG_WORKDIR}' && PACKAGER='CI <github-actions@github.com>' makepkg -f --nodeps --noconfirm --ignorearch"
+          cp "${PKG_WORKDIR}"/*.pkg.tar.zst "${KERNEL_ARTIFACTS_DIR}-firmware"/
+
+      - name: Upload firmware package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: archlinux-firmware-package
+          path: ${{ env.KERNEL_ARTIFACTS_DIR }}-firmware/*.pkg.tar.zst
+          if-no-files-found: error
+
   release:
-    needs: [build, archlinux-package]
+    needs: [build, archlinux-package, archlinux-firmware-package]
     runs-on: [self-hosted, arm64]
     if: success()
     steps:
       - name: Prepare release directories
         run: |
-          rm -rf release-modular release-builtin release-archlinux
-          mkdir -p release-modular release-builtin release-archlinux
+          rm -rf release-modular release-builtin release-archlinux release-firmware
+          mkdir -p release-modular release-builtin release-archlinux release-firmware
 
           # Copy from persistent local paths (same runner, no download needed)
           cp "${KERNEL_ARTIFACTS_DIR}-modular"/* release-modular/
@@ -480,6 +524,12 @@ jobs:
         with:
           name: archlinux-package
           path: release-archlinux
+
+      - name: Download firmware package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: archlinux-firmware-package
+          path: release-firmware
 
           # Prefix filenames so both variants can coexist in a single release
       - name: Prefix release filenames
@@ -501,6 +551,7 @@ jobs:
             release-modular/*
             release-builtin/*
             release-archlinux/*
+            release-firmware/*
           body: |
             Automated kernel build for Surface Pro X (SC8180X/SQ2)
 
@@ -532,6 +583,13 @@ jobs:
             Ready-to-install Arch Linux ARM package built with `makepkg`.
             Install with: `sudo pacman -U linux-denys-*.pkg.tar.zst`
             Includes kernel image, modules, DTBs, and mkinitcpio preset.
+
+            ### Firmware Package (`linux-denys-firmware-*.pkg.tar.zst`)
+            **Required for Wi-Fi, Bluetooth, audio, and camera.**
+            Proprietary Qualcomm firmware not in upstream `linux-firmware`.
+            Install with: `sudo pacman -U linux-denys-firmware-*.pkg.tar.zst`
+            Includes MPSS WCNSS firmware (qcmpss8180_nm.mbn), ath10k board
+            files, ADSP/CDSP/SLPI DSP firmware, Venus codec, and GPU firmware.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -556,4 +614,5 @@ jobs:
           rm -rf "${KERNEL_ARTIFACTS_DIR}-modular" \
                  "${KERNEL_ARTIFACTS_DIR}-builtin" \
                  "${KERNEL_ARTIFACTS_DIR}-archlinux" \
-                 release-modular release-builtin release-archlinux
+                 "${KERNEL_ARTIFACTS_DIR}-firmware" \
+                 release-modular release-builtin release-archlinux release-firmware
