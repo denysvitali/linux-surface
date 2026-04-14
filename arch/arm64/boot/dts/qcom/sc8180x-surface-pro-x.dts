@@ -46,7 +46,7 @@
  *  pcie2_phy         CONFIG_PHY_QCOM_QMP_PCIE (defconfig)
  *  remoteproc_adsp   CONFIG_QCOM_Q6V5_PAS (defconfig); auto_boot=false, userspace-managed
  *  remoteproc_cdsp   CONFIG_QCOM_Q6V5_PAS (defconfig); auto_boot=false, userspace-managed
- *  remoteproc_mpss   CONFIG_QCOM_Q6V5_MSS (defconfig); auto_boot=false, userspace-managed
+ *  remoteproc_mpss   CONFIG_QCOM_Q6V5_MSS (defconfig); status=disabled (no WiFi firmware)
  *  remoteproc_slpi   CONFIG_QCOM_Q6V5_PAS (defconfig); auto_boot=false, userspace-managed
  *  qupv3_id_0/1/2    CONFIG_QCOM_GENI_SE (defconfig)
  *  spi1 / hid@0      CONFIG_SPI_HID (surface_pro_x.config)
@@ -55,7 +55,7 @@
  *  i2c9              MSHW0125 auxiliary device placeholder (unbound)
  *  uart13 / wcn3998  CONFIG_BT_HCIUART + CONFIG_BT_HCIUART_QCA
  *  uart15 / ssam     CONFIG_SURFACE_AGGREGATOR (surface_pro_x.config)
- *  wifi              CONFIG_ATH10K_SNOC (surface_pro_x.config)
+ *  wifi              CONFIG_ATH10K_SNOC (surface_pro_x.config); needs MPSS firmware for wlan0
  *  ufs_mem_hc        DISABLED -- Surface Pro X uses PCIe NVMe, not UFS
  *  ufs_mem_phy       DISABLED -- no UFS device present on this board
  *  ipa               CONFIG_QCOM_IPA (surface_pro_x.config)
@@ -2166,17 +2166,13 @@
 		reg = <0>;
 		spi-max-frequency = <12500000>;
 		/*
-		 * SPI mode 1 (CPOL=0, CPHA=1) for Surface Pen HID.
-		 * The device communicates at 12.5 MHz. Explicit mode flags
-		 * prevent dependence on the SPI master default. Mode 1 is
-		 * standard for HID-over-SPI devices.
+		 * SPI mode 0 (CPOL=0, CPHA=0) — same as the geni-spi
+		 * controller default. This matches all other Surface SPI
+		 * devices (e.g., Surface 3 touchscreen surface3_spi.c).
 		 *
-		 * Sync constant 0x00/0xFF (instead of 0x5A) indicates either
-		 * the device is held in reset or the SPI mode is incorrect —
-		 * in either case the read approval command returns garbage.
+		 * Sync constant 0x00/0xFF (instead of 0x5A) indicates the
+		 * device is held in reset or not responding — not a mode issue.
 		 */
-		spi-cpol;
-		spi-cpha;
 
 		interrupts-extended = <&tlmm 122 IRQ_TYPE_EDGE_FALLING>;
 
