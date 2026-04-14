@@ -1579,10 +1579,12 @@
 	 * path and can prevent wlan0 from appearing.
 	 *
 	 * ath10k (WCN3990) communicates via Copy Engines using the SNOC fabric
-	 * and does not require IPA for basic operation.  With IPA disabled the
-	 * ath10k driver loads, the wlan0 interface appears, and userspace
-	 * services (qrtr-ns, rmtfs, tqftpserv, pd-mapper) manage the firmware
-	 * and modem path independently.
+	 * and does not require IPA for basic operation.  However, the wlanfw
+	 * QMI service must be running for wlan0 to appear; this service is
+	 * provided by the MPSS firmware on the WCN3990 coprocessor.  With MPSS
+	 * disabled (no WiFi firmware available), the ath10k_snoc driver probes
+	 * successfully but cannot complete the QMI handshake, so wlan0 does
+	 * not appear.  Enable MPSS once WiFi firmware is available.
 	 *
 	 * To re-enable IPA: change to status = "okay" and add SC8180X-specific
 	 * IPA endpoint data in drivers/net/ipa/data/ matching the actual GSI
