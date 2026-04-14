@@ -281,6 +281,7 @@ jobs:
             echo "Commit: ${{ github.sha }}"
             echo "Branch: ${{ github.ref_name }}"
             echo "Timestamp: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+            echo "DTB SHA256: $(sha256sum "$BUILD_DIR/arch/arm64/boot/dts/qcom/sc8180x-surface-pro-x.dtb" | awk '{print $1}')"
             if command -v ccache &> /dev/null; then
               echo "=== Ccache Statistics ==="
               ccache -s
@@ -506,6 +507,7 @@ jobs:
             **Commit:** ${{ github.sha }}
             **Branch:** ${{ github.ref_name }}
             **Workflow Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            **DTB SHA256:** $(sha256sum release-builtin/builtin-sc8180x-surface-pro-x.dtb | awk '{print $1}')
 
             ## Build Variants
 
