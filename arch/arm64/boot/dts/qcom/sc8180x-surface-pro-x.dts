@@ -227,8 +227,8 @@
 		connector@0 {
 			compatible = "usb-c-connector";
 			reg = <0>;
-			power-role = "dual";
-			data-role = "dual";
+			power-role = "host";
+			data-role = "host";
 
 			ports {
 				#address-cells = <1>;
@@ -261,8 +261,8 @@
 		connector@1 {
 			compatible = "usb-c-connector";
 			reg = <1>;
-			power-role = "dual";
-			data-role = "dual";
+			power-role = "host";
+			data-role = "host";
 
 			ports {
 				#address-cells = <1>;
