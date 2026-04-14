@@ -1905,12 +1905,12 @@
 
 &usb_prim_dwc3 {
 	/*
-	 * USB-C port supports dual-role (host and device).
-	 * Set to "otg" to allow role switching via pmic-glink UCSI.
-	 * Windows uses UCSI over PMIC GLINK for role management.
+	 * USB-C port set to host mode only.
+	 * The "otg" dual-role setting can cause issues with USB enumeration
+	 * on some Surface devices. Set to "host" for reliable USB operation.
+	 * Windows uses host mode on this port.
 	 */
-	dr_mode = "otg";
-	usb-role-switch;
+	dr_mode = "host";
 };
 
 &usb_prim_dwc3_hs {
@@ -1947,11 +1947,11 @@
 
 &usb_sec_dwc3 {
 	/*
-	 * Second USB-C port supports dual-role via UCSI.
-	 * Set to "otg" to allow role switching via pmic-glink UCSI.
+	 * Second USB-C port set to host mode only.
+	 * The "otg" dual-role setting can cause issues with USB enumeration.
+	 * Windows uses host mode on this port.
 	 */
-	dr_mode = "otg";
-	usb-role-switch;
+	dr_mode = "host";
 };
 
 &usb_sec_dwc3_hs {

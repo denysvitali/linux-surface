@@ -46,6 +46,11 @@ static const struct property_entry lid_device_props_l57[] = {
 	{},
 };
 
+static const struct property_entry lid_device_props_l52[] = {
+	PROPERTY_ENTRY_U32("gpe", 0x52),
+	{},
+};
+
 /*
  * Note: When changing this, don't forget to check that the MODULE_ALIAS below
  *       still fits.
@@ -106,6 +111,14 @@ static const struct dmi_system_id dmi_lid_device_table[] = {
 			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "Surface Pro 8"),
 		},
 		.driver_data = (void *)lid_device_props_l4B,
+	},
+	{
+		.ident = "Surface Pro 9",
+		.matches = {
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Microsoft Corporation"),
+			DMI_EXACT_MATCH(DMI_PRODUCT_SKU, "Surface_Pro_9_2038"),
+		},
+		.driver_data = (void *)lid_device_props_l52,
 	},
 	{
 		.ident = "Surface Book 1",
