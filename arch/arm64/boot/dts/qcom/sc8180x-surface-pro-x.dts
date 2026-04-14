@@ -2071,9 +2071,27 @@
 };
 
 &remoteproc_mpss {
-	status = "okay";
-	memory-region = <&mpss_mem>;
-	firmware-name = "qcom/msft/surface/pro-x-sq2/qcmpss8180.mbn";
+	/*
+	 * MPSS (Modem Processor Subsystem) is disabled to prevent the modem
+	 * crash loop. The Surface Pro X SQ2 does not have a cellular modem,
+	 * so the MPSS is not needed for WWAN. The WCN3990 WiFi+BT chip uses
+	 * the MPSS for its main firmware, but the correct firmware file is
+	 * not available in this build environment (it would come from the
+	 * Windows partition). Without the MPSS firmware, the wlanfw QMI
+	 * service is not registered, so ath10k_snoc cannot complete its
+	 * initialization and wlan0 will not appear.
+	 *
+	 * Disabling the MPSS stops the crash loop that was causing the
+	 * remoteproc to restart every ~108 seconds. The BT side (WCN3998)
+	 * continues to work independently via UART15 firmware loading.
+	 *
+	 * To re-enable WiFi: provide the correct MPSS firmware
+	 * (qcom/msft/surface/pro-x-sq2/qcmpss8180.mbn or equivalent) and
+	 * change status to "okay". The ath10k_snoc driver will then be
+	 * able to complete its QMI handshake once the wlanfw service
+	 * becomes available.
+	 */
+	status = "disabled";
 };
 
 &remoteproc_slpi {
@@ -2146,8 +2164,19 @@
 		compatible = "hid-over-spi";
 
 		reg = <0>;
-		// spi-max-frequency = <25000000>;
 		spi-max-frequency = <12500000>;
+		/*
+		 * SPI mode 1 (CPOL=0, CPHA=1) for Surface Pen HID.
+		 * The device communicates at 12.5 MHz. Explicit mode flags
+		 * prevent dependence on the SPI master default. Mode 1 is
+		 * standard for HID-over-SPI devices.
+		 *
+		 * Sync constant 0x00/0xFF (instead of 0x5A) indicates either
+		 * the device is held in reset or the SPI mode is incorrect —
+		 * in either case the read approval command returns garbage.
+		 */
+		spi-cpol;
+		spi-cpha;
 
 		interrupts-extended = <&tlmm 122 IRQ_TYPE_EDGE_FALLING>;
 

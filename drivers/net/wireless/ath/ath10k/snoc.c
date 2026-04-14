@@ -1429,6 +1429,7 @@ int ath10k_snoc_fw_indication(struct ath10k *ar, u64 type)
 			return ret;
 		}
 		set_bit(ATH10K_SNOC_FLAG_REGISTERED, &ar_snoc->flags);
+		ath10k_info(ar, "ath10k-snoc: FW_READY_IND received, wlan0 created successfully\n");
 		break;
 	case ATH10K_QMI_EVENT_FW_DOWN_IND:
 		set_bit(ATH10K_SNOC_FLAG_RECOVERY, &ar_snoc->flags);
@@ -1901,7 +1902,7 @@ static int ath10k_snoc_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_qmi_deinit;
 
-	ath10k_dbg(ar, ATH10K_DBG_SNOC, "snoc probe\n");
+	ath10k_info(ar, "ath10k-snoc: probe complete, QMI connected, waiting for FW_READY_IND to create wlan0\n");
 
 	return 0;
 
