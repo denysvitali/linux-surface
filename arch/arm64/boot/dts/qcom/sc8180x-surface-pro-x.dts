@@ -33,15 +33,15 @@
  *  edp_phy           CONFIG_PHY_QCOM_EDP (built into defconfig for arm64)
  *  mdss_dp0          CONFIG_DRM_MSM (DP Alt Mode port 0)
  *  mdss_dp1          CONFIG_DRM_MSM (DP Alt Mode port 1)
- *  usb_prim_hsphy    CONFIG_PHY_QCOM_USB_HS (part of defconfig)
+ *  usb_prim_hsphy    CONFIG_PHY_QCOM_USB_SNPS_FEMTO_V2 (built-in)
  *  usb_prim_qmpphy   CONFIG_PHY_QCOM_QMP_COMBO (surface_pro_x.config)
- *  usb_prim          CONFIG_USB_DWC3 / CONFIG_USB_DWC3_QCOM
- *  usb_sec_hsphy     CONFIG_PHY_QCOM_USB_HS
- *  usb_sec_qmpphy    CONFIG_PHY_QCOM_QMP_COMBO
- *  usb_sec           CONFIG_USB_DWC3 / CONFIG_USB_DWC3_QCOM
- *  usb_mp_hsphy0/1   CONFIG_PHY_QCOM_USB_HS
+ *  usb_prim          CONFIG_USB_DWC3 / CONFIG_USB_DWC3_QCOM (built-in)
+ *  usb_sec_hsphy     CONFIG_PHY_QCOM_USB_SNPS_FEMTO_V2 (built-in)
+ *  usb_sec_qmpphy    CONFIG_PHY_QCOM_QMP_COMBO (surface_pro_x.config)
+ *  usb_sec           CONFIG_USB_DWC3 / CONFIG_USB_DWC3_QCOM (built-in)
+ *  usb_mp_hsphy0/1   CONFIG_PHY_QCOM_USB_SNPS_FEMTO_V2 (built-in)
  *  usb_mp_qmpphy0/1  CONFIG_PHY_QCOM_QMP_USB (surface_pro_x.config)
- *  usb_mp            CONFIG_USB_DWC3 / CONFIG_USB_DWC3_QCOM
+ *  usb_mp            CONFIG_USB_DWC3 / CONFIG_USB_DWC3_QCOM (built-in)
  *  pcie2             CONFIG_PCIE_QCOM (part of defconfig)
  *  pcie2_phy         CONFIG_PHY_QCOM_QMP_PCIE (defconfig)
  *  remoteproc_adsp   CONFIG_QCOM_Q6V5_PAS (defconfig); auto_boot=false, userspace-managed
