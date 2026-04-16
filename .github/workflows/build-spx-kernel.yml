@@ -588,7 +588,7 @@ jobs:
             **Required for Wi-Fi, Bluetooth, audio, and camera.**
             Proprietary Qualcomm firmware not in upstream `linux-firmware`.
             Install with: `sudo pacman -U linux-denys-firmware-*.pkg.tar.zst`
-            Includes MPSS WCNSS firmware (qcmpss8180_nm.mbn), ath10k board
+            Includes MPSS firmware (qcmpss8180.mbn), ath10k board
             files, ADSP/CDSP/SLPI DSP firmware, Venus codec, and GPU firmware.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
