@@ -27,7 +27,7 @@ package_linux-denys-firmware() {
     pkgdesc="Proprietary firmware for Microsoft Surface Pro X (SC8180X/SQ2)"
     depends=("linux-firmware")
 
-    local fwdir="${srcdir}/aarch64-firmware/firmware"
+    local fwdir="${srcdir}/firmware"
 
     # MPSS modem/WCNSS firmware (required for Wi-Fi via WCN3990)
     # ath10k SNOC board and firmware files
