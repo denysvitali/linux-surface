@@ -473,6 +473,7 @@ jobs:
 
       - name: Clone Surface Pro X firmware
         run: |
+          pacman -Sy --noconfirm
           pacman -S --noconfirm --needed git
           git clone --depth=1 https://github.com/linux-surface/aarch64-firmware.git /tmp/aarch64-firmware
 
