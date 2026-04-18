@@ -126,6 +126,7 @@ depend = linux-firmware
 depend = kmod
 depend = mkinitcpio>=0.7
 optdepend = crda: to set the correct wireless channels of your country
+optdepend = linux-denys-firmware: proprietary Surface Pro X firmware required for early display, Wi-Fi, and USB-C bring-up
 EOF
 
 # ── Write .INSTALL ────────────────────────────────────────────────────────────

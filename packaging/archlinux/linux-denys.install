@@ -1,4 +1,35 @@
-post_install() {
+_spx_required_fw=(
+    /usr/lib/firmware/qcom/msft/surface/pro-x-sq2/qcdxkmsuc8180.mbn
+    /usr/lib/firmware/qcom/msft/surface/pro-x-sq2/qcmpss8180.mbn
+    /usr/lib/firmware/ath10k/WCN3990/hw1.0/board-2.bin
+    /usr/lib/firmware/ath10k/WCN3990/hw1.0/firmware-5.bin
+)
+
+_spx_warn_missing_firmware() {
+    local missing=0
+    local fw
+
+    for fw in "${_spx_required_fw[@]}"; do
+        if [ ! -e "${fw}" ]; then
+            if [ "${missing}" -eq 0 ]; then
+                echo "WARNING: Surface Pro X firmware is incomplete."
+                echo "         The linux-denys package is the modular kernel variant and"
+                echo "         expects the proprietary SPX firmware files to be installed"
+                echo "         before regenerating the initramfs."
+            fi
+
+            echo "         Missing: ${fw}"
+            missing=1
+        fi
+    done
+
+    if [ "${missing}" -ne 0 ]; then
+        echo "         Install the Surface Pro X firmware package, then rerun:"
+        echo "           mkinitcpio -p linux-denys"
+    fi
+}
+
+_spx_regen_initramfs() {
     if [ -f /etc/mkinitcpio.d/linux-denys.preset ]; then
         mkinitcpio -p linux-denys
     else
@@ -6,10 +37,12 @@ post_install() {
     fi
 }
 
+post_install() {
+    _spx_warn_missing_firmware
+    _spx_regen_initramfs
+}
+
 post_upgrade() {
-    if [ -f /etc/mkinitcpio.d/linux-denys.preset ]; then
-        mkinitcpio -p linux-denys
-    else
-        echo "WARNING: /etc/mkinitcpio.d/linux-denys.preset not found, skipping initramfs generation"
-    fi
+    _spx_warn_missing_firmware
+    _spx_regen_initramfs
 }

@@ -33,7 +33,10 @@ sha256sums=(
 
 package_linux-denys() {
     depends=("coreutils" "linux-firmware" "kmod" "mkinitcpio>=0.7")
-    optdepends=("crda: to set the correct wireless channels of your country")
+    optdepends=(
+        "linux-denys-firmware: proprietary Surface Pro X firmware required for early display, Wi-Fi, and USB-C bring-up"
+        "crda: to set the correct wireless channels of your country"
+    )
     install="${pkgbase}.install"
 
     local kernver

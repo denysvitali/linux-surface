@@ -61,24 +61,34 @@ Each build produces:
 ```bash
 # 1. Download all artifacts from the pre-release
 
-# 2. Install kernel image
+# 2. Install the proprietary Surface Pro X firmware package first.
+#    The modular kernel path expects these files on the rootfs and in the
+#    initramfs: qcmpss8180.mbn, qcdxkmsuc8180.mbn, and the ath10k WCN3990
+#    board/firmware blobs. Without them, early display, Wi-Fi, and USB-C
+#    bring-up can fail even if the kernel itself boots.
+
+# 3. Install kernel image
 sudo cp Image.gz /boot/vmlinuz-linux-spx
 
-# 3. Install modules
+# 4. Install modules
 sudo tar -xzf modules.tar.gz -C /
 
-# 4. Update initramfs (choose based on your distro)
+# 5. Update initramfs (choose based on your distro)
 sudo update-initramfs -c -k linux-spx     # Debian/Ubuntu
 # OR
 sudo mkinitcpio -p linux-spx               # Arch
 
-# 5. Update bootloader (add entry for /boot/vmlinuz-linux-spx)
+# 6. Update bootloader (add entry for /boot/vmlinuz-linux-spx)
 # For grub:
 sudo update-grub
 
-# 6. Reboot
+# 7. Reboot
 sudo reboot
 ```
+
+For Arch Linux package installs, the packaged kernel is the modular variant.
+After any kernel or firmware change, regenerate the initramfs so the early
+MSM DRM, USB-C/UCSI, and ath10k firmware paths stay in sync.
 
 ## Performance
 
