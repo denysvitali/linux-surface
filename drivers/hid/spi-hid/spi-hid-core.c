@@ -276,6 +276,15 @@ static void spi_hid_stop_hid(struct spi_hid *shid)
 	}
 }
 
+/*
+ * Number of error attempts to tolerate with a soft retry (no EC reset)
+ * before escalating to a full EC reset. The EC also hosts the Surface
+ * Aggregator Module, and a full EC reset disrupts the SAM session,
+ * which is what causes the type-cover keyboard to drop key-release
+ * events and the kernel to start its software auto-repeat.
+ */
+#define SPI_HID_SOFT_RETRY_ATTEMPTS	5
+
 static int spi_hid_error_handler(struct spi_hid *shid)
 {
 	struct device *dev = &shid->spi->dev;
@@ -284,7 +293,7 @@ static int spi_hid_error_handler(struct spi_hid *shid)
 	if (shid->power_state == SPI_HID_POWER_MODE_OFF)
 		return 0;
 
-	dev_err(dev, "Error Handler\n");
+	dev_err(dev, "Error Handler (attempt %u)\n", shid->attempts);
 
 	if (shid->attempts++ >= SPI_HID_MAX_RESET_ATTEMPTS) {
 		dev_err(dev, "unresponsive device, aborting.\n");
@@ -297,18 +306,33 @@ static int spi_hid_error_handler(struct spi_hid *shid)
 	shid->ready = false;
 	sysfs_notify(&dev->kobj, NULL, "ready");
 
+	shid->input_stage = SPI_HID_INPUT_STAGE_IDLE;
+	shid->input_transfer_pending = 0;
+	cancel_work_sync(&shid->reset_work);
+
+	/*
+	 * For the first SPI_HID_SOFT_RETRY_ATTEMPTS failures, just
+	 * settle the bus and let the next IRQ start over. A full EC
+	 * reset is destructive: it also resets the Surface Aggregator
+	 * Module on the same EC, which causes the type-cover keyboard
+	 * to lose its session and the kernel to see held keys without
+	 * releases.
+	 */
+	if (shid->attempts <= SPI_HID_SOFT_RETRY_ATTEMPTS) {
+		usleep_range(1000, 2000);
+		shid->power_state = SPI_HID_POWER_MODE_ACTIVE;
+		return 0;
+	}
+
 	ret = pinctrl_select_state(shid->pinctrl, shid->pinctrl_reset);
 	if (ret) {
 		dev_err(dev, "Power Reset failed\n");
 		return ret;
 	}
 	shid->power_state = SPI_HID_POWER_MODE_OFF;
-	shid->input_stage = SPI_HID_INPUT_STAGE_IDLE;
-	shid->input_transfer_pending = 0;
-	cancel_work_sync(&shid->reset_work);
 
-	/* Drive reset for at least 100 ms */
-	msleep(100);
+	/* Hold reset long enough for the EC to actually come back. */
+	msleep(250);
 
 	shid->power_state = SPI_HID_POWER_MODE_ACTIVE;
 	ret = pinctrl_select_state(shid->pinctrl, shid->pinctrl_active);
@@ -602,6 +626,7 @@ static int spi_hid_process_input_report(struct spi_hid *shid,
 		ret = spi_hid_response_handler(shid, buf);
 		break;
 	default:
+		shid->attempts = 0;
 		dev_err(dev, "Unknown input report: 0x%x\n", header.report_type);
 		ret = -EINVAL;
 		break;
@@ -1499,7 +1524,7 @@ static int spi_hid_probe(struct spi_device *spi)
 	INIT_WORK(&shid->refresh_device_work, spi_hid_refresh_device_work);
 	INIT_WORK(&shid->error_work, spi_hid_error_work);
 
-	irqflags = irq_get_trigger_type(spi->irq) | IRQF_ONESHOT;
+	irqflags = irq_get_trigger_type(spi->irq);
 	ret = request_irq(spi->irq, spi_hid_dev_irq, irqflags,
 			dev_name(&spi->dev), shid);
 	if (ret)
@@ -1524,6 +1549,14 @@ static int spi_hid_probe(struct spi_device *spi)
 		dev_err(dev, "%s: failed to deassert reset\n", __func__);
 		goto err1;
 	}
+
+	/*
+	 * Give the EC's boot ROM and SPI bring-up time to actually
+	 * complete before we let the IRQ handler run. Without this,
+	 * the first IRQ after probe hits a not-yet-ready EC and the
+	 * header validator sees 0xff on the floating MISO line.
+	 */
+	msleep(150);
 
 	dev_err(dev, "%s: d3 -> %s\n", __func__,
 			spi_hid_power_mode_string(shid->power_state));
