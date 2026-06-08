@@ -891,6 +891,14 @@ static void spi_hid_input_header_complete(void *_shid)
 						false);
 		shid->bus_error_count++;
 		shid->bus_last_error = ret;
+		/*
+		 * Garbage on the wire (e.g. the EC is not yet booted, or
+		 * a brief bus glitch) leaves the driver in an infinite
+		 * loop of useless header reads unless we explicitly kick
+		 * the error worker. The body path does this; mirror it
+		 * here.
+		 */
+		schedule_work(&shid->error_work);
 		goto out;
 	}
 
