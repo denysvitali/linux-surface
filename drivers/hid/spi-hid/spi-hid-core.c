@@ -931,6 +931,20 @@ static int spi_hid_bus_input_report(struct spi_hid *shid)
 	int ret;
 
 	trace_spi_hid_bus_input_report(shid);
+
+	/*
+	 * An IRQ can fire while the device is in D3 (e.g. noise on the
+	 * interrupt line in the sleep pinctrl state, which biases the
+	 * line down, or a genuine wake notification). In that case
+	 * there is nothing to read until ll_open() powers the device
+	 * back up; starting an SPI read now just clocks 0xff out of a
+	 * floating MISO and trips the header validator.
+	 */
+	if (shid->power_state == SPI_HID_POWER_MODE_OFF) {
+		dev_dbg(dev, "spurious IRQ while device is in D3, ignoring\n");
+		return 0;
+	}
+
 	if (shid->input_transfer_pending++)
 		return 0;
 
