@@ -8,6 +8,20 @@
  */
 #include "sc8180x-surface-pro-x.dts"
 
+/*
+ * Keep the hardware watchdog available during the guarded speaker test. This
+ * node is byte-for-byte equivalent to the watchdog used by the proven camera
+ * test DTBs; the common SC8180X DTS currently omits it.
+ */
+&soc {
+	watchdog@17c10000 {
+		compatible = "qcom,apss-wdt-sm8150", "qcom,kpss-wdt";
+		reg = <0 0x17c10000 0 0x1000>;
+		clocks = <&sleep_clk>;
+		interrupts = <GIC_SPI 0 IRQ_TYPE_EDGE_RISING>;
+	};
+};
+
 &right_spkr {
 	status = "disabled";
 };
