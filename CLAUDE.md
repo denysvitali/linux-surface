@@ -187,8 +187,8 @@ bring-up, then `dmesg | grep spxwr`.
 
 ## Open threads
 
-0. Re-test the exact historically audible PA Volume 12 setting.  The audited
-   v3-v5 runs used code 8 (6 dB lower) and were all silent.
+0. Re-establish an audible baseline before running any further A/B.  See
+   "No audible baseline" below — this now blocks everything else.
 1. Validate the restored relative Q6 fallback cadence; the absolute-deadline
    version never produced sound on a cold boot.
 2. If the first stream is audible but dirty, capture the serialized DP1 master
@@ -272,7 +272,7 @@ DP1 bank-enable parity is not the current silence gate.  The next cold-boot A/B
 restores PA Volume 12, the exact +18 dB value from the last audible recovery
 runs; the tested transport remains unchanged.
 
-## 2026-08-09 guarded v6 runtime result (listening result PENDING)
+## 2026-08-09 guarded v6 runtime result
 
 V6 changed exactly one variable from v5: `SpkrLeft PA Volume` 8 -> 12, the exact
 +18 dB value from the last audible recovery runs.  The kernel command line,
@@ -284,9 +284,9 @@ path, a verified `0 -> 12` PA Volume transition in `mixer.log`, a full
 five-second 48 kHz S16_LE stereo tone, mid-stream `B0=0x01000107
 B1=0x01000107`, verified GPIO-low parking, no kernel fault, exit status 0.
 
-**The listening result was never collected** — the driving session died on
-upstream API errors immediately after arming the boot.  Do not treat this run
-as silent; it is unmeasured.  The machine is still booted in it.
+The user heard **nothing**.  PA gain is therefore eliminated: v3-v6 have now
+each disproven one hypothesis (gain, slave DP1 shadowing, master/slave DP1
+bank parity) while passing every software gate.  Open thread 0 is closed.
 
 Transport cross-check (open thread 2, done offline from this capture):
 `SWRM_DP_PORT_CTRL` = `en_chan<<24 | offset2<<16 | offset1<<8 | sinterval`, so
@@ -296,3 +296,43 @@ That is bit-exact against master port 1 in `sc8180x-wcd9340.dtsi` (`0x07`,
 single-port DAC transport therefore holds no discrepancy against the Windows
 ground truth; the only remaining structural difference is Windows opening all
 four descriptors, which was already tested (loud transient, then silence).
+
+## No audible baseline — this blocks every further A/B (2026-08-09)
+
+Four consecutive guarded boots (v3, v4, v5, v6) passed **every** software gate —
+real device-0 presence, cold-init replay, correct mixer path, full five-second
+tone, correct mid-stream `DP1_PORT_CTRL`, verified GPIO-low parking, no kernel
+fault — and all four were silent.  We therefore have no proof that any boot in
+this series can make sound at all, and per the whole-boot-silence rule every
+single-variable result in the series is uninterpretable.
+
+Two things changed between the last audible run and v3, neither ever validated
+as audible:
+
+1. `cfc49f4bed61` ("audit Surface Pro X speaker bring-up") rewrote 1015 lines
+   across `wsa881x.c` (463), `qcom.c` (300), `wcd934x.c` (64) and `wcd934x.c`
+   (mfd, 49).  Its DTSI hunk is comment-only, so the port parameters are
+   unchanged — but the driver logic underneath them is not.  This is a
+   multi-variable change that landed without a listening test.
+2. Every guarded entry forces `snd_soc_wsa881x.spx_win_pa_seq=1` and
+   `soundwire_qcom.spx_win_transport=1`.  Both are RE-derived, both ship with
+   cross-platform defaults of **0**, and neither has ever been shown audible.
+   `spx_win_transport=1` stops writing `BLOCK_CTRL_1`, slave `BlockCtrl3` and
+   `HCTRL`, leaving them at 0 instead of `0xFF`/`0xFF`/`0xF0`.  Those govern
+   block packing.  Windows can leave them at reset because Windows opens all
+   four descriptors; the single-port DAC config plausibly cannot.  Wrong
+   framing with correct control registers produces exactly the observed
+   signature: a bit-exact `DP1_PORT_CTRL` trace and no audible output.
+
+The v3-v6 A/Bs were single-variable deltas layered on top of both of these.
+
+**Next test (staged, no reboot needed).**  Both knobs are runtime-writable
+(0644), so the baseline can be probed on a live boot for the cost of one listen:
+`scripts/spx-prere-baseline.sh` sets `spx_win_pa_seq=0` and
+`spx_win_transport=0` and plays one tone.  This is deliberately two variables —
+the goal is a baseline, not isolation.  It is an *audibility* test, not a
+quality one (only the first stream after a cold boot measures quality).
+
+- Audible  -> the RE knobs are the gate; one more listen bisects which.
+- Silent   -> suspicion moves to the `cfc49f4bed61` rewrite; boot the pre-audit
+  tree (`a88666f0b27d`) to recover a known-audible reference.
