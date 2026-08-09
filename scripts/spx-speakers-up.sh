@@ -140,8 +140,27 @@ fresh_regs()
 		"$tag" "$SPX_COMP_PARAMS" "$SPX_SLV_STATUS"
 	[[ $SPX_COMP_PARAMS == 0x016840c6 ]] ||
 		fatal "AHB bridge canary is invalid ($SPX_COMP_PARAMS)"
-	[[ $SPX_SLV_STATUS == 0x00000001 ]] ||
-		fatal "single amp is not stably attached at physical device 0 ($SPX_SLV_STATUS)"
+	if [[ $tag == pre-stream ]]; then
+		[[ $SPX_SLV_STATUS == 0x00000001 ]] ||
+			fatal "single amp is not stably attached at physical device 0 ($SPX_SLV_STATUS)"
+	else
+		# In no-assign mode the amp cannot acquire any address except device 0,
+		# but this master's status latch commonly clears on the first frame-bank
+		# switch.  A zero after a proven pre-stream 0x1 is therefore ambiguous:
+		# it can mean absent or merely stale.  Keep the bounded listening test
+		# running and decide from the active-bank transport plus acoustic result;
+		# still reject any indication that the slave moved to another address.
+		case $SPX_SLV_STATUS in
+		0x00000000)
+			echo "  WARNING: slave-status latch cleared after the proven device-0 attach"
+			;;
+		0x00000001)
+			;;
+		*)
+			fatal "single amp left physical device 0 ($SPX_SLV_STATUS)"
+			;;
+		esac
+	fi
 	if [[ $tag == active-stream ]]; then
 		printf '  MCP_STATUS=%s DP1 banks: B0=%s B1=%s\n' \
 			"$SPX_MCP_STATUS" "$SPX_DP1_B0" "$SPX_DP1_B1"
