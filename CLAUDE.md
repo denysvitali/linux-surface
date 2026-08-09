@@ -336,3 +336,19 @@ quality one (only the first stream after a cold boot measures quality).
 - Audible  -> the RE knobs are the gate; one more listen bisects which.
 - Silent   -> suspicion moves to the `cfc49f4bed61` rewrite; boot the pre-audit
   tree (`a88666f0b27d`) to recover a known-audible reference.
+
+## v7 armed (2026-08-09) — pre-RE baseline on a cold boot
+
+`spx-speaker-dev0-v7-prere` is derived from the audited v6 block and differs
+from it in exactly the title, the `--id`, and two knobs:
+`soundwire_qcom.spx_win_transport` 1 -> 0 and
+`snd_soc_wsa881x.spx_win_pa_seq` 1 -> 0.  Kernel, DTB
+(`...dtb.speaker-dev0-v3-audited`), initramfs and every other parameter are
+byte-identical, and no kernel code changed since the v6 build, so no rebuild or
+`mkinitcpio` run was needed.  PA Volume stays at 12.
+
+Deliberately two variables: this is a baseline probe, not an isolation test.
+
+- Audible -> the RE knobs are the gate; one more cold boot bisects which.
+- Silent  -> suspicion moves to the `cfc49f4bed61` rewrite; boot the pre-audit
+  tree (`a88666f0b27d`) to recover a known-audible reference.
