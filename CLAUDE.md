@@ -219,6 +219,15 @@ latch cleared to `0x0` after the bank switch, as seen in older runs, so the firs
 harness revision stopped the tone after about 1.3 seconds and safely parked the
 amp.  There were no kernel faults and audible output was not confirmed.
 
+A fresh-boot attach initially missed status again, but its one safe same-boot
+retry attached and submitted the full five-second stereo tone window.  GNU
+`timeout` escalated its TERM to KILL while the protected persistent PCM teardown
+was still closing, returning 137; the normal delayed PA POST_PMD arrived about
+3.8 seconds later.  The initial harness treated 137 as failure even though the
+full test interval ran.  It again verified GPIO-low cleanup, with no kernel
+fault.  The harness now accepts this bounded 137 result and waits up to eight
+seconds for the delayed PA POST_PMD before judging the lifecycle.
+
 For the next guarded boot, `0x1` remains mandatory before playback.  After that
 proof, `0x0` is treated as the documented ambiguous/stale latch state only during
 the bounded stream and post-stream checks; any non-device-0 address, incorrect

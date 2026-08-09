@@ -413,10 +413,20 @@ wait "$TONE_PID"
 TONE_RC=$?
 TONE_PID=
 set -e
-if (( TONE_RC != 0 && TONE_RC != 124 )); then
+if (( TONE_RC != 0 && TONE_RC != 124 && TONE_RC != 137 )); then
 	sed -n '1,120p' "$TONE_LOG" >&2
 	fatal "speaker-test failed with exit code $TONE_RC"
 fi
+# With the deliberately persistent WCD/AFE teardown policy, speaker-test can
+# remain in PCM close after timeout sends SIGTERM and then be reaped by the
+# two-second SIGKILL deadline (137).  ALSA DAPM also applies its normal delayed
+# power-down several seconds after the process is gone.  Both are bounded here;
+# do not misreport that expected protected teardown as a playback failure.
+for ((i = 0; i < 80; i++)); do
+	TONE_KERNEL_LOG=$(logs_since_marker "$TONE_MARKER")
+	grep -q 'SPX: PA DAPM event 0x8' <<<"$TONE_KERNEL_LOG" && break
+	sleep 0.1
+done
 grep -q '0 - Front Left' "$TONE_LOG" ||
 	fatal "speaker-test never reported submitting the left channel"
 TONE_KERNEL_LOG=$(logs_since_marker "$TONE_MARKER")
