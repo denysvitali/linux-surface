@@ -337,7 +337,7 @@ quality one (only the first stream after a cold boot measures quality).
 - Silent   -> suspicion moves to the `cfc49f4bed61` rewrite; boot the pre-audit
   tree (`a88666f0b27d`) to recover a known-audible reference.
 
-## v7 armed (2026-08-09) — pre-RE baseline on a cold boot
+## v7 result (2026-08-09) — pre-RE baseline, SILENT
 
 `spx-speaker-dev0-v7-prere` is derived from the audited v6 block and differs
 from it in exactly the title, the `--id`, and two knobs:
@@ -352,3 +352,66 @@ Deliberately two variables: this is a baseline probe, not an isolation test.
 - Audible -> the RE knobs are the gate; one more cold boot bisects which.
 - Silent  -> suspicion moves to the `cfc49f4bed61` rewrite; boot the pre-audit
   tree (`a88666f0b27d`) to recover a known-audible reference.
+
+### v7 outcome
+
+The first v7 boot aborted in step `[0]`: the guarded bring-up hardcoded
+`spx_win_transport=1` and `spx_win_pa_seq=1` as boot invariants, so it refused
+the pre-RE command line before touching hardware.  No tone played and the amp
+was never powered, so that cold boot stayed pristine.  Fixed in
+`01f5fc38d6f7`: exactly those two expectations are now overridable via
+`SPX_EXPECT_WIN_TRANSPORT` / `SPX_EXPECT_WIN_PA_SEQ`, defaulting to 1 so every
+existing guarded entry is unchanged.
+
+The re-run was then a genuine first-stream-after-cold-boot measurement, with
+both knobs 0 from the command line (no live write).  Every gate passed —
+device-0 presence, cold init, DAC-only mixer path, PA Volume 12, full
+five-second tone, `B0=0x01000107 B1=0x01000107`, verified parking, no fault.
+
+The user heard **nothing**.
+
+The reverse-engineered knobs are therefore eliminated.  Note this is not a
+no-op comparison: with `spx_win_transport=0` the `PORT_CTRL` path falls back to
+read-modify-write over the AHB bridge instead of composing the word in one
+write, and it *still* read back `0x01000107`.  Both code paths, both silent.
+
+## The audible baseline still exists on disk (2026-08-09)
+
+Five consecutive gate-perfect silent boots (v3-v7) mean the useful move is no
+longer another hypothesis but recovering a known-audible reference.  The
+2026-07-28 configuration survives intact:
+
+- GRUB entry `spx-windows-native-audio`, preserved in
+  `/boot/grub/grub.cfg.bak-20260729-010942`.
+- DTB `/boot/dtb/qcom/sc8180x-surface-pro-x.dtb.windows-audio` (mtime 07-28 15:56).
+- A coherent module snapshot in `/lib/modules/$(uname -r)/updates/`: every one of
+  `soundwire-qcom`, `snd-soc-wsa881x`, `snd-soc-wcd934x` and `soundwire-bus`
+  carries the suffix `.pre-fullbuild-20260728-161033`, same 15:56 timestamp.
+
+Its kernel command line is the important surprise.  The **entire** SPX knob set
+was `slim_qcom_ngd_ctrl.spx_probe_stage=8 spx_pio_mode=1 spx_allow_full=1
+spx_pin_after_qmi=1` — no `spx_write_dev0`, no `spx_core_enum`, no
+`spx_no_assign`, no `spx_win_*`, no `spx_wsa_gpio_val`.  The audible runs set
+every module parameter **at runtime from the bring-up script**, whereas v3-v7
+bake about thirty knobs into the command line.
+
+So the gap between the audible era and this series is four simultaneous
+differences — DTB, command line, built modules, and the `cfc49f4bed61` driver
+rewrite — not the two knobs v7 tested.
+
+Caveat before booting it: that entry has no `panic=10` / `oops=panic` /
+`ramoops.console_size` and its DTB has no watchdog node, so the guarded harness
+cannot run on it and a hang needs a hard power cycle.
+
+Three candidate next tests, in decreasing confidence and increasing safety:
+
+1. Full 07-28 reconstruction (modules + DTB + minimal cmdline, manual bring-up).
+   Deliberately multi-variable; the point is a reference, then re-bisect forward.
+2. Pre-audit DTB only (`eeb15ca58849`, already built).  Isolates the sound-dai
+   and audio-routing block the audit added, keeps modules and the guarded
+   harness.  Risk: the pre-audit DTS disables `right_spkr` while the inherited
+   DAI link still references it, which may stop the card probing at all.
+3. Revert `qcom.c`, `wsa881x.c` and both `wcd934x.c` to `a88666f0b27d`, rebuild,
+   `mkinitcpio -P`, keep the audited DTB and harness.  Isolates the rewrite with
+   all safety rails, but drops `spx_shadow_dp1_enable` and `spx_snapshot`, so
+   the entry and harness need small edits.
