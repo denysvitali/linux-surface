@@ -7,6 +7,7 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/device.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <sound/pcm.h>
@@ -367,6 +368,25 @@ static int q6dma_hw_params(struct snd_pcm_substream *substream,
 
 	return 0;
 }
+/*
+ * Surface Pro X: AFE port STOP wedges the MSFT ADSP firmware (and with
+ * it the whole platform). On SPX, ports are started once and left
+ * running; the BE hw_params fixup pins the config, so reuse is safe.
+ * The module parameter keeps the behavior available for manual testing
+ * on related firmware builds.
+ */
+static bool spx_no_port_stop;
+module_param(spx_no_port_stop, bool, 0644);
+MODULE_PARM_DESC(spx_no_port_stop,
+		 "Surface Pro X: never send AFE port STOP (stop wedges the ADSP)");
+
+static bool q6afe_dai_keep_port_running(int port_id)
+{
+	return spx_no_port_stop ||
+	       (port_id == SLIMBUS_2_RX &&
+		of_machine_is_compatible("microsoft,surface-pro-x"));
+}
+
 static void q6afe_dai_shutdown(struct snd_pcm_substream *substream,
 				struct snd_soc_dai *dai)
 {
@@ -375,6 +395,13 @@ static void q6afe_dai_shutdown(struct snd_pcm_substream *substream,
 
 	if (!dai_data->is_port_started[dai->id])
 		return;
+
+	if (q6afe_dai_keep_port_running(dai->id)) {
+		dev_info(dai->dev,
+			 "SPX: leaving AFE port %d running (stop parked)\n",
+			 dai->id);
+		return;
+	}
 
 	rc = q6afe_port_stop(dai_data->port[dai->id]);
 	if (rc < 0)
@@ -391,6 +418,12 @@ static int q6afe_dai_prepare(struct snd_pcm_substream *substream,
 	int rc;
 
 	if (dai_data->is_port_started[dai->id]) {
+		if (q6afe_dai_keep_port_running(dai->id)) {
+			dev_info(dai->dev,
+				 "SPX: AFE port %d already running, reusing\n",
+				 dai->id);
+			return 0;
+		}
 		/* stop the port and restart with new port config */
 		rc = q6afe_port_stop(dai_data->port[dai->id]);
 		if (rc < 0) {

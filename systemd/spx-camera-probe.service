@@ -1,0 +1,21 @@
+[Unit]
+Description=SPX camera probe + capture (manual camera-test DT only)
+ConditionPathExists=/proc/device-tree/soc@0/camss@ac65000
+After=systemd-user-sessions.service
+
+# Do not add SuccessAction/FailureAction=reboot here.  The 2026-08-09 v22 run
+# completed capture and STREAMOFF, then its automatic systemd reboot wedged in
+# systemd-shutdown and required a physical power cycle.  This unit is disabled
+# by default and is started manually only after a camera-entry boot is known to
+# be reachable.  A capture-local watchdog/SysRq timer still covers STREAMON.
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+TimeoutStartSec=180
+WorkingDirectory=/home/dvitali/Documents/git/linux-surface-kernel
+ExecStart=/home/dvitali/Documents/git/linux-surface-kernel/scripts/spx-camera-run.sh
+ExecStop=/bin/sh -c '/home/dvitali/Documents/git/linux-surface-kernel/scripts/spx-camera-down.sh > /var/log/spx-camera-down.log 2>&1 || true'
+
+[Install]
+WantedBy=multi-user.target

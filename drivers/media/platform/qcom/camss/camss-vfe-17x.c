@@ -174,6 +174,8 @@
 #define VFE_BUS_WM_FRAME_INC(n)			(0x2258 + (n) * 0x100)
 #define VFE_BUS_WM_BURST_LIMIT(n)		(0x225c + (n) * 0x100)
 
+static atomic_t spx_vfe_irq_logs = ATOMIC_INIT(0);
+
 static inline void vfe_reg_set(struct vfe_device *vfe, u32 reg, u32 set_bits)
 {
 	u32 bits = readl_relaxed(vfe->base + reg);
@@ -206,6 +208,8 @@ static void vfe_global_reset(struct vfe_device *vfe)
 
 static void vfe_wm_start(struct vfe_device *vfe, u8 wm, struct vfe_line *line)
 {
+	struct v4l2_pix_format_mplane *pix =
+		&line->video_out.active_fmt.fmt.pix_mp;
 	u32 val;
 
 	/*Set Debug Registers*/
@@ -245,6 +249,15 @@ static void vfe_wm_start(struct vfe_device *vfe, u8 wm, struct vfe_line *line)
 	val = 1 << WM_CFG_EN |
 	      MODE_MIPI_RAW << WM_CFG_MODE;
 	writel_relaxed(val, vfe->base + VFE_BUS_WM_CFG(wm));
+
+	dev_info(vfe->camss->dev,
+		 "SPX VFE: wm%u start %ux%u stride=%u cfg=%#x width=%#x height=%#x packer=%#x frame_inc=%#x\n",
+		 wm, pix->width, pix->height, pix->plane_fmt[0].bytesperline,
+		 readl_relaxed(vfe->base + VFE_BUS_WM_CFG(wm)),
+		 readl_relaxed(vfe->base + VFE_BUS_WM_BUFFER_WIDTH_CFG(wm)),
+		 readl_relaxed(vfe->base + VFE_BUS_WM_BUFFER_HEIGHT_CFG(wm)),
+		 readl_relaxed(vfe->base + VFE_BUS_WM_PACKER_CFG(wm)),
+		 readl_relaxed(vfe->base + VFE_BUS_WM_FRAME_INC(wm)));
 }
 
 static void vfe_wm_stop(struct vfe_device *vfe, u8 wm)
@@ -262,6 +275,12 @@ static void vfe_wm_update(struct vfe_device *vfe, u8 wm, u32 addr,
 
 	writel_relaxed(addr, vfe->base + VFE_BUS_WM_IMAGE_ADDR(wm));
 	writel_relaxed(stride * pix->height, vfe->base + VFE_BUS_WM_FRAME_INC(wm));
+
+	dev_info(vfe->camss->dev,
+		 "SPX VFE: wm%u update dma=%#x image_addr=%#x frame_inc=%#x\n",
+		 wm, addr,
+		 readl_relaxed(vfe->base + VFE_BUS_WM_IMAGE_ADDR(wm)),
+		 readl_relaxed(vfe->base + VFE_BUS_WM_FRAME_INC(wm)));
 }
 
 static void vfe_reg_update(struct vfe_device *vfe, enum vfe_line_id line_id)
@@ -341,6 +360,15 @@ static irqreturn_t vfe_isr(int irq, void *dev)
 		vfe_bus_status[i] = readl_relaxed(vfe->base + VFE_BUS_IRQ_STATUS(i));
 		writel_relaxed(vfe_bus_status[i], vfe->base + VFE_BUS_IRQ_CLEAR(i));
 	}
+
+	if ((status0 & BIT(9)) && atomic_inc_return(&spx_vfe_irq_logs) <= 16)
+		dev_info(vfe->camss->dev,
+			 "SPX VFE IRQ: top0=%#x top1=%#x bus0=%#x bus1=%#x bus2=%#x bus3=%#x wm0_status0=%#x wm0_status1=%#x image_addr=%#x\n",
+			 status0, status1, vfe_bus_status[0], vfe_bus_status[1],
+			 vfe_bus_status[2], vfe_bus_status[3],
+			 readl_relaxed(vfe->base + VFE_BUS_WM_STATUS0(0)),
+			 readl_relaxed(vfe->base + VFE_BUS_WM_STATUS1(0)),
+			 readl_relaxed(vfe->base + VFE_BUS_WM_IMAGE_ADDR(0)));
 
 	/* Enforce ordering between IRQ reading and interpretation */
 	wmb();
@@ -511,6 +539,7 @@ static void vfe_isr_wm_done(struct vfe_device *vfe, u8 wm)
 	struct camss_buffer *ready_buf;
 	struct vfe_output *output;
 	unsigned long flags;
+	void *vaddr;
 	u32 index;
 	u64 ts = ktime_get_ns();
 
@@ -532,6 +561,12 @@ static void vfe_isr_wm_done(struct vfe_device *vfe, u8 wm)
 
 	ready_buf->vb.vb2_buf.timestamp = ts;
 	ready_buf->vb.sequence = output->sequence++;
+	vaddr = vb2_plane_vaddr(&ready_buf->vb.vb2_buf, 0);
+	if (vaddr)
+		dev_info(vfe->camss->dev,
+			 "SPX VFE: wm%u done dma=%pad first_words=%08x %08x %08x %08x\n",
+			 wm, &ready_buf->addr[0], ((u32 *)vaddr)[0],
+			 ((u32 *)vaddr)[1], ((u32 *)vaddr)[2], ((u32 *)vaddr)[3]);
 
 	index = 0;
 	output->buf[0] = output->buf[1];

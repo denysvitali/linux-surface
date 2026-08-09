@@ -1,0 +1,5 @@
+config SPX_SWR_DIRECT
+	tristate "SPX direct SWR master drive (debug only)"
+	help
+	  Direct regmap drive of the WCD9340 codec's internal SoundWire master.
+	  Debug/experimental only.

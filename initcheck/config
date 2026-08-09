@@ -1,0 +1,6 @@
+MODULES="surface_aggregator surface_aggregator_registry surface_aggregator_hub surface_hid_core surface_hid dm_crypt leds_qcom_lpg pwm_bl soundwire_qcom snd_soc_wsa881x"
+EARLYHOOKS=""
+HOOKS=""
+LATEHOOKS=""
+CLEANUPHOOKS=""
+EMERGENCYHOOKS=""

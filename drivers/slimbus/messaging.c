@@ -29,22 +29,31 @@ void slim_msg_response(struct slim_controller *ctrl, u8 *reply, u8 tid, u8 len)
 
 	spin_lock_irqsave(&ctrl->txn_lock, flags);
 	txn = idr_find(&ctrl->tid_idr, tid);
-	spin_unlock_irqrestore(&ctrl->txn_lock, flags);
-
-	if (txn == NULL)
+	if (txn == NULL) {
+		spin_unlock_irqrestore(&ctrl->txn_lock, flags);
 		return;
+	}
 
 	msg = txn->msg;
 	if (msg == NULL || msg->rbuf == NULL) {
+		spin_unlock_irqrestore(&ctrl->txn_lock, flags);
 		dev_err(ctrl->dev, "Got response to invalid TID:%d, len:%d\n",
 				tid, len);
 		return;
 	}
 
-	slim_free_txn_tid(ctrl, txn);
+	/*
+	 * Claim and deliver the txn without dropping txn_lock: a waiter that
+	 * timed out concurrently must block in slim_free_txn_tid() until the
+	 * (typically on-stack) completion has been completed, otherwise this
+	 * dereferences a dead stack frame. Whoever removes the tid from the
+	 * IDR owns the runtime-PM put for the transaction.
+	 */
+	idr_remove(&ctrl->tid_idr, tid);
 	memcpy(msg->rbuf, reply, len);
 	if (txn->comp)
 		complete(txn->comp);
+	spin_unlock_irqrestore(&ctrl->txn_lock, flags);
 
 	/* Remove runtime-pm vote now that response was received for TID txn */
 	pm_runtime_mark_last_busy(ctrl->dev);
@@ -83,14 +92,29 @@ EXPORT_SYMBOL_GPL(slim_alloc_txn_tid);
  *
  * @ctrl: Controller handle
  * @txn: transaction whose tid should be freed
+ *
+ * Return: true if this call removed the tid from the table, false if it was
+ * already claimed (e.g. by a concurrent slim_msg_response()). The caller that
+ * gets true owns the runtime-PM put for the transaction.
  */
-void slim_free_txn_tid(struct slim_controller *ctrl, struct slim_msg_txn *txn)
+bool slim_free_txn_tid(struct slim_controller *ctrl, struct slim_msg_txn *txn)
 {
 	unsigned long flags;
+	bool removed = false;
 
 	spin_lock_irqsave(&ctrl->txn_lock, flags);
-	idr_remove(&ctrl->tid_idr, txn->tid);
+	/*
+	 * Only remove the entry if it still belongs to this txn: the tid may
+	 * have been claimed by slim_msg_response() and even reallocated to a
+	 * different transaction in the meantime.
+	 */
+	if (txn->tid && idr_find(&ctrl->tid_idr, txn->tid) == txn) {
+		idr_remove(&ctrl->tid_idr, txn->tid);
+		removed = true;
+	}
 	spin_unlock_irqrestore(&ctrl->txn_lock, flags);
+
+	return removed;
 }
 EXPORT_SYMBOL_GPL(slim_free_txn_tid);
 
@@ -111,6 +135,7 @@ int slim_do_transfer(struct slim_controller *ctrl, struct slim_msg_txn *txn)
 {
 	DECLARE_COMPLETION_ONSTACK(done);
 	bool need_tid = false, clk_pause_msg = false;
+	bool tid_freed = false;
 	int ret;
 	unsigned long time_left;
 
@@ -124,6 +149,9 @@ int slim_do_transfer(struct slim_controller *ctrl, struct slim_msg_txn *txn)
 		 txn->mc <= SLIM_MSG_MC_RECONFIGURE_NOW))
 		clk_pause_msg = true;
 
+	/* Initialize tid to invalid value */
+	txn->tid = 0;
+
 	if (!clk_pause_msg) {
 		ret = pm_runtime_get_sync(ctrl->dev);
 		if (ctrl->sched.clk_state != SLIM_CLK_ACTIVE) {
@@ -132,30 +160,34 @@ int slim_do_transfer(struct slim_controller *ctrl, struct slim_msg_txn *txn)
 			goto slim_xfer_err;
 		}
 	}
-	/* Initialize tid to invalid value */
-	txn->tid = 0;
 	need_tid = slim_tid_txn(txn->mt, txn->mc);
 
 	if (need_tid) {
 		ret = slim_alloc_txn_tid(ctrl, txn);
 		if (ret)
-			return ret;
+			goto slim_xfer_err;
 
 		if (!txn->msg->comp)
 			txn->comp = &done;
 	}
 
 	ret = ctrl->xfer_msg(ctrl, txn);
-	if (ret == -ETIMEDOUT) {
-		slim_free_txn_tid(ctrl, txn);
-	} else if (!ret && need_tid && !txn->msg->comp) {
+	if (ret) {
+		/*
+		 * Drop the tid on ANY error, not just -ETIMEDOUT: leaving a
+		 * stale entry behind lets a late reply complete() a dead
+		 * stack frame. tid_freed decides who does the PM put below.
+		 */
+		tid_freed = slim_free_txn_tid(ctrl, txn);
+	} else if (need_tid && !txn->msg->comp &&
+		   !completion_done(txn->comp)) {
 		unsigned long ms = txn->rl + HZ;
 
 		time_left = wait_for_completion_timeout(txn->comp,
 							msecs_to_jiffies(ms));
 		if (!time_left) {
 			ret = -ETIMEDOUT;
-			slim_free_txn_tid(ctrl, txn);
+			tid_freed = slim_free_txn_tid(ctrl, txn);
 		}
 	}
 
@@ -164,10 +196,12 @@ int slim_do_transfer(struct slim_controller *ctrl, struct slim_msg_txn *txn)
 			txn->mt, txn->mc, txn->la, ret);
 
 slim_xfer_err:
-	if (!clk_pause_msg && (txn->tid == 0  || ret == -ETIMEDOUT)) {
+	if (!clk_pause_msg && (txn->tid == 0 || tid_freed)) {
 		/*
-		 * remove runtime-pm vote if this was TX only, or
-		 * if there was error during this transaction
+		 * Remove the runtime-pm vote if this was TX only, or if this
+		 * path (and not a concurrent slim_msg_response()) claimed the
+		 * failed transaction. A reply that won the race already did
+		 * the put in slim_msg_response().
 		 */
 		pm_runtime_mark_last_busy(ctrl->dev);
 		pm_runtime_put_autosuspend(ctrl->dev);
@@ -180,8 +214,17 @@ static int slim_val_inf_sanity(struct slim_controller *ctrl,
 			       struct slim_val_inf *msg, u8 mc)
 {
 	if (!msg || msg->num_bytes > 16 ||
-	    (msg->start_offset + msg->num_bytes) > 0xC00)
-		goto reterr;
+	    (msg->start_offset + msg->num_bytes) > 0xC00) {
+		/* SPX: the codec-internal SWR master AHB bridge is at 0xc85-0xc96.
+		 * The generic 0xC00 sanity limit was added for safety but it
+		 * wrongly rejects these legitimate addresses on sc8180x. Allow
+		 * up to 0x10000 (full 16-bit SLIMbus value-element space). */
+		if (!msg || (msg->start_offset + msg->num_bytes) > 0x10000) {
+			dev_err(ctrl->dev, "SPX: SLIM sanity REJECTED offset=0x%x bytes=%d\n",
+				msg ? msg->start_offset : 0, msg ? msg->num_bytes : 0);
+			goto reterr;
+		}
+	}
 	switch (mc) {
 	case SLIM_MSG_MC_REQUEST_VALUE:
 	case SLIM_MSG_MC_REQUEST_INFORMATION:

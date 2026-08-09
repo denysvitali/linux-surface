@@ -11,5 +11,6 @@ struct q6core_svc_api_info {
 
 bool q6core_is_adsp_ready(void);
 int q6core_get_svc_api_info(int svc_id, struct q6core_svc_api_info *ainfo);
+int q6core_spx_audio_init(void);
 
 #endif /* __Q6CORE_H__ */

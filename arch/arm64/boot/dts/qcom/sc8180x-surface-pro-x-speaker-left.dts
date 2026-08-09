@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: GPL-2.0
+
+/*
+ * Conservative speaker test: retain the stock reserved-memory layout and
+ * expose one logical WSA881x slave to ASoC. Both physical amplifiers share
+ * the bus and receive device number 1, but only one Linux codec component is
+ * needed to configure the SoundWire stream and PA path.
+ */
+#include "sc8180x-surface-pro-x.dts"
+
+&right_spkr {
+	status = "disabled";
+};
+
+/*
+ * SPX: the codec-internal SWR master IRQ is needed for the bus to
+ * function. On Jun 29 the bus worked with the IRQ present (dtb.wsairq).
+ * Without it, MCP_SLV_STATUS stays 0x0 on every boot. The force-attach
+ * code now masks interrupts during the critical section (spx_blind_attach
+ * + interrupt CPU_EN/mask writes), so the ISR no longer corrupts the
+ * CMD FIFO.
+ */

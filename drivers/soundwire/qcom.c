@@ -22,6 +22,180 @@
 #include <sound/soc.h>
 #include "bus.h"
 
+/*
+ * SPX: on the wcd934x internal SoundWire master (no usable IRQ) the HW
+ * auto-enumerator runs at master probe, BEFORE wsa881x powers the WSA881x amps,
+ * so it scans an unpowered bus and latches a garbage DevID. When set, the poll
+ * worker re-runs the auto-enum on a live (powered) bus via soft-reset + re-init.
+ * Gated + default-off so the known-good default boot is unaffected; the
+ * experimental GRUB entry passes soundwire_qcom.spx_core_enum=1. IRQ-less only.
+ */
+static int spx_core_enum;
+module_param(spx_core_enum, int, 0644);
+/*
+ * SPX: the WCD9340 AHB bridge is slow -- reading RD_DATA before the bridge has
+ * fetched the SWR-master register returns stale/partial bytes (observed:
+ * intermittent 0xAA/0x00 corruption in DevID reads even though the amp does
+ * respond). The Windows-native Surface path reproduces qcauddev8180's exact
+ * ACCESS_STATUS completion handshake for every bridge transaction.
+ * spx_ahb_dbg logs each bridge read's status so the completion bit can be
+ * characterised live; spx_ahb_wait_us caps the completion poll.
+ */
+static int spx_ahb_dbg;
+module_param(spx_ahb_dbg, int, 0644);
+static int spx_ahb_wait_us = 500;
+module_param(spx_ahb_wait_us, int, 0644);
+/*
+ * SPX: the two WSA881x share SD_N (wcdgpio pin1) AND a shared enable (pin2), so
+ * they can't be electrically isolated -- both always answer device 0, and the
+ * unique_id read is too marginal to disambiguate them (bytes drop). But the amp
+ * DOES report the correct DevID (0217:2010, confirmed byte-by-byte), and the
+ * audio DATA path is master->slave (no response -> no bus clash). So when
+ * spx_force_attach is set, blindly assign device number 1 at device 0 (a
+ * fire-and-forget write, far more reliable than the reads), mark the DT WSA
+ * slave attached, and let wsa881x bind + stream. Both physical amps take dev 1
+ * and receive the same stream (mono, both speakers) -- the goal is audible sound.
+ */
+static int spx_force_attach;
+module_param(spx_force_attach, int, 0644);
+MODULE_PARM_DESC(spx_force_attach,
+		 "SPX: blind-assign dev#1 + force-attach the WSA slave (bypass marginal enum reads)");
+/*
+ * SPX: skip the DevID read-back verification in force-attach. The two amps
+ * clash on reads (both answer dev1 simultaneously), but writes are
+ * fire-and-forget and may succeed. With blind attach, assign dev1 and
+ * proceed without verifying the identity.
+ */
+static int spx_blind_attach;
+module_param(spx_blind_attach, int, 0644);
+MODULE_PARM_DESC(spx_blind_attach,
+		 "SPX: skip DevID verification in force-attach (writes are fire-and-forget)");
+/* Keep a validated logical slave bound without repeatedly reinitializing it. */
+static bool spx_forced_attached;
+/*
+ * SPX: DEFAULT OFF. This used to redirect every logical device-1 write to
+ * enumeration address 0, on the assumption that the amps never really retained
+ * the blind device-number assignment. That assumption held only while the
+ * "attach" was a fiction (MCP_SLV_STATUS read 0x0).
+ *
+ * Once the amps are brought up one at a time (see the per-amp powerdown pins in
+ * sc8180x-wcd9340.dtsi) the assignment is REAL -- MCP_SLV_STATUS reads 0x4,
+ * i.e. device 1 attached -- and a slave that has accepted a device number stops
+ * answering address 0. With this enabled every write (wsa881x_init, DAPM, mixer,
+ * PA enable/unmute, and the SoundWire core's DPn_ChannelEn/SampleCtrl/OffsetCtrl
+ * port setup) was therefore dropped on the floor, while READS -- which are not
+ * remapped -- kept working. That mismatch produced months of contradictory
+ * register evidence and total silence. Turning it off produced audio.
+ */
+static int spx_write_dev0 = -1;
+module_param(spx_write_dev0, int, 0644);
+MODULE_PARM_DESC(spx_write_dev0,
+		 "SPX: -1 = auto (follow MCP_SLV_STATUS), 0 = always device 1, 1 = always device 0");
+
+/*
+ * SPX: where the amplifier physically answers right now.
+ *
+ * The blind device-number assignment does not always stick: sometimes the amp
+ * accepts device 1 (MCP_SLV_STATUS = 0x4) and sometimes it stays unenumerated
+ * at device 0 (0x1). A slave only answers ONE of those addresses, so a fixed
+ * routing choice is wrong half the time -- every register write silently
+ * vanishes, which is invisible because qcom_swrm_cmd_fifo_wr_cmd() reports
+ * SDW_CMD_OK for unicast regardless. Track the real address instead and let the
+ * write path follow it.
+ */
+static bool spx_amp_at_dev0;
+/* Set when the last MCP_SLV_STATUS sample showed no device at all; the write
+ * path re-samples before routing so a late attach still flips the routing. */
+static bool spx_amp_addr_stale = true;
+/* Runtime-PM reference held after force-attach (see fast path). */
+static bool spx_pm_held;
+
+/*
+ * SPX: dropped commands are invisible (unicast always reports SDW_CMD_OK), and
+ * a lost bank-switch strands the bus on the bank whose channel-enable was never
+ * programmed -- the "random silent run" failure. Mirror all banked port
+ * programming into BOTH banks (master DPn regs and the amp's slave DPn regs)
+ * and repeat amp-bound writes so a single dropped command cannot mute a stream.
+ */
+static int spx_mirror_banks = 1;
+module_param(spx_mirror_banks, int, 0644);
+MODULE_PARM_DESC(spx_mirror_banks, "SPX: program both register banks with identical port config");
+static int spx_write_twice = 1;
+module_param(spx_write_twice, int, 0644);
+MODULE_PARM_DESC(spx_write_twice, "SPX: issue amp-bound unicast writes twice (dropped-write insurance)");
+
+/*
+ * The frame-control broadcast has no slave response and cannot be verified on
+ * this v1.3 master. If it is dropped, the bus remains on the old bank while
+ * the enabled ports are in the new bank: all register traces look correct but
+ * no samples flow. Repeat only this critical command; repeating all amplifier
+ * writes was proven to destabilize the WSA881x.
+ */
+static int spx_bank_switch_repeats = 1;
+module_param(spx_bank_switch_repeats, int, 0644);
+MODULE_PARM_DESC(spx_bank_switch_repeats,
+		 "SPX: number of identical SCP_FRAMECTRL broadcasts (1-5)");
+
+/*
+ * SPX: set once frame-gen is confirmed up at the end of qcom_swrm_init. The
+ * ISR clash-recovery (re-arming the auto-enumerator) must NOT fire while the
+ * bus is still being brought up -- toggling ENUMERATOR_CFG mid-init disrupts
+ * frame-gen startup. Gate the recovery on this.
+ */
+static bool spx_bus_up;
+/* SPX debug override for MCP_FRAME_CTRL_BANK.SSP_PERIOD[23:16]. */
+static int spx_frame_phase = 1;
+/* The audible SPX transport uses SSP_PERIOD=1 for streaming banks as well. */
+static int spx_runtime_ssp_period = 1;
+
+/* Live transport timing overrides for the WSA playback master port. */
+static int spx_port_si = -1;
+module_param(spx_port_si, int, 0644);
+static int spx_port_off1 = -1;
+module_param(spx_port_off1, int, 0644);
+static int spx_port_off2 = -1;
+module_param(spx_port_off2, int, 0644);
+static int spx_port_bp = -1;
+module_param(spx_port_bp, int, 0644);
+MODULE_PARM_DESC(spx_port_bp,
+		 "SPX: master port 1 block-packing mode (-1 leaves DT/default)");
+
+/*
+ * SPX: WCD9340 GPIO registers (from gpio-wcd934x.c): 0x42 = direction (bit per
+ * pin, 1=output), 0x43 = output value. The WSA881x SD_N (shutdown) line is
+ * wcdgpio pin 1, physical HIGH = shutdown (per the SPX dtsi). Bring the SWR
+ * master up on a QUIET bus: drive the WSA amps into shutdown BEFORE frame-gen
+ * so they don't drive the bus and trigger MASTER_CLASH_DET (which makes
+ * frame-gen lock nondeterministic), then release them after the lock.
+ * spx_quiet_bus selects the pin mask to shut down during init (bitmask of
+ * wcdgpio pins; default pin1+pin2 = 0x6). 0 disables the quiet-bus step.
+ */
+#define WCD934X_GPIO_DIR_CTL	0x42
+#define WCD934X_GPIO_VAL_CTL	0x43
+static int spx_quiet_bus;	/* default off: disproven as the frame-gen blocker */
+module_param(spx_quiet_bus, int, 0644);
+MODULE_PARM_DESC(spx_quiet_bus, "SPX: wcdgpio pin bitmask to hold in shutdown during frame-gen bring-up (0=off)");
+MODULE_PARM_DESC(spx_core_enum,
+		 "SPX: re-run HW auto-enum on a powered bus from the poll (IRQ-less master)");
+
+/*
+ * SPX live-iteration harness (debug). With spx_core_enum=1 the diag normally
+ * reads the 6-byte SCP DevID with retries. To isolate WHICH read fails, set
+ * spx_diag_reg to a single SCP/SWR register: the diag then reads ONLY that
+ * register, spx_diag_count times, at device spx_diag_dev, logging each value.
+ * Writing anything to spx_reenum re-arms and re-runs the whole diag+enum on the
+ * live bus (no reboot) -- so you can toggle the WSA enable GPIOs between runs.
+ */
+static int spx_diag_reg = -1;
+module_param(spx_diag_reg, int, 0644);
+MODULE_PARM_DESC(spx_diag_reg, "SPX: if >=0, diag reads ONLY this SCP/SWR reg repeatedly");
+static int spx_diag_dev;
+module_param(spx_diag_dev, int, 0644);
+MODULE_PARM_DESC(spx_diag_dev, "SPX: device address for spx_diag_reg reads (default 0)");
+static int spx_diag_count = 24;
+module_param(spx_diag_count, int, 0644);
+MODULE_PARM_DESC(spx_diag_count, "SPX: how many times the diag reads (default 24)");
+
 #define SWRM_COMP_SW_RESET					0x008
 #define SWRM_COMP_STATUS					0x014
 #define SWRM_LINK_MANAGER_EE					0x018
@@ -117,10 +291,31 @@
 #define SWRM_DP_PORT_CTRL_EN_CHAN_SHFT				0x18
 #define SWRM_DP_PORT_CTRL_OFFSET2_SHFT				0x10
 #define SWRM_DP_PORT_CTRL_OFFSET1_SHFT				0x08
+/*
+ * Codec-internal SWR-master AHB bridge value-elements. These are WCD934X
+ * regmap addresses: the regmap range_cfg (window_start=0x800, window_len=0x100)
+ * page-translates 0xc85 -> write page 0x0c to selector VE 0x800, then access
+ * data at VE 0x885. Confirmed on SPX (sc8180x): VE 0x885 echoes WR_DATA, VE
+ * 0x800 reads back 0x0c. (Do NOT "remap" these to raw VEs like 0x844 — that
+ * was a 2026-06-29 misread of a direct, non-paged slim_read probe and it
+ * breaks COMP_PARAMS readback, failing the master probe with -EINVAL.)
+ */
 #define SWRM_AHB_BRIDGE_WR_DATA_0				0xc85
 #define SWRM_AHB_BRIDGE_WR_ADDR_0				0xc89
 #define SWRM_AHB_BRIDGE_RD_ADDR_0				0xc8d
 #define SWRM_AHB_BRIDGE_RD_DATA_0				0xc91
+/*
+ * Bridge access configuration.  Downstream Qualcomm names WCD register 0xc95
+ * WCD934X_SWR_AHB_BRIDGE_ACCESS_CFG and gives it a reset value of 0x0f.
+ * qcauddev8180.sys nevertheless explicitly reasserts 0x0f immediately after
+ * enabling the WCD SoundWire clock and before its first master access.
+ */
+#define SWRM_AHB_BRIDGE_ACCESS_CFG				0xc95
+/*
+ * AHB-bridge transaction-complete status. Windows (qcauddev8180) polls
+ * this after every codec-internal SWR register access; mainline never reads it.
+ */
+#define SWRM_AHB_BRIDGE_ACCESS_STATUS				0xc96
 
 #define SWRM_REG_VAL_PACK(data, dev, id, reg)	\
 			((reg) | ((id) << 16) | ((dev) << 20) | ((data) << 24))
@@ -187,6 +382,10 @@ struct qcom_swrm_ctrl {
 #endif
 	struct completion broadcast;
 	struct completion enumeration;
+	/* Serialize a complete transaction through the WCD9340 AHB bridge. */
+	struct mutex ahb_lock;
+	/* Keep the threaded IRQ out of a partially completed controller init. */
+	struct mutex controller_lock;
 	/* Port alloc/free lock */
 	struct mutex port_lock;
 	struct clk *hclk;
@@ -211,6 +410,13 @@ struct qcom_swrm_ctrl {
 	u32 wr_fifo_depth;
 	u32 rd_fifo_depth;
 	bool clock_stop_not_supported;
+	bool spx_windows_init;
+	struct delayed_work spx_enum_work;	/* SPX: poll-enumerate, IRQ-less */
+	int spx_enum_tries;
+	bool spx_diag_done;			/* SPX: one-shot DevID probe ran */
+	struct delayed_work spx_wd_work;	/* SPX: amp-presence watchdog */
+	int spx_wd_state;
+	int spx_wd_fails;
 };
 
 struct qcom_swrm_data {
@@ -277,11 +483,35 @@ static const struct qcom_swrm_data swrm_v2_0_data = {
 
 #define to_qcom_sdw(b)	container_of(b, struct qcom_swrm_ctrl, bus)
 
-static int qcom_swrm_ahb_reg_read(struct qcom_swrm_ctrl *ctrl, int reg,
-				  u32 *val)
+static int spx_regmap_read_byte(struct regmap *regmap, unsigned int reg,
+				u8 *val)
+{
+	int retry;
+	int ret = -EIO;
+
+	/*
+	 * The Windows WCD byte-read primitive retries a failed underlying
+	 * SLIMbus transaction four times.  This is separate from the AHB
+	 * completion poll: a transport error must not consume that poll's
+	 * status-zero retry budget.
+	 */
+	for (retry = 0; retry < 4; retry++) {
+		ret = regmap_bulk_read(regmap, reg, val, 1);
+		if (!ret)
+			return 0;
+	}
+
+	return ret;
+}
+
+static int __qcom_swrm_ahb_reg_read(struct qcom_swrm_ctrl *ctrl, int reg,
+				    u32 *val)
 {
 	struct regmap *wcd_regmap = ctrl->regmap;
+	u8 *data = (u8 *)val;
 	int ret;
+	u8 access_status = 0;
+	int i;
 
 	/* pg register + offset */
 	ret = regmap_bulk_write(wcd_regmap, SWRM_AHB_BRIDGE_RD_ADDR_0,
@@ -289,19 +519,125 @@ static int qcom_swrm_ahb_reg_read(struct qcom_swrm_ctrl *ctrl, int reg,
 	if (ret < 0)
 		return SDW_CMD_FAIL;
 
-	ret = regmap_bulk_read(wcd_regmap, SWRM_AHB_BRIDGE_RD_DATA_0,
-			       val, 4);
-	if (ret < 0)
-		return SDW_CMD_FAIL;
+	/*
+	 * qcauddev8180!0x14009a488 polls ACCESS_STATUS after submitting
+	 * RD_ADDR and before sampling RD_DATA. It performs at most six
+	 * immediate one-byte reads and waits specifically for RD_DONE (bit 1).
+	 * WR_DONE (bit 0) may still be set from the preceding transaction and
+	 * must not be mistaken for completion of this read.
+	 */
+	if (ctrl->spx_windows_init) {
+		for (i = 0; i < 6; i++) {
+			ret = spx_regmap_read_byte(wcd_regmap,
+						  SWRM_AHB_BRIDGE_ACCESS_STATUS,
+						  &access_status);
+			if (ret < 0)
+				return SDW_CMD_FAIL;
+			if (access_status & BIT(1))
+				break;
+		}
+		if (!(access_status & BIT(1)))
+			return SDW_CMD_FAIL;
+	}
+
+	/*
+	 * SPX: wait for the (slow) AHB bridge to complete the fetch before
+	 * sampling RD_DATA, else we read stale/partial bytes. Poll ACCESS_STATUS
+	 * (bit0 = done, best guess -- validated via spx_ahb_dbg) with a bounded
+	 * timeout; if the bit never asserts we still fall through and read after
+	 * the full wait, so a wrong guess only costs latency, never a hang.
+	 */
+	if (spx_core_enum) {
+		u32 st = 0;
+		int i, iters = spx_ahb_wait_us / 5;
+
+		for (i = 0; i < iters; i++) {
+			if (regmap_read(wcd_regmap, SWRM_AHB_BRIDGE_ACCESS_STATUS,
+					&st) == 0 && (st & 0x1))
+				break;
+			udelay(5);
+		}
+		if (spx_ahb_dbg)
+			dev_info(ctrl->dev,
+				 "SPX AHB rd reg=0x%x access_status=0x%x iters=%d/%d\n",
+				 reg, st, i, iters);
+	}
+
+	if (ctrl->spx_windows_init) {
+		/*
+		 * qcauddev8180!0x14009a488 fetches RD_DATA_0..3 as four
+		 * independent one-byte SLIMbus transactions.  Do not combine
+		 * these on the Surface bridge: multi-byte RD_DATA reads have
+		 * returned stale/partial words on this hardware.
+		 */
+		for (i = 0; i < sizeof(*val); i++) {
+			ret = spx_regmap_read_byte(wcd_regmap,
+						  SWRM_AHB_BRIDGE_RD_DATA_0 + i,
+						  &data[i]);
+			if (ret < 0)
+				return SDW_CMD_FAIL;
+		}
+	} else {
+		ret = regmap_bulk_read(wcd_regmap, SWRM_AHB_BRIDGE_RD_DATA_0,
+				       val, sizeof(*val));
+		if (ret < 0)
+			return SDW_CMD_FAIL;
+	}
 
 	return SDW_CMD_OK;
 }
 
-static int qcom_swrm_ahb_reg_write(struct qcom_swrm_ctrl *ctrl,
-				   int reg, int val)
+static int qcom_swrm_ahb_reg_read(struct qcom_swrm_ctrl *ctrl, int reg,
+				  u32 *val)
+{
+	int ret;
+
+	mutex_lock(&ctrl->ahb_lock);
+	ret = __qcom_swrm_ahb_reg_read(ctrl, reg, val);
+	mutex_unlock(&ctrl->ahb_lock);
+
+	return ret;
+}
+
+static int __qcom_swrm_ahb_reg_write(struct qcom_swrm_ctrl *ctrl,
+				     int reg, int val)
 {
 	struct regmap *wcd_regmap = ctrl->regmap;
 	int ret;
+	u32 request[2] = { val, reg };
+	u8 status = 0;
+	int i;
+
+	/*
+	 * qcauddev8180!0x14009a0a8 submits WR_DATA and WR_ADDR as one
+	 * contiguous eight-byte SLIMbus transaction. Splitting this into two
+	 * regmap writes lets a slow bridge observe an incomplete command.
+	 */
+	if (ctrl->spx_windows_init) {
+		ret = regmap_bulk_write(wcd_regmap,
+					SWRM_AHB_BRIDGE_WR_DATA_0,
+					request, sizeof(request));
+		if (ret < 0)
+			return SDW_CMD_FAIL;
+
+		/*
+		 * Windows performs at most six immediate one-byte status reads
+		 * and waits specifically for WR_DONE (bit 0). RD_DONE (bit 1)
+		 * can remain set from an earlier bridge read.
+		 */
+		for (i = 0; i < 6; i++) {
+			ret = spx_regmap_read_byte(wcd_regmap,
+						  SWRM_AHB_BRIDGE_ACCESS_STATUS,
+						  &status);
+			if (ret < 0)
+				return SDW_CMD_FAIL;
+			if (status & BIT(0))
+				return SDW_CMD_OK;
+		}
+
+		return SDW_CMD_FAIL;
+	}
+
 	/* pg register + offset */
 	ret = regmap_bulk_write(wcd_regmap, SWRM_AHB_BRIDGE_WR_DATA_0,
 			  (u8 *)&val, 4);
@@ -315,6 +651,18 @@ static int qcom_swrm_ahb_reg_write(struct qcom_swrm_ctrl *ctrl,
 		return SDW_CMD_FAIL;
 
 	return SDW_CMD_OK;
+}
+
+static int qcom_swrm_ahb_reg_write(struct qcom_swrm_ctrl *ctrl,
+				   int reg, int val)
+{
+	int ret;
+
+	mutex_lock(&ctrl->ahb_lock);
+	ret = __qcom_swrm_ahb_reg_write(ctrl, reg, val);
+	mutex_unlock(&ctrl->ahb_lock);
+
+	return ret;
 }
 
 static int qcom_swrm_cpu_reg_read(struct qcom_swrm_ctrl *ctrl, int reg,
@@ -444,14 +792,26 @@ static int qcom_swrm_cmd_fifo_wr_cmd(struct qcom_swrm_ctrl *ctrl, u8 cmd_data,
 					      dev_addr, reg_addr);
 	}
 
-	if (swrm_wait_for_wr_fifo_avail(ctrl))
+	/* SPX accesses this master through the WCD9340 SLIMbus bridge.  Its
+	 * write-FIFO count is stale/unreliable (often permanently reports full),
+	 * although the command register remains usable.  Serialize blind writes
+	 * with a flush and enough bridge settle time instead of rejecting DAPM
+	 * power writes based on that count.
+	 */
+	if (spx_core_enum) {
+		ctrl->reg_write(ctrl, SWRM_CMD_FIFO_CMD, SWRM_CMD_FIFO_FLUSH);
+		usleep_range(500, 550);
+	} else if (swrm_wait_for_wr_fifo_avail(ctrl)) {
 		return SDW_CMD_FAIL_OTHER;
+	}
 
 	if (cmd_id == SWR_BROADCAST_CMD_ID)
 		reinit_completion(&ctrl->broadcast);
 
 	/* Its assumed that write is okay as we do not get any status back */
 	ctrl->reg_write(ctrl, ctrl->reg_layout[SWRM_REG_CMD_FIFO_WR_CMD], val);
+	if (spx_core_enum)
+		usleep_range(1200, 1300);
 
 	if (ctrl->version <= SWRM_VERSION_1_3_0)
 		usleep_range(150, 155);
@@ -489,11 +849,25 @@ static int qcom_swrm_cmd_fifo_rd_cmd(struct qcom_swrm_ctrl *ctrl,
 	 */
 	swrm_wait_for_wr_fifo_avail(ctrl);
 
+	/*
+	 * SPX (no-IRQ, SLIMbus-bridged master): a stale entry left in the read
+	 * FIFO from a prior single-byte read corrupts the next read (every other
+	 * byte of a multi-byte DevID read drops to 0). Flush for a clean slate
+	 * and give the slow AHB-over-SLIMbus path extra settle so the response
+	 * is latched before we poll the FIFO count.
+	 */
+	if (spx_core_enum) {
+		ctrl->reg_write(ctrl, SWRM_CMD_FIFO_CMD, SWRM_CMD_FIFO_FLUSH);
+		usleep_range(500, 550);
+	}
+
 	/* wait for FIFO RD to complete to avoid overflow */
 	usleep_range(100, 105);
 	ctrl->reg_write(ctrl, ctrl->reg_layout[SWRM_REG_CMD_FIFO_RD_CMD], val);
 	/* wait for FIFO RD CMD complete to avoid overflow */
 	usleep_range(250, 255);
+	if (spx_core_enum)
+		usleep_range(700, 750);
 
 	if (swrm_wait_for_rd_fifo_avail(ctrl))
 		return SDW_CMD_FAIL_OTHER;
@@ -562,6 +936,15 @@ static void qcom_swrm_get_device_status(struct qcom_swrm_ctrl *ctrl)
 		s &= SWRM_MCP_SLV_STATUS_MASK;
 		ctrl->status[i] = s;
 	}
+
+	/*
+	 * SPX: when force-attaching the WSA881x, the hardware status will read
+	 * UNATTACHED because the shared-pin amps clash and the DevNumber write
+	 * cannot be verified. Keep device 1 reported as ATTACHED so the core
+	 * leaves the slave bound and the write-only stream path can be tested.
+	 */
+	if (spx_force_attach || spx_forced_attached)
+		ctrl->status[1] = SDW_SLAVE_ATTACHED;
 }
 
 static void qcom_swrm_set_slave_dev_num(struct sdw_bus *bus,
@@ -570,9 +953,20 @@ static void qcom_swrm_set_slave_dev_num(struct sdw_bus *bus,
 	struct qcom_swrm_ctrl *ctrl = to_qcom_sdw(bus);
 	u32 status;
 
-	ctrl->reg_read(ctrl, SWRM_MCP_SLV_STATUS, &status);
-	status = (status >> (devnum * SWRM_MCP_SLV_STATUS_SZ));
-	status &= SWRM_MCP_SLV_STATUS_MASK;
+	/*
+	 * qcauddev8180 maps the enumerator table from the single slave-status
+	 * snapshot which triggered its worker. Re-reading the physical status
+	 * here creates a race: a brief valid assignment can disappear before
+	 * Linux records the device number, leaving the DT slave permanently at
+	 * enumeration address 0.
+	 */
+	if (ctrl->spx_windows_init) {
+		status = ctrl->status[devnum];
+	} else {
+		ctrl->reg_read(ctrl, SWRM_MCP_SLV_STATUS, &status);
+		status = (status >> (devnum * SWRM_MCP_SLV_STATUS_SZ));
+		status &= SWRM_MCP_SLV_STATUS_MASK;
+	}
 
 	if (status == SDW_SLAVE_ATTACHED) {
 		if (slave)
@@ -580,6 +974,10 @@ static void qcom_swrm_set_slave_dev_num(struct sdw_bus *bus,
 		mutex_lock(&bus->bus_lock);
 		set_bit(devnum, bus->assigned);
 		mutex_unlock(&bus->bus_lock);
+		if (ctrl->spx_windows_init)
+			dev_info(ctrl->dev,
+				 "SPX: mapped SoundWire slave %d from status snapshot\n",
+				 devnum);
 	}
 }
 
@@ -605,8 +1003,11 @@ static int qcom_swrm_enumerate(struct sdw_bus *bus)
 		/*SCP_Devid3 - DevId 2 Devid 1 Devid 0*/
 		ctrl->reg_read(ctrl, SWRM_ENUMERATOR_SLAVE_DEV_ID_2(i), &val2);
 
-		if (!val1 && !val2)
+		if (!val1 && !val2) {
+			if (ctrl->spx_windows_init)
+				continue;
 			break;
+		}
 
 		addr = buf2[1] | (buf2[0] << 8) | (buf1[3] << 16) |
 			((u64)buf1[2] << 24) | ((u64)buf1[1] << 32) |
@@ -628,6 +1029,17 @@ static int qcom_swrm_enumerate(struct sdw_bus *bus)
 		}
 
 		if (!found) {
+			/* SPX DevID reads are electrically contended and frequently
+			 * contain mixed bytes from both amplifiers. Never instantiate
+			 * those transient IDs; the two real WSA881x devices are declared
+			 * by DT and the validated force-attach path binds them.
+			 */
+			if (spx_core_enum) {
+				dev_dbg(ctrl->dev,
+					"SPX: ignoring unknown enumerator ID %04x:%04x\n",
+					id.mfg_id, id.part_id);
+				continue;
+			}
 			qcom_swrm_set_slave_dev_num(bus, NULL, i);
 			sdw_slave_add(bus, &id, NULL);
 		}
@@ -636,6 +1048,713 @@ static int qcom_swrm_enumerate(struct sdw_bus *bus)
 	complete(&ctrl->enumeration);
 	return 0;
 }
+
+static int qcom_swrm_init(struct qcom_swrm_ctrl *ctrl);
+static bool swrm_wait_for_frame_gen_enabled(struct qcom_swrm_ctrl *ctrl);
+
+/*
+ * Re-read MCP_SLV_STATUS and record which address the amp is answering on.
+ * Presence flickers to 0 between samples on this bus, so poll for a nonzero
+ * status instead of latching a single flicker sample; if nothing ever shows,
+ * mark the answer stale so the write path keeps re-sampling -- silently
+ * keeping a guess here reroutes every write into the void for the whole boot.
+ */
+static void spx_refresh_amp_addr(struct qcom_swrm_ctrl *ctrl)
+{
+	u32 slv = 0;
+	int try;
+
+	for (try = 0; try < 20; try++) {
+		if (ctrl->reg_read(ctrl, SWRM_MCP_SLV_STATUS, &slv))
+			slv = 0;
+		if (slv)
+			break;
+		usleep_range(10000, 11000);
+	}
+
+	/* bits[3:2] = device 1 status; bits[1:0] = device 0 status */
+	if ((slv >> 2) & SWRM_MCP_SLV_STATUS_MASK) {
+		spx_amp_at_dev0 = false;
+		spx_amp_addr_stale = false;
+	} else if (slv & SWRM_MCP_SLV_STATUS_MASK) {
+		spx_amp_at_dev0 = true;
+		spx_amp_addr_stale = false;
+	} else {
+		/* No device visible: trust the just-assigned device 1 but keep
+		 * re-sampling on later writes until the amp shows up. */
+		spx_amp_at_dev0 = false;
+		spx_amp_addr_stale = true;
+		dev_warn(ctrl->dev,
+			 "SPX: no slave visible after %d polls, routing stale\n",
+			 try);
+	}
+
+	dev_info(ctrl->dev, "SPX: slv_status=0x%x -> writes go to device %d%s\n",
+		 slv, spx_amp_at_dev0 ? 0 : 1,
+		 spx_amp_addr_stale ? " (stale)" : "");
+}
+
+/*
+ * SPX amp-presence watchdog. The WSA amp intermittently drops off the bus
+ * (sync loss); once gone it does not return on its own, and every write to it
+ * silently vanishes. The one reliable revival is a long SD_N power-cycle.
+ * Poll MCP_SLV_STATUS; when the amp disappears, power-cycle it via the WCD
+ * GPIO (the bridge regmap IS the codec regmap) and refresh write routing.
+ * Never SW_RESET here: resetting a bus with a live amp kicks the amp off.
+ */
+static int spx_watchdog = 1;
+module_param(spx_watchdog, int, 0644);
+MODULE_PARM_DESC(spx_watchdog, "SPX: auto power-cycle the amp when it drops off the bus");
+static int spx_wd_amp_mask = 0x02;
+module_param(spx_wd_amp_mask, int, 0644);
+MODULE_PARM_DESC(spx_wd_amp_mask, "SPX: WCD GPIO VAL bits of the active amp's SD_N (high=off)");
+static int spx_wd_off_ms = 10000;
+module_param(spx_wd_off_ms, int, 0644);
+MODULE_PARM_DESC(spx_wd_off_ms, "SPX: how long to hold the amp powered off (2s is not enough)");
+static int spx_no_assign = 1;
+module_param(spx_no_assign, int, 0644);
+MODULE_PARM_DESC(spx_no_assign, "SPX: keep the amp unenumerated at device 0 (stable self-healing state)");
+
+static void spx_latch_from_slv(struct qcom_swrm_ctrl *ctrl, u32 slv)
+{
+	bool at_dev0 = !((slv >> 2) & SWRM_MCP_SLV_STATUS_MASK);
+
+	if (spx_amp_addr_stale || at_dev0 != spx_amp_at_dev0)
+		dev_info(ctrl->dev,
+			 "SPX wd: slv_status=0x%x -> writes go to device %d\n",
+			 slv, at_dev0 ? 0 : 1);
+	spx_amp_at_dev0 = at_dev0;
+	spx_amp_addr_stale = false;
+}
+
+static void spx_wd_work_fn(struct work_struct *work)
+{
+	struct qcom_swrm_ctrl *ctrl = container_of(work, struct qcom_swrm_ctrl,
+						   spx_wd_work.work);
+	unsigned int delay = 2000;
+	u32 slv = 0;
+
+	if (!spx_watchdog || !spx_forced_attached) {
+		delay = 5000;
+		goto rearm;
+	}
+
+	switch (ctrl->spx_wd_state) {
+	case 0:	/* monitor */
+		if (ctrl->reg_read(ctrl, SWRM_MCP_SLV_STATUS, &slv))
+			slv = 0;
+		if (slv) {
+			spx_latch_from_slv(ctrl, slv);
+			ctrl->spx_wd_fails = 0;
+			break;
+		}
+		if (ctrl->spx_wd_fails >= 3) {
+			delay = 30000;	/* keep watching, quietly */
+			break;
+		}
+		dev_warn(ctrl->dev,
+			 "SPX wd: amp gone (try %d), power-cycling SD_N for %d ms\n",
+			 ctrl->spx_wd_fails + 1, spx_wd_off_ms);
+		regmap_update_bits(ctrl->regmap, WCD934X_GPIO_DIR_CTL, 0x06, 0x06);
+		regmap_update_bits(ctrl->regmap, WCD934X_GPIO_VAL_CTL,
+				   spx_wd_amp_mask, spx_wd_amp_mask);
+		ctrl->spx_wd_state = 1;
+		delay = spx_wd_off_ms;
+		break;
+	case 1:	/* power the amp back on, then re-run the attach recipe --
+		 * a plain SD_N cycle alone never makes it announce. */
+		regmap_update_bits(ctrl->regmap, WCD934X_GPIO_VAL_CTL,
+				   spx_wd_amp_mask, 0);
+		spx_force_attach = 1;
+		mod_delayed_work(system_wq, &ctrl->spx_enum_work,
+				 msecs_to_jiffies(500));
+		ctrl->spx_wd_state = 2;
+		delay = 4000;
+		break;
+	case 2:	/* did it come back? */
+		if (ctrl->reg_read(ctrl, SWRM_MCP_SLV_STATUS, &slv))
+			slv = 0;
+		if (slv) {
+			dev_info(ctrl->dev, "SPX wd: amp revived (slv=0x%x)\n", slv);
+			spx_latch_from_slv(ctrl, slv);
+			ctrl->spx_wd_fails = 0;
+		} else {
+			ctrl->spx_wd_fails++;
+			dev_warn(ctrl->dev,
+				 "SPX wd: revival attempt %d failed\n",
+				 ctrl->spx_wd_fails);
+		}
+		ctrl->spx_wd_state = 0;
+		break;
+	}
+rearm:
+	schedule_delayed_work(&ctrl->spx_wd_work, msecs_to_jiffies(delay));
+}
+
+/*
+ * SPX: the wcd934x internal SoundWire master has no usable IRQ, so the normal
+ * IRQ-driven enumeration never runs and the WSA881x amps stay UNATTACHED. Worse,
+ * the HW auto-enumerator in qcom_swrm_init() ran at master probe -- BEFORE
+ * wsa881x powers the amps (wsa881x probes after this master) -- so it scanned an
+ * unpowered bus and latched a garbage DevID, and never rescans.
+ *
+ * Fix (gated on spx_core_enum): from this workqueue, after the amps are powered,
+ * RE-RUN the auto-enum on a live bus: soft-reset the master + re-init (restarts
+ * the bus clock so the now-powered slaves re-sync, and re-enables + re-triggers
+ * the auto-enum scan), then read status / enumerate / hand to the core. Retry the
+ * reset every few passes in case the first rescan still raced the amps, and poll
+ * in between, until both expected slaves attach (or give up after ~6s).
+ */
+static void spx_swrm_enum_work(struct work_struct *work)
+{
+	struct qcom_swrm_ctrl *ctrl = container_of(work, struct qcom_swrm_ctrl,
+						   spx_enum_work.work);
+
+	dev_info(ctrl->dev,
+		 "SPX enum work enter core_enum=%d force=%d diag_done=%d irq=%d\n",
+		 spx_core_enum, spx_force_attach, ctrl->spx_diag_done, ctrl->irq);
+
+	/*
+	 * FORCE-ATTACH is independent of the DevID diag storm. Always take the
+	 * short path first when requested: SW_RESET + init, program DevNumber,
+	 * mark ATTACHED. The 40× DevID read path trashes the CMD FIFO.
+	 */
+	if (spx_force_attach) {
+		static const u8 spx_wsa_id[] = {
+			0x00, 0x02, 0x10, 0x00, 0x10, 0x00,
+		};
+		struct sdw_slave *slave;
+		int dn = 1, k, i, rchk = 0;
+		u8 chk[6];
+		u32 comp = 0, ist = 0, rst;
+		int attempt = ++ctrl->spx_enum_tries;
+
+		ctrl->spx_diag_done = true;
+		/*
+		 * SPX: check if the frame-gen is already running BEFORE
+		 * resetting. The initial probe state (COMP_STATUS=0x2a01)
+		 * may have bus state that the SW_RESET destroys. If the
+		 * frame-gen is already locked, skip the reset loop and go
+		 * straight to the dev_num assignment.
+		 */
+		ctrl->reg_read(ctrl,
+			ctrl->reg_layout[SWRM_REG_FRAME_GEN_ENABLED],
+			&comp);
+		if (!(comp & 1)) {
+			for (rst = 0; rst < 8; rst++) {
+				reinit_completion(&ctrl->enumeration);
+				ctrl->reg_write(ctrl, SWRM_COMP_SW_RESET, 0x01);
+				usleep_range(100, 105);
+				spx_bus_up = false;
+				qcom_swrm_init(ctrl);
+				swrm_wait_for_frame_gen_enabled(ctrl);
+				ctrl->reg_read(ctrl,
+					ctrl->reg_layout[SWRM_REG_FRAME_GEN_ENABLED],
+					&comp);
+				if (comp & 1)
+					break;
+			}
+		} else {
+			rst = 0;
+		}
+		dev_info(ctrl->dev,
+			 "SPX FORCE-ATTACH: after %u resets frame-gen=0x%x\n",
+			 rst, comp);
+		ctrl->reg_write(ctrl, SWRM_ENUMERATOR_CFG_ADDR, 0);
+		/*
+		 * SPX: mask ALL SWR interrupts during force-attach. The
+		 * qcom_swrm_init() above unmasks everything, so with an IRQ
+		 * the ISR fires on every bus event and corrupts the CMD FIFO
+		 * mid-sequence. Disable until attach completes.
+		 */
+		if (ctrl->irq > 0) {
+			ctrl->reg_write(ctrl,
+				ctrl->reg_layout[SWRM_REG_INTERRUPT_CPU_EN], 0);
+			ctrl->reg_write(ctrl,
+				ctrl->reg_layout[SWRM_REG_INTERRUPT_MASK_ADDR], 0);
+		}
+		ctrl->reg_read(ctrl, ctrl->reg_layout[SWRM_REG_INTERRUPT_STATUS],
+			       &ist);
+		if (ist)
+			ctrl->reg_write(ctrl,
+					ctrl->reg_layout[SWRM_REG_INTERRUPT_CLEAR],
+					ist);
+		ctrl->reg_write(ctrl, SWRM_CMD_FIFO_CMD, SWRM_CMD_FIFO_FLUSH);
+		usleep_range(500, 550);
+
+		/*
+		 * Leaving the amp UNENUMERATED at device 0 is the stable,
+		 * self-healing configuration: after any bus desync it
+		 * re-announces at device 0 where the write rewrite still
+		 * reaches it, and playback there produces the real tone. An
+		 * enumerated device-1 amp is fragile -- one desync (stream
+		 * start is enough) and it is permanently deaf until a full
+		 * power-cycle + attach recipe. So skip the DevNumber
+		 * assignment by default (spx_no_assign=0 restores it).
+		 */
+		if (spx_no_assign) {
+			dev_info(ctrl->dev,
+				 "SPX FORCE-ATTACH: leaving amp unenumerated at device 0\n");
+		} else {
+			for (k = 0; k < 8; k++) {
+				qcom_swrm_cmd_fifo_wr_cmd(ctrl, dn, 0, SDW_SCP_DEVNUMBER);
+				usleep_range(1500, 1600);
+			}
+			for (i = 0; i < ARRAY_SIZE(chk); i++) {
+				u8 b = 0xaa;
+
+				rchk |= qcom_swrm_cmd_fifo_rd_cmd(ctrl, dn,
+								  SDW_SCP_DEVID_0 + i, 1,
+								  &b);
+				chk[i] = b;
+			}
+			dev_info(ctrl->dev,
+				 "SPX FORCE-ATTACH verify dev%d rc=%d id=%02x %02x %02x %02x %02x %02x\n",
+				 dn, rchk, chk[0], chk[1], chk[2], chk[3], chk[4],
+				 chk[5]);
+		}
+
+		/* Version and unique-ID bytes collide independently. Require the
+		 * stable manufacturer/product core before binding the logical slave.
+		 * In blind mode, skip verification entirely -- writes are
+		 * fire-and-forget and may succeed even when reads clash.
+		 */
+		if (!spx_no_assign && !spx_blind_attach &&
+		    memcmp(&chk[1], &spx_wsa_id[1], 4)) {
+			dev_warn(ctrl->dev,
+				 "SPX FORCE-ATTACH: assignment not verified on attempt %d/64\n",
+				 attempt);
+			ctrl->spx_diag_done = false;
+			if (attempt < 64)
+				mod_delayed_work(system_wq, &ctrl->spx_enum_work,
+						 msecs_to_jiffies(500));
+			else
+				dev_err(ctrl->dev,
+					"SPX FORCE-ATTACH: assignment failed after 64 attempts\n");
+			return;
+		}
+		ctrl->spx_enum_tries = 0;
+
+		memset(ctrl->status, 0, sizeof(ctrl->status));
+		ctrl->status[dn] = SDW_SLAVE_ATTACHED;
+		list_for_each_entry(slave, &ctrl->bus.slaves, node) {
+			if (slave->id.part_id != 0x2010 ||
+			    slave->id.mfg_id != 0x0217)
+				continue;
+			/* skip OF-disabled nodes */
+			if (!slave->dev.of_node ||
+			    !of_device_is_available(slave->dev.of_node)) {
+				dev_info(ctrl->dev,
+					 "SPX FORCE-ATTACH skip disabled %s\n",
+					 dev_name(&slave->dev));
+				continue;
+			}
+			slave->dev_num = dn;
+			mutex_lock(&ctrl->bus.bus_lock);
+			set_bit(dn, ctrl->bus.assigned);
+			mutex_unlock(&ctrl->bus.bus_lock);
+			dev_info(ctrl->dev,
+				 "SPX FORCE-ATTACH: %s -> dev_num %d\n",
+				 dev_name(&slave->dev), dn);
+		}
+		/* Keep the forced logical attachment stable before the status
+		 * notification invokes wsa881x_init(). Device routing remains a
+		 * runtime option; SPX requires logical device 1 during codec init.
+		 */
+		spx_forced_attached = true;
+		spx_force_attach = 0;
+		/*
+		 * The shared-address amplifiers continue raising clash and command
+		 * errors after their logical address is established.  Unicast codec
+		 * writes are fire-and-forget, but the IRQ handler used to flush the
+		 * command FIFO for those errors while wsa881x_init() was still
+		 * programming the amplifier.  Keep only broadcast completion, which
+		 * is the sole interrupt required by the transfer path after attach.
+		 */
+		ctrl->reg_write(ctrl, SWRM_ENUMERATOR_CFG_ADDR, 0);
+		ctrl->intr_mask = SWRM_INTERRUPT_STATUS_SPECIAL_CMD_ID_FINISHED;
+		ctrl->reg_write(ctrl,
+				ctrl->reg_layout[SWRM_REG_INTERRUPT_CLEAR],
+				0xffffffff);
+		if (ctrl->irq > 0)
+			ctrl->reg_write(ctrl,
+					ctrl->reg_layout[SWRM_REG_INTERRUPT_CPU_EN],
+					ctrl->intr_mask);
+		dev_info(ctrl->dev,
+			 "SPX FORCE-ATTACH: stable attachment, write_dev0=%d intr_mask=0x%x\n",
+			 spx_write_dev0, ctrl->intr_mask);
+		/* Learn the amp's real address before wsa881x_init() writes to it. */
+		spx_refresh_amp_addr(ctrl);
+		sdw_handle_slave_status(&ctrl->bus, ctrl->status);
+		/*
+		 * Keep the master clocking: a runtime clock-stop suspend
+		 * desyncs the force-attached amp (it never comes back on
+		 * resume), and a suspended master makes the watchdog's
+		 * presence reads meaningless. One reference, dropped in
+		 * remove().
+		 */
+		if (!spx_pm_held) {
+			spx_pm_held = true;
+			pm_runtime_get_noresume(ctrl->dev);
+		}
+		/* From here the watchdog owns amp presence and write routing. */
+		ctrl->spx_wd_state = 0;
+		ctrl->spx_wd_fails = 0;
+		schedule_delayed_work(&ctrl->spx_wd_work, msecs_to_jiffies(2000));
+		return;
+	}
+
+	/*
+	 * Once terminally force-attached, the poll/diag below must never run:
+	 * its SW_RESET + init storm and per-pass wsa881x_init replay wreck a
+	 * live bus. Re-triggering recovery requires spx_force_attach=1 first,
+	 * which takes the fast path above.
+	 */
+	if (spx_forced_attached)
+		return;
+
+	/*
+	 * SPX: frame-gen lock is nondeterministic boot-to-boot, and the diag
+	 * below is gated on device-0 presence, which needs the lock -- so a
+	 * bad-lock boot used to be a wasted reboot. If frame-gen is down,
+	 * re-run the full SW_RESET + init (which re-sweeps frame_phase) right
+	 * here, so writing spx_reenum retries the lock without rebooting.
+	 */
+	if (spx_core_enum) {
+		u32 comp = 0;
+
+		ctrl->reg_read(ctrl, ctrl->reg_layout[SWRM_REG_FRAME_GEN_ENABLED],
+			       &comp);
+		if (!(comp & 0x1)) {
+			dev_info(ctrl->dev,
+				 "SPX: frame-gen down (comp=0x%x), SW_RESET + re-init sweep\n",
+				 comp);
+			reinit_completion(&ctrl->enumeration);
+			ctrl->reg_write(ctrl, SWRM_COMP_SW_RESET, 0x01);
+			usleep_range(100, 105);
+			qcom_swrm_init(ctrl);
+			swrm_wait_for_frame_gen_enabled(ctrl);
+		}
+	}
+
+	/*
+	 * SPX one-shot decisive probe (the HW auto-enum's DevID read underflows
+	 * with AUTO_ENUM_FAILED). Read the WSA SCP DevID DIRECTLY at device 0 and
+	 * log the raw bytes to settle whether the slave returns ANY data; then
+	 * break the enumeration chicken-and-egg by FORCE-writing a device number
+	 * (a write needs no slave echo) and re-reading the DevID at that number.
+	 */
+	if (spx_core_enum && !ctrl->spx_diag_done) {
+		{
+			u8 id[6];
+			u32 ist = 0;
+			int i, r0 = 0, tries, mfg = 0, part = 0;
+			u32 comp = 0, rst;
+
+			ctrl->spx_diag_done = true;
+
+			/*
+			 * The amp asserts device-0 presence only briefly after a bus
+			 * reset, and the read needs frame-gen locked -- both hold at
+			 * once ONLY right after a reset that happens to lock. Loop
+			 * reset+init until frame-gen locks, then read immediately in
+			 * that fresh window (do NOT gate on a presence sample, which
+			 * flickers to 0 between polls).
+			 */
+			for (rst = 0; rst < 12; rst++) {
+				reinit_completion(&ctrl->enumeration);
+				ctrl->reg_write(ctrl, SWRM_COMP_SW_RESET, 0x01);
+				usleep_range(100, 105);
+				qcom_swrm_init(ctrl);
+				swrm_wait_for_frame_gen_enabled(ctrl);
+				ctrl->reg_read(ctrl, ctrl->reg_layout[SWRM_REG_FRAME_GEN_ENABLED], &comp);
+				if (comp & 1)
+					break;
+			}
+			qcom_swrm_get_device_status(ctrl);
+			dev_info(ctrl->dev,
+				 "SPX DIAG: %u resets, frame-gen comp=0x%x slv=0x%x\n",
+				 rst, comp, ctrl->slave_status);
+			ctrl->reg_write(ctrl, SWRM_ENUMERATOR_CFG_ADDR, 0);
+			ctrl->reg_read(ctrl, ctrl->reg_layout[SWRM_REG_INTERRUPT_STATUS], &ist);
+			ctrl->reg_write(ctrl, ctrl->reg_layout[SWRM_REG_INTERRUPT_CLEAR], ist);
+			ctrl->reg_write(ctrl, SWRM_CMD_FIFO_CMD, SWRM_CMD_FIFO_FLUSH);
+			usleep_range(500, 550);
+
+			if (spx_diag_reg >= 0) {
+				/*
+				 * Live harness: isolate ONE register. Read
+				 * spx_diag_reg at device spx_diag_dev, spx_diag_count
+				 * times, logging each value -- to see whether a single
+				 * read is reliable on its own (vs inside the 6-byte
+				 * sequence). Re-trigger via spx_reenum after toggling pins.
+				 */
+				int n;
+
+				for (n = 0; n < spx_diag_count; n++) {
+					u8 b = 0xAA;
+					int rc = qcom_swrm_cmd_fifo_rd_cmd(ctrl,
+							spx_diag_dev, spx_diag_reg, 1, &b);
+
+					dev_info(ctrl->dev,
+						"SPX DIAG1 dev%d reg=0x%02x n=%d rc=%d val=0x%02x\n",
+						spx_diag_dev, spx_diag_reg, n, rc, b);
+					usleep_range(3000, 3200);
+				}
+			} else {
+				/*
+				 * Read the device-0 DevID, RETRYING the whole 6-byte
+				 * read until a valid WSA881x signature (mfg 0217 /
+				 * part 2010) appears, logging every attempt.
+				 */
+				for (tries = 0; tries < 40; tries++) {
+					u32 e1 = 0, e2 = 0, slv = 0;
+
+					/* clear latched CMD_ERROR/underflow so a wedged
+					 * FIFO doesn't fail every subsequent read */
+					ctrl->reg_read(ctrl, ctrl->reg_layout[SWRM_REG_INTERRUPT_STATUS], &ist);
+					if (ist)
+						ctrl->reg_write(ctrl, ctrl->reg_layout[SWRM_REG_INTERRUPT_CLEAR], ist);
+					ctrl->reg_write(ctrl, SWRM_CMD_FIFO_CMD, SWRM_CMD_FIFO_FLUSH);
+
+					r0 = 0;
+					for (i = 0; i < 6; i++) {
+						u8 b = 0xAA;
+
+						r0 |= qcom_swrm_cmd_fifo_rd_cmd(ctrl, 0,
+									SDW_SCP_DEVID_0 + i, 1, &b);
+						id[i] = b;
+					}
+					mfg = (id[1] << 8) | id[2];
+					part = (id[3] << 8) | id[4];
+					/* snapshot presence + what the HW auto-enum captured */
+					ctrl->reg_read(ctrl, SWRM_MCP_SLV_STATUS, &slv);
+					ctrl->reg_read(ctrl, SWRM_ENUMERATOR_SLAVE_DEV_ID_1(1), &e1);
+					ctrl->reg_read(ctrl, SWRM_ENUMERATOR_SLAVE_DEV_ID_2(1), &e2);
+					dev_info(ctrl->dev,
+						"SPX DIAG dev0 try %d rc=%d id=%02x %02x %02x %02x %02x %02x mfg=%04x part=%04x slv=0x%x enum1=0x%x enum2=0x%x ist=0x%x\n",
+						tries, r0, id[0], id[1], id[2], id[3], id[4], id[5],
+						mfg, part, slv, e1, e2, ist);
+					if (mfg == 0x0217 && part == 0x2010)
+						break;
+					usleep_range(2000, 2100);
+				}
+				dev_info(ctrl->dev,
+					"SPX DIAG dev0 FINAL mfg=%04x part=%04x => %s (int_sts=0x%x)\n",
+					mfg, part,
+					(mfg == 0x0217 && part == 0x2010) ?
+						"VALID WSA881x -- read is now reliable" :
+						"still garbled", ist);
+			}
+
+			/* force_attach already handled in fast path above */
+
+			ctrl->reg_write(ctrl, SWRM_ENUMERATOR_CFG_ADDR, 1);
+		}
+	}
+
+	qcom_swrm_get_device_status(ctrl);
+	spx_refresh_amp_addr(ctrl);
+	qcom_swrm_enumerate(&ctrl->bus);
+	sdw_handle_slave_status(&ctrl->bus, ctrl->status);
+	dev_info(ctrl->dev,
+		 "SPX enum poll #%d: slv_status=0x%x st[0]=%d st[1]=%d st[2]=%d\n",
+		 ctrl->spx_enum_tries, ctrl->slave_status,
+		 ctrl->status[0], ctrl->status[1], ctrl->status[2]);
+
+	if ((ctrl->status[1] && ctrl->status[2]) || ++ctrl->spx_enum_tries > 24)
+		return;
+	schedule_delayed_work(&ctrl->spx_enum_work, msecs_to_jiffies(250));
+}
+
+/*
+ * SPX live re-trigger: writing to soundwire_qcom.spx_reenum re-arms the diag
+ * (spx_diag_done=0) and re-runs spx_swrm_enum_work on the live bus -- so the
+ * WSA enable GPIOs can be toggled (gpioset) between runs without a reboot.
+ */
+static struct qcom_swrm_ctrl *spx_dbg_ctrl;
+
+static int spx_frame_field_set(const char *val, const struct kernel_param *kp,
+			       u32 mask, unsigned int shift)
+{
+	int ret;
+
+	ret = param_set_int(val, kp);
+	if (ret)
+		return ret;
+	if (*(int *)kp->arg < 0 || *(int *)kp->arg > (mask >> shift))
+		return -EINVAL;
+
+	/* Updating frame timing on a running SPX link poisons frame generation.
+	 * Stage the value and apply it only from qcom_swrm_init(), after reset.
+	 */
+	return 0;
+}
+
+/*
+ * SPX: update a frame-control field on both banks in place. The caller must
+ * already have validated new_val against mask/shift. This lets us tune
+ * SSP_PERIOD without a module reload or reboot.
+ */
+static int spx_update_frame_ctrl_banks(struct qcom_swrm_ctrl *ctrl,
+				       u32 mask, unsigned int shift,
+				       unsigned int new_val)
+{
+	u32 val;
+	int ret, bank;
+
+	for (bank = 0; bank < 2; bank++) {
+		ret = ctrl->reg_read(ctrl,
+				     SWRM_MCP_FRAME_CTRL_BANK_ADDR(bank),
+				     &val);
+		if (ret) {
+			dev_err(ctrl->dev,
+				"SPX: failed to read frame ctrl bank %u: %d\n",
+				bank, ret);
+			return ret;
+		}
+
+		val &= ~mask;
+		val |= (new_val << shift) & mask;
+
+		ret = ctrl->reg_write(ctrl,
+				      SWRM_MCP_FRAME_CTRL_BANK_ADDR(bank),
+				      val);
+		if (ret) {
+			dev_err(ctrl->dev,
+				"SPX: failed to write frame ctrl bank %u: %d\n",
+				bank, ret);
+			return ret;
+		}
+
+		dev_info(ctrl->dev,
+			 "SPX: bank %u FRAME_CTRL = 0x%08x (mask=0x%08x)\n",
+			 bank, val, mask);
+	}
+	return 0;
+}
+
+static int spx_ssp_period_set(const char *val, const struct kernel_param *kp)
+{
+	int ret;
+
+	ret = spx_frame_field_set(val, kp, GENMASK(23, 16), 16);
+	if (ret)
+		return ret;
+
+	if (spx_dbg_ctrl) {
+		dev_info(spx_dbg_ctrl->dev, "SPX: staging SSP_PERIOD=%d\n",
+			 spx_frame_phase);
+		/*
+		 * Also apply to the active frame banks immediately so the user
+		 * can hear the effect of SSP_PERIOD changes without rebooting.
+		 * If this poisons frame generation, a re-init or reboot recovers.
+		 */
+		spx_update_frame_ctrl_banks(spx_dbg_ctrl, GENMASK(23, 16), 16,
+					    spx_frame_phase);
+	}
+	return 0;
+}
+
+static const struct kernel_param_ops spx_ssp_period_ops = {
+	.set = spx_ssp_period_set,
+	.get = param_get_int,
+};
+module_param_cb(spx_frame_phase, &spx_ssp_period_ops,
+		&spx_frame_phase, 0644);
+MODULE_PARM_DESC(spx_frame_phase,
+		 "SPX MCP_FRAME_CTRL SSP_PERIOD[23:16] used to lock frame generation");
+
+static int spx_runtime_ssp_period_set(const char *val,
+				      const struct kernel_param *kp)
+{
+	int ret;
+
+	ret = param_set_int(val, kp);
+	if (ret)
+		return ret;
+	if (spx_runtime_ssp_period < 0 || spx_runtime_ssp_period > 0xff)
+		return -EINVAL;
+
+	if (spx_dbg_ctrl) {
+		dev_info(spx_dbg_ctrl->dev,
+			 "SPX: staging runtime SSP_PERIOD=%d\n",
+			 spx_runtime_ssp_period);
+		spx_update_frame_ctrl_banks(spx_dbg_ctrl, GENMASK(23, 16), 16,
+					    spx_runtime_ssp_period);
+	}
+	return 0;
+}
+
+static const struct kernel_param_ops spx_runtime_ssp_period_ops = {
+	.set = spx_runtime_ssp_period_set,
+	.get = param_get_int,
+};
+module_param_cb(spx_runtime_ssp_period, &spx_runtime_ssp_period_ops,
+		&spx_runtime_ssp_period, 0644);
+MODULE_PARM_DESC(spx_runtime_ssp_period,
+		 "SPX MCP_FRAME_CTRL SSP_PERIOD[23:16] used for audio bank switches");
+
+static int spx_actual_phase;
+
+static int spx_actual_phase_set(const char *val, const struct kernel_param *kp)
+{
+	int ret = spx_frame_field_set(val, kp, GENMASK(15, 11), 11);
+
+	if (!ret && spx_dbg_ctrl)
+		dev_info(spx_dbg_ctrl->dev, "SPX: staged PHASE=%d\n",
+			 spx_actual_phase);
+	return ret;
+}
+
+static const struct kernel_param_ops spx_actual_phase_ops = {
+	.set = spx_actual_phase_set,
+	.get = param_get_int,
+};
+module_param_cb(spx_actual_phase, &spx_actual_phase_ops,
+		&spx_actual_phase, 0644);
+MODULE_PARM_DESC(spx_actual_phase,
+		 "SPX MCP_FRAME_CTRL PHASE[15:11], applied on re-init");
+
+static int spx_clk_div;
+
+static int spx_clk_div_set(const char *val, const struct kernel_param *kp)
+{
+	int ret = spx_frame_field_set(val, kp, GENMASK(10, 8), 8);
+
+	if (!ret && spx_dbg_ctrl)
+		dev_info(spx_dbg_ctrl->dev, "SPX: staged CLK_DIV=%d\n", spx_clk_div);
+	return ret;
+}
+
+static const struct kernel_param_ops spx_clk_div_ops = {
+	.set = spx_clk_div_set,
+	.get = param_get_int,
+};
+module_param_cb(spx_clk_div, &spx_clk_div_ops, &spx_clk_div, 0644);
+MODULE_PARM_DESC(spx_clk_div,
+		 "SPX MCP_FRAME_CTRL CLK_DIV[10:8], applied on re-init");
+
+static int spx_reenum_set(const char *val, const struct kernel_param *kp)
+{
+	if (spx_dbg_ctrl) {
+		pr_info("soundwire_qcom: spx_reenum: schedule work (force=%d core_enum=%d)\n",
+			spx_force_attach, spx_core_enum);
+		spx_dbg_ctrl->spx_diag_done = false;
+		spx_dbg_ctrl->spx_enum_tries = 0;
+		schedule_delayed_work(&spx_dbg_ctrl->spx_enum_work,
+				      msecs_to_jiffies(10));
+	} else {
+		pr_warn("soundwire_qcom: spx_reenum: no ctrl (probe without spx_core_enum=1?)\n");
+	}
+	return 0;
+}
+
+static const struct kernel_param_ops spx_reenum_ops = {
+	.set = spx_reenum_set,
+};
+module_param_cb(spx_reenum, &spx_reenum_ops, NULL, 0644);
+MODULE_PARM_DESC(spx_reenum, "SPX: write to re-run the diag/enum on the live bus");
 
 static irqreturn_t qcom_swrm_wake_irq_handler(int irq, void *dev_id)
 {
@@ -669,7 +1788,11 @@ static irqreturn_t qcom_swrm_irq_handler(int irq, void *dev_id)
 	u32 i;
 	int devnum;
 	int ret = IRQ_HANDLED;
+	/* Retry budget for the older opt-in SPX diagnostic path. */
+	static int spx_clash_recover;
 	clk_prepare_enable(ctrl->hclk);
+	if (ctrl->spx_windows_init)
+		mutex_lock(&ctrl->controller_lock);
 
 	ctrl->reg_read(ctrl, ctrl->reg_layout[SWRM_REG_INTERRUPT_STATUS],
 		       &intr_sts);
@@ -683,6 +1806,12 @@ static irqreturn_t qcom_swrm_irq_handler(int irq, void *dev_id)
 
 			switch (value) {
 			case SWRM_INTERRUPT_STATUS_SLAVE_PEND_IRQ:
+				/* Shared-address SPX alerts are collision artifacts.
+				 * Once force-attached, consulting slave status here can
+				 * notify the core and re-run codec initialization.
+				 */
+				if (spx_forced_attached)
+					break;
 				devnum = qcom_swrm_get_alert_slave_dev_num(ctrl);
 				if (devnum < 0) {
 					dev_err_ratelimited(ctrl->dev,
@@ -694,6 +1823,13 @@ static irqreturn_t qcom_swrm_irq_handler(int irq, void *dev_id)
 				break;
 			case SWRM_INTERRUPT_STATUS_NEW_SLAVE_ATTACHED:
 			case SWRM_INTERRUPT_STATUS_CHANGE_ENUM_SLAVE_STATUS:
+				/* The shared SPX amps make physical status flicker on
+				 * every colliding command. The logical forced attachment
+				 * is terminal; notifying the core here re-runs codec init
+				 * and destroys the active stream configuration.
+				 */
+				if (spx_forced_attached)
+					break;
 				dev_dbg_ratelimited(ctrl->dev, "SWR new slave attached\n");
 				ctrl->reg_read(ctrl, SWRM_MCP_SLV_STATUS, &slave_status);
 				if (ctrl->slave_status == slave_status) {
@@ -704,15 +1840,62 @@ static irqreturn_t qcom_swrm_irq_handler(int irq, void *dev_id)
 					qcom_swrm_enumerate(&ctrl->bus);
 					sdw_handle_slave_status(&ctrl->bus, ctrl->status);
 				}
+				/*
+				 * SPX: NO budget refund here. The failed arbitration makes
+				 * the device-0 slv-status flicker, which fires this IRQ
+				 * repeatedly; refunding on it reset the 64-cap forever and
+				 * stormed (57k IRQs). The cap is a hard per-session bound.
+				 */
 				break;
 			case SWRM_INTERRUPT_STATUS_MASTER_CLASH_DET:
 				dev_err_ratelimited(ctrl->dev,
 						"%s: SWR bus clsh detected\n",
 						__func__);
+				/*
+				 * qcauddev8180 clears and logs MASTER_CLASH_DET. It does
+				 * not disable this interrupt and does not toggle the
+				 * enumerator. The common tail below clears the status.
+				 */
+				if (ctrl->spx_windows_init)
+					break;
+
+				/* Older opt-in SPX diagnostic recovery path. */
+				if (spx_core_enum && spx_bus_up &&
+				    spx_clash_recover++ < 64) {
+					ctrl->reg_write(ctrl, SWRM_ENUMERATOR_CFG_ADDR, 0);
+					ctrl->reg_write(ctrl, SWRM_ENUMERATOR_CFG_ADDR, 1);
+					usleep_range(1000, 2000);
+					break;
+				}
+				/* SPX: budget spent -> give up cleanly: STOP the auto-
+				 * enumerator so the clash + slv-flicker stop firing. */
+				if (spx_core_enum)
+					ctrl->reg_write(ctrl, SWRM_ENUMERATOR_CFG_ADDR, 0);
 				ctrl->intr_mask &= ~SWRM_INTERRUPT_STATUS_MASTER_CLASH_DET;
 				ctrl->reg_write(ctrl,
 						ctrl->reg_layout[SWRM_REG_INTERRUPT_CPU_EN],
 						ctrl->intr_mask);
+				break;
+			case SWRM_INTERRUPT_STATUS_AUTO_ENUM_FAILED:
+				/*
+				 * SPX: Windows' clash recovery fires on this bit too --
+				 * toggle ENUMERATOR_CFG to re-arm auto-enumeration.
+				 * Mainline has no handler (it shows up as "unknown
+				 * interrupt 2048" and storms). Bounded.
+				 */
+				if (spx_core_enum && spx_bus_up &&
+				    spx_clash_recover++ < 64) {
+					ctrl->reg_write(ctrl, SWRM_ENUMERATOR_CFG_ADDR, 0);
+					ctrl->reg_write(ctrl, SWRM_ENUMERATOR_CFG_ADDR, 1);
+					usleep_range(1000, 2000);
+				} else if (spx_bus_up) {
+					/* budget spent -> stop the auto-enumerator + mask. */
+					ctrl->reg_write(ctrl, SWRM_ENUMERATOR_CFG_ADDR, 0);
+					ctrl->intr_mask &= ~SWRM_INTERRUPT_STATUS_AUTO_ENUM_FAILED;
+					ctrl->reg_write(ctrl,
+						ctrl->reg_layout[SWRM_REG_INTERRUPT_CPU_EN],
+						ctrl->intr_mask);
+				}
 				break;
 			case SWRM_INTERRUPT_STATUS_RD_FIFO_OVERFLOW:
 				ctrl->reg_read(ctrl,
@@ -802,6 +1985,8 @@ static irqreturn_t qcom_swrm_irq_handler(int irq, void *dev_id)
 		intr_sts_masked = intr_sts & ctrl->intr_mask;
 	} while (intr_sts_masked);
 
+	if (ctrl->spx_windows_init)
+		mutex_unlock(&ctrl->controller_lock);
 	clk_disable_unprepare(ctrl->hclk);
 	return ret;
 }
@@ -829,27 +2014,156 @@ static bool swrm_wait_for_frame_gen_enabled(struct qcom_swrm_ctrl *ctrl)
 static int qcom_swrm_init(struct qcom_swrm_ctrl *ctrl)
 {
 	u32 val;
+	int retry;
+
+	spx_bus_up = false;
+	if (ctrl->spx_windows_init)
+		mutex_lock(&ctrl->controller_lock);
+
+	/*
+	 * Exact qcauddev8180 sequence for the WCD9340-integrated v1.3 master.
+	 * The Windows driver's logical power-control calls around its 2 ms wait
+	 * map to empty ACPI component states on Surface Pro X; they do not touch
+	 * WCD GPIOs. Keep the actual register writes in their observed order.
+	 */
+	if (ctrl->spx_windows_init) {
+		/*
+		 * Windows brackets its empty Surface ACPI component-state
+		 * transitions with 2 ms and 1 ms waits before touching the
+		 * master. The component calls have no electrical effect on this
+		 * machine, but preserve both settling intervals.
+		 */
+		usleep_range(2000, 2100);
+		usleep_range(1000, 1100);
+
+		ctrl->reg_write(ctrl, SWRM_COMP_SW_RESET, 1);
+		ctrl->reg_write(ctrl, SWRM_COMP_SW_RESET, 0);
+
+		/*
+		 * qcauddev8180!0x14009c6fc writes 0x03: three command
+		 * retries, without CONTINUE_EXEC_ON_CMD_IGNORE.
+		 */
+		ctrl->reg_write(ctrl, SWRM_CMD_FIFO_CFG_ADDR, 0x03);
+
+		ctrl->reg_read(ctrl, SWRM_MCP_CFG_ADDR, &val);
+		u32p_replace_bits(&val, 0,
+				  SWRM_MCP_CFG_MAX_NUM_OF_CMD_NO_PINGS_BMSK);
+		ctrl->reg_write(ctrl, SWRM_MCP_CFG_ADDR, val);
+
+		ctrl->reg_write(ctrl,
+				ctrl->reg_layout[SWRM_REG_INTERRUPT_MASK_ADDR], 0);
+		ctrl->intr_mask = 0x1c3fd;
+		ctrl->reg_write(ctrl,
+				ctrl->reg_layout[SWRM_REG_INTERRUPT_MASK_ADDR],
+				ctrl->intr_mask);
+
+		ctrl->reg_write(ctrl, SWRM_ENUMERATOR_CFG_ADDR, 1);
+		ctrl->reg_write(ctrl, SWRM_MCP_FRAME_CTRL_BANK_ADDR(0),
+				BIT(16));
+		ctrl->reg_write(ctrl, SWRM_MCP_BUS_CTRL,
+				SWRM_MCP_BUS_CLK_START);
+		ctrl->reg_write(ctrl, SWRM_COMP_CFG_ADDR,
+				SWRM_COMP_CFG_ENABLE_MSK);
+
+		for (retry = 0; retry < 11; retry++) {
+			ctrl->reg_read(ctrl, SWRM_COMP_STATUS, &val);
+			if (val & SWRM_FRM_GEN_ENABLED)
+				break;
+		}
+		if (!(val & SWRM_FRM_GEN_ENABLED))
+			dev_err(ctrl->dev,
+				"SPX: Windows init sequence did not start frame generator (status %#x)\n",
+				val);
+		else
+			dev_info(ctrl->dev,
+				 "SPX: exact Windows SoundWire controller init complete\n");
+
+		ctrl->slave_status = 0;
+		ctrl->reg_read(ctrl, SWRM_COMP_PARAMS, &val);
+		ctrl->rd_fifo_depth =
+			FIELD_GET(SWRM_COMP_PARAMS_RD_FIFO_DEPTH, val);
+		ctrl->wr_fifo_depth =
+			FIELD_GET(SWRM_COMP_PARAMS_WR_FIFO_DEPTH, val);
+		mutex_unlock(&ctrl->controller_lock);
+		return 0;
+	}
+
+	/*
+	 * SPX: quiet the bus before frame-gen. Force the WSA SD_N pins to
+	 * shutdown (physical HIGH) so the amps are not driving the bus while
+	 * the frame generator starts — this is what triggers MASTER_CLASH_DET
+	 * and leaves frame-gen lock nondeterministic. Released after the lock.
+	 */
+	if (spx_core_enum && spx_quiet_bus) {
+		regmap_update_bits(ctrl->regmap, WCD934X_GPIO_DIR_CTL,
+				   spx_quiet_bus, spx_quiet_bus);
+		regmap_update_bits(ctrl->regmap, WCD934X_GPIO_VAL_CTL,
+				   spx_quiet_bus, spx_quiet_bus);
+		usleep_range(2000, 2100);
+	}
 
 	/* Clear Rows and Cols */
 	val = FIELD_PREP(SWRM_MCP_FRAME_CTRL_BANK_ROW_CTRL_BMSK, ctrl->rows_index);
 	val |= FIELD_PREP(SWRM_MCP_FRAME_CTRL_BANK_COL_CTRL_BMSK, ctrl->cols_index);
+	/*
+	 * SPX: set the frame-phase field [22:16]. REQUIRED for frame-gen to lock
+	 * on SPX (proven: removing it -> "link status not disconnected"; db845c
+	 * doesn't need it). Tunable via spx_frame_phase to hunt a value that also
+	 * lets the device-0 arbitration converge.
+	 */
+	if (ctrl->spx_windows_init)
+		val |= BIT(16);
+	else if (spx_core_enum)
+		val |= (spx_frame_phase & 0xff) << 16 |
+		       (spx_actual_phase & 0x1f) << 11 |
+		       (spx_clk_div & 0x7) << 8;
 
-	reset_control_reset(ctrl->audio_cgcr);
+	if (ctrl->audio_cgcr)
+		reset_control_reset(ctrl->audio_cgcr);
 
 	ctrl->reg_write(ctrl, SWRM_MCP_FRAME_CTRL_BANK_ADDR(0), val);
 
-	/* Enable Auto enumeration */
+	/*
+	 * Enable Auto enumeration HERE (stock/db845c position). NOTE: deferring
+	 * this to post-frame-gen (tried earlier) BREAKS frame-gen lock -- the
+	 * frame generator needs the enumerator enabled to lock (frame-gen then
+	 * timed out intermittently with "link status not disconnected"). db845c
+	 * enables it here and locks fine, so match it.
+	 */
 	ctrl->reg_write(ctrl, SWRM_ENUMERATOR_CFG_ADDR, 1);
 
-	ctrl->intr_mask = SWRM_INTERRUPT_STATUS_RMSK;
+	/*
+	 * SPX: Windows writes INTERRUPT_MASK = 0x1c3fd (not the full 0x1ffff) --
+	 * it MASKS OFF NEW_SLAVE_ATTACHED(b1), AUTO_ENUM_FAILED(b11) and the other
+	 * enum-chatter IRQs (b9,10,12,13) so the driver ISR stays OUT of the HW
+	 * auto-enum's multi-pass arbitration (and does not storm). Mainline unmasks
+	 * everything, so its ISR reacts to every attach/fail mid-arbitration.
+	 */
+	/*
+	 * SPX: keep ALL interrupts unmasked (like stock/db845c). The earlier
+	 * 0x1c3fd masked NEW_SLAVE_ATTACHED(b1) + AUTO_ENUM_FAILED(b11) -- exactly
+	 * the bits the device-0 clash RECOVERY needs (the ISR re-arms the HW
+	 * auto-enumerator on the clash, Windows-style, and re-enumerates on the
+	 * resulting attach). Masking them left the bus stuck after one clash.
+	 */
+	ctrl->intr_mask = ctrl->spx_windows_init ? 0x1c3fd :
+						 SWRM_INTERRUPT_STATUS_RMSK;
 	/* Mask soundwire interrupts */
 	if (ctrl->version < SWRM_VERSION_2_0_0)
 		ctrl->reg_write(ctrl, ctrl->reg_layout[SWRM_REG_INTERRUPT_MASK_ADDR],
-				SWRM_INTERRUPT_STATUS_RMSK);
+				ctrl->intr_mask);
 
-	/* Configure No pings */
+	/*
+	 * Configure No pings.
+	 * SPX: Windows zeroes the no-pings field on this codec-internal master;
+	 * mainline's 0x1f changes the ping cadence during auto-enum arbitration on
+	 * the slow SLIMbus-bridged bus. db845c (fast MMIO master) keeps 0x1f.
+	 */
 	ctrl->reg_read(ctrl, SWRM_MCP_CFG_ADDR, &val);
-	u32p_replace_bits(&val, SWRM_DEF_CMD_NO_PINGS, SWRM_MCP_CFG_MAX_NUM_OF_CMD_NO_PINGS_BMSK);
+	u32p_replace_bits(&val,
+			  (ctrl->spx_windows_init || spx_core_enum) ? 0 :
+			  SWRM_DEF_CMD_NO_PINGS,
+			  SWRM_MCP_CFG_MAX_NUM_OF_CMD_NO_PINGS_BMSK);
 	ctrl->reg_write(ctrl, SWRM_MCP_CFG_ADDR, val);
 
 	if (ctrl->version == SWRM_VERSION_1_7_0) {
@@ -860,6 +2174,31 @@ static int qcom_swrm_init(struct qcom_swrm_ctrl *ctrl)
 		ctrl->reg_write(ctrl, SWRM_LINK_MANAGER_EE, SWRM_EE_CPU);
 		ctrl->reg_write(ctrl, SWRM_V2_0_CLK_CTRL,
 				SWRM_V2_0_CLK_CTRL_CLK_START);
+	} else if (ctrl->spx_windows_init) {
+		/* qcauddev8180 writes MCP_BUS_CTRL (0x1044) byte value 2. */
+		ctrl->reg_write(ctrl, SWRM_MCP_BUS_CTRL,
+				SWRM_MCP_BUS_CLK_START);
+		ctrl->reg_write(ctrl, SWRM_CMD_FIFO_CFG_ADDR, 0x03);
+	} else if (spx_core_enum) {
+		/*
+		 * SPX: the WCD9340 codec-internal SWR master is SHARED with the
+		 * ADSP execution environment. db845c's v1.3.0 master is single-EE
+		 * so mainline just starts the bus clock — but on SPX the APPS EE
+		 * must first CLAIM ownership of the link manager (LINK_MANAGER_EE
+		 * = CPU), otherwise the BUS_CTRL=CLK_START write does not reliably
+		 * start the frame generator (nondeterministic "link status not
+		 * disconnected"). Claim EE, then start the clock.
+		 */
+		ctrl->reg_write(ctrl, SWRM_LINK_MANAGER_EE, SWRM_EE_CPU);
+		/*
+		 * SPX: the EE-arbitrated master encodes the bus-clock-start bit
+		 * at a PER-EE position (see the v1.7.0 path: CLK_START<<EE_CPU).
+		 * Writing the bare CLK_START (bit1, the EE0/ADSP slot) reads back
+		 * 0 and never starts the frame generator. Shift it to the CPU EE
+		 * slot so the APPS-owned clock actually starts.
+		 */
+		ctrl->reg_write(ctrl, SWRM_MCP_BUS_CTRL,
+				SWRM_MCP_BUS_CLK_START << SWRM_EE_CPU);
 	} else {
 		ctrl->reg_write(ctrl, SWRM_MCP_BUS_CTRL, SWRM_MCP_BUS_CLK_START);
 	}
@@ -869,6 +2208,14 @@ static int qcom_swrm_init(struct qcom_swrm_ctrl *ctrl)
 		ctrl->reg_write(ctrl, SWRM_CMD_FIFO_CFG_ADDR,
 				SWRM_RD_WR_CMD_RETRIES |
 				SWRM_CONTINUE_EXEC_ON_CMD_IGNORE);
+	} else if (ctrl->spx_windows_init) {
+		/* Windows uses three retries without continue-on-ignore. */
+		ctrl->reg_write(ctrl, SWRM_CMD_FIFO_CFG_ADDR, 0x03);
+	} else if (spx_core_enum) {
+		/* SPX: Windows writes CMD_FIFO_CFG=0x03 (retries=3, NO bit31
+		 * CONTINUE_EXEC_ON_CMD_IGNORE); the continue-on-ignore bit lets
+		 * enumeration plow past ignored cmds and aggravates the clash. */
+		ctrl->reg_write(ctrl, SWRM_CMD_FIFO_CFG_ADDR, 0x03);
 	} else {
 		ctrl->reg_write(ctrl, SWRM_CMD_FIFO_CFG_ADDR,
 				SWRM_RD_WR_CMD_RETRIES);
@@ -884,10 +2231,10 @@ static int qcom_swrm_init(struct qcom_swrm_ctrl *ctrl)
 	ctrl->reg_write(ctrl, ctrl->reg_layout[SWRM_REG_INTERRUPT_CLEAR],
 			0xFFFFFFFF);
 
-	/* enable CPU IRQs */
-	if (ctrl->mmio) {
+	/* enable CPU IRQs (SPX: use the Windows-masked set, not all-17) */
+	if (ctrl->mmio && ctrl->irq > 0) {
 		ctrl->reg_write(ctrl, ctrl->reg_layout[SWRM_REG_INTERRUPT_CPU_EN],
-				SWRM_INTERRUPT_STATUS_RMSK);
+				ctrl->intr_mask);
 	}
 
 	/* Set IRQ to PULSE */
@@ -895,7 +2242,85 @@ static int qcom_swrm_init(struct qcom_swrm_ctrl *ctrl)
 			SWRM_COMP_CFG_IRQ_LEVEL_OR_PULSE_MSK |
 			SWRM_COMP_CFG_ENABLE_MSK);
 
-	swrm_wait_for_frame_gen_enabled(ctrl);
+	/*
+	 * SPX: once frame-gen is confirmed up, allow the ISR clash-recovery to
+	 * fire (re-arm on clash, bounded). The enumerator is already enabled
+	 * above (stock position); we only flip the recovery gate here.
+	 */
+	if (swrm_wait_for_frame_gen_enabled(ctrl) && spx_core_enum)
+		spx_bus_up = true;
+
+	if (spx_core_enum) {
+		/*
+		 * SPX diag + frame_phase auto-sweep. The codec-internal master
+		 * fails frame-gen lock with "bus clsh detected" at the default
+		 * phase. Dump the master state, then (if not locked) sweep the
+		 * frame-phase field [22:16] re-pulsing the bus clock until
+		 * COMP_STATUS bit0 sets. Logs the locking phase if found.
+		 */
+		static const struct { u16 a; const char *n; } dbg[] = {
+			{ SWRM_COMP_STATUS, "COMP_STATUS" },
+			{ SWRM_V1_3_INTERRUPT_STATUS, "INT_STATUS" },
+			{ SWRM_LINK_MANAGER_EE, "LINK_MANAGER_EE" },
+			{ SWRM_MCP_FRAME_CTRL_BANK_ADDR(0), "FRAME_CTRL" },
+			{ SWRM_MCP_BUS_CTRL, "MCP_BUS_CTRL" },
+			{ SWRM_MCP_STATUS, "MCP_STATUS" },
+			{ SWRM_MCP_SLV_STATUS, "MCP_SLV_STATUS" },
+		};
+		u32 dv;
+		int di;
+
+		for (di = 0; di < ARRAY_SIZE(dbg); di++) {
+			dv = 0;
+			ctrl->reg_read(ctrl, dbg[di].a, &dv);
+			dev_info(ctrl->dev, "SPX SWRM %-14s (0x%04x) = 0x%08x\n",
+				 dbg[di].n, dbg[di].a, dv);
+		}
+
+		if (!spx_bus_up) {
+			int phase, base;
+
+			base = FIELD_PREP(SWRM_MCP_FRAME_CTRL_BANK_ROW_CTRL_BMSK,
+					  ctrl->rows_index) |
+			       FIELD_PREP(SWRM_MCP_FRAME_CTRL_BANK_COL_CTRL_BMSK,
+					  ctrl->cols_index);
+			dev_info(ctrl->dev, "SPX: frame-gen not locked, sweeping frame_phase 0..127\n");
+			for (phase = 0; phase < 128; phase += 2) {
+				ctrl->reg_write(ctrl,
+					SWRM_MCP_FRAME_CTRL_BANK_ADDR(0),
+					base | ((phase & 0x7f) << 16));
+				ctrl->reg_write(ctrl, SWRM_LINK_MANAGER_EE,
+						SWRM_EE_CPU);
+				ctrl->reg_write(ctrl, SWRM_MCP_BUS_CTRL,
+						SWRM_MCP_BUS_CLK_START << SWRM_EE_CPU);
+				if (swrm_wait_for_frame_gen_enabled(ctrl)) {
+					dev_info(ctrl->dev,
+						"SPX: *** frame-gen LOCKED at frame_phase=%d ***\n",
+						phase);
+					spx_frame_phase = phase;
+					spx_bus_up = true;
+					break;
+				}
+			}
+			if (!spx_bus_up)
+				dev_info(ctrl->dev,
+					"SPX: frame-gen FAILED all frame_phase values\n");
+		}
+
+		/*
+		 * Frame-gen settled on a quiet bus; now RELEASE the WSA amps
+		 * (drive SD_N pins LOW = active). They attach as NEW_SLAVE and
+		 * enumerate against the now-locked frame generator.
+		 */
+		if (spx_quiet_bus) {
+			dev_info(ctrl->dev, "SPX: releasing WSA amps (pins 0x%x) post frame-gen, bus_up=%d\n",
+				 spx_quiet_bus, spx_bus_up);
+			regmap_update_bits(ctrl->regmap, WCD934X_GPIO_VAL_CTL,
+					   spx_quiet_bus, 0);
+			usleep_range(5000, 5100);
+		}
+	}
+
 	ctrl->slave_status = 0;
 	ctrl->reg_read(ctrl, SWRM_COMP_PARAMS, &val);
 	ctrl->rd_fifo_depth = FIELD_GET(SWRM_COMP_PARAMS_RD_FIFO_DEPTH, val);
@@ -935,12 +2360,82 @@ static enum sdw_command_response qcom_swrm_xfer_msg(struct sdw_bus *bus,
 			i = i + len;
 		}
 	} else if (msg->flags == SDW_MSG_FLAG_WRITE) {
+		u8 dev_num = msg->dev_num;
+
+		/* Force-attach keeps a logical device 1 in the SoundWire core, but
+		 * the shared SPX amplifiers do not retain the blind device-number
+		 * assignment.  They remain at enumeration address 0, so send both
+		 * codec-register and stream-port writes to that physical address.
+		 */
+		/*
+		 * Route to whichever address the amp actually answers on.
+		 * spx_write_dev0 < 0 = auto (track MCP_SLV_STATUS); 0/1 force it.
+		 * While the last sample saw no device, re-sample cheaply before
+		 * each write so a late attach still flips the routing.
+		 */
+		if (spx_forced_attached && dev_num == 1) {
+			if (spx_write_dev0 < 0 && spx_amp_addr_stale) {
+				u32 slv = 0;
+
+				if (!ctrl->reg_read(ctrl, SWRM_MCP_SLV_STATUS, &slv) && slv) {
+					spx_amp_at_dev0 =
+						!((slv >> 2) & SWRM_MCP_SLV_STATUS_MASK);
+					spx_amp_addr_stale = false;
+					dev_info(ctrl->dev,
+						 "SPX: late slv_status=0x%x -> writes go to device %d\n",
+						 slv, spx_amp_at_dev0 ? 0 : 1);
+				}
+			}
+			if (spx_write_dev0 < 0 ? spx_amp_at_dev0 : !!spx_write_dev0)
+				dev_num = SDW_ENUM_DEV_NUM;
+		}
+
 		for (i = 0; i < msg->len; i++) {
-			ret = qcom_swrm_cmd_fifo_wr_cmd(ctrl, msg->buf[i],
-							msg->dev_num,
-						       msg->addr + i);
-			if (ret)
-				return SDW_CMD_IGNORED;
+			u16 addr = msg->addr + i;
+			int rep, reps = 1;
+			u16 mirror = 0;
+
+			if (spx_forced_attached &&
+			    msg->dev_num == SDW_BROADCAST_DEV_NUM &&
+			    (addr == SDW_SCP_FRAMECTRL_B0 ||
+			     addr == SDW_SCP_FRAMECTRL_B1))
+				reps = clamp(spx_bank_switch_repeats, 1, 5);
+
+			if (spx_forced_attached &&
+			    (msg->dev_num == 1 || dev_num == SDW_ENUM_DEV_NUM)) {
+				/*
+				 * Mirror banked slave DPn registers (offset
+				 * 0x20-0x2f = bank 0, 0x30-0x3f = bank 1 within
+				 * each 0x100-sized port block) so the stream is
+				 * configured no matter which bank the bus is
+				 * on; a lost bank switch then cannot mute it.
+				 */
+				if (spx_mirror_banks &&
+				    addr >= 0x100 && addr < 0xf00) {
+					if ((addr & 0xf0) == 0x20)
+						mirror = addr + 0x10;
+					else if ((addr & 0xf0) == 0x30)
+						mirror = addr - 0x10;
+				}
+				if (spx_write_twice && addr != SDW_SCP_DEVNUMBER)
+					reps = 2;
+			}
+
+			for (rep = 0; rep < reps; rep++) {
+				ret = qcom_swrm_cmd_fifo_wr_cmd(ctrl, msg->buf[i],
+								dev_num, addr);
+				if (ret)
+					return SDW_CMD_IGNORED;
+				if (mirror) {
+					ret = qcom_swrm_cmd_fifo_wr_cmd(ctrl,
+							msg->buf[i], dev_num,
+							mirror);
+					if (ret)
+						return SDW_CMD_IGNORED;
+				}
+				if (reps > 1 && rep + 1 < reps)
+					usleep_range(200, 400);
+			}
 		}
 	}
 
@@ -951,14 +2446,94 @@ static int qcom_swrm_pre_bank_switch(struct sdw_bus *bus)
 {
 	u32 reg = SWRM_MCP_FRAME_CTRL_BANK_ADDR(bus->params.next_bank);
 	struct qcom_swrm_ctrl *ctrl = to_qcom_sdw(bus);
-	u32 val;
+	u32 val = 0;
+	int ret;
 
-	ctrl->reg_read(ctrl, reg, &val);
+	ret = ctrl->reg_read(ctrl, reg, &val);
+	if (ret && !spx_core_enum)
+		return ret;
 
 	u32p_replace_bits(&val, ctrl->cols_index, SWRM_MCP_FRAME_CTRL_BANK_COL_CTRL_BMSK);
 	u32p_replace_bits(&val, ctrl->rows_index, SWRM_MCP_FRAME_CTRL_BANK_ROW_CTRL_BMSK);
+	/* Preserve the SPX transport period across inactive-bank switches. */
+	if (spx_core_enum) {
+		u32p_replace_bits(&val, spx_runtime_ssp_period,
+				  GENMASK(23, 16));
+		u32p_replace_bits(&val, spx_actual_phase, GENMASK(15, 11));
+		u32p_replace_bits(&val, spx_clk_div, GENMASK(10, 8));
+		dev_info(ctrl->dev, "SPX: bank %u FRAME_CTRL=0x%08x\n",
+			 bus->params.next_bank, val);
+	}
 
 	return ctrl->reg_write(ctrl, reg, val);
+}
+
+/*
+ * SPX: default OFF. The Windows handshake (COMP_STATUS[5:4]==2, 5x5 poll at
+ * qcauddev8180.sys 0x14009bb54) does not apply to this codec-internal master:
+ * COMP_STATUS reads 0x14201 with bits[5:4]==0 on every switch, even when the
+ * bus is demonstrably running. Kept as a knob for further experiments.
+ */
+/*
+ * SPX: stop programming transport registers that the Windows driver
+ * (qcauddev8180.sys) leaves at reset, and stop read-modify-writing the port
+ * control register through the unreliable AHB bridge. Covers four divergences
+ * found by diffing the Windows master against this driver on 2026-07-27:
+ * BLOCK_CTRL_1=0xff (bps==0), slave DPn_BlockCtrl3=0xff, HCTRL=0xf0, and the
+ * PORT_CTRL RMW. All four are candidates for the signal-proportional static.
+ */
+static int spx_dr_freq;
+module_param(spx_dr_freq, int, 0444);
+MODULE_PARM_DESC(spx_dr_freq,
+		 "SPX: SoundWire bus data rate in Hz (0 = driver default 9.6 MHz). 19200000 (dual-edge) was TESTED 2026-07-27 and is WRONG: complete silence where 9.6 MHz gives tone+static.");
+
+static int spx_win_transport = 1;
+module_param(spx_win_transport, int, 0644);
+MODULE_PARM_DESC(spx_win_transport,
+		 "SPX: match the Windows master's transport programming (skip bogus BLOCK_CTRL_1/BlockCtrl3/HCTRL writes, no PORT_CTRL read-modify-write)");
+
+static int spx_verify_bank;
+module_param(spx_verify_bank, int, 0644);
+MODULE_PARM_DESC(spx_verify_bank,
+		 "SPX: verify bank switch via COMP_STATUS[5:4]==2 and re-broadcast on failure (Windows qcauddev8180 handshake; field does not match this master)");
+
+static int qcom_swrm_post_bank_switch(struct sdw_bus *bus)
+{
+	struct qcom_swrm_ctrl *ctrl = to_qcom_sdw(bus);
+	int outer, inner;
+	u32 val = 0;
+	u8 data;
+
+	if (!spx_verify_bank)
+		return 0;
+
+	/* Windows qcauddev8180 handshake: after the bank-switch broadcast,
+	 * COMP_STATUS bits[5:4] must read 2 (5x5 retry loop at 0x14009bb54).
+	 * Writes on this bus always report CMD_OK even when dropped, so a
+	 * lost bank switch is otherwise invisible and strands the bus on the
+	 * unprogrammed bank -> silent/static runs. On failure re-issue the
+	 * SCP_FRAMECTRL broadcast; bus->params banks are already flipped
+	 * here, so curr_bank is the bank we just switched to.
+	 */
+	for (outer = 0; outer < 5; outer++) {
+		for (inner = 0; inner < 5; inner++) {
+			if (!ctrl->reg_read(ctrl, SWRM_COMP_STATUS, &val) &&
+			    FIELD_GET(GENMASK(5, 4), val) == 2)
+				return 0;
+			usleep_range(200, 400);
+		}
+		data = sdw_find_col_index(bus->params.col) |
+		       (sdw_find_row_index(bus->params.row) << 3);
+		dev_warn(ctrl->dev,
+			 "SPX: bank switch unconfirmed (COMP_STATUS=0x%x), re-broadcasting (try %d)\n",
+			 val, outer + 1);
+		qcom_swrm_cmd_fifo_wr_cmd(ctrl, data, SDW_BROADCAST_DEV_NUM,
+					  bus->params.curr_bank ?
+						SDW_SCP_FRAMECTRL_B1 :
+						SDW_SCP_FRAMECTRL_B0);
+	}
+	/* Never fail the stream over this; the log is the diagnostic. */
+	return 0;
 }
 
 static int qcom_swrm_port_params(struct sdw_bus *bus,
@@ -967,14 +2542,24 @@ static int qcom_swrm_port_params(struct sdw_bus *bus,
 {
 	struct qcom_swrm_ctrl *ctrl = to_qcom_sdw(bus);
 
+	/*
+	 * SPX: with no qcom,ports-word-length in DT, sdw_fill_port_params() is
+	 * never called and bps stays 0, so this writes 0xff ("256-bit words")
+	 * into BLOCK_CTRL_1 of a 1-bit PDM port. The Windows driver
+	 * (qcauddev8180.sys) never touches this register at all. Leaving it at
+	 * its reset value is the only sane interpretation of bps == 0.
+	 */
+	if (spx_win_transport && !p_params->bps)
+		return 0;
+
 	return ctrl->reg_write(ctrl, SWRM_DP_BLOCK_CTRL_1(p_params->num),
 			       p_params->bps - 1);
 
 }
 
-static int qcom_swrm_transport_params(struct sdw_bus *bus,
-				      struct sdw_transport_params *params,
-				      enum sdw_reg_bank bank)
+static int qcom_swrm_transport_params_bank(struct sdw_bus *bus,
+					   struct sdw_transport_params *params,
+					   enum sdw_reg_bank bank)
 {
 	struct qcom_swrm_ctrl *ctrl = to_qcom_sdw(bus);
 	struct qcom_swrm_port_config *pcfg;
@@ -984,16 +2569,21 @@ static int qcom_swrm_transport_params(struct sdw_bus *bus,
 
 	pcfg = &ctrl->pconfig[params->port_num];
 
-	value = pcfg->off1 << SWRM_DP_PORT_CTRL_OFFSET1_SHFT;
-	value |= pcfg->off2 << SWRM_DP_PORT_CTRL_OFFSET2_SHFT;
-	value |= pcfg->si & 0xff;
+	value = ((params->port_num == 1 && spx_port_off1 >= 0) ?
+		 spx_port_off1 : pcfg->off1) << SWRM_DP_PORT_CTRL_OFFSET1_SHFT;
+	value |= ((params->port_num == 1 && spx_port_off2 >= 0) ?
+		  spx_port_off2 : pcfg->off2) << SWRM_DP_PORT_CTRL_OFFSET2_SHFT;
+	value |= ((params->port_num == 1 && spx_port_si >= 0) ?
+		  spx_port_si : pcfg->si) & 0xff;
 
 	ret = ctrl->reg_write(ctrl, reg, value);
 	if (ret)
 		goto err;
 
-	if (pcfg->si > 0xff) {
-		value = (pcfg->si >> 8) & 0xff;
+	if (((params->port_num == 1 && spx_port_si >= 0) ?
+	     spx_port_si : pcfg->si) > 0xff) {
+		value = (((params->port_num == 1 && spx_port_si >= 0) ?
+			  spx_port_si : pcfg->si) >> 8) & 0xff;
 		reg = SWRM_DP_SAMPLECTRL2_BANK(params->port_num, bank);
 		ret = ctrl->reg_write(ctrl, reg, value);
 		if (ret)
@@ -1021,7 +2611,13 @@ static int qcom_swrm_transport_params(struct sdw_bus *bus,
 		reg = SWRM_DP_PORT_HCTRL_BANK(params->port_num, bank);
 		value = (pcfg->hstop << 4) | pcfg->hstart;
 		ret = ctrl->reg_write(ctrl, reg, value);
-	} else {
+	} else if (!spx_win_transport) {
+		/*
+		 * SPX: Windows never writes HCTRL. The fallback below also
+		 * assumes hstop[7:4]/hstart[3:0], the inverse of the slave-side
+		 * field order in sdw_registers.h, so it is not obviously right
+		 * even on its own terms. Leave the register at reset.
+		 */
 		reg = SWRM_DP_PORT_HCTRL_BANK(params->port_num, bank);
 		value = (SWR_HSTOP_MAX_VAL << 4) | SWR_HSTART_MIN_VAL;
 		ret = ctrl->reg_write(ctrl, reg, value);
@@ -1030,22 +2626,62 @@ static int qcom_swrm_transport_params(struct sdw_bus *bus,
 	if (ret)
 		goto err;
 
-	if (pcfg->bp_mode != SWR_INVALID_PARAM) {
+	if ((params->port_num == 1 && spx_port_bp >= 0) ||
+	    pcfg->bp_mode != SWR_INVALID_PARAM) {
 		reg = SWRM_DP_BLOCK_CTRL3_BANK(params->port_num, bank);
-		ret = ctrl->reg_write(ctrl, reg, pcfg->bp_mode);
+		ret = ctrl->reg_write(ctrl, reg,
+				      (params->port_num == 1 && spx_port_bp >= 0) ?
+				      spx_port_bp : pcfg->bp_mode);
 	}
 
 err:
 	return ret;
 }
 
-static int qcom_swrm_port_enable(struct sdw_bus *bus,
-				 struct sdw_enable_ch *enable_ch,
-				 unsigned int bank)
+/* SPX: program both banks identically so a lost bank switch cannot land the
+ * bus on a bank whose ports were never configured (see spx_mirror_banks). */
+static int qcom_swrm_transport_params(struct sdw_bus *bus,
+				      struct sdw_transport_params *params,
+				      enum sdw_reg_bank bank)
+{
+	int ret;
+
+	ret = qcom_swrm_transport_params_bank(bus, params, bank);
+	if (!ret && spx_mirror_banks)
+		ret = qcom_swrm_transport_params_bank(bus, params,
+				bank == SDW_BANK0 ? SDW_BANK1 : SDW_BANK0);
+	return ret;
+}
+
+static int qcom_swrm_port_enable_bank(struct sdw_bus *bus,
+				      struct sdw_enable_ch *enable_ch,
+				      unsigned int bank)
 {
 	u32 reg = SWRM_DP_PORT_CTRL_BANK(enable_ch->port_num, bank);
 	struct qcom_swrm_ctrl *ctrl = to_qcom_sdw(bus);
 	u32 val;
+
+	/*
+	 * SPX: never read-modify-write this register. The AHB bridge read path
+	 * on this codec-internal master returns stale/zero data, so the RMW can
+	 * rewrite si/offset1/offset2 with junk while leaving the channel
+	 * enabled -- audio that still plays but is corrupt. Windows composes
+	 * the whole word from its port table and writes it in one shot; do the
+	 * same from ctrl->pconfig[].
+	 */
+	if (spx_win_transport) {
+		struct qcom_swrm_port_config *pcfg =
+			&ctrl->pconfig[enable_ch->port_num];
+
+		val = (pcfg->off1 << SWRM_DP_PORT_CTRL_OFFSET1_SHFT) |
+		      (pcfg->off2 << SWRM_DP_PORT_CTRL_OFFSET2_SHFT) |
+		      (pcfg->si & 0xff);
+		if (enable_ch->enable)
+			val |= enable_ch->ch_mask <<
+			       SWRM_DP_PORT_CTRL_EN_CHAN_SHFT;
+
+		return ctrl->reg_write(ctrl, reg, val);
+	}
 
 	ctrl->reg_read(ctrl, reg, &val);
 
@@ -1055,6 +2691,18 @@ static int qcom_swrm_port_enable(struct sdw_bus *bus,
 		val &= ~(0xff << SWRM_DP_PORT_CTRL_EN_CHAN_SHFT);
 
 	return ctrl->reg_write(ctrl, reg, val);
+}
+
+static int qcom_swrm_port_enable(struct sdw_bus *bus,
+				 struct sdw_enable_ch *enable_ch,
+				 unsigned int bank)
+{
+	int ret;
+
+	ret = qcom_swrm_port_enable_bank(bus, enable_ch, bank);
+	if (!ret && spx_mirror_banks)
+		ret = qcom_swrm_port_enable_bank(bus, enable_ch, bank ? 0 : 1);
+	return ret;
 }
 
 static const struct sdw_master_port_ops qcom_swrm_port_ops = {
@@ -1067,6 +2715,7 @@ static const struct sdw_master_ops qcom_swrm_ops = {
 	.read_prop = qcom_swrm_read_prop,
 	.xfer_msg = qcom_swrm_xfer_msg,
 	.pre_bank_switch = qcom_swrm_pre_bank_switch,
+	.post_bank_switch = qcom_swrm_post_bank_switch,
 };
 
 static int qcom_swrm_compute_params(struct sdw_bus *bus, struct sdw_stream_runtime *stream)
@@ -1104,10 +2753,34 @@ static int qcom_swrm_compute_params(struct sdw_bus *bus, struct sdw_stream_runti
 					pcfg = &ctrl->pconfig[i];
 				p_rt->transport_params.port_num = p_rt->num;
 				p_rt->transport_params.sample_interval =
-					pcfg->si + 1;
-				p_rt->transport_params.offset1 = pcfg->off1;
-				p_rt->transport_params.offset2 = pcfg->off2;
-				p_rt->transport_params.blk_pkg_mode = pcfg->bp_mode;
+					(((!m_port ? i : m_port) == 1 &&
+					   spx_port_si >= 0) ? spx_port_si :
+					  pcfg->si) + 1;
+				p_rt->transport_params.offset1 =
+					((!m_port ? i : m_port) == 1 &&
+					 spx_port_off1 >= 0) ? spx_port_off1 :
+					 pcfg->off1;
+				p_rt->transport_params.offset2 =
+					((!m_port ? i : m_port) == 1 &&
+					 spx_port_off2 >= 0) ? spx_port_off2 :
+					 pcfg->off2;
+				p_rt->transport_params.blk_pkg_mode =
+					((!m_port ? i : m_port) == 1 &&
+					 spx_port_bp >= 0) ? spx_port_bp :
+					 pcfg->bp_mode;
+				/*
+				 * SPX: with no qcom,ports-block-pack-mode in
+				 * DT this stays SWR_INVALID_PARAM (0xff), and
+				 * the bus layer then writes 0xff into the
+				 * slave's DPn_BlockCtrl3 -- bit0 is the real
+				 * BlockPackingMode and bits 7:1 are reserved.
+				 * Windows never writes the register; 0 is its
+				 * reset value.
+				 */
+				if (spx_win_transport &&
+				    p_rt->transport_params.blk_pkg_mode ==
+					SWR_INVALID_PARAM)
+					p_rt->transport_params.blk_pkg_mode = 0;
 				p_rt->transport_params.blk_grp_ctrl = pcfg->blk_group_count;
 
 				p_rt->transport_params.hstart = pcfg->hstart;
@@ -1366,11 +3039,23 @@ static int qcom_swrm_get_port_config(struct qcom_swrm_ctrl *ctrl)
 	ctrl->num_dout_ports = FIELD_GET(SWRM_COMP_PARAMS_DOUT_PORTS_MASK, val);
 	ctrl->num_din_ports = FIELD_GET(SWRM_COMP_PARAMS_DIN_PORTS_MASK, val);
 
+	/*
+	 * SPX: the WCD9340 codec-internal SWR master does not service APPS
+	 * reads of COMP_PARAMS over SLIMbus (returns 0/garbage), so the
+	 * hardware-reported port counts read as 0 and the sanity checks below
+	 * wrongly reject the (authoritative) DT port counts. Log the raw value
+	 * and, under spx_core_enum, treat the DT as the source of truth.
+	 */
+	if (spx_core_enum)
+		dev_info(ctrl->dev,
+			 "SPX: COMP_PARAMS raw=0x%x -> hw dout=%d din=%d (DT will override)\n",
+			 val, ctrl->num_dout_ports, ctrl->num_din_ports);
+
 	ret = of_property_read_u32(np, "qcom,din-ports", &val);
 	if (ret)
 		return ret;
 
-	if (val > ctrl->num_din_ports)
+	if (!spx_core_enum && val > ctrl->num_din_ports)
 		return -EINVAL;
 
 	ctrl->num_din_ports = val;
@@ -1379,7 +3064,7 @@ static int qcom_swrm_get_port_config(struct qcom_swrm_ctrl *ctrl)
 	if (ret)
 		return ret;
 
-	if (val > ctrl->num_dout_ports)
+	if (!spx_core_enum && val > ctrl->num_dout_ports)
 		return -EINVAL;
 
 	ctrl->num_dout_ports = val;
@@ -1489,12 +3174,38 @@ static int qcom_swrm_probe(struct platform_device *pdev)
 	struct sdw_bus_params *params;
 	struct qcom_swrm_ctrl *ctrl;
 	const struct qcom_swrm_data *data;
-	int ret;
+	bool attached, both_attached;
+	int i, retry, ret;
 	u32 val;
 
 	ctrl = devm_kzalloc(dev, sizeof(*ctrl), GFP_KERNEL);
 	if (!ctrl)
 		return -ENOMEM;
+	mutex_init(&ctrl->ahb_lock);
+	mutex_init(&ctrl->controller_lock);
+
+	/*
+	 * Match the live qcauddev8180.sys path.  It exposes both physical
+	 * slaves to one hardware auto-enumeration pass; it never invents an
+	 * attachment or mirrors traffic between device addresses.
+	 */
+	ctrl->spx_windows_init =
+		of_machine_is_compatible("microsoft,surface-pro-x");
+	if (ctrl->spx_windows_init) {
+		spx_core_enum = 0;
+		spx_force_attach = 0;
+		spx_blind_attach = 0;
+		spx_watchdog = 0;
+		spx_win_transport = 0;
+		spx_dr_freq = 0;
+		spx_mirror_banks = 0;
+		spx_write_twice = 0;
+		spx_bank_switch_repeats = 1;
+		spx_write_dev0 = -1;
+		spx_no_assign = 0;
+		spx_forced_attached = false;
+		dev_info(dev, "SPX: Windows-compatible one-shot SoundWire enumeration\n");
+	}
 
 	data = of_device_get_match_data(dev);
 	ctrl->max_reg = data->max_reg;
@@ -1530,8 +3241,8 @@ static int qcom_swrm_probe(struct platform_device *pdev)
 
 	ctrl->irq = of_irq_get(dev->of_node, 0);
 	if (ctrl->irq < 0) {
-		ret = ctrl->irq;
-		goto err_init;
+		dev_warn(dev, "No IRQ found, SoundWire interrupts will not be available\n");
+		ctrl->irq = 0;
 	}
 
 	ctrl->hclk = devm_clk_get(dev, "iface");
@@ -1541,6 +3252,23 @@ static int qcom_swrm_probe(struct platform_device *pdev)
 	}
 
 	clk_prepare_enable(ctrl->hclk);
+
+	/*
+	 * Match qcauddev8180's constructor ordering exactly: clock enable
+	 * (WCD 0xd43 = 1), then ACCESS_CFG = 0x0f, then the first AHB bridge
+	 * transaction.  Do not leave this to the documented reset default:
+	 * Windows deliberately restores it on every controller construction.
+	 */
+	if (ctrl->spx_windows_init) {
+		ret = regmap_write(ctrl->regmap, SWRM_AHB_BRIDGE_ACCESS_CFG,
+				   0x0f);
+		if (ret) {
+			dev_err(dev,
+				"SPX: failed to configure SoundWire AHB bridge: %d\n",
+				ret);
+			goto err_clk;
+		}
+	}
 
 	ctrl->dev = dev;
 	dev_set_drvdata(&pdev->dev, ctrl);
@@ -1558,8 +3286,17 @@ static int qcom_swrm_probe(struct platform_device *pdev)
 		goto err_clk;
 
 	params = &ctrl->bus.params;
-	params->max_dr_freq = DEFAULT_CLK_FREQ;
-	params->curr_dr_freq = DEFAULT_CLK_FREQ;
+	/*
+	 * SPX: SoundWire clocks data on both edges, so the bus DATA RATE is
+	 * twice the 9.6 MHz clock. The Windows master computes its frame rate
+	 * from 2*9.6 MHz (= 25 kHz at 48x16), and the sample intervals in our
+	 * DT were derived from that figure -- but this driver seeds dr_freq
+	 * with the clock, halving the rate the core reasons about. A 440 Hz
+	 * tone that changes pitch when another port is allocated is the
+	 * symptom. spx_dr_freq lets us pin the data rate explicitly.
+	 */
+	params->max_dr_freq = spx_dr_freq ? spx_dr_freq : DEFAULT_CLK_FREQ;
+	params->curr_dr_freq = params->max_dr_freq;
 	params->col = data->default_cols;
 	params->row = data->default_rows;
 	ctrl->reg_read(ctrl, SWRM_MCP_STATUS, &val);
@@ -1576,14 +3313,16 @@ static int qcom_swrm_probe(struct platform_device *pdev)
 
 	ctrl->reg_read(ctrl, SWRM_COMP_HW_VERSION, &ctrl->version);
 
-	ret = devm_request_threaded_irq(dev, ctrl->irq, NULL,
-					qcom_swrm_irq_handler,
-					IRQF_TRIGGER_RISING |
-					IRQF_ONESHOT,
-					"soundwire", ctrl);
-	if (ret) {
-		dev_err(dev, "Failed to request soundwire irq\n");
-		goto err_clk;
+	if (ctrl->irq > 0) {
+		ret = devm_request_threaded_irq(dev, ctrl->irq, NULL,
+						qcom_swrm_irq_handler,
+						IRQF_TRIGGER_RISING |
+						IRQF_ONESHOT,
+						"soundwire", ctrl);
+		if (ret) {
+			dev_err(dev, "Failed to request soundwire irq\n");
+			goto err_clk;
+		}
 	}
 
 	ctrl->wake_irq = of_irq_get(dev->of_node, 1);
@@ -1594,7 +3333,7 @@ static int qcom_swrm_probe(struct platform_device *pdev)
 						"swr_wake_irq", ctrl);
 		if (ret) {
 			dev_err(dev, "Failed to request soundwire wake irq\n");
-			goto err_init;
+			goto err_clk;
 		}
 	}
 
@@ -1613,8 +3352,83 @@ static int qcom_swrm_probe(struct platform_device *pdev)
 	}
 
 	qcom_swrm_init(ctrl);
+
+	/*
+	 * The Linux IRQ path clears status late and suppresses an unchanged
+	 * cached status, so the sole CHANGE edge can be consumed while probe is
+	 * still finishing. Capture the hardware-auto-enumerator result
+	 * synchronously after the complete Windows init sequence. Use the same
+	 * single status snapshot for table mapping, as qcauddev8180 does.
+	 */
+	if (ctrl->spx_windows_init) {
+		attached = false;
+		both_attached = false;
+		for (retry = 0; retry < 40; retry++) {
+			mutex_lock(&ctrl->controller_lock);
+			qcom_swrm_get_device_status(ctrl);
+			both_attached =
+				(ctrl->slave_status & GENMASK(5, 2)) == 0x14;
+			for (i = 1; i <= SDW_MAX_DEVICES; i++) {
+				if (ctrl->status[i] == SDW_SLAVE_ATTACHED) {
+					attached = true;
+					break;
+				}
+			}
+			if (attached) {
+				dev_info(ctrl->dev,
+					 "SPX: synchronous slave status snapshot %#x\n",
+					 ctrl->slave_status);
+				qcom_swrm_enumerate(&ctrl->bus);
+				sdw_handle_slave_status(&ctrl->bus,
+							ctrl->status);
+			}
+			mutex_unlock(&ctrl->controller_lock);
+
+			if (both_attached)
+				break;
+			usleep_range(500, 550);
+		}
+		if (!attached)
+			dev_err(ctrl->dev,
+				"SPX: no attached slave in post-init status window\n");
+		else if (!both_attached)
+			dev_warn(ctrl->dev,
+				 "SPX: post-init window did not capture both slaves together\n");
+	}
+
 	wait_for_completion_timeout(&ctrl->enumeration,
 				    msecs_to_jiffies(TIMEOUT_MS));
+	/*
+	 * SPX: the wcd934x internal SoundWire master has no usable IRQ (the
+	 * codec INT is not wired as a Linux irq), so the enumeration completion
+	 * above always times out -- the slave-status/enumerate path normally
+	 * runs only from qcom_swrm_irq_handler(). Without it the WSA881x amps
+	 * stay UNATTACHED forever. Do a one-shot software enumeration kick here
+	 * for the IRQ-less case, mirroring the NEW_SLAVE_ATTACHED IRQ path. HW
+	 * auto-enum (SWRM_ENUMERATOR_CFG_ADDR=1 in qcom_swrm_init) needs a moment
+	 * to assign device numbers after the bus reset.
+	 */
+	/*
+	 * SPX: always init the enum work + the global ctrl so the spx_reenum
+	 * live re-trigger works on ANY boot (IRQ or polled). Only auto-SCHEDULE
+	 * the boot-time poll when there is no IRQ (the no-IRQ master can't
+	 * enumerate otherwise). The HW auto-enumerator in qcom_swrm_init() runs at
+	 * master probe -- but the wsa881x slaves are only powered when wsa881x
+	 * probes (AFTER us), so the boot-time scan races; spx_swrm_enum_work
+	 * re-runs it on a live bus.
+	 */
+	/*
+	 * Always arm the enum work + spx_dbg_ctrl so spx_reenum / force_attach
+	 * work even when the boot cmdline omitted spx_core_enum.
+	 */
+	INIT_DELAYED_WORK(&ctrl->spx_enum_work, spx_swrm_enum_work);
+	INIT_DELAYED_WORK(&ctrl->spx_wd_work, spx_wd_work_fn);
+	spx_dbg_ctrl = ctrl;
+	if (spx_core_enum || spx_force_attach) {
+		if (ctrl->irq <= 0 || spx_force_attach)
+			schedule_delayed_work(&ctrl->spx_enum_work,
+					      msecs_to_jiffies(300));
+	}
 	ret = qcom_swrm_register_dais(ctrl);
 	if (ret)
 		goto err_master_add;
@@ -1648,7 +3462,33 @@ err_init:
 static void qcom_swrm_remove(struct platform_device *pdev)
 {
 	struct qcom_swrm_ctrl *ctrl = dev_get_drvdata(&pdev->dev);
+	int ret;
 
+	/* The SPX work exists even with an IRQ-backed master. Letting it survive
+	 * device removal leaves a dangling controller pointer and poisons rebind.
+	 */
+	cancel_delayed_work_sync(&ctrl->spx_enum_work);
+	cancel_delayed_work_sync(&ctrl->spx_wd_work);
+	if (spx_dbg_ctrl == ctrl)
+		spx_dbg_ctrl = NULL;
+	spx_forced_attached = false;
+	spx_bus_up = false;
+	spx_amp_at_dev0 = false;
+	spx_amp_addr_stale = true;
+	if (spx_pm_held) {
+		spx_pm_held = false;
+		pm_runtime_put_noidle(ctrl->dev);
+	}
+
+	/* Runtime PM remains enabled across a manual unbind unless the driver
+	 * disables it. Resume while the bus is intact, then tear it down from a
+	 * known active state so a subsequent bind cannot enter runtime-resume in
+	 * the middle of sdw_bus_master_add().
+	 */
+	ret = pm_runtime_resume_and_get(&pdev->dev);
+	pm_runtime_disable(&pdev->dev);
+	if (ret >= 0)
+		pm_runtime_put_noidle(&pdev->dev);
 	sdw_bus_master_delete(&ctrl->bus);
 	clk_disable_unprepare(ctrl->hclk);
 }
@@ -1682,7 +3522,8 @@ static int __maybe_unused swrm_runtime_resume(struct device *dev)
 		qcom_swrm_get_device_status(ctrl);
 		sdw_handle_slave_status(&ctrl->bus, ctrl->status);
 	} else {
-		reset_control_reset(ctrl->audio_cgcr);
+		if (ctrl->audio_cgcr)
+			reset_control_reset(ctrl->audio_cgcr);
 
 		if (ctrl->version == SWRM_VERSION_1_7_0) {
 			ctrl->reg_write(ctrl, SWRM_LINK_MANAGER_EE, SWRM_EE_CPU);
@@ -1703,8 +3544,9 @@ static int __maybe_unused swrm_runtime_resume(struct device *dev)
 			ctrl->reg_write(ctrl,
 					ctrl->reg_layout[SWRM_REG_INTERRUPT_MASK_ADDR],
 					ctrl->intr_mask);
-		ctrl->reg_write(ctrl, ctrl->reg_layout[SWRM_REG_INTERRUPT_CPU_EN],
-				ctrl->intr_mask);
+		if (ctrl->irq > 0)
+			ctrl->reg_write(ctrl, ctrl->reg_layout[SWRM_REG_INTERRUPT_CPU_EN],
+					ctrl->intr_mask);
 
 		usleep_range(100, 105);
 		if (!swrm_wait_for_frame_gen_enabled(ctrl))
@@ -1731,8 +3573,9 @@ static int __maybe_unused swrm_runtime_suspend(struct device *dev)
 			ctrl->reg_write(ctrl,
 					ctrl->reg_layout[SWRM_REG_INTERRUPT_MASK_ADDR],
 					ctrl->intr_mask);
-		ctrl->reg_write(ctrl, ctrl->reg_layout[SWRM_REG_INTERRUPT_CPU_EN],
-				ctrl->intr_mask);
+		if (ctrl->irq > 0)
+			ctrl->reg_write(ctrl, ctrl->reg_layout[SWRM_REG_INTERRUPT_CPU_EN],
+					ctrl->intr_mask);
 		/* Prepare slaves for clock stop */
 		ret = sdw_bus_prep_clk_stop(&ctrl->bus);
 		if (ret < 0 && ret != -ENODATA) {

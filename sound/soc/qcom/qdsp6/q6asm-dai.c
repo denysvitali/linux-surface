@@ -17,6 +17,7 @@
 #include <asm/div64.h>
 #include <asm/dma.h>
 #include <linux/dma-mapping.h>
+#include <linux/iommu.h>
 #include <sound/pcm_params.h>
 #include "q6asm.h"
 #include "q6routing.h"
@@ -74,6 +75,11 @@ struct q6asm_dai_rtd {
 	uint32_t initial_samples_drop;
 	uint32_t trailing_samples_drop;
 	bool notify_on_drain;
+	phys_addr_t alias_iova;	/* SPX: high-window IOVA alias for the ADSP */
+	size_t alias_sz;
+	struct delayed_work write_watchdog;
+	unsigned long period_jiffies;
+	bool write_fallback;
 };
 
 struct q6asm_dai_data {
@@ -81,6 +87,86 @@ struct q6asm_dai_data {
 	int num_dais;
 	long long int sid;
 };
+
+static int spx_period_adjust_ms;
+module_param(spx_period_adjust_ms, int, 0644);
+MODULE_PARM_DESC(spx_period_adjust_ms,
+		 "SPX: signed adjustment to fallback write cadence in milliseconds");
+
+/*
+ * SPX (2026-06-22): the address the ADSP is told to map = buf->addr | (sid<<32).
+ * RE of the Windows codec mgr (qcadcm8180.sys ADCM\SMMU\POIPU_V1) shows the ADSP
+ * audio SMMU IOVA window is [0x1_00000000, 0x1_FFFF0000) (bit32 set; ARID
+ * 0x07030000 = apps_smmu SID 0x1b21). sid = 0x1b21 & 0xF = 1, so sid<<32 places
+ * the address into that window. The bug: q6asm only IOMMU-maps buf->addr (the
+ * LOW IOVA) but tells the DSP the HIGH IOVA -> the DSP access is unmapped
+ * (EFAILED) or, with bit32 cleared, out-of-window (ADSP watchdog crash). Fix:
+ * alias-map the buffer's pages at the HIGH IOVA in the same apps_smmu context.
+ */
+static phys_addr_t spx_map_addr(struct q6asm_dai_data *pdata, dma_addr_t iova)
+{
+	if (pdata->sid < 0)
+		return iova;
+	return iova | ((phys_addr_t)pdata->sid << 32);
+}
+
+/*
+ * SPX H4 probe: the ADSP VCM context registry says MemoryCacheType=2; if the
+ * ADSP expects device/non-cached and we map IOMMU_CACHE the walk may stall.
+ * prot is a module param. On the Surface Pro X the ADSP requires the alias
+ * to be non-cacheable; the stock cacheable mapping makes mem-map stall or
+ * return EFAILED. Keep the parameter override for A/B testing.
+ */
+static int spx_alias_prot = IOMMU_READ | IOMMU_WRITE;
+module_param_named(alias_prot, spx_alias_prot, int, 0644);
+MODULE_PARM_DESC(alias_prot,
+		 "SPX: iommu_map prot for the high-IOVA alias (default READ|WRITE)");
+
+static int spx_alias_dbg;
+module_param_named(alias_debug, spx_alias_dbg, int, 0644);
+MODULE_PARM_DESC(alias_debug, "SPX: log iova_to_phys of the alias first page");
+
+/* Map the buffer pages at the high-window IOVA the ADSP will access. */
+static int spx_alias_map(struct device *dev, dma_addr_t low, phys_addr_t high,
+			 size_t size)
+{
+	struct iommu_domain *dom = iommu_get_domain_for_dev(dev);
+	size_t off;
+	int ret;
+
+	if (!dom || high == low)
+		return 0;
+	size = ALIGN(size, PAGE_SIZE);
+	for (off = 0; off < size; off += PAGE_SIZE) {
+		phys_addr_t pa = iommu_iova_to_phys(dom, low + off);
+
+		if (!pa) {
+			ret = -EINVAL;
+			goto err;
+		}
+		if (!off && spx_alias_dbg)
+			dev_info(dev, "SPX alias: low=%pad high=0x%llx pa=%pa sz=%zu prot=0x%x\n",
+				 &low, (unsigned long long)high, &pa, size,
+				 spx_alias_prot);
+		ret = iommu_map(dom, high + off, pa, PAGE_SIZE,
+				spx_alias_prot, GFP_KERNEL);
+		if (ret)
+			goto err;
+	}
+	return 0;
+err:
+	if (off)
+		iommu_unmap(dom, high, off);
+	return ret;
+}
+
+static void spx_alias_unmap(struct device *dev, phys_addr_t high, size_t size)
+{
+	struct iommu_domain *dom = iommu_get_domain_for_dev(dev);
+
+	if (dom && high && size)
+		iommu_unmap(dom, high, ALIGN(size, PAGE_SIZE));
+}
 
 static const struct snd_pcm_hardware q6asm_dai_hardware_capture = {
 	.info =                 (SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_BATCH |
@@ -174,6 +260,27 @@ static const struct snd_compr_codec_caps q6asm_compr_caps = {
 	.descriptor[0].formats = 0,
 };
 
+static void q6asm_write_watchdog(struct work_struct *work)
+{
+	struct q6asm_dai_rtd *prtd =
+		container_of(to_delayed_work(work), struct q6asm_dai_rtd,
+			     write_watchdog);
+
+	if (prtd->state != Q6ASM_STREAM_RUNNING || !prtd->substream)
+		return;
+
+	prtd->write_fallback = true;
+	prtd->pcm_irq_pos += prtd->pcm_count;
+	snd_pcm_period_elapsed(prtd->substream);
+	if (prtd->state != Q6ASM_STREAM_RUNNING)
+		return;
+	q6asm_write_async(prtd->audio_client, prtd->stream_id,
+			  prtd->pcm_count, 0, 0, 0);
+
+	mod_delayed_work(system_wq, &prtd->write_watchdog,
+			 max_t(unsigned long, 1, prtd->period_jiffies));
+}
+
 static void event_handler(uint32_t opcode, uint32_t token,
 			  void *payload, void *priv)
 {
@@ -182,14 +289,33 @@ static void event_handler(uint32_t opcode, uint32_t token,
 
 	switch (opcode) {
 	case ASM_CLIENT_EVENT_CMD_RUN_DONE:
-		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
-			q6asm_write_async(prtd->audio_client, prtd->stream_id,
-				   prtd->pcm_count, 0, 0, 0);
+		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+			int i;
+
+			/* Immediate write ACKs are not consumption events on SPX. */
+			prtd->write_fallback = true;
+			/* This firmware ACKs writes but emits no consumption event.
+			 * Fill the DSP queue before starting the paced replacement
+			 * worker, otherwise its first period underruns into silence.
+			 */
+			for (i = 0; i < prtd->periods; i++)
+				q6asm_write_async(prtd->audio_client,
+						  prtd->stream_id,
+						  prtd->pcm_count, 0, 0, 0);
+			mod_delayed_work(system_wq, &prtd->write_watchdog,
+					 max_t(unsigned long, 1,
+					       prtd->period_jiffies));
+		}
 		break;
 	case ASM_CLIENT_EVENT_CMD_EOS_DONE:
 		prtd->state = Q6ASM_STREAM_STOPPED;
 		break;
 	case ASM_CLIENT_EVENT_DATA_WRITE_DONE: {
+		if (prtd->write_fallback)
+			break;
+		mod_delayed_work(system_wq, &prtd->write_watchdog,
+				 max_t(unsigned long, 1,
+				       prtd->period_jiffies * 2));
 		prtd->pcm_irq_pos += prtd->pcm_count;
 		snd_pcm_period_elapsed(substream);
 		if (prtd->state == Q6ASM_STREAM_RUNNING)
@@ -232,6 +358,16 @@ static int q6asm_dai_prepare(struct snd_soc_component *component,
 
 	prtd->pcm_count = snd_pcm_lib_period_bytes(substream);
 	prtd->pcm_irq_pos = 0;
+	prtd->write_fallback = false;
+	prtd->period_jiffies = DIV_ROUND_UP((unsigned long)prtd->pcm_count * HZ,
+					   runtime->rate * runtime->channels *
+					   (prtd->bits_per_sample / 8));
+	if (spx_period_adjust_ms) {
+		long adjusted = (long)prtd->period_jiffies +
+			DIV_ROUND_CLOSEST((long)spx_period_adjust_ms * HZ, 1000);
+
+		prtd->period_jiffies = max_t(long, 1, adjusted);
+	}
 	/* rate and channels are sent to audio driver */
 	if (prtd->state) {
 		/* clear the previous setup if any  */
@@ -326,6 +462,7 @@ static int q6asm_dai_trigger(struct snd_soc_component *component,
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
 		prtd->state = Q6ASM_STREAM_STOPPED;
+		cancel_delayed_work(&prtd->write_watchdog);
 		ret = q6asm_cmd_nowait(prtd->audio_client, prtd->stream_id,
 				       CMD_EOS);
 		break;
@@ -367,6 +504,7 @@ static int q6asm_dai_open(struct snd_soc_component *component,
 		return -ENOMEM;
 
 	prtd->substream = substream;
+	INIT_DELAYED_WORK(&prtd->write_watchdog, q6asm_write_watchdog);
 	prtd->audio_client = q6asm_audio_client_alloc(dev,
 				(q6asm_cb)event_handler, prtd, stream_id,
 				LEGACY_PCM_MODE);
@@ -421,11 +559,13 @@ static int q6asm_dai_open(struct snd_soc_component *component,
 
 	runtime->dma_bytes = q6asm_dai_hardware_playback.buffer_bytes_max;
 
-
-	if (pdata->sid < 0)
-		prtd->phys = substream->dma_buffer.addr;
-	else
-		prtd->phys = substream->dma_buffer.addr | (pdata->sid << 32);
+	/*
+	 * prtd->phys is captured in q6asm_dai_hw_params() instead of open():
+	 * the DMA buffer is finalized there as runtime->dma_buffer_p. With
+	 * managed buffer allocation (snd_pcm_set_fixed_buffer_all), capturing
+	 * the address at open() can hand the DSP a stale dma_buffer.addr
+	 * and make ASM_CMD_SHARED_MEM_MAP_REGIONS fail with ADSP_EFAILED.
+	 */
 
 	return 0;
 }
@@ -437,6 +577,8 @@ static int q6asm_dai_close(struct snd_soc_component *component,
 	struct snd_soc_pcm_runtime *soc_prtd = snd_soc_substream_to_rtd(substream);
 	struct q6asm_dai_rtd *prtd = runtime->private_data;
 
+	cancel_delayed_work_sync(&prtd->write_watchdog);
+
 	if (prtd->audio_client) {
 		if (prtd->state)
 			q6asm_cmd(prtd->audio_client, prtd->stream_id,
@@ -446,6 +588,10 @@ static int q6asm_dai_close(struct snd_soc_component *component,
 					   prtd->audio_client);
 		q6asm_audio_client_free(prtd->audio_client);
 		prtd->audio_client = NULL;
+	}
+	if (prtd->alias_iova) {
+		spx_alias_unmap(component->dev, prtd->alias_iova, prtd->alias_sz);
+		prtd->alias_iova = 0;
 	}
 	q6routing_stream_close(soc_prtd->dai_link->id,
 						substream->stream);
@@ -472,9 +618,34 @@ static int q6asm_dai_hw_params(struct snd_soc_component *component,
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct q6asm_dai_rtd *prtd = runtime->private_data;
+	struct q6asm_dai_data *pdata = snd_soc_component_get_drvdata(component);
+	struct snd_dma_buffer *buf = runtime->dma_buffer_p;
 
 	prtd->pcm_size = params_buffer_bytes(params);
 	prtd->periods = params_periods(params);
+
+	if (!buf)
+		return -ENOMEM;
+
+	prtd->phys = spx_map_addr(pdata, buf->addr);
+
+	/* SPX: alias-map the buffer at the high-window IOVA the ADSP accesses. */
+	if (prtd->alias_iova) {
+		spx_alias_unmap(component->dev, prtd->alias_iova, prtd->alias_sz);
+		prtd->alias_iova = 0;
+	}
+	if (prtd->phys != buf->addr) {
+		int rc = spx_alias_map(component->dev, buf->addr, prtd->phys,
+				       buf->bytes);
+
+		if (rc) {
+			dev_warn(component->dev,
+				 "SPX: high-IOVA alias map failed: %d\n", rc);
+		} else {
+			prtd->alias_iova = prtd->phys;
+			prtd->alias_sz = buf->bytes;
+		}
+	}
 
 	switch (params_format(params)) {
 	case SNDRV_PCM_FORMAT_S16_LE:
@@ -633,10 +804,7 @@ static int q6asm_dai_compr_open(struct snd_soc_component *component,
 		goto free_client;
 	}
 
-	if (pdata->sid < 0)
-		prtd->phys = prtd->dma_buffer.addr;
-	else
-		prtd->phys = prtd->dma_buffer.addr | (pdata->sid << 32);
+	prtd->phys = spx_map_addr(pdata, prtd->dma_buffer.addr);
 
 	snd_compr_set_runtime_buffer(stream, &prtd->dma_buffer);
 	spin_lock_init(&prtd->lock);
@@ -1296,6 +1464,10 @@ static int q6asm_dai_probe(struct platform_device *pdev)
 	pdata = devm_kzalloc(dev, sizeof(*pdata), GFP_KERNEL);
 	if (!pdata)
 		return -ENOMEM;
+
+	rc = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
+	if (rc)
+		dev_warn(dev, "Unable to set DMA mask to 32-bit: %d\n", rc);
 
 	rc = of_parse_phandle_with_fixed_args(node, "iommus", 1, 0, &args);
 	if (rc < 0)

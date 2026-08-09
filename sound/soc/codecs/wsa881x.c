@@ -6,6 +6,7 @@
 #include <linux/gpio.h>
 #include <linux/gpio/consumer.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
 #include <linux/pm_runtime.h>
@@ -133,6 +134,8 @@
 #define WSA881X_PA_GAIN_SEL_MASK		BIT(3)
 #define WSA881X_PA_GAIN_SEL_REG			BIT(3)
 #define WSA881X_PA_GAIN_SEL_DRE			0
+#define WSA881X_PA_PWM_FREQ_MASK		BIT(2)
+#define WSA881X_PA_PWM_FREQ_600KHZ		BIT(2)
 #define WSA881X_SPKR_PAG_GAIN_MASK		GENMASK(7, 4)
 #define WSA881X_SPKR_DAC_CTL			(WSA881X_ANALOG_BASE + 0x001C)
 #define WSA881X_SPKR_DRV_DBG			(WSA881X_ANALOG_BASE + 0x001D)
@@ -666,6 +669,7 @@ enum {
  */
 struct wsa881x_priv {
 	struct regmap *regmap;
+	struct regmap *spx_wcd_regmap;
 	struct device *dev;
 	struct sdw_slave *slave;
 	struct sdw_stream_config sconfig;
@@ -677,60 +681,410 @@ struct wsa881x_priv {
 	 * For backwards compatibility.
 	 */
 	unsigned int sd_n_val;
+	/*
+	 * SPX: wcd934x GPIO pin index driving THIS amp's SD_N, parsed from the
+	 * node's own powerdown-gpios. Each amp must have its own pin: with both
+	 * amps sharing one pin they power up together, collide at device 0 and
+	 * the bus never enumerates.
+	 */
+	int spx_sd_n_pin;
 	int active_ports;
 	bool port_prepared[WSA881X_MAX_SWR_PORTS];
 	bool port_enable[WSA881X_MAX_SWR_PORTS];
+	bool spx_write_only;
+	u8 *spx_reg_shadow;
 };
+
+static int spx_powerdown_gpio = 1;
+static struct gpio_desc *spx_powerdown_desc;
+static struct wsa881x_priv *spx_debug_wsa881x;
+/*
+ * The live Windows driver allocates all four WSA881x sink descriptors for
+ * ordinary playback. Earlier one/two-port listening tests were useful
+ * diagnostics but did not reproduce that transport topology.
+ */
+static int spx_stream_port_mask = GENMASK(WSA881X_MAX_SWR_PORTS - 1, 0);
+module_param(spx_stream_port_mask, int, 0644);
+MODULE_PARM_DESC(spx_stream_port_mask,
+		 "SPX: SoundWire sink-port mask; write-only SPX devices transport every selected port independently of analog controls");
+
+/*
+ * SPX: override the DT qcom,port-mapping (slave port -> master port) at runtime.
+ * The stock <1 2 3 7> is inherited from db845c and puts the speaker audio on the
+ * slave's COMP port instead of its DAC port, which forces the compander
+ * transport config (4 channels, long sample interval) onto the audio and leaves
+ * the analog gain stuck in DRE mode. Being able to re-map without a reboot makes
+ * that tunable. Zero entries keep the DT value.
+ *   snd_soc_wsa881x.spx_port_map=2,1,3,7
+ */
+static int spx_port_map[WSA881X_MAX_SWR_PORTS];
+static int spx_port_map_count;
+module_param_array(spx_port_map, int, &spx_port_map_count, 0644);
+MODULE_PARM_DESC(spx_port_map,
+		 "SPX: master port for each slave port 1..4 (0 = keep DT value)");
+
+/*
+ * SPX: the wcd934x gpiolib chip is registered but its owner module's
+ * refcount wedged negative after a codec module swap, so every
+ * gpiod_request() fails with EPROBE_DEFER and wsa881x probes defer
+ * forever. Drive the WSA SD_N line (wcdgpio pin 1) directly through the
+ * WCD9340's SLIMbus regmap instead -- the same window the MFD driver and
+ * the soundwire_qcom quiet-bus code use. VAL bit = physical level.
+ *
+ * Polarity, measured 2026-07-29 with spx_wsa_power_probe.ko: physical HIGH =
+ * amp ON, LOW = off, matching powerdown-gpios/GPIO_ACTIVE_LOW in the DT. The
+ * code below is right for a *powerdown* signal -- logical 1 = powerdown
+ * asserted = physical low = amp off -- but the comment that used to sit here
+ * claimed "HIGH = shutdown, logical 1 = amp active", which is inverted and is
+ * the same error that made the bring-up script park the amps at 0x06 (both ON).
+ */
+#define SPX_WCD_GPIO_DIR_CTL	0x42
+#define SPX_WCD_GPIO_VAL_CTL	0x43
+#define SPX_WSA_SD_N_PIN_DFL	1
+
+static int spx_wsa_powerdown_set(struct wsa881x_priv *wsa881x, int logical)
+{
+	unsigned int mask;
+	u8 val;
+	int ret;
+
+	if (!wsa881x || !wsa881x->spx_wcd_regmap)
+		return -ENODEV;
+
+	mask = BIT(wsa881x->spx_sd_n_pin);
+	val = logical ? 0 : mask;
+
+	ret = regmap_update_bits(wsa881x->spx_wcd_regmap,
+				 SPX_WCD_GPIO_DIR_CTL, mask, mask);
+	if (ret)
+		return ret;
+	return regmap_update_bits(wsa881x->spx_wcd_regmap,
+				  SPX_WCD_GPIO_VAL_CTL, mask, val);
+}
+
+static int spx_powerdown_gpio_set(const char *val,
+				  const struct kernel_param *kp)
+{
+	int ret;
+
+	ret = param_set_int(val, kp);
+	if (ret)
+		return ret;
+	if (spx_debug_wsa881x && spx_debug_wsa881x->spx_wcd_regmap)
+		return spx_wsa_powerdown_set(spx_debug_wsa881x,
+					     spx_powerdown_gpio);
+	if (spx_powerdown_desc)
+		return gpiod_direction_output(spx_powerdown_desc,
+					      spx_powerdown_gpio);
+
+	return 0;
+}
+
+static const struct kernel_param_ops spx_powerdown_gpio_ops = {
+	.set = spx_powerdown_gpio_set,
+	.get = param_get_int,
+};
+module_param_cb(spx_powerdown_gpio, &spx_powerdown_gpio_ops,
+		&spx_powerdown_gpio, 0644);
+MODULE_PARM_DESC(spx_powerdown_gpio,
+		 "SPX: logical powerdown GPIO value (applied immediately)");
+
+/*
+ * The SPX amplifiers share their SoundWire address, so reads collide while
+ * broadcast writes remain usable. Build the full register value from regcache
+ * and issue a direct write instead of a hardware read-modify-write.
+ */
+/*
+ * SPX: even with native hardware enumeration (both amps at distinct device
+ * numbers) the WCD9340-internal master's read FIFO underflows on this board,
+ * so every read-modify-write in the DAPM power-up path fails with -EIO and the
+ * bandgap/RDAC/PA sequence never completes. Writes, however, land. Compose the
+ * full register value from the shadow and issue a plain write instead of ever
+ * reading. Independent of spx_write_only, which also changes probe/GPIO/port
+ * behaviour and stays off for the enumerated configuration.
+ */
+/*
+ * Selects the legacy single-amp bring-up behaviour wholesale (SD_N over the WCD
+ * regmap, write-only port config, spx_rearm_init). Latched per device at probe.
+ */
+static bool spx_write_only;
+module_param(spx_write_only, bool, 0444);
+MODULE_PARM_DESC(spx_write_only,
+		 "SPX: legacy single-amp write-only bring-up (read at probe)");
+
+static bool spx_blind_rmw = true;
+module_param(spx_blind_rmw, bool, 0644);
+MODULE_PARM_DESC(spx_blind_rmw,
+		 "SPX: never read the amp; compose register values from the driver shadow");
+
+static bool wsa881x_use_shadow(struct wsa881x_priv *wsa881x)
+{
+	return wsa881x->spx_reg_shadow &&
+	       (wsa881x->spx_write_only || spx_blind_rmw);
+}
+
+static int wsa881x_update_bits(struct wsa881x_priv *wsa881x,
+			       unsigned int reg, unsigned int mask,
+			       unsigned int val)
+{
+	struct regmap *rm = wsa881x->regmap;
+	u8 cached;
+
+	if (!wsa881x_use_shadow(wsa881x))
+		return regmap_update_bits(rm, reg, mask, val);
+
+	if (reg > WSA881X_SPKR_STATUS3)
+		return -EINVAL;
+
+	cached = wsa881x->spx_reg_shadow[reg];
+	cached &= ~mask;
+	cached |= val & mask;
+	wsa881x->spx_reg_shadow[reg] = cached;
+
+	return regmap_write(rm, reg, cached);
+}
+
+static int wsa881x_write_sequence(struct wsa881x_priv *wsa881x,
+				  const struct reg_sequence *regs,
+				  int num_regs)
+{
+	int i, ret;
+
+	if (!wsa881x_use_shadow(wsa881x))
+		return regmap_multi_reg_write(wsa881x->regmap, regs, num_regs);
+
+	for (i = 0; i < num_regs; i++) {
+		ret = wsa881x_update_bits(wsa881x, regs[i].reg, 0xff,
+					  regs[i].def);
+		if (ret)
+			return ret;
+		if (regs[i].delay_us)
+			fsleep(regs[i].delay_us);
+	}
+
+	return 0;
+}
+
+static int spx_sample_edge = -1;
+
+static int spx_sample_edge_set(const char *val, const struct kernel_param *kp)
+{
+	int ret;
+
+	ret = param_set_int(val, kp);
+	if (ret)
+		return ret;
+	if (spx_sample_edge < -1 || spx_sample_edge > 0xff)
+		return -EINVAL;
+	if (spx_debug_wsa881x && spx_sample_edge >= 0)
+		return wsa881x_update_bits(spx_debug_wsa881x,
+					    WSA881X_SAMPLE_EDGE_SEL, 0xff,
+					    spx_sample_edge);
+
+	return 0;
+}
+
+static const struct kernel_param_ops spx_sample_edge_ops = {
+	.set = spx_sample_edge_set,
+	.get = param_get_int,
+};
+module_param_cb(spx_sample_edge, &spx_sample_edge_ops, &spx_sample_edge, 0644);
+MODULE_PARM_DESC(spx_sample_edge,
+		 "SPX: live WSA881x PDM sample-edge register override (-1=default)");
+
+static int spx_win_pa_seq = 1;
+module_param(spx_win_pa_seq, int, 0644);
+MODULE_PARM_DESC(spx_win_pa_seq,
+		 "SPX: replicate the Windows qcauddev8180 PA bring-up (ANA_CTL latch pulse, DAC ramp, VI-sense teardown, stepped gain ramp)");
+
+/*
+ * SPX: default OFF. Replaying the ~100-register init table inside PRE_PMU costs
+ * ~240 ms of bus traffic on every stream start, while the port is already
+ * streaming -- measured 2026-07-27 as "mostly silent + static" with it on vs
+ * "tone + static" with it off. Windows never re-inits per stream. The recovery
+ * script still replays explicitly via spx_rearm_init after a power-cycle, which
+ * is the only case that actually needs it.
+ */
+static int spx_init_on_pmu;
+module_param(spx_init_on_pmu, int, 0644);
+MODULE_PARM_DESC(spx_init_on_pmu,
+		 "SPX: replay the amp init table before every PA enable");
 
 static void wsa881x_init(struct wsa881x_priv *wsa881x)
 {
 	struct regmap *rm = wsa881x->regmap;
 	unsigned int val = 0;
+	int i;
 
-	regmap_register_patch(wsa881x->regmap, wsa881x_rev_2_0,
-			      ARRAY_SIZE(wsa881x_rev_2_0));
+	if (wsa881x->spx_write_only)
+		dev_info(wsa881x->dev,
+			 "SPX: initializing amplifier at SoundWire device %d\n",
+			 wsa881x->slave->dev_num);
+
+	if (wsa881x->spx_write_only) {
+		for (i = 0; i < ARRAY_SIZE(wsa881x_rev_2_0); i++)
+			wsa881x_update_bits(wsa881x, wsa881x_rev_2_0[i].reg,
+					      0xff, wsa881x_rev_2_0[i].def);
+	} else {
+		regmap_register_patch(wsa881x->regmap, wsa881x_rev_2_0,
+				      ARRAY_SIZE(wsa881x_rev_2_0));
+	}
 
 	/* Enable software reset output from soundwire slave */
-	regmap_update_bits(rm, WSA881X_SWR_RESET_EN, 0x07, 0x07);
+	wsa881x_update_bits(wsa881x, WSA881X_SWR_RESET_EN, 0x07, 0x07);
 
-	/* Bring out of analog reset */
-	regmap_update_bits(rm, WSA881X_CDC_RST_CTL, 0x02, 0x02);
+	/*
+	 * The live 2023 Windows driver performs the reset and clock transition
+	 * as full writes in this order (qcauddev8180!0x1400979b0).  In
+	 * particular, CDC_RST_CTL must pass through 0x02 before reaching 0x03;
+	 * two update_bits() calls are not equivalent on the write-only SPX bus.
+	 */
+	if (wsa881x->spx_write_only) {
+		wsa881x_update_bits(wsa881x, WSA881X_CDC_RST_CTL, 0xff, 0x02);
+		wsa881x_update_bits(wsa881x, WSA881X_CDC_RST_CTL, 0xff, 0x03);
+		wsa881x_update_bits(wsa881x, WSA881X_CDC_DIG_CLK_CTL,
+				    0xff, 0x01);
+		wsa881x_update_bits(wsa881x, WSA881X_CDC_ANA_CLK_CTL,
+				    0xff, 0x01);
+		wsa881x_update_bits(wsa881x, WSA881X_SPKR_OCP_CTL,
+				    0xff, 0xd6);
+	} else {
+		/* Bring out of analog reset */
+		wsa881x_update_bits(wsa881x, WSA881X_CDC_RST_CTL, 0x02, 0x02);
 
-	/* Bring out of digital reset */
-	regmap_update_bits(rm, WSA881X_CDC_RST_CTL, 0x01, 0x01);
-	regmap_update_bits(rm, WSA881X_CLOCK_CONFIG, 0x10, 0x10);
-	regmap_update_bits(rm, WSA881X_SPKR_OCP_CTL, 0x02, 0x02);
-	regmap_update_bits(rm, WSA881X_SPKR_MISC_CTL1, 0xC0, 0x80);
-	regmap_update_bits(rm, WSA881X_SPKR_MISC_CTL1, 0x06, 0x06);
-	regmap_update_bits(rm, WSA881X_SPKR_BIAS_INT, 0xFF, 0x00);
-	regmap_update_bits(rm, WSA881X_SPKR_PA_INT, 0xF0, 0x40);
-	regmap_update_bits(rm, WSA881X_SPKR_PA_INT, 0x0E, 0x0E);
-	regmap_update_bits(rm, WSA881X_BOOST_LOOP_STABILITY, 0x03, 0x03);
-	regmap_update_bits(rm, WSA881X_BOOST_MISC2_CTL, 0xFF, 0x14);
-	regmap_update_bits(rm, WSA881X_BOOST_START_CTL, 0x80, 0x80);
-	regmap_update_bits(rm, WSA881X_BOOST_START_CTL, 0x03, 0x00);
-	regmap_update_bits(rm, WSA881X_BOOST_SLOPE_COMP_ISENSE_FB, 0x0C, 0x04);
-	regmap_update_bits(rm, WSA881X_BOOST_SLOPE_COMP_ISENSE_FB, 0x03, 0x00);
+		/* Bring out of digital reset */
+		wsa881x_update_bits(wsa881x, WSA881X_CDC_RST_CTL, 0x01, 0x01);
+	}
+	wsa881x_update_bits(wsa881x, WSA881X_CLOCK_CONFIG, 0x10, 0x10);
+	wsa881x_update_bits(wsa881x, WSA881X_SPKR_OCP_CTL, 0x02, 0x02);
+	wsa881x_update_bits(wsa881x, WSA881X_SPKR_MISC_CTL1, 0xC0, 0x80);
+	wsa881x_update_bits(wsa881x, WSA881X_SPKR_MISC_CTL1, 0x06, 0x06);
+	wsa881x_update_bits(wsa881x, WSA881X_SPKR_BIAS_INT, 0xFF, 0x00);
+	wsa881x_update_bits(wsa881x, WSA881X_SPKR_PA_INT, 0xF0, 0x40);
+	wsa881x_update_bits(wsa881x, WSA881X_SPKR_PA_INT, 0x0E, 0x0E);
+	wsa881x_update_bits(wsa881x, WSA881X_BOOST_LOOP_STABILITY, 0x03, 0x03);
+	wsa881x_update_bits(wsa881x, WSA881X_BOOST_MISC2_CTL, 0xFF, 0x14);
+	wsa881x_update_bits(wsa881x, WSA881X_BOOST_START_CTL, 0x80, 0x80);
+	wsa881x_update_bits(wsa881x, WSA881X_BOOST_START_CTL, 0x03, 0x00);
+	wsa881x_update_bits(wsa881x, WSA881X_BOOST_SLOPE_COMP_ISENSE_FB, 0x0C, 0x04);
+	wsa881x_update_bits(wsa881x, WSA881X_BOOST_SLOPE_COMP_ISENSE_FB, 0x03, 0x00);
 
-	regmap_read(rm, WSA881X_OTP_REG_0, &val);
+	if (wsa881x_use_shadow(wsa881x))
+		val = wsa881x->spx_reg_shadow[WSA881X_OTP_REG_0];
+	else if (regmap_read(rm, WSA881X_OTP_REG_0, &val))
+		val = 0;
 	if (val)
-		regmap_update_bits(rm, WSA881X_BOOST_PRESET_OUT1, 0xF0, 0x70);
+		wsa881x_update_bits(wsa881x, WSA881X_BOOST_PRESET_OUT1, 0xF0, 0x70);
 
-	regmap_update_bits(rm, WSA881X_BOOST_PRESET_OUT2, 0xF0, 0x30);
-	regmap_update_bits(rm, WSA881X_SPKR_DRV_EN, 0x08, 0x08);
-	regmap_update_bits(rm, WSA881X_BOOST_CURRENT_LIMIT, 0x0F, 0x08);
-	regmap_update_bits(rm, WSA881X_SPKR_OCP_CTL, 0x30, 0x30);
-	regmap_update_bits(rm, WSA881X_SPKR_OCP_CTL, 0x0C, 0x00);
-	regmap_update_bits(rm, WSA881X_OTP_REG_28, 0x3F, 0x3A);
-	regmap_update_bits(rm, WSA881X_BONGO_RESRV_REG1, 0xFF, 0xB2);
-	regmap_update_bits(rm, WSA881X_BONGO_RESRV_REG2, 0xFF, 0x05);
+	wsa881x_update_bits(wsa881x, WSA881X_BOOST_PRESET_OUT2, 0xF0, 0x30);
+	wsa881x_update_bits(wsa881x, WSA881X_SPKR_DRV_EN, 0x08, 0x08);
+	wsa881x_update_bits(wsa881x, WSA881X_BOOST_CURRENT_LIMIT, 0x0F, 0x08);
+	wsa881x_update_bits(wsa881x, WSA881X_SPKR_OCP_CTL, 0x30, 0x30);
+	wsa881x_update_bits(wsa881x, WSA881X_SPKR_OCP_CTL, 0x0C, 0x00);
+	wsa881x_update_bits(wsa881x, WSA881X_OTP_REG_28, 0x3F, 0x3A);
+	wsa881x_update_bits(wsa881x, WSA881X_BONGO_RESRV_REG1, 0xFF, 0xB2);
+	wsa881x_update_bits(wsa881x, WSA881X_BONGO_RESRV_REG2, 0xFF, 0x05);
+
+	/*
+	 * Remaining cold-init writes made by the live Windows WSA path
+	 * (qcauddev8180!0x140099ec8).  The 0x313a pulse commits the protection
+	 * front-end trim; 0x3110/0x3111 seed its two modulators.
+	 */
+	if (wsa881x->spx_write_only) {
+		wsa881x_update_bits(wsa881x, WSA881X_SPKR_PROT_FE_GAIN,
+				    0xff, 0x66);
+		wsa881x_update_bits(wsa881x, WSA881X_SPKR_PROT_FE_GAIN,
+				    0xff, 0x67);
+		wsa881x_update_bits(wsa881x, WSA881X_SPKR_PROT_FE_GAIN,
+				    0xff, 0x47);
+		wsa881x_update_bits(wsa881x, WSA881X_ADC_EN_SEL_IBAIS,
+				    0xff, 0x11);
+		wsa881x_update_bits(wsa881x, WSA881X_ADC_EN_MODU_V,
+				    0xff, 0x80);
+		wsa881x_update_bits(wsa881x, WSA881X_ADC_EN_MODU_I,
+				    0xff, 0x80);
+	}
 }
+
+/*
+ * SPX live re-arm: the boot-time wsa881x_init() and the DAPM PRE_PMU
+ * sequences can fire while the dev0 write rewrite is not yet armed (or
+ * while the physical amps are still unreachable), in which case every
+ * register write lands on a nonexistent logical device and the amp stays
+ * in reset/mute. Writing anything to this parameter replays the complete
+ * cold-start + playback-enable sequence on the force-attached amp, going
+ * through wsa881x_update_bits() so the shadow cache stays in sync.
+ */
+static int spx_rearm_init_set(const char *val, const struct kernel_param *kp)
+{
+	struct wsa881x_priv *wsa881x = spx_debug_wsa881x;
+	u8 pa_gain;
+
+	if (!wsa881x || !wsa881x->spx_write_only)
+		return -ENODEV;
+
+	dev_info(wsa881x->dev,
+		 "SPX: re-arming amplifier init (dev0 rewrite must be armed)\n");
+
+	/* Full cold-start register programming. */
+	wsa881x_init(wsa881x);
+
+	/* DAPM supply enables lost with the pre-attach power-up. */
+	wsa881x_update_bits(wsa881x, WSA881X_TEMP_OP, BIT(3), BIT(3));
+	wsa881x_update_bits(wsa881x, WSA881X_CDC_ANA_CLK_CTL, BIT(0), BIT(0));
+	wsa881x_update_bits(wsa881x, WSA881X_CDC_DIG_CLK_CTL, BIT(0), BIT(0));
+
+	/* RDAC on. */
+	wsa881x_update_bits(wsa881x, WSA881X_SPKR_DAC_CTL, BIT(7), BIT(7));
+
+	/* Boost on (hw needs 1.5ms after enable). */
+	if (wsa881x->port_enable[WSA881X_PORT_BOOST]) {
+		wsa881x_update_bits(wsa881x, WSA881X_BOOST_EN_CTL,
+				    WSA881X_BOOST_EN_MASK, WSA881X_BOOST_EN);
+		usleep_range(1500, 1510);
+	}
+
+	/* PA enable, mirroring wsa881x_spkr_pa_event() PRE_PMU. */
+	pa_gain = wsa881x->spx_reg_shadow[WSA881X_SPKR_DRV_GAIN] &
+		  WSA881X_SPKR_PAG_GAIN_MASK;
+	wsa881x_update_bits(wsa881x, WSA881X_SPKR_OCP_CTL,
+			    WSA881X_SPKR_OCP_MASK, WSA881X_SPKR_OCP_EN);
+	wsa881x_write_sequence(wsa881x, wsa881x_pre_pmu_pa_2_0,
+			       ARRAY_SIZE(wsa881x_pre_pmu_pa_2_0));
+	wsa881x_update_bits(wsa881x, WSA881X_SPKR_DRV_GAIN,
+			    WSA881X_PA_GAIN_SEL_MASK | WSA881X_SPKR_PAG_GAIN_MASK,
+			    WSA881X_PA_GAIN_SEL_REG | pa_gain);
+
+	/* Unmute the output driver (digital_mute(0) equivalent). */
+	wsa881x_update_bits(wsa881x, WSA881X_SPKR_DRV_EN, 0x80, 0x80);
+
+	dev_info(wsa881x->dev, "SPX: re-arm complete\n");
+	return 0;
+}
+
+static const struct kernel_param_ops spx_rearm_init_ops = {
+	.set = spx_rearm_init_set,
+};
+module_param_cb(spx_rearm_init, &spx_rearm_init_ops, NULL, 0644);
+MODULE_PARM_DESC(spx_rearm_init,
+		 "SPX: write to replay amp init + PA/RDAC enable on the live amp");
 
 static int wsa881x_component_probe(struct snd_soc_component *comp)
 {
 	struct wsa881x_priv *wsa881x = snd_soc_component_get_drvdata(comp);
+	static const struct snd_soc_dapm_route spx_stream_route = {
+		"RDAC", NULL, "SPKR Playback"
+	};
+	int ret;
 
 	snd_soc_component_init_regmap(comp, wsa881x->regmap);
+	if (wsa881x->spx_write_only) {
+		ret = snd_soc_dapm_add_routes(&comp->dapm, &spx_stream_route, 1);
+		if (ret)
+			return ret;
+		dev_info(comp->dev,
+			 "SPX: connected SPKR Playback directly to RDAC\n");
+	}
 
 	return 0;
 }
@@ -739,6 +1093,7 @@ static int wsa881x_put_pa_gain(struct snd_kcontrol *kc,
 			       struct snd_ctl_elem_value *ucontrol)
 {
 	struct snd_soc_component *comp = snd_soc_kcontrol_component(kc);
+	struct wsa881x_priv *wsa881x = snd_soc_component_get_drvdata(comp);
 	struct soc_mixer_control *mc =
 			(struct soc_mixer_control *)kc->private_value;
 	int max = mc->max;
@@ -765,10 +1120,9 @@ static int wsa881x_put_pa_gain(struct snd_kcontrol *kc,
 	usleep_range(1000, 1010);
 
 	for (val = min_gain; max_gain <= val; val--) {
-		ret = snd_soc_component_update_bits(comp,
-			      WSA881X_SPKR_DRV_GAIN,
-			      WSA881X_SPKR_PAG_GAIN_MASK,
-			      val << 4);
+		ret = wsa881x_update_bits(wsa881x, WSA881X_SPKR_DRV_GAIN,
+					    WSA881X_SPKR_PAG_GAIN_MASK,
+					    val << 4);
 		if (ret < 0)
 			dev_err(comp->dev, "Failed to change PA gain");
 
@@ -797,13 +1151,14 @@ static int wsa881x_get_port(struct snd_kcontrol *kcontrol,
 
 static int wsa881x_boost_ctrl(struct snd_soc_component *comp, bool enable)
 {
+	struct wsa881x_priv *wsa881x = snd_soc_component_get_drvdata(comp);
+
 	if (enable)
-		snd_soc_component_update_bits(comp, WSA881X_BOOST_EN_CTL,
-					      WSA881X_BOOST_EN_MASK,
-					      WSA881X_BOOST_EN);
+		wsa881x_update_bits(wsa881x, WSA881X_BOOST_EN_CTL,
+				     WSA881X_BOOST_EN_MASK, WSA881X_BOOST_EN);
 	else
-		snd_soc_component_update_bits(comp, WSA881X_BOOST_EN_CTL,
-					      WSA881X_BOOST_EN_MASK, 0);
+		wsa881x_update_bits(wsa881x, WSA881X_BOOST_EN_CTL,
+				     WSA881X_BOOST_EN_MASK, 0);
 	/*
 	 * 1.5ms sleep is needed after boost enable/disable as per
 	 * HW requirement
@@ -833,6 +1188,12 @@ static int wsa881x_set_port(struct snd_kcontrol *kcontrol,
 		data->port_enable[portidx] = false;
 	}
 
+	/*
+	 * SPX: do NOT let the COMP switch rewrite PA_GAIN_SEL (upstream's
+	 * set_port only handles BOOST). Coupling the two meant toggling the
+	 * compander also flipped the analog gain source, so the only way to get
+	 * register-controlled gain was to drop the COMP data port entirely.
+	 */
 	if (portidx == WSA881X_PORT_BOOST) /* Boost Switch */
 		wsa881x_boost_ctrl(comp, data->port_enable[portidx]);
 
@@ -882,19 +1243,18 @@ static int wsa881x_visense_txfe_ctrl(struct snd_soc_component *comp,
 	struct wsa881x_priv *wsa881x = snd_soc_component_get_drvdata(comp);
 
 	if (enable) {
-		regmap_multi_reg_write(wsa881x->regmap, wsa881x_vi_txfe_en_2_0,
-				       ARRAY_SIZE(wsa881x_vi_txfe_en_2_0));
+		wsa881x_write_sequence(wsa881x, wsa881x_vi_txfe_en_2_0,
+					ARRAY_SIZE(wsa881x_vi_txfe_en_2_0));
 	} else {
-		snd_soc_component_update_bits(comp,
-					      WSA881X_SPKR_PROT_FE_VSENSE_VCM,
-					      0x08, 0x08);
+		wsa881x_update_bits(wsa881x, WSA881X_SPKR_PROT_FE_VSENSE_VCM,
+				     0x08, 0x08);
 		/*
 		 * 200us sleep is needed after visense txfe disable as per
 		 * HW requirement.
 		 */
 		usleep_range(200, 210);
-		snd_soc_component_update_bits(comp, WSA881X_SPKR_PROT_FE_GAIN,
-					      0x01, 0x00);
+		wsa881x_update_bits(wsa881x, WSA881X_SPKR_PROT_FE_GAIN,
+				     0x01, 0x00);
 	}
 	return 0;
 }
@@ -902,10 +1262,12 @@ static int wsa881x_visense_txfe_ctrl(struct snd_soc_component *comp,
 static int wsa881x_visense_adc_ctrl(struct snd_soc_component *comp,
 				    bool enable)
 {
-	snd_soc_component_update_bits(comp, WSA881X_ADC_EN_MODU_V, BIT(7),
-				      (enable << 7));
-	snd_soc_component_update_bits(comp, WSA881X_ADC_EN_MODU_I, BIT(7),
-				      (enable << 7));
+	struct wsa881x_priv *wsa881x = snd_soc_component_get_drvdata(comp);
+
+	wsa881x_update_bits(wsa881x, WSA881X_ADC_EN_MODU_V, BIT(7),
+			     enable << 7);
+	wsa881x_update_bits(wsa881x, WSA881X_ADC_EN_MODU_I, BIT(7),
+			     enable << 7);
 	return 0;
 }
 
@@ -914,25 +1276,156 @@ static int wsa881x_spkr_pa_event(struct snd_soc_dapm_widget *w,
 {
 	struct snd_soc_component *comp = snd_soc_dapm_to_component(w->dapm);
 	struct wsa881x_priv *wsa881x = snd_soc_component_get_drvdata(comp);
+	u8 pa_gain = 0;
+
+	if (wsa881x->spx_write_only)
+		dev_info(comp->dev, "SPX: PA DAPM event 0x%x\n", event);
 
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
-		snd_soc_component_update_bits(comp, WSA881X_SPKR_OCP_CTL,
-					      WSA881X_SPKR_OCP_MASK,
-					      WSA881X_SPKR_OCP_EN);
-		regmap_multi_reg_write(wsa881x->regmap, wsa881x_pre_pmu_pa_2_0,
-				       ARRAY_SIZE(wsa881x_pre_pmu_pa_2_0));
+		/*
+		 * SPX: capture the user's PA volume BEFORE the init replay --
+		 * the init table reseeds SPKR_DRV_GAIN to the 0 dB floor, and
+		 * the gain write below puts the captured value back.
+		 */
+		if (wsa881x->spx_write_only)
+			pa_gain = wsa881x->spx_reg_shadow[WSA881X_SPKR_DRV_GAIN] &
+				  WSA881X_SPKR_PAG_GAIN_MASK;
+		/*
+		 * SPX: the amp loses all register state whenever it drops off
+		 * the bus and gets power-cycled back (which the soundwire-qcom
+		 * watchdog does automatically). Replay the whole init table
+		 * before every PA enable so playback never runs on a
+		 * factory-reset amp; the writes are idempotent when the state
+		 * was already good.
+		 */
+		if (wsa881x->spx_write_only && spx_init_on_pmu)
+			wsa881x_init(wsa881x);
 
-		snd_soc_component_update_bits(comp, WSA881X_SPKR_DRV_GAIN,
-					      WSA881X_PA_GAIN_SEL_MASK,
-					      WSA881X_PA_GAIN_SEL_REG);
+		/*
+		 * SPX: enable the boost converter here, not only when the
+		 * BOOST mixer control changes. wsa881x_boost_ctrl() is reached
+		 * exclusively from wsa881x_set_port(), which early-returns when
+		 * the control's value is unchanged -- so port_enable[BOOST]
+		 * stays true across a re-enumeration while the amp, which loses
+		 * every register when it power-cycles, comes back with
+		 * BOOST_EN_CTL cleared. Re-setting the switch is then an ALSA
+		 * no-op and 0x312a is never written again: the PA is commanded
+		 * on with no boosted supply behind it. Verified on SPX --
+		 * 0x312a appeared in zero write traces across a whole session.
+		 * The write is idempotent when the boost is already up.
+		 */
+		if (wsa881x->port_enable[WSA881X_PORT_BOOST]) {
+			wsa881x_update_bits(wsa881x, WSA881X_BOOST_EN_CTL,
+					    WSA881X_BOOST_EN_MASK,
+					    WSA881X_BOOST_EN);
+			/* 1.5 ms settle after boost enable, per HW spec. */
+			usleep_range(1500, 1510);
+		}
+
+		wsa881x_update_bits(wsa881x, WSA881X_SPKR_OCP_CTL,
+				     WSA881X_SPKR_OCP_MASK,
+				     WSA881X_SPKR_OCP_EN);
+		wsa881x_write_sequence(wsa881x, wsa881x_pre_pmu_pa_2_0,
+					ARRAY_SIZE(wsa881x_pre_pmu_pa_2_0));
+
+		/*
+		 * SPX: always take the analog gain from the REGISTER, as
+		 * upstream does. Selecting DRE whenever the COMP port happened
+		 * to be enabled slaved the PA gain to the compander/DRE stream
+		 * and left it parked at its floor (~18 dB down), which also
+		 * made "SpkrLeft PA Volume" a no-op: in DRE mode the
+		 * SPKR_PAG_GAIN[7:4] field this control writes is ignored.
+		 */
+		wsa881x_update_bits(wsa881x, WSA881X_SPKR_DRV_GAIN,
+				     WSA881X_PA_GAIN_SEL_MASK |
+				     (wsa881x->spx_write_only ?
+				      WSA881X_SPKR_PAG_GAIN_MASK : 0),
+				     WSA881X_PA_GAIN_SEL_REG | pa_gain);
+
+		/*
+		 * SPX: replicate the analog bring-up that the Windows driver
+		 * (qcauddev8180.sys, 0x140098af0 / 0x140099058) performs and
+		 * mainline does not. Extracted 2026-07-27; each step matters:
+		 *
+		 *  - ANA_CTL bit2 pulse: an analog-path latch. Without it the
+		 *    chain stays half-configured, which is what our
+		 *    gain-proportional ("multiplicative") static looks like.
+		 *  - SPKR_DAC_CTL 0x62 -> 0x42 -> 0xc2: staged DAC power-up.
+		 *  - VI-sense modulators are explicitly torn down after the PA
+		 *    comes up; leaving the ADCs running injects audible noise.
+		 *  - The PA gain is then walked to the target one code per ms
+		 *    instead of being written in a single step.
+		 */
+		if (wsa881x->spx_write_only && spx_win_pa_seq) {
+			int step;
+
+			wsa881x_update_bits(wsa881x, WSA881X_ANA_CTL,
+					    BIT(2), BIT(2));
+			fsleep(1000);
+			wsa881x_update_bits(wsa881x, WSA881X_ANA_CTL, BIT(2), 0);
+
+			wsa881x_update_bits(wsa881x, WSA881X_SPKR_DAC_CTL,
+					    0xff, 0x62);
+			wsa881x_update_bits(wsa881x, WSA881X_SPKR_DAC_CTL,
+					    0xff, 0x42);
+			wsa881x_update_bits(wsa881x, WSA881X_SPKR_DAC_CTL,
+					    0xff, 0xc2);
+			wsa881x_update_bits(wsa881x, WSA881X_SPKR_OCP_CTL,
+					    0xff, 0xb4);
+
+			/*
+			 * Exact non-protection-mode stabilization pulse from
+			 * qcauddev8180!0x140098158.  Windows enables both VI
+			 * front ends while the driver comes up, waits 2 ms,
+			 * then tears them down before walking the gain.
+			 */
+			wsa881x_update_bits(wsa881x, WSA881X_ADC_EN_DET_TEST_I,
+					    0xff, 0x01);
+			wsa881x_update_bits(wsa881x, WSA881X_ADC_EN_MODU_V,
+					    0xff, 0x02);
+			wsa881x_update_bits(wsa881x, WSA881X_ADC_EN_DET_TEST_V,
+					    0xff, 0x10);
+			wsa881x_update_bits(wsa881x, WSA881X_SPKR_PWRSTG_DBG,
+					    0xff, 0xa0);
+			wsa881x_update_bits(wsa881x, WSA881X_SPKR_DRV_EN,
+					    0xff, 0xfc);
+			fsleep(2000);
+
+			/* Windows tears these down unless speaker protection
+			 * mode 3 is in use, which we never enable. */
+			wsa881x_update_bits(wsa881x, WSA881X_SPKR_PWRSTG_DBG,
+					    0xff, 0x00);
+			wsa881x_update_bits(wsa881x, WSA881X_ADC_EN_DET_TEST_V,
+					    0xff, 0x00);
+			wsa881x_update_bits(wsa881x, WSA881X_ADC_EN_MODU_V,
+					    0xff, 0x00);
+			wsa881x_update_bits(wsa881x, WSA881X_ADC_EN_DET_TEST_I,
+					    0xff, 0x00);
+			fsleep(1000);
+
+			/* Ramp PAG_GAIN down from the 0 dB floor (code 0xc)
+			 * to the requested code, 1 ms per step. */
+			for (step = 0xc; step > (pa_gain >> 4); step--) {
+				wsa881x_update_bits(wsa881x,
+						    WSA881X_SPKR_DRV_GAIN,
+						    WSA881X_SPKR_PAG_GAIN_MASK,
+						    step << 4);
+				fsleep(1000);
+			}
+			wsa881x_update_bits(wsa881x, WSA881X_SPKR_DRV_GAIN,
+					    WSA881X_SPKR_PAG_GAIN_MASK, pa_gain);
+			wsa881x_update_bits(wsa881x, WSA881X_SPKR_DRV_EN,
+					    0xff, 0xfd);
+			wsa881x_update_bits(wsa881x, WSA881X_SPKR_BIAS_CAL,
+					    0xff, 0xac);
+		}
 		break;
 	case SND_SOC_DAPM_POST_PMU:
 		if (wsa881x->port_prepared[WSA881X_PORT_VISENSE]) {
 			wsa881x_visense_txfe_ctrl(comp, true);
-			snd_soc_component_update_bits(comp,
-						      WSA881X_ADC_EN_SEL_IBAIS,
-						      0x07, 0x01);
+			wsa881x_update_bits(wsa881x, WSA881X_ADC_EN_SEL_IBAIS,
+					     0x07, 0x01);
 			wsa881x_visense_adc_ctrl(comp, true);
 		}
 
@@ -943,29 +1436,72 @@ static int wsa881x_spkr_pa_event(struct snd_soc_dapm_widget *w,
 			wsa881x_visense_txfe_ctrl(comp, false);
 		}
 
-		snd_soc_component_update_bits(comp, WSA881X_SPKR_OCP_CTL,
-					      WSA881X_SPKR_OCP_MASK,
-					      WSA881X_SPKR_OCP_EN |
-					      WSA881X_SPKR_OCP_HOLD);
+		wsa881x_update_bits(wsa881x, WSA881X_SPKR_OCP_CTL,
+				     WSA881X_SPKR_OCP_MASK,
+				     WSA881X_SPKR_OCP_EN |
+				     WSA881X_SPKR_OCP_HOLD);
 		break;
 	}
 	return 0;
 }
 
+static int wsa881x_rdac_event(struct snd_soc_dapm_widget *w,
+			      struct snd_kcontrol *kcontrol, int event)
+{
+	struct snd_soc_component *comp = snd_soc_dapm_to_component(w->dapm);
+	struct wsa881x_priv *wsa881x = snd_soc_component_get_drvdata(comp);
+
+	if (wsa881x->spx_write_only)
+		dev_info(comp->dev, "SPX: RDAC DAPM event 0x%x\n", event);
+
+	return wsa881x_update_bits(wsa881x, WSA881X_SPKR_DAC_CTL, BIT(7),
+				     event == SND_SOC_DAPM_PRE_PMU ? BIT(7) : 0);
+}
+
+static int wsa881x_bandgap_event(struct snd_soc_dapm_widget *w,
+				 struct snd_kcontrol *kcontrol, int event)
+{
+	struct snd_soc_component *comp = snd_soc_dapm_to_component(w->dapm);
+	struct wsa881x_priv *wsa881x = snd_soc_component_get_drvdata(comp);
+
+	return wsa881x_update_bits(wsa881x, WSA881X_TEMP_OP, BIT(3),
+				     event == SND_SOC_DAPM_PRE_PMU ? BIT(3) : 0);
+}
+
+static int wsa881x_dclk_event(struct snd_soc_dapm_widget *w,
+			      struct snd_kcontrol *kcontrol, int event)
+{
+	struct snd_soc_component *comp = snd_soc_dapm_to_component(w->dapm);
+	struct wsa881x_priv *wsa881x = snd_soc_component_get_drvdata(comp);
+
+	return wsa881x_update_bits(wsa881x, WSA881X_CDC_DIG_CLK_CTL, BIT(0),
+				     event == SND_SOC_DAPM_PRE_PMU ? BIT(0) : 0);
+}
+
+static int wsa881x_aclk_event(struct snd_soc_dapm_widget *w,
+			      struct snd_kcontrol *kcontrol, int event)
+{
+	struct snd_soc_component *comp = snd_soc_dapm_to_component(w->dapm);
+	struct wsa881x_priv *wsa881x = snd_soc_component_get_drvdata(comp);
+
+	return wsa881x_update_bits(wsa881x, WSA881X_CDC_ANA_CLK_CTL, BIT(0),
+				     event == SND_SOC_DAPM_PRE_PMU ? BIT(0) : 0);
+}
+
 static const struct snd_soc_dapm_widget wsa881x_dapm_widgets[] = {
 	SND_SOC_DAPM_INPUT("IN"),
-	SND_SOC_DAPM_DAC_E("RDAC", NULL, WSA881X_SPKR_DAC_CTL, 7, 0,
-			   NULL,
+	SND_SOC_DAPM_DAC_E("RDAC", NULL, SND_SOC_NOPM, 0, 0,
+			   wsa881x_rdac_event,
 			   SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
 	SND_SOC_DAPM_PGA_E("SPKR PGA", SND_SOC_NOPM, 0, 0, NULL, 0,
 			   wsa881x_spkr_pa_event, SND_SOC_DAPM_PRE_PMU |
 			   SND_SOC_DAPM_POST_PMU | SND_SOC_DAPM_POST_PMD),
-	SND_SOC_DAPM_SUPPLY("DCLK", WSA881X_CDC_DIG_CLK_CTL, 0, 0, NULL,
+	SND_SOC_DAPM_SUPPLY("DCLK", SND_SOC_NOPM, 0, 0, wsa881x_dclk_event,
 			    SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
-	SND_SOC_DAPM_SUPPLY("ACLK", WSA881X_CDC_ANA_CLK_CTL, 0, 0, NULL,
+	SND_SOC_DAPM_SUPPLY("ACLK", SND_SOC_NOPM, 0, 0, wsa881x_aclk_event,
 			    SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
-	SND_SOC_DAPM_SUPPLY("Bandgap", WSA881X_TEMP_OP, 3, 0,
-			    NULL,
+	SND_SOC_DAPM_SUPPLY("Bandgap", SND_SOC_NOPM, 0, 0,
+			    wsa881x_bandgap_event,
 			    SND_SOC_DAPM_PRE_PMU | SND_SOC_DAPM_POST_PMD),
 	SND_SOC_DAPM_OUTPUT("SPKR"),
 };
@@ -979,13 +1515,28 @@ static int wsa881x_hw_params(struct snd_pcm_substream *substream,
 
 	wsa881x->active_ports = 0;
 	for (i = 0; i < WSA881X_MAX_SWR_PORTS; i++) {
-		if (!wsa881x->port_enable[i])
+		if (wsa881x->spx_write_only) {
+			/*
+			 * Windows opens all four transport descriptors even
+			 * when speaker protection/compander analog processing
+			 * is disabled.  Keep transport topology independent
+			 * from those controls on SPX, avoiding the VISENSE
+			 * POST_PMU re-enable and DRE gain selection that made
+			 * the earlier four-control experiment go silent.
+			 */
+			if (!(spx_stream_port_mask & BIT(i)))
+				continue;
+		} else if (!wsa881x->port_enable[i]) {
 			continue;
+		}
 
 		wsa881x->port_config[wsa881x->active_ports] =
 							wsa881x_pconfig[i];
 		wsa881x->active_ports++;
 	}
+	if (wsa881x->spx_write_only)
+		dev_info(wsa881x->dev, "SPX: hw_params active_ports=%d\n",
+			 wsa881x->active_ports);
 
 	return sdw_stream_add_slave(wsa881x->slave, &wsa881x->sconfig,
 				    wsa881x->port_config, wsa881x->active_ports,
@@ -1017,11 +1568,9 @@ static int wsa881x_digital_mute(struct snd_soc_dai *dai, int mute, int stream)
 	struct wsa881x_priv *wsa881x = dev_get_drvdata(dai->dev);
 
 	if (mute)
-		regmap_update_bits(wsa881x->regmap, WSA881X_SPKR_DRV_EN, 0x80,
-				   0x00);
+		wsa881x_update_bits(wsa881x, WSA881X_SPKR_DRV_EN, 0x80, 0x00);
 	else
-		regmap_update_bits(wsa881x->regmap, WSA881X_SPKR_DRV_EN, 0x80,
-				   0x80);
+		wsa881x_update_bits(wsa881x, WSA881X_SPKR_DRV_EN, 0x80, 0x80);
 
 	return 0;
 }
@@ -1105,18 +1654,85 @@ static const struct sdw_slave_ops wsa881x_slave_ops = {
 static int wsa881x_probe(struct sdw_slave *pdev,
 			 const struct sdw_device_id *id)
 {
+	int pm;
 	struct wsa881x_priv *wsa881x;
 	struct device *dev = &pdev->dev;
+
+	/*
+	 * SPX: refuse to bind to a DT-disabled speaker node. The SoundWire core
+	 * still creates a device for it, and since each amp now drives its OWN
+	 * powerdown pin, probing the disabled node powers the second amplifier.
+	 * Both amps then sit unenumerated at device 0 and collide, so nothing
+	 * enumerates at all (MCP_SLV_STATUS reads 0x0). This was harmless only
+	 * while both nodes wrongly shared pin 1.
+	 */
+	if (dev->of_node && !of_device_is_available(dev->of_node)) {
+		dev_info(dev, "SPX: node disabled in DT, not binding\n");
+		return -ENODEV;
+	}
 
 	wsa881x = devm_kzalloc(dev, sizeof(*wsa881x), GFP_KERNEL);
 	if (!wsa881x)
 		return -ENOMEM;
 
-	wsa881x->sd_n = devm_gpiod_get_optional(dev, "powerdown",
-						GPIOD_FLAGS_BIT_NONEXCLUSIVE);
-	if (IS_ERR(wsa881x->sd_n))
-		return dev_err_probe(dev, PTR_ERR(wsa881x->sd_n),
-				     "Shutdown Control GPIO not found\n");
+	/*
+	 * With native hardware enumeration each Surface amp has a distinct
+	 * logical device number, so reads do not collide, and the normal
+	 * WSA881x regmap/init path matches the Windows cold-start sequence --
+	 * hence the default of false.
+	 *
+	 * The older single-amp bring-up (the spx-wsa-pin2-test GRUB entry, the
+	 * only configuration ever observed to produce sound) needs this true:
+	 * it also selects the SD_N-via-WCD-regmap path instead of gpiolib, the
+	 * write-only port config, and spx_rearm_init. Read at probe, so set it
+	 * before the card is brought up:
+	 *   modprobe snd_soc_wsa881x spx_write_only=1
+	 */
+	wsa881x->spx_write_only = spx_write_only;
+
+	if (wsa881x->spx_write_only) {
+		/*
+		 * SPX: do NOT request the powerdown GPIO through gpiolib. The
+		 * wcd934x gpiochip's owner-module refcount wedged negative on
+		 * this platform, so every gpiod_request() returns EPROBE_DEFER
+		 * and this driver defers forever. The SD_N line is driven via
+		 * the WCD9340 SLIMbus regmap instead; walk up the parent chain
+		 * (slave -> soundwire bus -> soundwire platform -> wcd934x
+		 * codec) until a device with a regmap is found.
+		 */
+		struct of_phandle_args args;
+		struct device *anc;
+
+		for (anc = pdev->dev.parent; anc; anc = anc->parent) {
+			wsa881x->spx_wcd_regmap = dev_get_regmap(anc, NULL);
+			if (wsa881x->spx_wcd_regmap)
+				break;
+		}
+		if (!wsa881x->spx_wcd_regmap)
+			dev_warn(dev, "SPX: WCD regmap unavailable, SD_N not drivable\n");
+		wsa881x->sd_n = NULL;
+
+		/*
+		 * Take THIS amp's SD_N pin from its own powerdown-gpios rather
+		 * than assuming a fixed pin, so the two amps are gated
+		 * independently and can be brought up one at a time.
+		 */
+		wsa881x->spx_sd_n_pin = SPX_WSA_SD_N_PIN_DFL;
+		if (!of_parse_phandle_with_args(dev->of_node, "powerdown-gpios",
+						"#gpio-cells", 0, &args)) {
+			if (args.args_count > 0)
+				wsa881x->spx_sd_n_pin = args.args[0];
+			of_node_put(args.np);
+		}
+		dev_info(dev, "SPX: SD_N on wcd-gpio pin %d\n",
+			 wsa881x->spx_sd_n_pin);
+	} else {
+		wsa881x->sd_n = devm_gpiod_get_optional(dev, "powerdown",
+							GPIOD_FLAGS_BIT_NONEXCLUSIVE);
+		if (IS_ERR(wsa881x->sd_n))
+			return dev_err_probe(dev, PTR_ERR(wsa881x->sd_n),
+					     "Shutdown Control GPIO not found\n");
+	}
 
 	/*
 	 * Backwards compatibility work-around.
@@ -1134,7 +1750,8 @@ static int wsa881x_probe(struct sdw_slave *pdev,
 	 *    backwards compatibility, therefore this hack should be removed at
 	 *    some point.
 	 */
-	wsa881x->sd_n_val = gpiod_is_active_low(wsa881x->sd_n);
+	wsa881x->sd_n_val = wsa881x->sd_n ?
+		gpiod_is_active_low(wsa881x->sd_n) : 1;
 	if (!wsa881x->sd_n_val)
 		dev_warn(dev, "Using ACTIVE_HIGH for shutdown GPIO. Your DTB might be outdated or you use unsupported configuration for the GPIO.");
 
@@ -1146,21 +1763,87 @@ static int wsa881x_probe(struct sdw_slave *pdev,
 	wsa881x->sconfig.frame_rate = 48000;
 	wsa881x->sconfig.direction = SDW_DATA_DIR_RX;
 	wsa881x->sconfig.type = SDW_STREAM_PDM;
+	if (wsa881x->spx_write_only) {
+		spx_powerdown_desc = wsa881x->sd_n;
+		pdev->prop.quirks |= SDW_SLAVE_QUIRKS_WRITE_ONLY_PORTCTRL;
+	}
+	/* Keep each slave data port on the matching Qualcomm master port.
+	 * In particular, WSA881x BOOST port 3 must not be dynamically packed
+	 * onto COMP master port 2, which has different transport timing.
+	 */
+	if (of_property_read_u32_array(dev->of_node, "qcom,port-mapping",
+				       &pdev->m_port_map[1],
+				       WSA881X_MAX_SWR_PORTS))
+		dev_dbg(dev, "Static port mapping not specified\n");
+
+	/* SPX: runtime override of the above, see spx_port_map. */
+	for (pm = 0; pm < spx_port_map_count && pm < WSA881X_MAX_SWR_PORTS; pm++) {
+		if (spx_port_map[pm] > 0)
+			pdev->m_port_map[pm + 1] = spx_port_map[pm];
+	}
+	dev_info(dev, "SPX: port map slave1..4 -> master %u %u %u %u\n",
+		 pdev->m_port_map[1], pdev->m_port_map[2],
+		 pdev->m_port_map[3], pdev->m_port_map[4]);
 	pdev->prop.sink_ports = GENMASK(WSA881X_MAX_SWR_PORTS - 1, 0);
 	pdev->prop.sink_dpn_prop = wsa_sink_dpn_prop;
-	pdev->prop.scp_int1_mask = SDW_SCP_INT1_BUS_CLASH | SDW_SCP_INT1_PARITY;
+	pdev->prop.scp_int1_mask = wsa881x->spx_write_only ? 0 :
+		SDW_SCP_INT1_BUS_CLASH | SDW_SCP_INT1_PARITY;
 	pdev->prop.clk_stop_mode1 = true;
-	gpiod_direction_output(wsa881x->sd_n, !wsa881x->sd_n_val);
+	/* Keep the SPX value runtime-adjustable while the bus polarity is being
+	 * validated. Logical 0 is physical high for the active-low descriptor.
+	 */
+	if (wsa881x->spx_write_only)
+		spx_wsa_powerdown_set(wsa881x, spx_powerdown_gpio);
+	else if (wsa881x->sd_n &&
+		 of_machine_is_compatible("microsoft,surface-pro-x"))
+		/*
+		 * The exact Windows path does not drive these through the WCD
+		 * GPIO block. Preserve the firmware-established levels.
+		 */
+		dev_dbg(dev, "SPX: preserving firmware WSA control levels\n");
+	else if (wsa881x->sd_n)
+		gpiod_direction_output(wsa881x->sd_n, !wsa881x->sd_n_val);
 
 	wsa881x->regmap = devm_regmap_init_sdw(pdev, &wsa881x_regmap_config);
 	if (IS_ERR(wsa881x->regmap))
 		return dev_err_probe(dev, PTR_ERR(wsa881x->regmap), "regmap_init failed\n");
+
+	/*
+	 * SPX: the shadow is needed by the blind read-modify-write path, which
+	 * is now used in the enumerated configuration too (the master's read
+	 * FIFO underflows), so allocate and seed it unconditionally.
+	 */
+	{
+		int i;
+
+		wsa881x->spx_reg_shadow = devm_kzalloc(dev,
+				WSA881X_SPKR_STATUS3 + 1, GFP_KERNEL);
+		if (!wsa881x->spx_reg_shadow)
+			return -ENOMEM;
+		for (i = 0; i < ARRAY_SIZE(wsa881x_defaults); i++)
+			wsa881x->spx_reg_shadow[wsa881x_defaults[i].reg] =
+				wsa881x_defaults[i].def;
+		for (i = 0; i < ARRAY_SIZE(wsa881x_rev_2_0); i++)
+			wsa881x->spx_reg_shadow[wsa881x_rev_2_0[i].reg] =
+				wsa881x_rev_2_0[i].def;
+		if (of_device_is_available(dev->of_node) &&
+		    !spx_debug_wsa881x)
+			spx_debug_wsa881x = wsa881x;
+	}
 
 	pm_runtime_set_autosuspend_delay(dev, 3000);
 	pm_runtime_use_autosuspend(dev);
 	pm_runtime_mark_last_busy(dev);
 	pm_runtime_set_active(dev);
 	pm_runtime_enable(dev);
+	/*
+	 * SPX: runtime suspend asserts the (shared!) shutdown GPIO; resume
+	 * then needs a SoundWire re-enumeration, which fails on the polled
+	 * wcd934x master (AUTO_ENUM_FAILED) and latches a permanent
+	 * runtime-PM error. The amps enumerate fine once at boot - keep
+	 * them powered.
+	 */
+	pm_runtime_forbid(dev);
 
 	return devm_snd_soc_register_component(dev,
 					       &wsa881x_component_drv,
@@ -1173,7 +1856,10 @@ static int wsa881x_runtime_suspend(struct device *dev)
 	struct regmap *regmap = dev_get_regmap(dev, NULL);
 	struct wsa881x_priv *wsa881x = dev_get_drvdata(dev);
 
-	gpiod_direction_output(wsa881x->sd_n, wsa881x->sd_n_val);
+	if (wsa881x->spx_write_only)
+		spx_wsa_powerdown_set(wsa881x, 0);
+	else if (wsa881x->sd_n)
+		gpiod_direction_output(wsa881x->sd_n, wsa881x->sd_n_val);
 
 	regcache_cache_only(regmap, true);
 	regcache_mark_dirty(regmap);
@@ -1188,13 +1874,19 @@ static int wsa881x_runtime_resume(struct device *dev)
 	struct wsa881x_priv *wsa881x = dev_get_drvdata(dev);
 	unsigned long time;
 
-	gpiod_direction_output(wsa881x->sd_n, !wsa881x->sd_n_val);
+	if (wsa881x->spx_write_only)
+		spx_wsa_powerdown_set(wsa881x, spx_powerdown_gpio);
+	else if (wsa881x->sd_n)
+		gpiod_direction_output(wsa881x->sd_n, !wsa881x->sd_n_val);
 
 	time = wait_for_completion_timeout(&slave->initialization_complete,
 					   msecs_to_jiffies(WSA881X_PROBE_TIMEOUT));
 	if (!time) {
 		dev_err(dev, "Initialization not complete, timed out\n");
-		gpiod_direction_output(wsa881x->sd_n, wsa881x->sd_n_val);
+		if (wsa881x->spx_write_only)
+			spx_wsa_powerdown_set(wsa881x, 0);
+		else if (wsa881x->sd_n)
+			gpiod_direction_output(wsa881x->sd_n, wsa881x->sd_n_val);
 		return -ETIMEDOUT;
 	}
 

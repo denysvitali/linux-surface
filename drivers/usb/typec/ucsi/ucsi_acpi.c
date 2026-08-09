@@ -256,6 +256,7 @@ static DEFINE_SIMPLE_DEV_PM_OPS(ucsi_acpi_pm_ops, NULL, ucsi_acpi_resume);
 
 static const struct acpi_device_id ucsi_acpi_match[] = {
 	{ "PNP0CA0", 0 },
+	{ "QCOM04A9", 0 },
 	{ },
 };
 MODULE_DEVICE_TABLE(acpi, ucsi_acpi_match);

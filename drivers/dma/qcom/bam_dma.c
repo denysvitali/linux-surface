@@ -45,6 +45,21 @@
 #include "../dmaengine.h"
 #include "../virt-dma.h"
 
+static int spx_bam_start_stop;
+module_param(spx_bam_start_stop, int, 0644);
+MODULE_PARM_DESC(spx_bam_start_stop,
+		 "Surface Pro X BAM start diagnostic: 0=normal, 1=stop after pipe init, 2=stop before EVNT_REG");
+
+static int spx_bam_start_pipe = 3;
+module_param(spx_bam_start_pipe, int, 0644);
+MODULE_PARM_DESC(spx_bam_start_pipe,
+		 "Surface Pro X BAM start diagnostic pipe filter, -1=all pipes");
+
+static int spx_bam_dma_mask_bits;
+module_param(spx_bam_dma_mask_bits, int, 0644);
+MODULE_PARM_DESC(spx_bam_dma_mask_bits,
+		 "Surface Pro X BAM coherent DMA mask bits applied before FIFO allocation, 0=unchanged");
+
 struct bam_desc_hw {
 	__le32 addr;		/* Buffer physical address */
 	__le16 size;		/* Buffer size in bytes */
@@ -366,6 +381,10 @@ struct bam_chan {
 	unsigned int initialized;	/* is the channel hw initialized? */
 	unsigned int paused;		/* is the channel paused? */
 	unsigned int reconfigure;	/* new slave config? */
+	unsigned int prep_count;
+	unsigned int issue_count;
+	unsigned int start_count;
+	unsigned int init_count;
 	/* list of descriptors currently processed */
 	struct list_head desc_list;
 
@@ -395,6 +414,8 @@ struct bam_device {
 
 	struct clk *bamclk;
 	int irq;
+	unsigned int irq_count;
+	unsigned int alloc_count;
 
 	/* dma start transaction tasklet */
 	struct tasklet_struct task;
@@ -489,28 +510,54 @@ static void bam_chan_init_hw(struct bam_chan *bchan,
 	enum dma_transfer_direction dir)
 {
 	struct bam_device *bdev = bchan->bdev;
+	dma_addr_t fifo_phys;
 	u32 val;
 
+	bchan->init_count++;
+	dev_info(bdev->dev,
+		 "SPX: BAM pipe=%u init_hw[%u] begin dir=%d fifo_phys=%pad fifo_virt=%p head=%u tail=%u\n",
+		 bchan->id, bchan->init_count, dir, &bchan->fifo_phys,
+		 bchan->fifo_virt, bchan->head, bchan->tail);
+
 	/* Reset the channel to clear internal state of the FIFO */
+	dev_info(bdev->dev, "SPX: BAM pipe=%u writing P_RST assert/deassert\n",
+		 bchan->id);
 	bam_reset_channel(bchan);
+	dev_info(bdev->dev, "SPX: BAM pipe=%u P_RST done\n", bchan->id);
 
 	/*
 	 * write out 8 byte aligned address.  We have enough space for this
 	 * because we allocated 1 more descriptor (8 bytes) than we can use
 	 */
-	writel_relaxed(ALIGN(bchan->fifo_phys, sizeof(struct bam_desc_hw)),
+	fifo_phys = ALIGN(bchan->fifo_phys, sizeof(struct bam_desc_hw));
+	dev_info(bdev->dev,
+		 "SPX: BAM pipe=%u writing DESC_FIFO_ADDR=%pad FIFO_SIZE=%u\n",
+		 bchan->id, &fifo_phys, BAM_FIFO_SIZE);
+	writel_relaxed(fifo_phys,
 			bam_addr(bdev, bchan->id, BAM_P_DESC_FIFO_ADDR));
 	writel_relaxed(BAM_FIFO_SIZE,
 			bam_addr(bdev, bchan->id, BAM_P_FIFO_SIZES));
+	dev_info(bdev->dev, "SPX: BAM pipe=%u FIFO address/size writes done\n",
+		 bchan->id);
 
 	/* enable the per pipe interrupts, enable EOT, ERR, and INT irqs */
+	dev_info(bdev->dev, "SPX: BAM pipe=%u writing P_IRQ_EN=0x%lx\n",
+		 bchan->id, P_DEFAULT_IRQS_EN);
 	writel_relaxed(P_DEFAULT_IRQS_EN,
 			bam_addr(bdev, bchan->id, BAM_P_IRQ_EN));
+	dev_info(bdev->dev, "SPX: BAM pipe=%u P_IRQ_EN write done\n",
+		 bchan->id);
 
 	/* unmask the specific pipe and EE combo */
 	val = readl_relaxed(bam_addr(bdev, 0, BAM_IRQ_SRCS_MSK_EE));
+	dev_info(bdev->dev, "SPX: BAM pipe=%u IRQ mask read=0x%x\n",
+		 bchan->id, val);
 	val |= BIT(bchan->id);
+	dev_info(bdev->dev, "SPX: BAM pipe=%u writing IRQ mask=0x%x\n",
+		 bchan->id, val);
 	writel_relaxed(val, bam_addr(bdev, 0, BAM_IRQ_SRCS_MSK_EE));
+	dev_info(bdev->dev, "SPX: BAM pipe=%u IRQ mask write done\n",
+		 bchan->id);
 
 	/* don't allow cpu to reorder the channel enable done below */
 	wmb();
@@ -520,13 +567,19 @@ static void bam_chan_init_hw(struct bam_chan *bchan,
 	if (dir == DMA_DEV_TO_MEM)
 		val |= P_DIRECTION;
 
+	dev_info(bdev->dev, "SPX: BAM pipe=%u writing P_CTRL=0x%x\n",
+		 bchan->id, val);
 	writel_relaxed(val, bam_addr(bdev, bchan->id, BAM_P_CTRL));
+	dev_info(bdev->dev, "SPX: BAM pipe=%u P_CTRL write done\n",
+		 bchan->id);
 
 	bchan->initialized = 1;
 
 	/* init FIFO pointers */
 	bchan->head = 0;
 	bchan->tail = 0;
+	dev_info(bdev->dev, "SPX: BAM pipe=%u init_hw done head=%u tail=%u\n",
+		 bchan->id, bchan->head, bchan->tail);
 }
 
 /**
@@ -539,9 +592,43 @@ static int bam_alloc_chan(struct dma_chan *chan)
 {
 	struct bam_chan *bchan = to_bam_chan(chan);
 	struct bam_device *bdev = bchan->bdev;
+	int ret;
 
 	if (bchan->fifo_virt)
 		return 0;
+
+	bdev->alloc_count++;
+	dev_info(bdev->dev,
+		 "SPX: BAM alloc[%u] pipe=%u active_before=%u controlled=%d powered=%d\n",
+		 bdev->alloc_count, bchan->id, bdev->active_channels,
+		 bdev->controlled_remotely, bdev->powered_remotely);
+
+	if (spx_bam_dma_mask_bits > 0) {
+		u64 old_mask = dma_get_mask(bdev->dev);
+		u64 old_coherent = bdev->dev->coherent_dma_mask;
+		phys_addr_t old_bus_limit = bdev->dev->bus_dma_limit;
+		u64 mask = DMA_BIT_MASK(spx_bam_dma_mask_bits);
+
+		ret = dma_set_mask_and_coherent(bdev->dev,
+						mask);
+		if (ret) {
+			dev_err(bdev->dev,
+				"SPX: BAM pipe=%u failed to set DMA mask bits=%d ret=%d\n",
+				bchan->id, spx_bam_dma_mask_bits, ret);
+			return ret;
+		}
+
+		bdev->dev->bus_dma_limit = mask;
+		dev_info(bdev->dev,
+			 "SPX: BAM pipe=%u DMA limits bits=%d mask 0x%llx->0x%llx coherent 0x%llx->0x%llx bus 0x%llx->0x%llx before FIFO allocation\n",
+			 bchan->id, spx_bam_dma_mask_bits,
+			 (unsigned long long)old_mask,
+			 (unsigned long long)dma_get_mask(bdev->dev),
+			 (unsigned long long)old_coherent,
+			 (unsigned long long)bdev->dev->coherent_dma_mask,
+			 (unsigned long long)old_bus_limit,
+			 (unsigned long long)bdev->dev->bus_dma_limit);
+	}
 
 	/* allocate FIFO descriptor space, but only if necessary */
 	bchan->fifo_virt = dma_alloc_wc(bdev->dev, BAM_DESC_FIFO_SIZE,
@@ -552,8 +639,15 @@ static int bam_alloc_chan(struct dma_chan *chan)
 		return -ENOMEM;
 	}
 
-	if (bdev->active_channels++ == 0 && bdev->powered_remotely)
+	dev_info(bdev->dev, "SPX: BAM pipe=%u fifo allocated virt=%p phys=%pad size=%u\n",
+		 bchan->id, bchan->fifo_virt, &bchan->fifo_phys,
+		 BAM_DESC_FIFO_SIZE);
+
+	if (bdev->active_channels++ == 0 && bdev->powered_remotely) {
+		dev_info(bdev->dev, "SPX: BAM remote-powered reset begin\n");
 		bam_reset(bdev);
+		dev_info(bdev->dev, "SPX: BAM remote-powered reset done\n");
+	}
 
 	return 0;
 }
@@ -573,7 +667,14 @@ static void bam_free_chan(struct dma_chan *chan)
 	unsigned long flags;
 	int ret;
 
+	dev_info(bdev->dev,
+		 "SPX: BAM free pipe=%u begin active=%u initialized=%u head=%u tail=%u desc_list_empty=%d\n",
+		 bchan->id, bdev->active_channels, bchan->initialized,
+		 bchan->head, bchan->tail, list_empty(&bchan->desc_list));
+
 	ret = pm_runtime_get_sync(bdev->dev);
+	dev_info(bdev->dev, "SPX: BAM free pipe=%u pm_get ret=%d\n",
+		 bchan->id, ret);
 	if (ret < 0)
 		return;
 
@@ -585,20 +686,36 @@ static void bam_free_chan(struct dma_chan *chan)
 	}
 
 	spin_lock_irqsave(&bchan->vc.lock, flags);
+	dev_info(bdev->dev, "SPX: BAM free pipe=%u reset begin\n",
+		 bchan->id);
 	bam_reset_channel(bchan);
+	dev_info(bdev->dev, "SPX: BAM free pipe=%u reset done\n",
+		 bchan->id);
 	spin_unlock_irqrestore(&bchan->vc.lock, flags);
 
+	dev_info(bdev->dev, "SPX: BAM free pipe=%u freeing fifo phys=%pad\n",
+		 bchan->id, &bchan->fifo_phys);
 	dma_free_wc(bdev->dev, BAM_DESC_FIFO_SIZE, bchan->fifo_virt,
 		    bchan->fifo_phys);
 	bchan->fifo_virt = NULL;
 
 	/* mask irq for pipe/channel */
 	val = readl_relaxed(bam_addr(bdev, 0, BAM_IRQ_SRCS_MSK_EE));
+	dev_info(bdev->dev, "SPX: BAM free pipe=%u IRQ mask read=0x%x\n",
+		 bchan->id, val);
 	val &= ~BIT(bchan->id);
+	dev_info(bdev->dev, "SPX: BAM free pipe=%u writing IRQ mask=0x%x\n",
+		 bchan->id, val);
 	writel_relaxed(val, bam_addr(bdev, 0, BAM_IRQ_SRCS_MSK_EE));
+	dev_info(bdev->dev, "SPX: BAM free pipe=%u IRQ mask write done\n",
+		 bchan->id);
 
 	/* disable irq */
+	dev_info(bdev->dev, "SPX: BAM free pipe=%u disabling P_IRQ_EN\n",
+		 bchan->id);
 	writel_relaxed(0, bam_addr(bdev, bchan->id, BAM_P_IRQ_EN));
+	dev_info(bdev->dev, "SPX: BAM free pipe=%u P_IRQ_EN disabled\n",
+		 bchan->id);
 
 	if (--bdev->active_channels == 0 && bdev->powered_remotely) {
 		/* s/w reset bam */
@@ -610,6 +727,8 @@ static void bam_free_chan(struct dma_chan *chan)
 err:
 	pm_runtime_mark_last_busy(bdev->dev);
 	pm_runtime_put_autosuspend(bdev->dev);
+	dev_info(bdev->dev, "SPX: BAM free pipe=%u done active=%u\n",
+		 bchan->id, bdev->active_channels);
 }
 
 /**
@@ -656,6 +775,9 @@ static struct dma_async_tx_descriptor *bam_prep_slave_sg(struct dma_chan *chan,
 	u32 i;
 	struct bam_desc_hw *desc;
 	unsigned int num_alloc = 0;
+	dma_addr_t first_dma;
+	unsigned int first_len;
+	bool log_prep;
 
 
 	if (!is_slave_direction(direction)) {
@@ -666,6 +788,16 @@ static struct dma_async_tx_descriptor *bam_prep_slave_sg(struct dma_chan *chan,
 	/* calculate number of required entries */
 	for_each_sg(sgl, sg, sg_len, i)
 		num_alloc += DIV_ROUND_UP(sg_dma_len(sg), BAM_FIFO_SIZE);
+
+	bchan->prep_count++;
+	log_prep = bchan->prep_count <= 64;
+	first_dma = sg_dma_address(sgl);
+	first_len = sg_dma_len(sgl);
+	if (log_prep)
+		dev_info(bdev->dev,
+			 "SPX: BAM prep[%u] pipe=%u dir=%d flags=0x%lx sg_len=%u num_desc=%u first_dma=%pad first_len=%u\n",
+			 bchan->prep_count, bchan->id, direction, flags,
+			 sg_len, num_alloc, &first_dma, first_len);
 
 	/* allocate enough room to accommodate the number of entries */
 	async_desc = kzalloc(struct_size(async_desc, desc, num_alloc),
@@ -711,6 +843,14 @@ static struct dma_async_tx_descriptor *bam_prep_slave_sg(struct dma_chan *chan,
 		} while (remainder > 0);
 	}
 
+	if (log_prep)
+		dev_info(bdev->dev,
+			 "SPX: BAM prep[%u] pipe=%u done length=%zu desc0_addr=0x%x desc0_size=%u desc0_flags=0x%x\n",
+			 bchan->prep_count, bchan->id, async_desc->length,
+			 le32_to_cpu(async_desc->desc[0].addr),
+			 le16_to_cpu(async_desc->desc[0].size),
+			 le16_to_cpu(async_desc->desc[0].flags));
+
 	return vchan_tx_prep(&bchan->vc, &async_desc->vd, flags);
 }
 
@@ -725,12 +865,18 @@ static struct dma_async_tx_descriptor *bam_prep_slave_sg(struct dma_chan *chan,
 static int bam_dma_terminate_all(struct dma_chan *chan)
 {
 	struct bam_chan *bchan = to_bam_chan(chan);
+	struct bam_device *bdev = bchan->bdev;
 	struct bam_async_desc *async_desc, *tmp;
 	unsigned long flag;
 	LIST_HEAD(head);
 
 	/* remove all transactions, including active transaction */
 	spin_lock_irqsave(&bchan->vc.lock, flag);
+	dev_info(bdev->dev,
+		 "SPX: BAM terminate pipe=%u begin initialized=%u head=%u tail=%u issued_empty=%d active_empty=%d\n",
+		 bchan->id, bchan->initialized, bchan->head, bchan->tail,
+		 list_empty(&bchan->vc.desc_issued),
+		 list_empty(&bchan->desc_list));
 	/*
 	 * If we have transactions queued, then some might be committed to the
 	 * hardware in the desc fifo.  The only way to reset the desc fifo is
@@ -747,7 +893,14 @@ static int bam_dma_terminate_all(struct dma_chan *chan)
 	if (!list_empty(&bchan->desc_list)) {
 		async_desc = list_first_entry(&bchan->desc_list,
 					      struct bam_async_desc, desc_node);
+		dev_info(bdev->dev,
+			 "SPX: BAM terminate pipe=%u reinit for active dir=%d num_desc=%u xfer_len=%u\n",
+			 bchan->id, async_desc->dir, async_desc->num_desc,
+			 async_desc->xfer_len);
 		bam_chan_init_hw(bchan, async_desc->dir);
+		dev_info(bdev->dev,
+			 "SPX: BAM terminate pipe=%u reinit done head=%u tail=%u\n",
+			 bchan->id, bchan->head, bchan->tail);
 	}
 
 	list_for_each_entry_safe(async_desc, tmp,
@@ -760,6 +913,8 @@ static int bam_dma_terminate_all(struct dma_chan *chan)
 	spin_unlock_irqrestore(&bchan->vc.lock, flag);
 
 	vchan_dma_desc_free_list(&bchan->vc, &head);
+	dev_info(bdev->dev, "SPX: BAM terminate pipe=%u done\n",
+		 bchan->id);
 
 	return 0;
 }
@@ -852,6 +1007,12 @@ static u32 process_channel_irqs(struct bam_device *bdev)
 				       P_SW_OFSTS_MASK;
 		offset /= sizeof(struct bam_desc_hw);
 
+		if (bdev->irq_count < 10)
+			dev_info(bdev->dev,
+				 "SPX: BAM IRQ srcs=0x%x pipe=%u stts=0x%x offset=%u head=%u tail=%u\n",
+				 srcs, i, pipe_stts, offset, bchan->head,
+				 bchan->tail);
+
 		/* Number of bytes available to read */
 		avail = CIRC_CNT(offset, bchan->head, MAX_DESCRIPTORS + 1);
 
@@ -906,6 +1067,17 @@ static irqreturn_t bam_dma_irq(int irq, void *data)
 	int ret;
 
 	srcs |= process_channel_irqs(bdev);
+
+	if (!srcs) {
+		dev_warn_once(bdev->dev, "SPX: BAM IRQ with no sources\n");
+		return IRQ_NONE;
+	}
+
+	if (bdev->irq_count < 10) {
+		bdev->irq_count++;
+		dev_info(bdev->dev, "SPX: BAM IRQ srcs=0x%x hit=%u\n",
+			 srcs, bdev->irq_count);
+	}
 
 	/* kick off tasklet to start next dma transfer */
 	if (srcs & P_IRQ)
@@ -1008,6 +1180,14 @@ static void bam_apply_new_config(struct bam_chan *bchan,
 	bchan->reconfigure = 0;
 }
 
+static bool spx_bam_start_diag_matches(struct bam_chan *bchan, int stop_level)
+{
+	if (spx_bam_start_stop != stop_level)
+		return false;
+
+	return spx_bam_start_pipe < 0 || spx_bam_start_pipe == bchan->id;
+}
+
 /**
  * bam_start_dma - start next transaction
  * @bchan: bam dma channel
@@ -1023,28 +1203,77 @@ static void bam_start_dma(struct bam_chan *bchan)
 	int ret;
 	unsigned int avail;
 	struct dmaengine_desc_callback cb;
+	bool log_start;
 
 	lockdep_assert_held(&bchan->vc.lock);
+
+	bchan->start_count++;
+	log_start = bchan->start_count <= 64;
+	if (log_start)
+		dev_info(bdev->dev,
+			 "SPX: BAM start[%u] pipe=%u vd=%p initialized=%u busy=%d head=%u tail=%u controlled=%d powered=%d active=%u\n",
+			 bchan->start_count, bchan->id, vd, bchan->initialized,
+			 IS_BUSY(bchan), bchan->head, bchan->tail,
+			 bdev->controlled_remotely, bdev->powered_remotely,
+			 bdev->active_channels);
 
 	if (!vd)
 		return;
 
 	ret = pm_runtime_get_sync(bdev->dev);
+	if (log_start)
+		dev_info(bdev->dev, "SPX: BAM start[%u] pipe=%u pm_get ret=%d\n",
+			 bchan->start_count, bchan->id, ret);
 	if (ret < 0)
 		return;
+
+	if (spx_bam_start_diag_matches(bchan, 1)) {
+		async_desc = container_of(vd, struct bam_async_desc, vd);
+		dev_warn(bdev->dev,
+			 "SPX: BAM start diagnostic stop=1 pipe=%u: init only, skip descriptor dequeue/EVNT_REG\n",
+			 bchan->id);
+		if (!bchan->initialized)
+			bam_chan_init_hw(bchan, async_desc->dir);
+		pm_runtime_mark_last_busy(bdev->dev);
+		pm_runtime_put_autosuspend(bdev->dev);
+		return;
+	}
 
 	while (vd && !IS_BUSY(bchan)) {
 		list_del(&vd->node);
 
 		async_desc = container_of(vd, struct bam_async_desc, vd);
+		if (log_start)
+			dev_info(bdev->dev,
+				 "SPX: BAM start[%u] pipe=%u cookie=%d dir=%d num_desc=%u length=%zu desc_addr=0x%x desc_size=%u desc_flags=0x%x\n",
+				 bchan->start_count, bchan->id,
+				 async_desc->vd.tx.cookie, async_desc->dir,
+				 async_desc->num_desc, async_desc->length,
+				 le32_to_cpu(async_desc->curr_desc[0].addr),
+				 le16_to_cpu(async_desc->curr_desc[0].size),
+				 le16_to_cpu(async_desc->curr_desc[0].flags));
 
 		/* on first use, initialize the channel hardware */
-		if (!bchan->initialized)
+		if (!bchan->initialized) {
+			if (log_start)
+				dev_info(bdev->dev,
+					 "SPX: BAM start[%u] pipe=%u calling init_hw\n",
+					 bchan->start_count, bchan->id);
 			bam_chan_init_hw(bchan, async_desc->dir);
+			if (log_start)
+				dev_info(bdev->dev,
+					 "SPX: BAM start[%u] pipe=%u init_hw returned\n",
+					 bchan->start_count, bchan->id);
+		}
 
 		/* apply new slave config changes, if necessary */
-		if (bchan->reconfigure)
+		if (bchan->reconfigure) {
+			if (log_start)
+				dev_info(bdev->dev,
+					 "SPX: BAM start[%u] pipe=%u applying config\n",
+					 bchan->start_count, bchan->id);
 			bam_apply_new_config(bchan, async_desc->dir);
+		}
 
 		desc = async_desc->curr_desc;
 		avail = CIRC_SPACE(bchan->tail, bchan->head,
@@ -1054,6 +1283,13 @@ static void bam_start_dma(struct bam_chan *bchan)
 			async_desc->xfer_len = avail;
 		else
 			async_desc->xfer_len = async_desc->num_desc;
+
+		if (log_start)
+			dev_info(bdev->dev,
+				 "SPX: BAM start[%u] pipe=%u avail=%u xfer_len=%u head=%u tail=%u next_vd=%p\n",
+				 bchan->start_count, bchan->id, avail,
+				 async_desc->xfer_len, bchan->head,
+				 bchan->tail, vchan_next_desc(&bchan->vc));
 
 		/* set any special flags on the last descriptor */
 		if (async_desc->num_desc == async_desc->xfer_len)
@@ -1095,12 +1331,38 @@ static void bam_start_dma(struct bam_chan *bchan)
 		bchan->tail += async_desc->xfer_len;
 		bchan->tail %= MAX_DESCRIPTORS;
 		list_add_tail(&async_desc->desc_node, &bchan->desc_list);
+		if (log_start)
+			dev_info(bdev->dev,
+				 "SPX: BAM start[%u] pipe=%u queued cookie=%d new_tail=%u desc_list_empty=%d\n",
+				 bchan->start_count, bchan->id,
+				 async_desc->vd.tx.cookie, bchan->tail,
+				 list_empty(&bchan->desc_list));
+	}
+
+	if (spx_bam_start_diag_matches(bchan, 2)) {
+		dev_warn(bdev->dev,
+			 "SPX: BAM start diagnostic stop=2 pipe=%u: queued FIFO tail=%u, skip EVNT_REG\n",
+			 bchan->id, bchan->tail);
+		pm_runtime_mark_last_busy(bdev->dev);
+		pm_runtime_put_autosuspend(bdev->dev);
+		return;
 	}
 
 	/* ensure descriptor writes and dma start not reordered */
 	wmb();
+	if (log_start)
+		dev_info(bdev->dev,
+			 "SPX: BAM start[%u] pipe=%u writing EVNT_REG=%u head=%u tail=%u\n",
+			 bchan->start_count, bchan->id,
+			 bchan->tail * (unsigned int)sizeof(struct bam_desc_hw),
+			 bchan->head, bchan->tail);
 	writel_relaxed(bchan->tail * sizeof(struct bam_desc_hw),
 			bam_addr(bdev, bchan->id, BAM_P_EVNT_REG));
+	if (log_start)
+		dev_info(bdev->dev,
+			 "SPX: BAM start[%u] pipe=%u EVNT_REG write done head=%u tail=%u\n",
+			 bchan->start_count, bchan->id, bchan->head,
+			 bchan->tail);
 
 	pm_runtime_mark_last_busy(bdev->dev);
 	pm_runtime_put_autosuspend(bdev->dev);
@@ -1141,11 +1403,23 @@ static void bam_issue_pending(struct dma_chan *chan)
 {
 	struct bam_chan *bchan = to_bam_chan(chan);
 	unsigned long flags;
+	bool issued;
+	bool busy;
 
 	spin_lock_irqsave(&bchan->vc.lock, flags);
 
 	/* if work pending and idle, start a transaction */
-	if (vchan_issue_pending(&bchan->vc) && !IS_BUSY(bchan))
+	issued = vchan_issue_pending(&bchan->vc);
+	busy = IS_BUSY(bchan);
+	bchan->issue_count++;
+	if (bchan->issue_count <= 64)
+		dev_info(bchan->bdev->dev,
+			 "SPX: BAM issue[%u] pipe=%u issued=%d busy=%d initialized=%u head=%u tail=%u issued_empty=%d active_empty=%d\n",
+			 bchan->issue_count, bchan->id, issued, busy,
+			 bchan->initialized, bchan->head, bchan->tail,
+			 list_empty(&bchan->vc.desc_issued),
+			 list_empty(&bchan->desc_list));
+	if (issued && !busy)
 		bam_start_dma(bchan);
 
 	spin_unlock_irqrestore(&bchan->vc.lock, flags);
@@ -1272,29 +1546,42 @@ static int bam_dma_probe(struct platform_device *pdev)
 	bdev->powered_remotely = of_property_read_bool(pdev->dev.of_node,
 						"qcom,powered-remotely");
 
-	if (bdev->controlled_remotely || bdev->powered_remotely)
-		bdev->bamclk = devm_clk_get_optional(bdev->dev, "bam_clk");
-	else
+	if (bdev->controlled_remotely || bdev->powered_remotely) {
+		if (of_property_present(pdev->dev.of_node, "clocks"))
+			bdev->bamclk = devm_clk_get(bdev->dev, "bam_clk");
+		else
+			bdev->bamclk = devm_clk_get_optional(bdev->dev,
+							     "bam_clk");
+	} else {
 		bdev->bamclk = devm_clk_get(bdev->dev, "bam_clk");
+	}
 
 	if (IS_ERR(bdev->bamclk))
-		return PTR_ERR(bdev->bamclk);
+		return dev_err_probe(bdev->dev, PTR_ERR(bdev->bamclk),
+				     "failed to get bam_clk\n");
+	if (!bdev->bamclk && of_property_present(pdev->dev.of_node, "clocks"))
+		return dev_err_probe(bdev->dev, -ENOENT,
+				     "bam_clk lookup returned NULL\n");
 
-	if (!bdev->bamclk) {
-		ret = of_property_read_u32(pdev->dev.of_node, "num-channels",
-					   &bdev->num_channels);
-		if (ret) {
-			dev_err(bdev->dev, "num-channels unspecified in dt\n");
-			return ret;
-		}
-
-		ret = of_property_read_u32(pdev->dev.of_node, "qcom,num-ees",
-					   &bdev->num_ees);
-		if (ret) {
-			dev_err(bdev->dev, "num-ees unspecified in dt\n");
-			return ret;
-		}
+	ret = of_property_read_u32(pdev->dev.of_node, "num-channels",
+				   &bdev->num_channels);
+	if (ret && !bdev->bamclk) {
+		dev_err(bdev->dev, "num-channels unspecified in dt\n");
+		return ret;
 	}
+
+	ret = of_property_read_u32(pdev->dev.of_node, "qcom,num-ees",
+				   &bdev->num_ees);
+	if (ret && !bdev->bamclk) {
+		dev_err(bdev->dev, "num-ees unspecified in dt\n");
+		return ret;
+	}
+
+	dev_info(bdev->dev,
+		 "SPX: BAM probe irq=%d ee=%u controlled=%d powered=%d has_clk=%d preset_channels=%u preset_ees=%u\n",
+		 bdev->irq, bdev->ee, bdev->controlled_remotely,
+		 bdev->powered_remotely, !!bdev->bamclk, bdev->num_channels,
+		 bdev->num_ees);
 
 	ret = clk_prepare_enable(bdev->bamclk);
 	if (ret) {
@@ -1305,6 +1592,8 @@ static int bam_dma_probe(struct platform_device *pdev)
 	ret = bam_init(bdev);
 	if (ret)
 		goto err_disable_clk;
+	dev_info(bdev->dev, "SPX: BAM init done channels=%u ees=%u\n",
+		 bdev->num_channels, bdev->num_ees);
 
 	tasklet_setup(&bdev->task, dma_tasklet);
 
@@ -1363,6 +1652,8 @@ static int bam_dma_probe(struct platform_device *pdev)
 					&bdev->common);
 	if (ret)
 		goto err_unregister_dma;
+	dev_info(bdev->dev, "SPX: BAM DMA registered irq=%d channels=%u\n",
+		 bdev->irq, bdev->num_channels);
 
 	pm_runtime_irq_safe(&pdev->dev);
 	pm_runtime_set_autosuspend_delay(&pdev->dev, BAM_DMA_AUTOSUSPEND_DELAY);

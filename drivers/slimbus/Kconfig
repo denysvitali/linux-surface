@@ -27,4 +27,23 @@ config SLIM_QCOM_NGD_CTRL
 	  communicating with slave HW directly over the bus using messaging
 	  interface, and communicating with master component residing on ADSP
 	  for bandwidth and data-channel management.
+
+config SLIM_QCOM_NGD_QMI_PROBE
+	tristate "Qualcomm SLIMbus QMI probe (diagnostic)"
+	depends on SLIMBUS && QCOM_QMI_HELPERS
+	help
+	  Diagnostic module that exercises the same QMI / QRTR plumbing as
+	  the SLIMbus child probe (qcom-ngd-ctrl.c), without touching the
+	  SLIMbus / BAM MMIO. Used to bisect whether a hang in the audio
+	  bring-up lives in the QRTR / QMI / PDR subsystem or in the
+	  SLIMbus driver itself.
+
+	  Stage 0: qmi_handle_init + qmi_add_lookup for the SLIMbus QMI
+	           service 0x301, wait for new_server.
+	  Stage 1: connect to the discovered service and send
+	           SELECT_INSTANCE.
+	  Stage 2: also send POWER_ACTIVE then POWER_INACTIVE so the ADSP
+	           is left in the same state it was in before the probe.
+
+	  Safe to load/unload without affecting the audio driver.
 endif

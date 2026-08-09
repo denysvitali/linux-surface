@@ -1,0 +1,26 @@
+# Surface Pro X (sc8180x / SQ2) initramfs config. Managed by surface-pro-x-installer.
+# Base config (NOT a conf.d drop-in): the linux-surface preset pins
+# ALL_config=/etc/mkinitcpio.conf, so preset builds pass -c and ignore conf.d.
+MODULES=(uas usb_storage surface_aggregator surface_aggregator_registry surface_aggregator_hub surface_hid_core surface_hid dm-crypt leds_qcom_lpg pwm_bl soundwire_qcom snd_soc_wsa881x)
+BINARIES=()
+# Adreno 680 firmware: needed in initramfs so msm_dpu can complete panel
+# probe during the kms hook (the kms hook adds DRM modules but NOT
+# firmware files; without these, GPU firmware loads 40s late and the
+# panel ends up with "No display modes" + a framebuffer that won't
+# imageblit). Reversible: drop these lines and rerun mkinitcpio -P.
+#
+# The zap shader (qcdxkmsuc8180.mbn) is loaded by zap_shader_load_mdt()
+# via request_firmware_direct() — NO usermode-helper fallback, so it
+# MUST be in the initramfs or the GPU never initializes (causes the
+# "black screen at boot, random noise in Hyprland" regression).
+# SQE/GMU are loaded via adreno_request_fw() which has the usermode-
+# helper retry path, so they only need to be in initramfs for the
+# panel to come up during the kms hook.
+# edid/lgd_lp129wt112684.bin: pinned eDP EDID (AUX read is racy: panel ID ok,
+# full read often fails -> generic 1024x768). Used via drm.edid_firmware=eDP-1:...
+# Probes before rootfs, so it must live in the initramfs (like the zap shader).
+FILES=(/usr/lib/firmware/qcom/a680_sqe.fw
+       /usr/lib/firmware/qcom/a680_gmu.bin
+       /usr/lib/firmware/qcom/msft/surface/pro-x-sq2/qcdxkmsuc8180.mbn
+       /usr/lib/firmware/edid/lgd_lp129wt112684.bin)
+HOOKS=(base systemd microcode modconf kms keyboard sd-vconsole block sd-encrypt lvm2 filesystems fsck)

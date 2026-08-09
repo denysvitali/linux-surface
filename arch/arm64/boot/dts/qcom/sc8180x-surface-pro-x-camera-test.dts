@@ -1,0 +1,98 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * SPX camera CCI probe test — ONE variable vs the known-good DTB: it adds
+ * the two CCI I2C controllers and nothing else. No camss node, no sensor
+ * nodes, no cmdline change.
+ *
+ * Purpose: answer a single binary question — are the camera sensor supply
+ * rails always-on on this board, or are they gated by firmware we cannot
+ * reach? With MCLK running (spx_cam_probe.ko), a sensor whose rails are up
+ * will ACK on I2C and return its chip ID; one whose rails are down will not
+ * answer at all.
+ *
+ * Addressing is reverse-engineered, see memory/spx-camera-bringup.md:
+ * ACPI CAMP._CRS lists 0x0ac4a000..0x0ac4d000 (0x1000 each) and interrupts
+ * GSIV 0x1ec/0x12f/0x2ab/0x2aa -> SPI 460/271/651/650. Identical block layout
+ * to sc8280xp.dtsi, and cci0's SPI 460 matches sm8250 exactly.
+ *
+ * Expected sensor placement (from ACPI CAMP.PCFG):
+ *   CCI0 port0  rear  OV13858 @0x10  (chip id 0xD855 at reg 0x300B)
+ *   CCI0 port1  aux   OV7251  @0x60  (chip id 0x7750 at reg 0x300A)
+ *   CCI1 port0  front OV5693  @0x36  (chip id 0x5690 at reg 0x300A)
+ *
+ * camcc-sc8180x is a module and is NOT autoloaded at boot here, so CCI will
+ * sit in EPROBE_DEFER until it is insmod'd by hand. That is deliberate: it
+ * keeps the boot itself identical to the known-good path.
+ */
+
+#include "sc8180x-surface-pro-x.dts"
+
+#include <dt-bindings/clock/qcom,sc8180x-camcc.h>
+
+&soc {
+	cci0: cci@ac4a000 {
+		compatible = "qcom,sc8180x-cci", "qcom,msm8996-cci";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		reg = <0 0x0ac4a000 0 0x1000>;
+		interrupts = <GIC_SPI 460 IRQ_TYPE_EDGE_RISING>;
+		power-domains = <&camcc TITAN_TOP_GDSC>;
+
+		clocks = <&camcc CAM_CC_CAMNOC_AXI_CLK>,
+			 <&camcc CAM_CC_SLOW_AHB_CLK_SRC>,
+			 <&camcc CAM_CC_CPAS_AHB_CLK>,
+			 <&camcc CAM_CC_CCI_0_CLK>,
+			 <&camcc CAM_CC_CCI_0_CLK_SRC>;
+		clock-names = "camnoc_axi", "slow_ahb_src", "cpas_ahb",
+			      "cci", "cci_src";
+		status = "okay";
+
+		cci0_i2c0: i2c-bus@0 {
+			reg = <0>;
+			clock-frequency = <400000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+		};
+
+		cci0_i2c1: i2c-bus@1 {
+			reg = <1>;
+			clock-frequency = <400000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+		};
+	};
+
+	cci1: cci@ac4b000 {
+		compatible = "qcom,sc8180x-cci", "qcom,msm8996-cci";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		reg = <0 0x0ac4b000 0 0x1000>;
+		interrupts = <GIC_SPI 271 IRQ_TYPE_EDGE_RISING>;
+		power-domains = <&camcc TITAN_TOP_GDSC>;
+
+		clocks = <&camcc CAM_CC_CAMNOC_AXI_CLK>,
+			 <&camcc CAM_CC_SLOW_AHB_CLK_SRC>,
+			 <&camcc CAM_CC_CPAS_AHB_CLK>,
+			 <&camcc CAM_CC_CCI_1_CLK>,
+			 <&camcc CAM_CC_CCI_1_CLK_SRC>;
+		clock-names = "camnoc_axi", "slow_ahb_src", "cpas_ahb",
+			      "cci", "cci_src";
+		status = "okay";
+
+		cci1_i2c0: i2c-bus@0 {
+			reg = <0>;
+			clock-frequency = <400000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+		};
+
+		cci1_i2c1: i2c-bus@1 {
+			reg = <1>;
+			clock-frequency = <400000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+		};
+	};
+};

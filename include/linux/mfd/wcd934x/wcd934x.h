@@ -26,6 +26,7 @@ struct wcd934x_ddata {
 	struct clk *extclk;
 	struct device *dev;
 	int irq;
+	struct dentry *dbgdir;  /* SPX: debugfs root for write_reg helper */
 };
 
 #endif /* __WCD934X_H__ */

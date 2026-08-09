@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * SPX Windows ADSP firmware test: expand ADSP carveout from 26→28 MiB
+ * (borrow 2 MiB from CDSP) to load the non-stub Windows qcadsp8180-win.mbn.
+ * The non-stub firmware may initialize the SWR bus PHY, allowing the
+ * WSA881x amps to sync.
+ */
+#include "sc8180x-surface-pro-x.dts"
+
+&adsp_mem {
+	reg = <0x0 0x96e00000 0x0 0x1c00000>;  /* 28 MiB (was 26) */
+};
+
+&cdsp_mem {
+	reg = <0x0 0x98a00000 0x0 0x600000>;  /* 6 MiB at +2MiB offset (was 8 MiB) */
+};
+
+&remoteproc_adsp {
+	firmware-name = "qcom/msft/surface/pro-x-sq2/qcadsp8180-win.mbn";
+};
+
+&right_spkr {
+	status = "disabled";
+};

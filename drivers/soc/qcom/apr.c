@@ -63,7 +63,8 @@ int apr_send_pkt(struct apr_device *adev, struct apr_pkt *pkt)
 
 	hdr = &pkt->hdr;
 	hdr->src_domain = APR_DOMAIN_APPS;
-	hdr->src_svc = adev->svc.id;
+	if (!hdr->src_svc)
+		hdr->src_svc = adev->svc.id;
 	hdr->dest_domain = adev->domain_id;
 	hdr->dest_svc = adev->svc.id;
 
@@ -232,6 +233,16 @@ static int apr_do_rx_callback(struct packet_router *apr, struct apr_rx_buf *abuf
 	svc_id = hdr->dest_svc;
 	spin_lock_irqsave(&apr->svcs_lock, flags);
 	svc = idr_find(&apr->svcs_idr, svc_id);
+	/*
+	 * qcadcm identifies its APPS clients as service 2 (AVCS) and service 5
+	 * (ADM). Linux registers the corresponding ADSP endpoints instead, so
+	 * route replies from those Windows client identities back to the owning
+	 * Linux services.
+	 */
+	if (!svc && svc_id == 2)
+		svc = idr_find(&apr->svcs_idr, APR_SVC_ADSP_CORE);
+	else if (!svc && svc_id == 5)
+		svc = idr_find(&apr->svcs_idr, APR_SVC_ADM);
 	if (svc && svc->dev->driver) {
 		adev = svc_to_apr_device(svc);
 		adrv = to_apr_driver(adev->dev.driver);
@@ -365,11 +376,35 @@ static int apr_device_probe(struct device *dev)
 {
 	struct apr_device *adev = to_apr_device(dev);
 	struct apr_driver *adrv = to_apr_driver(dev->driver);
+	struct packet_router *apr = dev_get_drvdata(adev->dev.parent);
+	bool restored = false;
 	int ret;
 
+	/* apr_device_remove() drops the service from the receive IDR when a
+	 * service driver is unbound.  The APR device itself survives a module
+	 * reload, so put the service back before the replacement driver starts
+	 * sending commands. */
+	spin_lock(&apr->svcs_lock);
+	if (!idr_find(&apr->svcs_idr, adev->svc.id)) {
+		ret = idr_alloc(&apr->svcs_idr, &adev->svc, adev->svc.id,
+				adev->svc.id + 1, GFP_ATOMIC);
+		if (ret >= 0)
+			restored = true;
+	} else {
+		ret = 0;
+	}
+	spin_unlock(&apr->svcs_lock);
+	if (ret < 0)
+		return ret;
+
 	ret = adrv->probe(adev);
-	if (!ret)
+	if (!ret) {
 		adev->svc.callback = adrv->gpr_callback;
+	} else if (restored) {
+		spin_lock(&apr->svcs_lock);
+		idr_remove(&apr->svcs_idr, adev->svc.id);
+		spin_unlock(&apr->svcs_lock);
+	}
 
 	return ret;
 }

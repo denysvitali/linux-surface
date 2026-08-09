@@ -1465,14 +1465,43 @@ static void wcd934x_enable_efuse_sensing(struct wcd934x_codec *wcd)
 	__wcd934x_cdc_mclk_enable(wcd, false);
 }
 
+/*
+ * SPX: downstream tavil_swrm_clock() CLEARS the NPL delay element in the SWR
+ * clock path (WCD934X_TEST_DEBUG_NPL_DLY_TEST_1 bit 0x10, set at reset) BEFORE
+ * enabling the SWR clock; mainline never touches it. Leaving the NPL delay in
+ * skews master-vs-slave bit timing on the codec-internal SoundWire PHY, so the
+ * 2 WSA881x latch device-0 DevID reads as contention garbage (MASTER_CLASH_DET
+ * / AUTO_ENUM_FAILED -> both UNATTACHED). Gated + default-off so other WCD9340
+ * boards (db845c) are unaffected; set on SPX via snd_soc_wcd934x.spx_clear_npl=1.
+ */
+static int spx_clear_npl;
+module_param(spx_clear_npl, int, 0644);
+MODULE_PARM_DESC(spx_clear_npl,
+	"SPX: clear the SWR-clock NPL delay (reg 0x803e bit 0x10) before SWR clock enable");
+
 static int wcd934x_swrm_clock(struct wcd934x_codec *wcd, bool enable)
 {
 	if (enable) {
+		if (spx_clear_npl)
+			regmap_update_bits(wcd->regmap,
+					   WCD934X_TEST_DEBUG_NPL_DLY_TEST_1,
+					   0x10, 0x00);
 		__wcd934x_cdc_mclk_enable(wcd, true);
-		regmap_update_bits(wcd->regmap,
-				   WCD934X_CDC_CLK_RST_CTRL_SWR_CONTROL,
-				   WCD934X_CDC_SWR_CLK_EN_MASK,
-				   WCD934X_CDC_SWR_CLK_ENABLE);
+		if (of_machine_is_compatible("microsoft,surface-pro-x"))
+			/*
+			 * qcauddev8180.sys writes the complete byte 0x01,
+			 * rather than preserving bits 7:1.  This immediately
+			 * precedes its ACCESS_CFG=0x0f write and first bridge
+			 * transaction, so reproduce that exact pair on SPX.
+			 */
+			regmap_write(wcd->regmap,
+				     WCD934X_CDC_CLK_RST_CTRL_SWR_CONTROL,
+				     WCD934X_CDC_SWR_CLK_ENABLE);
+		else
+			regmap_update_bits(wcd->regmap,
+					   WCD934X_CDC_CLK_RST_CTRL_SWR_CONTROL,
+					   WCD934X_CDC_SWR_CLK_EN_MASK,
+					   WCD934X_CDC_SWR_CLK_ENABLE);
 	} else {
 		regmap_update_bits(wcd->regmap,
 				   WCD934X_CDC_CLK_RST_CTRL_SWR_CONTROL,
@@ -2951,6 +2980,12 @@ static int wcd934x_mbhc_init(struct snd_soc_component *component)
 	struct wcd934x_ddata *data = dev_get_drvdata(component->dev->parent);
 	struct wcd934x_codec *wcd = snd_soc_component_get_drvdata(component);
 	struct wcd_mbhc_intr *intr_ids = &wcd->intr_ids;
+
+	if (!data->irq_data) {
+		dev_warn(component->dev,
+			 "No codec IRQ; MBHC disabled (no jack detection, no HPH OCP)\n");
+		return 0;
+	}
 
 	intr_ids->mbhc_sw_intr = regmap_irq_get_virq(data->irq_data,
 						     WCD934X_IRQ_MBHC_SW_DET);
@@ -5877,16 +5912,21 @@ static int wcd934x_codec_probe(struct platform_device *pdev)
 	memcpy(wcd->rx_chs, wcd934x_rx_chs, sizeof(wcd934x_rx_chs));
 	memcpy(wcd->tx_chs, wcd934x_tx_chs, sizeof(wcd934x_tx_chs));
 
-	irq = regmap_irq_get_virq(data->irq_data, WCD934X_IRQ_SLIMBUS);
-	if (irq < 0)
-		return dev_err_probe(wcd->dev, irq, "Failed to get SLIM IRQ\n");
+	if (data->irq_data) {
+		irq = regmap_irq_get_virq(data->irq_data, WCD934X_IRQ_SLIMBUS);
+		if (irq < 0)
+			return dev_err_probe(wcd->dev, irq, "Failed to get SLIM IRQ\n");
 
-	ret = devm_request_threaded_irq(dev, irq, NULL,
-					wcd934x_slim_irq_handler,
-					IRQF_TRIGGER_RISING | IRQF_ONESHOT,
-					"slim", wcd);
-	if (ret)
-		return dev_err_probe(dev, ret, "Failed to request slimbus irq\n");
+		ret = devm_request_threaded_irq(dev, irq, NULL,
+						wcd934x_slim_irq_handler,
+						IRQF_TRIGGER_RISING | IRQF_ONESHOT,
+						"slim", wcd);
+		if (ret)
+			return dev_err_probe(dev, ret, "Failed to request slimbus irq\n");
+	} else {
+		dev_warn(dev,
+			 "No codec IRQ; SLIMbus port errors will be polled (BAM/PIO path is independent)\n");
+	}
 
 	wcd934x_register_mclk_output(wcd);
 	platform_set_drvdata(pdev, wcd);

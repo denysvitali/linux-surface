@@ -1,0 +1,114 @@
+#!/bin/bash
+# SPX speaker replay v2: APPS-side recipe (bypasses stubbed ADSP codec-reg op).
+# Writes WCD9340 codec + SoundWire master + WSA881x registers directly over the
+# working SLIMbus regmap from APPS. Derived from the live ACDB the workflow
+# captured (qcadcm8180 1.8MB parsed pool on the live Windows system, 2026-06-19)
+# + the db845c working reference. Uses the wcd934x debugfs write_reg helper.
+#
+# Requires: wcd934x MFD patched with write_reg debugfs entry
+# (/sys/kernel/debug/wcd934x/217:250:1:0/write_reg).
+#
+# Usage: sudo ./scripts/spx-spkr-replay-v2.sh
+set -eu
+RM=/sys/kernel/debug/wcd934x/217:250:1:0
+W() { sudo bash -c "echo '$1 $2' > $RM/write_reg"; }   # W reg val
+R() { sudo cat "$RM/registers" 2>/dev/null | awk -v r="$1" '$1==r{substr($2,3); exit}'; }
+say(){ echo -e "\n=== $* ==="; }
+[ -e "$RM/write_reg" ] || { echo "FATAL: $RM/write_reg missing - rebuild wcd934x MFD with the write_reg debugfs patch"; exit 1; }
+
+# ---------------- Phase A — WCD9340 codec + analog bring-up ----------------
+say "A1..A5 codec + analog bring-up"
+W 0x0003 0x01   # WCD934X_CODEC_RPM_CLK_MCLK_CFG = 9P6MHZ
+W 0x0002 0x03   # WCD934X_CODEC_RPM_CLK_GATE      = mask
+W 0x0001 0xC0   # WCD934X_ANA_BIAS
+W 0x0005 0x05   # WCD934X_CLK_SYS_MCLK_PRG
+say "A verify: 0x0d43=$(R 0x0d43) (expect 0x00 baseline)"
+
+# ---------------- Phase B — codec-internal SWR master enable ---------------
+say "B1..B6 SWR master enable (codec 0x0d43 + 0xc85+ block)"
+W 0x0d43 0x01   # CDC_CLK_RST_CTRL_SWR_CONTROL (enable codec SWR clock)  - PROVEN LIVE
+W 0x0c89 0x01   # 0xc85+0x04  SWRM_COMP_CFG  (enable master)
+W 0x0e89 0x00   # 0xc85+0x204 SWRM_INTERRUPT_MASK (mask all - polled)
+W 0x0e8d FFFFFFFF  # 0xc85+0x208 SWRM_INTERRUPT_CLEAR
+W 0x1185 0x01   # 0xc85+0x500 SWRM_ENUMERATOR_CFG (arm auto-enum)
+W 0x1cc9 0x02   # 0xc85+0x1044 SWRM_MCP_BUS_CTRL (BUS_CLK_START=BIT1)
+sleep 0.05
+say "B verify: INT_STATUS 0x0e85=$(R 0x0e85)  (expect NEW_SLAVE_ATTACHED bit1=1)"
+
+# ---------------- Phase C — WSA enumeration + FORCE dev_num assign ---------
+say "C1..C3 enumerate read (may fail cmd_data=0x0 on this build)"
+echo "  MCP_SLV_STATUS 0x1d15=$(R 0x1d15)"
+echo "  ENUM_DEV_ID_1   0x11b5=$(R 0x11b5)"
+echo "  ENUM_DEV_ID_2   0x11bd=$(R 0x11bd)"
+say "C4 broadcast DevID write (send regardless of read state)"
+W 0x0f85 0x00F15000   # 0xc85+0x300 SWRM_CMD_FIFO_WR: BROADCAST=0xF, reg=0x0500
+say "C5..C6 FORCE-ASSIGN dev_num (the escape from the read-0x0 failure)"
+W 0x1281 0x01   # 0xc85+0x112C SWRM_DP_BLOCK_CTRL_1[amp1] <- dev_num 1 (left)
+W 0x1381 0x02   # 0xc85+0x122C SWRM_DP_BLOCK_CTRL_1[amp2] <- dev_num 2 (right)
+sleep 0.02
+say "C verify: ls /sys/bus/soundwire/devices/ (expect ATTACHED for :1 :2)"
+sudo ls -l /sys/bus/soundwire/devices/ 2>/dev/null
+for d in /sys/bus/soundwire/devices/sdw:0:0:0217:2010:00:[12]; do
+  echo "  $(basename $d): status=$(cat $d/status 2>/dev/null) dev_num=$(cat $d/dev_num 2>/dev/null)"
+done
+
+# ---------------- Phase D — per-amp WSA881x register init ------------------
+# ACDB blob 0x15200 scalars drive the per-amp WSA register map.
+# wsa881x register addresses (after the slave SoundWire bind, the per-amp
+# regmap is exposed by the slave driver; the codec-side regmap is also
+# available at page 0x1015/0x1016 for amp1/amp2).
+amp_init() {
+  local page=$1
+  local pfx
+  case "$page" in 0x1015) pfx="" ;; 0x1016) pfx="" ;; *) pfx="" ;; esac
+  # WSA881x registers (page is per-amp, addr is the WSA reg offset)
+  # Using the ACDB-derived scalar values (0x05, 0x1b, 0x02, 0x157c, 0x1e46, 0x251c)
+  # and the wsa881x.c patch table.
+  W ${page}00 0x00   # 0x00:  page register
+  W ${page}0C 0x00   # 0x0C:  RESET_CTL
+  W ${page}0F 0x01   # 0x0F:  TADC VALUE
+  W ${page}21 0x1B   # 0x21:  INTR_MASK (ACDB scalar 0x1b)
+  W ${page}45 0x00   # 0x45:  IOPAD_CTL
+  W ${page}BC 0x3F   # 0xBC:  OTP_REG_28
+  W ${page}1B 0xC1   # 0x1B:  SPKR PA GAIN
+  W ${page}1C 0x42   # 0x1C:  SPKR DAC CTL
+  W ${page}21 0x02   # 0x21:  INTR MODE (ACDB scalar 0x02)
+  W ${page}0B 0x07   # 0x0B:  SWR RESET EN
+  W ${page}05 0x03   # 0x05:  CDC RST CTL out of reset
+  W ${page}06 0x03   # 0x06:  CDC TOP CLK CTL
+  W ${page}08 0x05   # 0x08:  CDC DIG CLK CTL (ACDB scalar 0x05)
+  W ${page}1D 0x157c # 0x1D:  OTP_CTRL0
+  W ${page}1E 0x1e46 # 0x1E:  OTP_CTRL1
+  W ${page}1F 0x251c # 0x1F:  HDRIVE_CTL_GROUP1
+  W ${page}24 0x5F   # 0x24:  SPKR BIAS INT
+  W ${page}1F 0x30   # 0x1F:  SPKR OCP CTL
+  W ${page}2D 0xB7   # 0x2D:  BOOST PRESET OUT1
+  W ${page}2E 0x30   # 0x2E:  BOOST PRESET OUT2
+  W ${page}1A 0x08   # 0x1A:  SPKR DRV EN
+  W ${page}21 0x02   # 0x21:  INTR MASK (re-affirm)
+  W ${page}12 0x02   # 0x12:  SPKR BBM CTL
+}
+say "D1 amp1 (left) WSA881x init at page 0x1015"
+amp_init 0x1015
+say "D2 amp2 (right) WSA881x init at page 0x1016"
+amp_init 0x1016
+
+# ---------------- Phase E — audio routing (RX0/1 -> INT7/8 -> SWR) ---------
+say "E1..E7 audio routing (RX7/8 -> INT7/8 -> SWR -> WSA)"
+W 0x0d10 0x00   # CDC_RX_INP_MUX_RX_INT7_CFG1 = RX0 (SLIM ch 192)
+W 0x0d12 0x01   # CDC_RX_INP_MUX_RX_INT8_CFG1 = RX1 (SLIM ch 193)
+W 0x0bcd 0x01   # CDC_RX7_RX_PATH_CTL enable
+W 0x0be1 0x01   # CDC_RX8_RX_PATH_CTL enable
+W 0x0bd1 0x84   # CDC_RX7_RX_VOL_CTL
+W 0x0be5 0x84   # CDC_RX8_RX_VOL_CTL
+W 0x0d02 0x01   # CDC_RX7_MIX_CTL (RX7 -> path)
+
+say "FINAL: /sys/bus/soundwire/devices/ + speaker-test"
+sudo ls -l /sys/bus/soundwire/devices/ 2>/dev/null
+for d in /sys/bus/soundwire/devices/sdw:0:0:0217:2010:00:[12]; do
+  echo "  $(basename $d): status=$(cat $d/status 2>/dev/null) dev_num=$(cat $d/dev_num 2>/dev/null)"
+done
+echo
+echo "To hear audio, now run:"
+echo "  sudo SPX_TEST=slim /home/dvitali/Documents/git/linux-surface-kernel/scripts/spx-run2-pio-full.sh"
+echo "  speaker-test -Dplughw:0,0 -c2 -tsine -f440"

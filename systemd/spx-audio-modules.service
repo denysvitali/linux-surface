@@ -1,0 +1,11 @@
+[Unit]
+Description=Surface Pro X delayed audio module loader
+After=systemd-modules-load.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/spx-audio-modules
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target
