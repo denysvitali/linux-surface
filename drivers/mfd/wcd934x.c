@@ -37,42 +37,39 @@
  * SPX: the two internal WSA881x speaker amps share a codec-GPIO enable line
  * that the stock wsa881x driver never drives (it only manages the per-amp
  * "powerdown" GPIO on wcd-gpio pin 1, like db845c). On the Surface Pro X the
- * amps also hang off wcd-gpio pin 2, and that line must be driven LOW for them
- * to power up and answer SoundWire enumeration (verified live: pin2 LOW =>
- * MCP_SLV_STATUS present, pin2 HIGH/floating => silent + AUTO_ENUM_FAILED).
- * This mirrors the Lenovo Yoga C630 (sdm850) fix that gave each WSA its own
- * powerdown pin. Gated by a module param so it is opt-in and fully reversible;
- * default -1 = off (no behavioural change for any other board).
- *   set: wcd934x.spx_wsa_en_pin=2   (the wcd-gpio pin index to force low)
+ * amps also hang off wcd-gpio pin 2. Direct electrical probing established
+ * that physical HIGH powers an amp and LOW turns it off. This legacy one-pin
+ * override is boot-only and opt-in; default -1 leaves all boards unchanged.
+ *   set: wcd934x.spx_wsa_en_pin=2   (the wcd-gpio pin index to power on)
  */
 static int spx_wsa_en_pin = -1;
-module_param(spx_wsa_en_pin, int, 0644);
+module_param(spx_wsa_en_pin, int, 0444);
 MODULE_PARM_DESC(spx_wsa_en_pin,
-	"SPX: force this wcd934x GPIO pin to output-low at bring-up to enable the WSA amps (-1=off)");
+	"SPX: force this wcd934x GPIO pin output-high at bring-up to power one WSA amp (-1=off)");
 
 /*
  * SPX: raw boot-time control of the wcd934x GPIO block, applied before the
  * SoundWire master child is added.
  *
- * The two WSA881x amps are gated by pins 1 and 2. These parameters are retained
- * only for old diagnostic boot entries; the Surface Pro X path below
- * overwrites them with the levels used by the Windows driver.
+ * The two WSA881x amps are gated by pins 1 and 2. Only those managed bits are
+ * changed; unrelated WCD GPIO state is preserved.
  *
  *   wcd934x.spx_wsa_gpio_dir=0x06 wcd934x.spx_wsa_gpio_val=0x06
  */
 static int spx_wsa_gpio_dir = -1;
-module_param(spx_wsa_gpio_dir, int, 0644);
+module_param(spx_wsa_gpio_dir, int, 0444);
 MODULE_PARM_DESC(spx_wsa_gpio_dir,
 	"SPX: raw wcd934x GPIO direction reg 0x42 value at bring-up (-1=off)");
 
 static int spx_wsa_gpio_val = -1;
-module_param(spx_wsa_gpio_val, int, 0644);
+module_param(spx_wsa_gpio_val, int, 0444);
 MODULE_PARM_DESC(spx_wsa_gpio_val,
 	"SPX: raw wcd934x GPIO value reg 0x43 value at bring-up (-1=off)");
 
 /* wcd934x GPIO block (see drivers/gpio/gpio-wcd934x.c): dir/value at 0x42/0x43 */
 #define WCD934X_GPIO_DIR_CTL	0x42
 #define WCD934X_GPIO_VAL_CTL	0x43
+#define SPX_WSA_GPIO_MASK	0x06
 
 static const struct mfd_cell wcd934x_devices[] = {
 	{
@@ -262,29 +259,29 @@ static int wcd934x_slim_status_up(struct slim_device *sdev)
 	}
 
 	/*
-	 * SPX: drive the shared WSA enable GPIO low BEFORE the soundwire master
-	 * (an mfd child added below) enumerates, so the amps are powered when the
-	 * auto-enumerator scans the bus. pin = output, value = low.
+	 * SPX legacy one-pin override: physical HIGH powers the selected amp.
 	 */
 	if (spx_wsa_en_pin >= 0 && spx_wsa_en_pin < 5) {
 		u32 m = BIT(spx_wsa_en_pin);
 
 		regmap_update_bits(ddata->regmap, WCD934X_GPIO_DIR_CTL, m, m);
-		regmap_update_bits(ddata->regmap, WCD934X_GPIO_VAL_CTL, m, 0);
-		dev_info(dev, "SPX: forced wcd-gpio pin %d output-low to enable WSA amps\n",
+		regmap_update_bits(ddata->regmap, WCD934X_GPIO_VAL_CTL, m, m);
+		dev_info(dev, "SPX: forced wcd-gpio pin %d output-high to power one WSA amp\n",
 			 spx_wsa_en_pin);
 	}
 
-	/* Raw override, applied after the single-pin helper above. */
+	/* Managed two-pin override, applied after the single-pin helper above. */
 	if (spx_wsa_gpio_dir >= 0)
-		regmap_write(ddata->regmap, WCD934X_GPIO_DIR_CTL,
-			     spx_wsa_gpio_dir & 0xff);
+		regmap_update_bits(ddata->regmap, WCD934X_GPIO_DIR_CTL,
+				   SPX_WSA_GPIO_MASK, spx_wsa_gpio_dir);
 	if (spx_wsa_gpio_val >= 0)
-		regmap_write(ddata->regmap, WCD934X_GPIO_VAL_CTL,
-			     spx_wsa_gpio_val & 0xff);
+		regmap_update_bits(ddata->regmap, WCD934X_GPIO_VAL_CTL,
+				   SPX_WSA_GPIO_MASK, spx_wsa_gpio_val);
 	if (spx_wsa_gpio_dir >= 0 || spx_wsa_gpio_val >= 0)
-		dev_info(dev, "SPX: wcd-gpio forced dir=0x%02x val=0x%02x\n",
-			 spx_wsa_gpio_dir, spx_wsa_gpio_val);
+		dev_info(dev,
+			 "SPX: wcd-gpio managed bits 0x06 dir=0x%02x val=0x%02x\n",
+			 spx_wsa_gpio_dir & SPX_WSA_GPIO_MASK,
+			 spx_wsa_gpio_val & SPX_WSA_GPIO_MASK);
 
 	/* SPX: skip the regmap IRQ chip when no codec IRQ is wired. */
 	if (ddata->irq > 0) {

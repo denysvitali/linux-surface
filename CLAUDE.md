@@ -5,7 +5,7 @@
 Make the built-in speakers work **fully**: clean audio, at maximum volume if wanted,
 from both speakers, surviving normal use (not just one stream after a cold boot).
 
-## Where we are (2026-07-28)
+## Where we are (2026-08-09)
 
 Audio plays, but it is not clean. Live listening on 2026-07-28 confirmed:
 
@@ -28,11 +28,12 @@ Audio plays, but it is not clean. Live listening on 2026-07-28 confirmed:
    staged test restores relative cadence while retaining S16 and all settled
    transport settings.
 
-The next boot now also carries an evidence-backed Windows transport/amp update:
-all four WSA sink descriptors are allocated without enabling the COMP or VISENSE
-analog controls, and the missing Windows cold-init and 2 ms stabilization writes
-are reproduced. This is distinct from the earlier four-port test, which enabled
-all four ALSA analog controls and therefore ran VISENSE/DRE side effects.
+The audited guarded boot returns to the last audible baseline: one WSA codec in the
+playback DAI link, physical device 0 with fixed device-0 write routing, and only
+the DAC SoundWire descriptor. The disproven mirror/write-twice/watchdog modes are
+off. Fifteen independent reviews completed on 2026-08-09. This is still only a
+single-speaker candidate: do not select it until its corrected modules, DTB and
+initramfs have been rebuilt/restaged and the no-audio rescue boot has been proven.
 
 Only the **left** amp (DT `pin1`, physically the RIGHT speaker — the DT names are
 inverted) is brought up. The second amp is untouched.
@@ -46,10 +47,11 @@ inverted) is brought up. The second amp is untouched.
 - **Always `sudo mkinitcpio -P` after installing modules** into
   `/lib/modules/$(uname -r)/updates/`. The initramfs bundles those `.ko` files; skip
   this and the boot silently loads the *stale* copy. This has voided whole test boots.
-- **`grubenv next_entry` is single-use** — consumed by the boot it steers. Re-arm it
-  (`sudo grub-editenv /boot/grub/grubenv set next_entry=spx-wsa-pin2-test`) *before*
-  every reboot request, and verify after boot with
-  `grep -o spx_wsa_gpio_val=0x06 /proc/cmdline`.
+- **`grubenv next_entry` is single-use** — consumed by the boot it steers. After
+  first proving the persistent `spx-audio-rescue` default, arm only the audited
+  test (`sudo grub-editenv /boot/grub/grubenv set next_entry=spx-speaker-dev0-v3-audited`)
+  as the final operation before that one reboot, and verify after boot with
+  `grep -o spx_wsa_gpio_val=0x00 /proc/cmdline`.
 - **One variable per test boot.** Never put an unverified DTB or cmdline on the
   default GRUB entry.
 - Never read `/sys/module/soundwire_qcom/parameters/spx_reenum` (write-only, blocks
@@ -68,15 +70,18 @@ ask about a run whose preconditions were invalid (e.g. amp not attached: check
 ## How to bring the speaker up
 
 ```sh
-sudo ./scripts/spx-speakers-up.sh      # full path: card, power-cycle, attach, mixer, tone
-sudo ./scripts/spx-amp-recover.sh [f.wav]  # amp desynced mid-session (no power cycle)
+./scripts/spx-speakers-up.sh  # run as the desktop user, never through sudo
 ```
+
+`scripts/spx-amp-recover.sh` is unsafe for a live stream and is not part of the
+guarded path. It can reset the controller and enable the PA before ports are
+prepared; do not use it until recovery is serialized and stream-aware.
 
 Music: `ffmpeg -i x.mp3 -t 10 -ar 48000 -ac 2 out.wav && aplay -D plughw:0,0 out.wav`
 
-Key detail: after any init replay, the PA gain must be **force-written** — toggle
-`SpkrLeft PA Volume` 0 then 12, because a plain re-set is an ALSA no-op while the
-hardware register has been reseeded to the 0 dB floor.
+Key detail: after the idle cold-init replay, the PA gain must be **force-written** —
+the guarded script toggles `SpkrLeft PA Volume` 0 then 8. A plain re-set is an ALSA
+no-op while the hardware register has been reseeded to the 0 dB floor.
 
 ## Hardware model
 
@@ -96,9 +101,8 @@ unreliable — so never trust a write, and never read-modify-write.
   note here was **wrong**, which made `val=0x06` ("both parked off") power BOTH amps
   and clash them, and `val=0x04` ("pin1 on") actually power pin2.
   Correct values: `0x00` = both off, `0x02` = pin1 only, `0x04` = pin2 only.
-  The `spx-wsa-pin2-test` GRUB entry still passes `spx_wsa_gpio_val=0x06` and so boots
-  with both amps live; it needs `0x00`. pin1 and pin2 are the two amps' independent
-  shutdown lines. A power-cycle needs **10 s** off.
+  The legacy `spx-wsa-pin2-test` entry is unsafe and must not be used. pin1 and pin2
+  are the two amps' independent enable lines. A power-cycle needs **10 s** off.
 - Loud static with no tone = amp desynced from the bus with the PA still on.
 
 ## Windows driver reference (the ground truth)
@@ -118,7 +122,7 @@ master ports 1/2/3/7 with channel masks 1/f/3/3; the right descriptors map
 to 4/5/6/8. The sample intervals and offsets match
 `sc8180x-wcd9340.dtsi`, and Windows opens all four descriptors.
 
-Implemented from this RE (all live-tunable, defaults on):
+Implemented from this RE (live-tunable, with cross-platform defaults off):
 - `snd_soc_wsa881x.spx_win_pa_seq` — ANA_CTL bit-2 latch pulse, staged DAC ramp,
   VI-sense teardown, 1 ms/step PA gain ramp.
 - `soundwire_qcom.spx_win_transport` — stop writing `BLOCK_CTRL_1`, slave
@@ -142,7 +146,8 @@ Implemented from this RE (all live-tunable, defaults on):
   PIO jitter is not a static suspect.
 - `spx_init_on_pmu` (replaying the init table in PRE_PMU) **makes it worse** — ~240 ms
   of register traffic at every stream start, while the port already streams. Default
-  is now 0; the recovery script replays explicitly via `spx_rearm_init` instead.
+  is 0; `spx_rearm_init` now replays cold init only while no stream is configured and
+  never enables/unmutes the PA itself.
 - **Nothing writes to the bus during steady-state playback** (kprobe-verified: 0 writes
   between PA-on and teardown). So the static is *not* caused by mid-stream register
   traffic, and it originates upstream of SoundWire — in the ADSP AFE → SLIMbus → codec
@@ -180,22 +185,21 @@ bring-up, then `dmesg | grep spxwr`.
 
 ## Open threads
 
-0. Validate the staged Windows-exact four-port transport with COMP/VISENSE
-   analog controls kept off and DAC/BOOST kept on.
+0. Validate the audited device-0, DAC-only, single-speaker first stream.
 1. Validate the restored relative Q6 fallback cadence; the absolute-deadline
    version never produced sound on a cold boot.
-2. If the first stream is audible but dirty, capture the four-port master/slave
-   programming and compare it against the static Windows descriptor table.
+2. If the first stream is audible but dirty, capture the serialized DP1 master
+   snapshot and compare it against the static Windows descriptor table.
 3. Second amp / DT left-right name inversion.
 
 ## Debug tooling (`drivers/spx_extras/`)
 
 | module | purpose |
 |---|---|
-| `spx_swrm_regs.ko` | one-shot dump of master regs incl. both banks' port control |
+| `spx_swrm_regs.ko` | legacy idle-only bridge dump; never use during playback (the guarded path uses `soundwire_qcom.spx_snapshot`) |
 | `spx_wsa_seq.ko` | replay arbitrary WSA register sequences: `seq=reg:val:delay_ms,...` |
 | `spx_wr_trace.ko` | kprobe tracer of every SoundWire write (no ftrace in this kernel) |
-| `spx_wcd_gpio.ko` | drive the amp `SD_N` pins directly: `dir=0x06 val=0x04` |
+| `spx_wcd_gpio.ko` | drive managed amp-enable pins: `dir=0x06 val=0x02` powers only pin1 |
 
 These "fail" to load with `-EAGAIN` **by design** so they can be re-run without `rmmod`.
 

@@ -166,9 +166,9 @@
 					compatible = "sdw10217201000";
 					reg = <0 1>;
 					qcom,port-mapping = <1 2 3 7>;
-					/* SPX: SD_N is active-low (high=shutdown); ACTIVE_HIGH
-					 * made wsa881x drive it high on enable = held in
-					 * shutdown (silent). ACTIVE_LOW drives it correctly. */
+					/* SPX: measured physical HIGH = amp on, LOW = off.
+					 * The active-low powerdown descriptor represents that.
+					 */
 					powerdown-gpios = <&wcdgpio 1 GPIO_ACTIVE_LOW>;
 					#thermal-sensor-cells = <0>;
 					sound-name-prefix = "SpkrLeft";
@@ -179,9 +179,8 @@
 					compatible = "sdw10217201000";
 					reg = <0 2>;
 					qcom,port-mapping = <4 5 6 8>;
-					/* SPX: SD_N is active-low (high=shutdown); ACTIVE_HIGH
-					 * made wsa881x drive it high on enable = held in
-					 * shutdown (silent). ACTIVE_LOW drives it correctly.
+					/* SPX: measured physical HIGH = amp on, LOW = off.
+					 * The active-low powerdown descriptor represents that.
 					 *
 					 * This MUST be a different pin from left_spkr. Both
 					 * nodes previously named pin 1, so both amps powered

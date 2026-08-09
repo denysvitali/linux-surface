@@ -72,7 +72,7 @@ fi
 # Park all teardown paths: stream stop / AFE port stop wedge the MSFT
 # ADSP. Set via sysfs too in case the modules were already loaded.
 echo 1 | sudo tee /sys/module/snd_soc_wcd934x/parameters/spx_persist_stream >/dev/null 2>&1 || true
-echo 1 | sudo tee /sys/module/q6afe_dai/parameters/spx_no_port_stop >/dev/null 2>&1 || true
+echo 0 | sudo tee /sys/module/q6afe_dai/parameters/spx_no_port_stop >/dev/null 2>&1 || true
 echo "SPX: teardown parking: wcd=$(cat /sys/module/snd_soc_wcd934x/parameters/spx_persist_stream 2>/dev/null) afe=$(cat /sys/module/q6afe_dai/parameters/spx_no_port_stop 2>/dev/null)"
 
 echo "SPX: sound card state:"
@@ -103,10 +103,9 @@ set_ctl 'COMP7 Switch' on
 set_ctl 'COMP8 Switch' on
 set_ctl 'RX7 Digital Volume' 84
 set_ctl 'RX8 Digital Volume' 84
-# NOTE: the old SpkrLeft/SpkrRight COMP/BOOST/DAC/PA controls were wsa881x
-# controls; the wsa881x driver is no longer instantiated (the WSA amps are
-# ADSP-owned now), so those controls no longer exist. WSA gain/boost/PA is the
-# ADSP's job. Do not set them here.
+# The guarded speaker DT does instantiate one WSA881x codec. This legacy helper
+# only brings up the SLIMbus/card side; scripts/spx-speakers-up.sh owns all WSA
+# COMP/BOOST/DAC/PA controls and validates their readback before its single tone.
 set_ctl 'RX0 Digital Volume' 84
 set_ctl 'RX1 Digital Volume' 84
 set_ctl 'HPHL Volume' 75%

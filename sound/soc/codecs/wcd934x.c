@@ -496,7 +496,25 @@ struct wcd_slim_codec_dai_data {
 	struct list_head slim_ch_list;
 	struct slim_stream_config sconfig;
 	struct slim_stream_runtime *sruntime;
+	bool spx_stream_started;
 };
+
+/*
+ * Surface Pro X: deactivating the WCD9340 SLIMbus stream after playback has
+ * repeatedly wedged the platform. Keep the first fixed-format stream prepared
+ * for this diagnostic boot and reuse it on later opens. This remains opt-in so
+ * normal SLIMbus users retain standard teardown semantics.
+ */
+static bool spx_persist_stream;
+module_param(spx_persist_stream, bool, 0444);
+MODULE_PARM_DESC(spx_persist_stream,
+		 "Surface Pro X: keep the WCD SLIMbus stream prepared after STOP");
+
+static bool wcd934x_spx_persist(const struct snd_soc_dai *dai)
+{
+	return spx_persist_stream && dai->id == AIF1_PB &&
+	       of_machine_is_compatible("microsoft,surface-pro-x");
+}
 
 static const struct regmap_range_cfg wcd934x_ifc_ranges[] = {
 	{
@@ -1879,6 +1897,13 @@ static int wcd934x_hw_params(struct snd_pcm_substream *substream,
 	}
 
 	wcd->dai[dai->id].sconfig.rate = params_rate(params);
+	if (wcd934x_spx_persist(dai) &&
+	    wcd->dai[dai->id].spx_stream_started) {
+		dev_info(wcd->dev,
+			 "SPX: reusing persistent SLIMbus stream for DAI %d\n",
+			 dai->id);
+		return 0;
+	}
 
 	return wcd934x_slim_set_hw_params(wcd, &wcd->dai[dai->id], substream->stream);
 }
@@ -1892,8 +1917,11 @@ static int wcd934x_hw_free(struct snd_pcm_substream *substream,
 	wcd = snd_soc_component_get_drvdata(dai->component);
 
 	dai_data = &wcd->dai[dai->id];
+	if (wcd934x_spx_persist(dai) && dai_data->spx_stream_started)
+		return 0;
 
 	kfree(dai_data->sconfig.chs);
+	dai_data->sconfig.chs = NULL;
 
 	return 0;
 }
@@ -1904,6 +1932,7 @@ static int wcd934x_trigger(struct snd_pcm_substream *substream, int cmd,
 	struct wcd_slim_codec_dai_data *dai_data;
 	struct wcd934x_codec *wcd;
 	struct slim_stream_config *cfg;
+	int ret;
 
 	wcd = snd_soc_component_get_drvdata(dai->component);
 
@@ -1913,15 +1942,42 @@ static int wcd934x_trigger(struct snd_pcm_substream *substream, int cmd,
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_RESUME:
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+		if (wcd934x_spx_persist(dai) && dai_data->spx_stream_started) {
+			dev_info(wcd->dev,
+				 "SPX: persistent SLIMbus stream already active for DAI %d\n",
+				 dai->id);
+			break;
+		}
 		cfg = &dai_data->sconfig;
-		slim_stream_prepare(dai_data->sruntime, cfg);
-		slim_stream_enable(dai_data->sruntime);
+		ret = slim_stream_prepare(dai_data->sruntime, cfg);
+		if (ret)
+			return ret;
+		ret = slim_stream_enable(dai_data->sruntime);
+		if (ret) {
+			/* Preserve the enable failure, but return the runtime to an
+			 * unprepared state so a controlled retry is possible.
+			 */
+			slim_stream_unprepare(dai_data->sruntime);
+			return ret;
+		}
+		dai_data->spx_stream_started = true;
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_SUSPEND:
 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
-		slim_stream_disable(dai_data->sruntime);
-		slim_stream_unprepare(dai_data->sruntime);
+		if (wcd934x_spx_persist(dai) && dai_data->spx_stream_started) {
+			dev_info(wcd->dev,
+				 "SPX: leaving SLIMbus stream active for DAI %d\n",
+				 dai->id);
+			break;
+		}
+		ret = slim_stream_disable(dai_data->sruntime);
+		if (ret)
+			return ret;
+		ret = slim_stream_unprepare(dai_data->sruntime);
+		if (ret)
+			return ret;
+		dai_data->spx_stream_started = false;
 		break;
 	default:
 		break;
