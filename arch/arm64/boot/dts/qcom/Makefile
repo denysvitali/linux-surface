@@ -220,6 +220,7 @@ dtb-$(CONFIG_ARCH_QCOM)	+= sc8180x-lenovo-flex-5g.dtb
 dtb-$(CONFIG_ARCH_QCOM)	+= sc8180x-primus.dtb
 dtb-$(CONFIG_ARCH_QCOM)	+= sc8180x-surface-pro-x.dtb
 dtb-$(CONFIG_ARCH_QCOM)	+= sc8180x-surface-pro-x-camera-test.dtb
+dtb-$(CONFIG_ARCH_QCOM)	+= sc8180x-surface-pro-x-speaker-left-preaudit.dtb
 sc8280xp-crd-el2-dtbs	:= sc8280xp-crd.dtb sc8280xp-el2.dtbo
 dtb-$(CONFIG_ARCH_QCOM)	+= sc8280xp-crd.dtb sc8280xp-crd-el2.dtb
 sc8280xp-huawei-gaokun3-el2-dtbs	:= sc8280xp-huawei-gaokun3.dtb sc8280xp-el2.dtbo
