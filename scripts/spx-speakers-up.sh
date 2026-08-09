@@ -216,7 +216,11 @@ require_param /sys/module/soundwire_qcom/parameters/spx_write_twice 0
 require_param /sys/module/soundwire_qcom/parameters/spx_bank_switch_repeats 1
 require_param /sys/module/soundwire_qcom/parameters/spx_watchdog 0
 require_param /sys/module/soundwire_qcom/parameters/spx_quiet_bus 0
-require_param /sys/module/soundwire_qcom/parameters/spx_win_transport 1
+# The two reverse-engineered knobs are the only invariants a baseline probe is
+# allowed to relax, and only by naming the value it expects up front, so the
+# guard still catches a boot that disagrees with the entry that was armed.
+require_param /sys/module/soundwire_qcom/parameters/spx_win_transport \
+	"${SPX_EXPECT_WIN_TRANSPORT:-1}"
 require_param /sys/module/soundwire_qcom/parameters/spx_runtime_ssp_period 1
 require_param /sys/module/soundwire_qcom/parameters/spx_verify_bank 0
 require_param /sys/module/soundwire_qcom/parameters/spx_dr_freq 0
@@ -232,7 +236,8 @@ require_param /sys/module/snd_soc_wsa881x/parameters/spx_blind_rmw N
 require_param /sys/module/snd_soc_wsa881x/parameters/spx_stream_port_mask 1
 require_param /sys/module/snd_soc_wsa881x/parameters/spx_replay_supplies Y
 require_param /sys/module/snd_soc_wsa881x/parameters/spx_init_on_pmu 0
-require_param /sys/module/snd_soc_wsa881x/parameters/spx_win_pa_seq 1
+require_param /sys/module/snd_soc_wsa881x/parameters/spx_win_pa_seq \
+	"${SPX_EXPECT_WIN_PA_SEQ:-1}"
 require_param /sys/module/snd_soc_wsa881x/parameters/spx_sample_edge -1
 require_param /sys/module/snd_soc_wsa881x/parameters/spx_powerdown_gpio 1
 require_param /sys/module/snd_soc_wsa881x/parameters/spx_port_map 0,0,0,0
