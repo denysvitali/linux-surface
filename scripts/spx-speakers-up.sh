@@ -1,9 +1,9 @@
 #!/bin/bash
 # SPX: bring the built-in speaker up from a fresh boot.
 #
-# Boot the "spx-wsa-pin2-test" GRUB entry first. That entry parks BOTH WSA amps
-# in shutdown at MFD probe (wcd934x.spx_wsa_gpio_dir=0x06 val=0x06); wsa881x then
-# powers only its own pin, so exactly one amp is ever unenumerated on the bus.
+# Boot the single-amp GRUB entry first. It parks both WSA amps LOW (off), disables
+# the right WSA codec in DT, and loads the left codec in write-only mode. The
+# script then raises only pin 1, so exactly one amp is at enumeration address 0.
 # Two amps powered together collide at device 0 and nothing enumerates at all.
 #
 # Verified working chain (2026-07-25): amp enumerates for real
@@ -14,11 +14,15 @@ cd "$(dirname "$0")/.."
 
 echo "=== [0] sanity ==="
 grep -q "spx_wsa_gpio_val=" /proc/cmdline \
-	|| { echo "FATAL: not the spx-wsa-pin2-test entry"; exit 1; }
-# NOTE: that entry still passes val=0x06, which by the measured polarity powers
-# BOTH amps at MFD probe. Change it to 0x00 in grub.cfg to actually park them.
+	|| { echo "FATAL: not a guarded single-amp test entry"; exit 1; }
 grep -q "spx_wsa_gpio_val=0x00" /proc/cmdline \
-	|| echo "  WARN: cmdline parks amps at 0x06 = BOTH ON (should be 0x00)"
+	|| { echo "FATAL: both amps were not parked off at boot"; exit 1; }
+[ "$(cat /sys/module/soundwire_qcom/parameters/spx_core_enum)" = 1 ] \
+	|| { echo "FATAL: spx_core_enum is not enabled"; exit 1; }
+[ "$(cat /sys/module/soundwire_qcom/parameters/spx_no_assign)" = 1 ] \
+	|| { echo "FATAL: stable device-0 mode is not enabled"; exit 1; }
+[ "$(cat /sys/module/snd_soc_wsa881x/parameters/spx_write_only)" = Y ] \
+	|| { echo "FATAL: WSA write-only mode is not enabled"; exit 1; }
 
 echo "=== [1] codec / SLIMbus bring-up ==="
 if ! grep -q sdm845 /proc/asound/cards 2>/dev/null; then
@@ -33,7 +37,7 @@ echo "=== [2] enumerate the single powered amp ==="
 # so power-cycle it via the WCD GPIO immediately before forcing the attach.
 # Without this, force-attach writes the device number into a void and
 # MCP_SLV_STATUS stays 0x0. dir=0x06 both pins output; val bit1=pin1, bit2=pin2;
-# LOW = amp on. 0x06 = both off, 0x04 = pin1 on / pin2 off.
+# Physical HIGH = amp on. 0x00 = both off, 0x02 = pin1 on / pin2 off.
 # 10 s off: 2 s was repeatedly not enough for the amp to announce afterwards.
 sudo insmod drivers/spx_extras/spx_wcd_gpio.ko dir=0x06 val=0x00 2>/dev/null
 sleep 10
@@ -45,12 +49,18 @@ sleep 25
 
 echo "=== [3] verify a REAL attach (hardware register, not sysfs) ==="
 # sysfs 'status' lies when spx_blind_attach=1 -- only MCP_SLV_STATUS counts.
-# 0x4 = device 1 attached. 0x1 = still unenumerated at device 0. 0x0 = nothing.
+# 0x1 = the preferred stable device-0 state. 0x4 = device 1 attached and is
+# acceptable because post_bank_switch refreshes routing if it later falls to 0.
+# 0x0 means no amp is visible, so do not start a stream in that state.
 sudo insmod drivers/spx_extras/spx_swrm_regs.ko 2>/dev/null; sleep 2
 sudo rmmod spx_swrm_regs 2>/dev/null
 SLV=$(sudo dmesg | grep "MCP_SLV_STATUS" | tail -1 | grep -o '0x[0-9a-f]\{8\}' | head -1)
 echo "  MCP_SLV_STATUS = $SLV"
-[ "$SLV" = "0x00000004" ] || echo "  WARN: expected 0x00000004 (device 1 attached)"
+case "$SLV" in
+	0x00000001) echo "  stable device-0 state detected" ;;
+	0x00000004) echo "  device 1 attached; stream-start refresh will follow any fallback" ;;
+	*) echo "FATAL: no trustworthy single-amp status; refusing playback"; exit 1 ;;
+esac
 
 echo "=== [4] write routing (auto) ==="
 # A slave answers only ONE address. The blind device-number assignment does not
@@ -82,7 +92,7 @@ sc "SpkrLeft Smart Boost Level" 8
 echo "=== [6] tone ==="
 systemctl --user stop wireplumber pipewire pipewire-pulse 2>/dev/null || true
 timeout -k 2 8 speaker-test -D plughw:0,0 -c 2 -t sine -f 440 >/dev/null 2>&1
-echo "  played 6s 440Hz -- audible?"
+echo "  played 8s 440Hz -- audible?"
 echo
 echo "Notes:"
 echo " * The stream allocates all four Windows transport descriptors (mask=15)"

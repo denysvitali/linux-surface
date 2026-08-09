@@ -32,6 +32,18 @@
  */
 static int spx_core_enum;
 module_param(spx_core_enum, int, 0644);
+
+/*
+ * The byte-for-byte Windows controller init is useful as a diagnostic, but it
+ * powers both Surface Pro X amplifiers into the hardware auto-enumerator at
+ * once. On the codec-internal, SLIMbus-bridged master that leaves both slaves
+ * colliding at device 0. Keep that experiment opt-in; the working path is the
+ * single-amp force attach selected by spx_core_enum/spx_force_attach.
+ */
+static bool spx_exact_windows_init;
+module_param(spx_exact_windows_init, bool, 0444);
+MODULE_PARM_DESC(spx_exact_windows_init,
+		 "SPX: use the experimental two-amp Windows controller init instead of stable single-amp force attach");
 /*
  * SPX: the WCD9340 AHB bridge is slow -- reading RD_DATA before the bridge has
  * fetched the SWR-master register returns stale/partial bytes (observed:
@@ -417,6 +429,7 @@ struct qcom_swrm_ctrl {
 	struct delayed_work spx_wd_work;	/* SPX: amp-presence watchdog */
 	int spx_wd_state;
 	int spx_wd_fails;
+	int spx_wd_misses;
 };
 
 struct qcom_swrm_data {
@@ -1107,10 +1120,15 @@ module_param(spx_watchdog, int, 0644);
 MODULE_PARM_DESC(spx_watchdog, "SPX: auto power-cycle the amp when it drops off the bus");
 static int spx_wd_amp_mask = 0x02;
 module_param(spx_wd_amp_mask, int, 0644);
-MODULE_PARM_DESC(spx_wd_amp_mask, "SPX: WCD GPIO VAL bits of the active amp's SD_N (high=off)");
+MODULE_PARM_DESC(spx_wd_amp_mask,
+		 "SPX: WCD GPIO VAL bits of the active amp's SD_N (physical high=on)");
 static int spx_wd_off_ms = 10000;
 module_param(spx_wd_off_ms, int, 0644);
 MODULE_PARM_DESC(spx_wd_off_ms, "SPX: how long to hold the amp powered off (2s is not enough)");
+static int spx_wd_miss_limit = 3;
+module_param(spx_wd_miss_limit, int, 0644);
+MODULE_PARM_DESC(spx_wd_miss_limit,
+		 "SPX: consecutive empty slave-status polls required before an amp power-cycle");
 static int spx_no_assign = 1;
 module_param(spx_no_assign, int, 0644);
 MODULE_PARM_DESC(spx_no_assign, "SPX: keep the amp unenumerated at device 0 (stable self-healing state)");
@@ -1145,9 +1163,19 @@ static void spx_wd_work_fn(struct work_struct *work)
 			slv = 0;
 		if (slv) {
 			spx_latch_from_slv(ctrl, slv);
+			ctrl->spx_wd_misses = 0;
 			ctrl->spx_wd_fails = 0;
 			break;
 		}
+		ctrl->spx_wd_misses++;
+		if (ctrl->spx_wd_misses < max(spx_wd_miss_limit, 1)) {
+			dev_dbg(ctrl->dev,
+				"SPX wd: empty slave status %d/%d; waiting before recovery\n",
+				ctrl->spx_wd_misses, max(spx_wd_miss_limit, 1));
+			delay = 1000;
+			break;
+		}
+		ctrl->spx_wd_misses = 0;
 		if (ctrl->spx_wd_fails >= 3) {
 			delay = 30000;	/* keep watching, quietly */
 			break;
@@ -1157,14 +1185,14 @@ static void spx_wd_work_fn(struct work_struct *work)
 			 ctrl->spx_wd_fails + 1, spx_wd_off_ms);
 		regmap_update_bits(ctrl->regmap, WCD934X_GPIO_DIR_CTL, 0x06, 0x06);
 		regmap_update_bits(ctrl->regmap, WCD934X_GPIO_VAL_CTL,
-				   spx_wd_amp_mask, spx_wd_amp_mask);
+				   spx_wd_amp_mask, 0);
 		ctrl->spx_wd_state = 1;
 		delay = spx_wd_off_ms;
 		break;
 	case 1:	/* power the amp back on, then re-run the attach recipe --
 		 * a plain SD_N cycle alone never makes it announce. */
 		regmap_update_bits(ctrl->regmap, WCD934X_GPIO_VAL_CTL,
-				   spx_wd_amp_mask, 0);
+				   spx_wd_amp_mask, spx_wd_amp_mask);
 		spx_force_attach = 1;
 		mod_delayed_work(system_wq, &ctrl->spx_enum_work,
 				 msecs_to_jiffies(500));
@@ -1177,6 +1205,7 @@ static void spx_wd_work_fn(struct work_struct *work)
 		if (slv) {
 			dev_info(ctrl->dev, "SPX wd: amp revived (slv=0x%x)\n", slv);
 			spx_latch_from_slv(ctrl, slv);
+			ctrl->spx_wd_misses = 0;
 			ctrl->spx_wd_fails = 0;
 		} else {
 			ctrl->spx_wd_fails++;
@@ -1400,6 +1429,7 @@ static void spx_swrm_enum_work(struct work_struct *work)
 		/* From here the watchdog owns amp presence and write routing. */
 		ctrl->spx_wd_state = 0;
 		ctrl->spx_wd_fails = 0;
+		ctrl->spx_wd_misses = 0;
 		schedule_delayed_work(&ctrl->spx_wd_work, msecs_to_jiffies(2000));
 		return;
 	}
@@ -2504,6 +2534,15 @@ static int qcom_swrm_post_bank_switch(struct sdw_bus *bus)
 	u32 val = 0;
 	u8 data;
 
+	/*
+	 * The SPX slave can fall from its fragile assigned address back to
+	 * enumeration address 0 while processing FRAMECTRL. Refresh immediately
+	 * after every switch so the PA/supply writes which follow are redirected
+	 * to the address which is actually listening.
+	 */
+	if (spx_forced_attached)
+		spx_refresh_amp_addr(ctrl);
+
 	if (!spx_verify_bank)
 		return 0;
 
@@ -3189,7 +3228,7 @@ static int qcom_swrm_probe(struct platform_device *pdev)
 	 * slaves to one hardware auto-enumeration pass; it never invents an
 	 * attachment or mirrors traffic between device addresses.
 	 */
-	ctrl->spx_windows_init =
+	ctrl->spx_windows_init = spx_exact_windows_init &&
 		of_machine_is_compatible("microsoft,surface-pro-x");
 	if (ctrl->spx_windows_init) {
 		spx_core_enum = 0;
@@ -3205,6 +3244,10 @@ static int qcom_swrm_probe(struct platform_device *pdev)
 		spx_no_assign = 0;
 		spx_forced_attached = false;
 		dev_info(dev, "SPX: Windows-compatible one-shot SoundWire enumeration\n");
+	} else if (of_machine_is_compatible("microsoft,surface-pro-x")) {
+		dev_info(dev,
+			 "SPX: stable single-amp mode core_enum=%d force_attach=%d no_assign=%d\n",
+			 spx_core_enum, spx_force_attach, spx_no_assign);
 	}
 
 	data = of_device_get_match_data(dev);

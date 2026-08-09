@@ -910,6 +910,17 @@ module_param(spx_init_on_pmu, int, 0644);
 MODULE_PARM_DESC(spx_init_on_pmu,
 		 "SPX: replay the amp init table before every PA enable");
 
+/*
+ * A Surface amp can lose its hardware register state while ASoC still has the
+ * DAPM supplies marked on. Replaying the complete cold-init table here was
+ * measured to make playback worse (~240 ms of traffic), but the four supply
+ * writes are small, idempotent, and required before the PA is enabled.
+ */
+static bool spx_replay_supplies = true;
+module_param(spx_replay_supplies, bool, 0644);
+MODULE_PARM_DESC(spx_replay_supplies,
+		 "SPX: replay DCLK, ACLK, bandgap and RDAC state before every PA enable");
+
 static void wsa881x_init(struct wsa881x_priv *wsa881x)
 {
 	struct regmap *rm = wsa881x->regmap;
@@ -1301,6 +1312,23 @@ static int wsa881x_spkr_pa_event(struct snd_soc_dapm_widget *w,
 		 */
 		if (wsa881x->spx_write_only && spx_init_on_pmu)
 			wsa881x_init(wsa881x);
+
+		/*
+		 * DAPM's software state survives a SoundWire de/re-enumeration or
+		 * SD_N recovery, while these hardware bits do not. Restore only
+		 * the essential supplies here; unlike wsa881x_init(), this is four
+		 * idempotent writes and does not delay an already-running stream.
+		 */
+		if (wsa881x->spx_write_only && spx_replay_supplies) {
+			wsa881x_update_bits(wsa881x, WSA881X_CDC_DIG_CLK_CTL,
+					    BIT(0), BIT(0));
+			wsa881x_update_bits(wsa881x, WSA881X_CDC_ANA_CLK_CTL,
+					    BIT(0), BIT(0));
+			wsa881x_update_bits(wsa881x, WSA881X_TEMP_OP,
+					    BIT(3), BIT(3));
+			wsa881x_update_bits(wsa881x, WSA881X_SPKR_DAC_CTL,
+					    BIT(7), BIT(7));
+		}
 
 		/*
 		 * SPX: enable the boost converter here, not only when the
