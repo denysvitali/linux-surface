@@ -187,19 +187,16 @@ bring-up, then `dmesg | grep spxwr`.
 
 ## Open threads
 
-0. Validate the audited device-0, DAC-only, single-speaker first stream.
+0. Re-test the exact historically audible PA Volume 12 setting.  The audited
+   v3-v5 runs used code 8 (6 dB lower) and were all silent.
 1. Validate the restored relative Q6 fallback cadence; the absolute-deadline
    version never produced sound on a cold boot.
 2. If the first stream is audible but dirty, capture the serialized DP1 master
    snapshot and compare it against the static Windows descriptor table.
 3. Second amp / DT left-right name inversion.
-4. The first `spx_shadow_dp1_enable=1` boot mirrored slave DP1 ChannelEn into
-   both banks, completed the full five-second stream, and was silent.  Its
-   master bank 1 was still disabled (`0x00000107`), however, whereas the
-   historical mid-stream recovery explicitly enabled both master and slave
-   bank 1.  The next revision shadows only master and slave DP1 ChannelEn; it
-   still leaves every other timing/transport register under the normal banked
-   sequence and keeps the disproven full-bank mirror disabled.
+4. Master/slave DP1 ChannelEn parity is ruled out as the whole-boot silence
+   gate.  V5 verified both master banks as `0x01000107`, logged enable/disable
+   shadows on both sides, completed the stream, and was silent.
 
 ## Debug tooling (`drivers/spx_extras/`)
 
@@ -262,3 +259,15 @@ heard nothing.  The serialized master snapshot was
 mid-stream recovery, which explicitly enabled bank 1 on both sides.  The next
 single-variable test therefore adds only master DP1 ChannelEn parity; gain and
 all other transport/analog settings remain unchanged.
+
+## 2026-08-09 guarded v5 runtime result
+
+V5 added the missing master-side half of the historical DP1 repair.  During the
+full five-second tone the serialized snapshot proved
+`B0=0x01000107, B1=0x01000107`, while fresh logs proved slave and master enable
+shadows (`0x01`) and teardown shadows (`0x00`).  Device 0 was physically observed
+before attach, cold init and the PA PMU/PMD lifecycle completed, GPIO-low cleanup
+was verified, and no kernel fault occurred.  The user heard nothing.  Therefore
+DP1 bank-enable parity is not the current silence gate.  The next cold-boot A/B
+restores PA Volume 12, the exact +18 dB value from the last audible recovery
+runs; the tested transport remains unchanged.

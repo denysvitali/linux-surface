@@ -397,10 +397,11 @@ set_ctl 'SpkrLeft COMP Switch' 0
 set_ctl 'SpkrLeft VISENSE Switch' 0
 set_ctl 'SpkrLeft BOOST Switch' 1
 set_ctl 'SpkrLeft DAC Switch' 1
-# Force a real control transition after the cold-init replay. Code 8 is 6 dB
-# below the historically audible code 12 and is a safer first listening level.
+# Force a real control transition after the cold-init replay.  Code 12 is the
+# exact +18 dB setting used by the historically audible recovery runs; the
+# guarded v3-v5 tests at code 8 were all silent despite correct transport.
 set_ctl 'SpkrLeft PA Volume' 0
-set_ctl 'SpkrLeft PA Volume' 8
+set_ctl 'SpkrLeft PA Volume' 12
 set_ctl 'SpkrLeft Smart Boost Level' 0
 
 echo "=== [5] short 48 kHz S16_LE stereo tone ==="
