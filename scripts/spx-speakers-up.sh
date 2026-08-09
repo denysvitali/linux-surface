@@ -39,6 +39,7 @@ SPX_CARD=
 HARDWARE_TOUCHED=0
 TEST_SUCCEEDED=0
 KERNEL_FAULT=0
+PHYSICAL_DEV0_SEEN=0
 KERNEL_FAULT_RE='soft lockup|hard LOCKUP|rcu.*stall|kernel panic|Oops:'
 KERNEL_FAULT_RE+='|Internal error:|SError|hung task|synchronous external abort'
 KERNEL_FAULT_RE+='|watchdog: BUG'
@@ -140,27 +141,27 @@ fresh_regs()
 		"$tag" "$SPX_COMP_PARAMS" "$SPX_SLV_STATUS"
 	[[ $SPX_COMP_PARAMS == 0x016840c6 ]] ||
 		fatal "AHB bridge canary is invalid ($SPX_COMP_PARAMS)"
-	if [[ $tag == pre-stream ]]; then
-		[[ $SPX_SLV_STATUS == 0x00000001 ]] ||
-			fatal "single amp is not stably attached at physical device 0 ($SPX_SLV_STATUS)"
-	else
-		# In no-assign mode the amp cannot acquire any address except device 0,
-		# but this master's status latch commonly clears on the first frame-bank
-		# switch.  A zero after a proven pre-stream 0x1 is therefore ambiguous:
-		# it can mean absent or merely stale.  Keep the bounded listening test
-		# running and decide from the active-bank transport plus acoustic result;
-		# still reject any indication that the slave moved to another address.
-		case $SPX_SLV_STATUS in
-		0x00000000)
+	# In no-assign mode the amp cannot acquire any address except device 0,
+	# but this master's status latch flickers between 0x1 and 0x0 even while
+	# the powered amp remains present.  Require a real 0x1 in the immediate
+	# GPIO-high window, remember that physical proof, and reject every other
+	# nonzero address.  Later zero samples are ambiguous/stale, not proof that
+	# the already-observed device vanished.
+	case $SPX_SLV_STATUS in
+	0x00000001)
+		PHYSICAL_DEV0_SEEN=1
+		;;
+	0x00000000)
+		if [[ $tag != attach-window ]]; then
+			(( PHYSICAL_DEV0_SEEN )) ||
+				fatal "device 0 was never physically observed before $tag"
 			echo "  WARNING: slave-status latch cleared after the proven device-0 attach"
-			;;
-		0x00000001)
-			;;
-		*)
-			fatal "single amp left physical device 0 ($SPX_SLV_STATUS)"
-			;;
-		esac
-	fi
+		fi
+		;;
+	*)
+		fatal "single amp left physical device 0 ($SPX_SLV_STATUS)"
+		;;
+	esac
 	if [[ $tag == active-stream ]]; then
 		printf '  MCP_STATUS=%s DP1 banks: B0=%s B1=%s\n' \
 			"$SPX_MCP_STATUS" "$SPX_DP1_B0" "$SPX_DP1_B1"
@@ -350,7 +351,14 @@ set_amp_gpio 0x00 || fatal "failed to park both WSA GPIOs off"
 sleep 10
 HARDWARE_TOUCHED=1
 set_amp_gpio 0x02 || fatal "failed to power the single guarded WSA GPIO"
-sleep 1
+for ((ATTACH_SAMPLE = 0; ATTACH_SAMPLE < 40; ATTACH_SAMPLE++)); do
+	fresh_regs attach-window
+	(( PHYSICAL_DEV0_SEEN )) && break
+	sleep 0.05
+done
+(( PHYSICAL_DEV0_SEEN )) ||
+	fatal "single amp never announced at physical device 0 after GPIO-high"
+echo "  physical device-0 presence observed after $((ATTACH_SAMPLE + 1)) sample(s)"
 kmsg_marker enum
 ENUM_MARKER=$SPX_KMSG_MARKER
 echo 1 | sudo tee /sys/module/soundwire_qcom/parameters/spx_force_attach >/dev/null

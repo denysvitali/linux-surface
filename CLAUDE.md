@@ -228,7 +228,17 @@ full test interval ran.  It again verified GPIO-low cleanup, with no kernel
 fault.  The harness now accepts this bounded 137 result and waits up to eight
 seconds for the delayed PA POST_PMD before judging the lifecycle.
 
-For the next guarded boot, `0x1` remains mandatory before playback.  After that
-proof, `0x0` is treated as the documented ambiguous/stale latch state only during
-the bounded stream and post-stream checks; any non-device-0 address, incorrect
-active bank, missing DAPM lifecycle event or kernel fault still aborts the test.
+For the next guarded run, a real `0x1` remains mandatory in the GPIO-high window
+before logical attach or playback.  After that proof, `0x0` is treated as the
+documented ambiguous/stale latch state during later pre-stream, active-stream and
+post-stream checks; any non-device-0 address, incorrect active bank, missing DAPM
+lifecycle event or kernel fault still aborts the test.
+
+Two later attempts falsely aborted because their single pre-stream sample landed
+on `0x0`.  A no-audio timing probe then powered only pin1 and took 40 serialized
+master snapshots over about 2.4 seconds: 23 read `MCP_SLV_STATUS=0x1` and 17 read
+`0x0`, while GPIO remained high throughout.  This proves the status latch flickers
+even before streaming.  The harness now samples immediately after GPIO-high until
+it observes at least one real device-0 `0x1`, remembers that physical proof, and
+then permits later ambiguous zero samples.  It still rejects every other nonzero
+address and never opens ALSA unless device 0 was actually observed first.
