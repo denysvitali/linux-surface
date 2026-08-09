@@ -40,6 +40,12 @@ HARDWARE_TOUCHED=0
 TEST_SUCCEEDED=0
 KERNEL_FAULT=0
 PHYSICAL_DEV0_SEEN=0
+# Amplifier power state. The default reproduces the guarded single-amp runs:
+# boot with both amps parked off, then raise pin1 only. Set SPX_EXPECT_GPIO_VAL
+# and SPX_AMP_GPIO_ON to 0x06 to reproduce the audible 07-26/07-28 two-amp state.
+SPX_EXPECT_GPIO_VAL=${SPX_EXPECT_GPIO_VAL:-0x00}
+SPX_AMP_GPIO_ON=${SPX_AMP_GPIO_ON:-0x02}
+SPX_EXPECT_GPIO_VAL_DEC=$((SPX_EXPECT_GPIO_VAL))
 KERNEL_FAULT_RE='soft lockup|hard LOCKUP|rcu.*stall|kernel panic|Oops:'
 KERNEL_FAULT_RE+='|Internal error:|SError|hung task|synchronous external abort'
 KERNEL_FAULT_RE+='|watchdog: BUG'
@@ -159,7 +165,17 @@ fresh_regs()
 		fi
 		;;
 	*)
-		fatal "single amp left physical device 0 ($SPX_SLV_STATUS)"
+		# With both amplifiers powered, two slaves answer at once and the
+		# latch legitimately reports something other than 0x1 (0x4, 0x40,
+		# a garbled DevID). That is the configuration under test, not a
+		# fault, so accept any nonzero address as proof that an amp
+		# announced. The single-amp default still rejects it.
+		if [[ $SPX_AMP_GPIO_ON != 0x02 ]]; then
+			PHYSICAL_DEV0_SEEN=1
+			echo "  NOTE: multi-amp mode, slave status $SPX_SLV_STATUS accepted as presence"
+		else
+			fatal "single amp left physical device 0 ($SPX_SLV_STATUS)"
+		fi
 		;;
 	esac
 	if [[ $tag == active-stream ]]; then
@@ -187,8 +203,11 @@ set_amp_gpio()
 }
 
 echo "=== [0] guarded boot invariants ==="
-grep -qw 'wcd934x.spx_wsa_gpio_val=0x00' /proc/cmdline ||
-	fatal "not booted with both amplifiers parked off"
+# The boot-time GPIO value is the variable under test: the audible 07-26/07-28
+# runs booted 0x06 (both amps powered), every silent boot since booted 0x00.
+# Declare which one this run expects so the gate still verifies the boot.
+grep -qw "wcd934x.spx_wsa_gpio_val=$SPX_EXPECT_GPIO_VAL" /proc/cmdline ||
+	fatal "not booted with spx_wsa_gpio_val=$SPX_EXPECT_GPIO_VAL"
 grep -qw 'wcd934x.spx_wsa_gpio_dir=0x06' /proc/cmdline ||
 	fatal "not booted with the managed WSA GPIO direction mask"
 grep -qw 'wcd934x.spx_wsa_en_pin=-1' /proc/cmdline ||
@@ -245,7 +264,8 @@ grep -qw 'snd_soc_wsa881x.spx_port_map=0,0,0,0' /proc/cmdline ||
 	fatal "the boot entry did not pin the all-zero WSA port-map override"
 require_param /sys/module/wcd934x/parameters/spx_wsa_en_pin -1
 require_param /sys/module/wcd934x/parameters/spx_wsa_gpio_dir 6
-require_param /sys/module/wcd934x/parameters/spx_wsa_gpio_val 0
+require_param /sys/module/wcd934x/parameters/spx_wsa_gpio_val \
+	"$SPX_EXPECT_GPIO_VAL_DEC"
 grep -qw 'snd_soc_wcd934x.spx_persist_stream=1' /proc/cmdline ||
 	fatal "the boot entry did not arm persistent WCD SLIMbus teardown protection"
 grep -qw 'q6afe_dai.spx_no_port_stop=0' /proc/cmdline ||
@@ -353,7 +373,8 @@ echo "=== [2] power and attach exactly one amplifier ==="
 set_amp_gpio 0x00 || fatal "failed to park both WSA GPIOs off"
 sleep 10
 HARDWARE_TOUCHED=1
-set_amp_gpio 0x02 || fatal "failed to power the single guarded WSA GPIO"
+set_amp_gpio "$SPX_AMP_GPIO_ON" ||
+	fatal "failed to power the guarded WSA GPIO(s) ($SPX_AMP_GPIO_ON)"
 for ((ATTACH_SAMPLE = 0; ATTACH_SAMPLE < 40; ATTACH_SAMPLE++)); do
 	fresh_regs attach-window
 	(( PHYSICAL_DEV0_SEEN )) && break
