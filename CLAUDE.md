@@ -271,3 +271,28 @@ was verified, and no kernel fault occurred.  The user heard nothing.  Therefore
 DP1 bank-enable parity is not the current silence gate.  The next cold-boot A/B
 restores PA Volume 12, the exact +18 dB value from the last audible recovery
 runs; the tested transport remains unchanged.
+
+## 2026-08-09 guarded v6 runtime result (listening result PENDING)
+
+V6 changed exactly one variable from v5: `SpkrLeft PA Volume` 8 -> 12, the exact
++18 dB value from the last audible recovery runs.  The kernel command line,
+modules and DTB were byte-identical to v5.  The run
+(`runs/b1f315df-...-20260809T172639Z-914`) passed every software gate: real
+device-0 presence in the GPIO-high window (`MCP_SLV_STATUS=0x1` with a valid
+`COMP_PARAMS=0x016840c6` canary), idle cold-init replay, the DAC-only mixer
+path, a verified `0 -> 12` PA Volume transition in `mixer.log`, a full
+five-second 48 kHz S16_LE stereo tone, mid-stream `B0=0x01000107
+B1=0x01000107`, verified GPIO-low parking, no kernel fault, exit status 0.
+
+**The listening result was never collected** — the driving session died on
+upstream API errors immediately after arming the boot.  Do not treat this run
+as silent; it is unmeasured.  The machine is still booted in it.
+
+Transport cross-check (open thread 2, done offline from this capture):
+`SWRM_DP_PORT_CTRL` = `en_chan<<24 | offset2<<16 | offset1<<8 | sinterval`, so
+`0x01000107` = chan `0x01`, offset2 `0x00`, offset1 `0x01`, sinterval `0x07`.
+That is bit-exact against master port 1 in `sc8180x-wcd9340.dtsi` (`0x07`,
+`0x01`, `0x00`), which matches the Windows static left descriptor.  The
+single-port DAC transport therefore holds no discrepancy against the Windows
+ground truth; the only remaining structural difference is Windows opening all
+four descriptors, which was already tested (loud transient, then silence).
