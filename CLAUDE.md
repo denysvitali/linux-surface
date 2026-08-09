@@ -375,7 +375,7 @@ no-op comparison: with `spx_win_transport=0` the `PORT_CTRL` path falls back to
 read-modify-write over the AHB bridge instead of composing the word in one
 write, and it *still* read back `0x01000107`.  Both code paths, both silent.
 
-## The audible baseline still exists on disk (2026-08-09)
+## The audible baseline on disk — FIRST ATTEMPT WAS WRONG (2026-08-09)
 
 Five consecutive gate-perfect silent boots (v3-v7) mean the useful move is no
 longer another hypothesis but recovering a known-audible reference.  The
@@ -415,3 +415,44 @@ Three candidate next tests, in decreasing confidence and increasing safety:
    `mkinitcpio -P`, keep the audited DTB and harness.  Isolates the rewrite with
    all safety rails, but drops `spx_shadow_dp1_enable` and `spx_snapshot`, so
    the entry and harness need small edits.
+
+### Correction: `spx-windows-native-audio` is NOT the audible entry
+
+The reconstruction above was built on two mistakes, both now disproven:
+
+1. **Git history before 2026-08-09 is squashed.**  `005adbc494a5`,
+   `a88666f0b27d` and `cfc49f4bed61` are all 08-09 commits containing
+   accumulated work, so `a88666f0b27d` is *not* the 07-28 tree and
+   `git show a88666f0b27d:scripts/spx-speakers-up.sh` is an 08-09 artifact.
+   Do not use git to date anything before 08-09; use the `/boot/grub/grub.cfg.bak-*`
+   files and the `/lib/modules/.../updates/*.ko.<suffix>` mtimes instead.
+2. **`spx-windows-native-audio` was a different experiment.**  Its minimal
+   command line lacks `spx_wsa_gpio_val`, `spx_core_enum`, `spx_no_assign` and
+   `spx_write_only`, all of which the bring-up script hard-requires and aborts
+   without.  It cannot have been the entry that produced a tone.
+
+**What the GRUB backups actually show.**  In `grub.cfg.bak-20260729-010942` the
+only speaker entry is `spx-wsa-pin2-test`: `dtb.wsa-pin2`, with
+`wcd934x.spx_wsa_gpio_dir=0x06 wcd934x.spx_wsa_gpio_val=0x06
+soundwire_qcom.spx_core_enum=1 spx_force_attach=1 spx_blind_attach=1`.
+`spx_wsa_gpio_val=0x00` does not appear in any backup until 2026-08-04.
+
+So **the audible 07-26/07-28 runs booted `spx_wsa_gpio_val=0x06`** — which the
+later polarity correction re-interpreted as *both amps powered*.  Every silent
+boot since (v3-v7 and the 08-04 onward series) boots `0x00` and then raises pin1
+only, i.e. exactly one amp.
+
+That is a real, untested, single-variable difference between the audible era and
+every silent boot, and it sits upstream of everything v3-v7 varied.  It also
+sits awkwardly against [[spx-wsa-enum-collision]], which says two amps at
+device 0 collide — yet a tone was heard in that configuration, twice.
+
+Note the guarded bring-up drives the GPIOs itself (`val=0x00`, then `0x02`), so
+changing the command line alone does not reproduce the old state; the script's
+power sequence has to leave both amps enabled too.
+
+**Attempted and reverted:** the 07-28 15:56 module snapshot was installed and
+`mkinitcpio -P` run, then fully restored after the premise collapsed.  Keep in
+mind those modules predate `spx_shadow_dp1_enable` and `spx_snapshot`, so
+booting any v3-v7 entry against them fails to load `soundwire_qcom` on an
+unknown parameter and leaves the machine with no sound card.
