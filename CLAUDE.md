@@ -193,6 +193,11 @@ bring-up, then `dmesg | grep spxwr`.
 2. If the first stream is audible but dirty, capture the serialized DP1 master
    snapshot and compare it against the static Windows descriptor table.
 3. Second amp / DT left-right name inversion.
+4. Test the boot-only `spx_shadow_dp1_enable=1` experiment.  It mirrors only
+   slave DP1 ChannelEn (0x0120/0x0130), not the timing/transport registers that
+   made the disproven full-bank mirror desynchronize the amp.  This directly
+   tests the historical observation that enabling the slave's stranded bank
+   made audio appear mid-stream when its unacknowledged frame switch was lost.
 
 ## Debug tooling (`drivers/spx_extras/`)
 

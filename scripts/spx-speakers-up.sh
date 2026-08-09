@@ -214,6 +214,7 @@ require_param /sys/module/soundwire_qcom/parameters/spx_no_assign 1
 require_param /sys/module/soundwire_qcom/parameters/spx_blind_attach 0
 require_param /sys/module/soundwire_qcom/parameters/spx_write_dev0 1
 require_param /sys/module/soundwire_qcom/parameters/spx_mirror_banks 0
+require_param /sys/module/soundwire_qcom/parameters/spx_shadow_dp1_enable 1
 require_param /sys/module/soundwire_qcom/parameters/spx_write_twice 0
 require_param /sys/module/soundwire_qcom/parameters/spx_bank_switch_repeats 1
 require_param /sys/module/soundwire_qcom/parameters/spx_watchdog 0
@@ -446,8 +447,12 @@ grep -q 'SPX: hw_params active_ports=1' <<<"$TONE_KERNEL_LOG" ||
 	fatal "WSA DAC-only stream setup was not observed"
 grep -q 'SPX: PA DAPM event 0x1' <<<"$TONE_KERNEL_LOG" ||
 	fatal "speaker PA PRE_PMU event was not observed"
+grep -q 'SPX: shadow DP1 ChannelEn value=0x01' <<<"$TONE_KERNEL_LOG" ||
+	fatal "slave DP1 enable was not shadowed into both banks"
 grep -q 'SPX: PA DAPM event 0x8' <<<"$TONE_KERNEL_LOG" ||
 	fatal "speaker PA POST_PMD teardown event was not observed"
+grep -q 'SPX: shadow DP1 ChannelEn value=0x00' <<<"$TONE_KERNEL_LOG" ||
+	fatal "slave DP1 disable was not shadowed into both banks"
 
 sleep 2
 fresh_regs post-stream

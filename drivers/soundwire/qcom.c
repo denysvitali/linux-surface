@@ -125,13 +125,18 @@ static bool spx_pm_held;
 /*
  * SPX: dropped commands are invisible (unicast always reports SDW_CMD_OK), and
  * a lost bank-switch strands the bus on the bank whose channel-enable was never
- * programmed -- the "random silent run" failure. Mirror all banked port
- * programming into BOTH banks (master DPn regs and the amp's slave DPn regs)
- * and repeat amp-bound writes so a single dropped command cannot mute a stream.
+ * programmed -- the "random silent run" failure. The old full-bank mirror and
+ * write-twice experiments are retained opt-in but were proven to desynchronize
+ * this amp. A narrower experiment shadows only DP1 ChannelEn, leaving every
+ * timing/transport register in the normal next-bank sequence.
  */
 static int spx_mirror_banks;
 module_param(spx_mirror_banks, int, 0644);
 MODULE_PARM_DESC(spx_mirror_banks, "SPX: program both register banks with identical port config");
+static int spx_shadow_dp1_enable;
+module_param(spx_shadow_dp1_enable, int, 0444);
+MODULE_PARM_DESC(spx_shadow_dp1_enable,
+		 "SPX: shadow only slave DP1 ChannelEn into both banks (boot-only dropped-switch workaround)");
 static int spx_write_twice;
 module_param(spx_write_twice, int, 0644);
 MODULE_PARM_DESC(spx_write_twice, "SPX: issue amp-bound unicast writes twice (dropped-write insurance)");
@@ -2478,6 +2483,16 @@ route_write:
 						mirror = addr + 0x10;
 					else if ((addr & 0xf0) == 0x30)
 						mirror = addr - 0x10;
+				}
+				if (!mirror && spx_shadow_dp1_enable) {
+					if (addr == SDW_DPN_CHANNELEN_B0(1))
+						mirror = SDW_DPN_CHANNELEN_B1(1);
+					else if (addr == SDW_DPN_CHANNELEN_B1(1))
+						mirror = SDW_DPN_CHANNELEN_B0(1);
+					if (mirror)
+						dev_info(ctrl->dev,
+							 "SPX: shadow DP1 ChannelEn value=0x%02x reg 0x%04x->0x%04x\n",
+							 msg->buf[i], addr, mirror);
 				}
 				if (spx_write_twice && addr != SDW_SCP_DEVNUMBER)
 					reps = 2;
