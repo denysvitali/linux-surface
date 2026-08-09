@@ -49,11 +49,11 @@ inverted) is brought up. The second amp is untouched.
 - **Always `sudo mkinitcpio -P` after installing modules** into
   `/lib/modules/$(uname -r)/updates/`. The initramfs bundles those `.ko` files; skip
   this and the boot silently loads the *stale* copy. This has voided whole test boots.
-- **`grubenv next_entry` is single-use** — consumed by the boot it steers. After
-  first proving the persistent `spx-audio-rescue` default, arm only the audited
-  test (`sudo grub-editenv /boot/grub/grubenv set next_entry=spx-speaker-dev0-v3-audited`)
-  as the final operation before that one reboot, and verify after boot with
-  `grep -o spx_wsa_gpio_val=0x00 /proc/cmdline`.
+- **`grubenv next_entry` is single-use** — consumed by the boot it steers. Keep
+  `spx-audio-rescue` as the persistent default and arm only the freshly generated,
+  fully audited one-time entry as the final operation before a test reboot. Never
+  reuse a stale v3/v4 entry after changing a module or harness. Verify after boot
+  with `grep -o spx_wsa_gpio_val=0x00 /proc/cmdline`.
 - **One variable per test boot.** Never put an unverified DTB or cmdline on the
   default GRUB entry.
 - Never read `/sys/module/soundwire_qcom/parameters/spx_reenum` (write-only, blocks
@@ -193,11 +193,13 @@ bring-up, then `dmesg | grep spxwr`.
 2. If the first stream is audible but dirty, capture the serialized DP1 master
    snapshot and compare it against the static Windows descriptor table.
 3. Second amp / DT left-right name inversion.
-4. Test the boot-only `spx_shadow_dp1_enable=1` experiment.  It mirrors only
-   slave DP1 ChannelEn (0x0120/0x0130), not the timing/transport registers that
-   made the disproven full-bank mirror desynchronize the amp.  This directly
-   tests the historical observation that enabling the slave's stranded bank
-   made audio appear mid-stream when its unacknowledged frame switch was lost.
+4. The first `spx_shadow_dp1_enable=1` boot mirrored slave DP1 ChannelEn into
+   both banks, completed the full five-second stream, and was silent.  Its
+   master bank 1 was still disabled (`0x00000107`), however, whereas the
+   historical mid-stream recovery explicitly enabled both master and slave
+   bank 1.  The next revision shadows only master and slave DP1 ChannelEn; it
+   still leaves every other timing/transport register under the normal banked
+   sequence and keeps the disproven full-bank mirror disabled.
 
 ## Debug tooling (`drivers/spx_extras/`)
 
@@ -247,3 +249,16 @@ even before streaming.  The harness now samples immediately after GPIO-high unti
 it observes at least one real device-0 `0x1`, remembers that physical proof, and
 then permits later ambiguous zero samples.  It still rejects every other nonzero
 address and never opens ALSA unless device 0 was actually observed first.
+
+## 2026-08-09 guarded v4 runtime result
+
+The v4 one-time boot loaded the intended `spx_shadow_dp1_enable=1` module and
+completed the full guarded five-second stream without a kernel fault.  The real
+device-0 presence window, idle cold-init replay, ALSA submission, DAC-only
+`hw_params`, PA PMU/PMD lifecycle, and verified GPIO-low cleanup all passed.  The
+slave DP1 enable and disable writes were shadowed across both banks.  The user
+heard nothing.  The serialized master snapshot was
+`B0=0x01000107, B1=0x00000107`: slave-only shadowing did not reproduce the older
+mid-stream recovery, which explicitly enabled bank 1 on both sides.  The next
+single-variable test therefore adds only master DP1 ChannelEn parity; gain and
+all other transport/analog settings remain unchanged.

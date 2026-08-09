@@ -165,13 +165,10 @@ fresh_regs()
 	if [[ $tag == active-stream ]]; then
 		printf '  MCP_STATUS=%s DP1 banks: B0=%s B1=%s\n' \
 			"$SPX_MCP_STATUS" "$SPX_DP1_B0" "$SPX_DP1_B1"
-		if (( SPX_MCP_STATUS & 1 )); then
-			[[ $SPX_DP1_B1 == 0x01000107 ]] ||
-				fatal "active bank 1 does not contain the enabled DAC transport"
-		else
-			[[ $SPX_DP1_B0 == 0x01000107 ]] ||
-				fatal "active bank 0 does not contain the enabled DAC transport"
-		fi
+		[[ $SPX_DP1_B0 == 0x01000107 ]] ||
+			fatal "master bank 0 does not contain the enabled DAC transport"
+		[[ $SPX_DP1_B1 == 0x01000107 ]] ||
+			fatal "master bank 1 does not contain the shadowed DAC transport"
 	fi
 }
 
@@ -447,12 +444,16 @@ grep -q 'SPX: hw_params active_ports=1' <<<"$TONE_KERNEL_LOG" ||
 	fatal "WSA DAC-only stream setup was not observed"
 grep -q 'SPX: PA DAPM event 0x1' <<<"$TONE_KERNEL_LOG" ||
 	fatal "speaker PA PRE_PMU event was not observed"
-grep -q 'SPX: shadow DP1 ChannelEn value=0x01' <<<"$TONE_KERNEL_LOG" ||
+grep -q 'SPX: shadow slave DP1 ChannelEn value=0x01' <<<"$TONE_KERNEL_LOG" ||
 	fatal "slave DP1 enable was not shadowed into both banks"
+grep -q 'SPX: shadow master DP1 ChannelEn value=0x01' <<<"$TONE_KERNEL_LOG" ||
+	fatal "master DP1 enable was not shadowed into both banks"
 grep -q 'SPX: PA DAPM event 0x8' <<<"$TONE_KERNEL_LOG" ||
 	fatal "speaker PA POST_PMD teardown event was not observed"
-grep -q 'SPX: shadow DP1 ChannelEn value=0x00' <<<"$TONE_KERNEL_LOG" ||
+grep -q 'SPX: shadow slave DP1 ChannelEn value=0x00' <<<"$TONE_KERNEL_LOG" ||
 	fatal "slave DP1 disable was not shadowed into both banks"
+grep -q 'SPX: shadow master DP1 ChannelEn value=0x00' <<<"$TONE_KERNEL_LOG" ||
+	fatal "master DP1 disable was not shadowed into both banks"
 
 sleep 2
 fresh_regs post-stream
