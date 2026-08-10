@@ -46,6 +46,15 @@ PHYSICAL_DEV0_SEEN=0
 SPX_EXPECT_GPIO_VAL=${SPX_EXPECT_GPIO_VAL:-0x00}
 SPX_AMP_GPIO_ON=${SPX_AMP_GPIO_ON:-0x02}
 SPX_EXPECT_GPIO_VAL_DEC=$((SPX_EXPECT_GPIO_VAL))
+# Addressing model under test. The audible 07-25/28 era let the amp enumerate
+# naturally (device 1, MCP_SLV_STATUS=0x4) with spx_no_assign=0 spx_write_dev0=0;
+# every silent v3-v9 boot pinned it unenumerated at device 0. The defaults
+# reproduce the pinned guarded runs. Set SPX_EXPECT_NO_ASSIGN=0,
+# SPX_EXPECT_WRITE_DEV0=0 and SPX_EXPECT_DEV_STATUS=0x00000004 to test the
+# era's enumerated addressing.
+SPX_EXPECT_NO_ASSIGN=${SPX_EXPECT_NO_ASSIGN:-1}
+SPX_EXPECT_WRITE_DEV0=${SPX_EXPECT_WRITE_DEV0:-1}
+SPX_EXPECT_DEV_STATUS=${SPX_EXPECT_DEV_STATUS:-0x00000001}
 KERNEL_FAULT_RE='soft lockup|hard LOCKUP|rcu.*stall|kernel panic|Oops:'
 KERNEL_FAULT_RE+='|Internal error:|SError|hung task|synchronous external abort'
 KERNEL_FAULT_RE+='|watchdog: BUG'
@@ -157,6 +166,13 @@ fresh_regs()
 	0x00000001)
 		PHYSICAL_DEV0_SEEN=1
 		;;
+	"$SPX_EXPECT_DEV_STATUS")
+		# Only reachable when the expected status is not 0x1: the
+		# enumerated-addressing experiment, where the amp legitimately
+		# answers at its assigned address after force-attach.
+		PHYSICAL_DEV0_SEEN=1
+		echo "  NOTE: amp answering at the expected enumerated address $SPX_SLV_STATUS"
+		;;
 	0x00000000)
 		if [[ $tag != attach-window ]]; then
 			(( PHYSICAL_DEV0_SEEN )) ||
@@ -226,9 +242,11 @@ sudo fuser /dev/watchdog0 2>/dev/null | grep -qw 1 ||
 
 require_param /sys/module/soundwire_qcom/parameters/spx_exact_windows_init N
 require_param /sys/module/soundwire_qcom/parameters/spx_core_enum 1
-require_param /sys/module/soundwire_qcom/parameters/spx_no_assign 1
+require_param /sys/module/soundwire_qcom/parameters/spx_no_assign \
+	"$SPX_EXPECT_NO_ASSIGN"
 require_param /sys/module/soundwire_qcom/parameters/spx_blind_attach 0
-require_param /sys/module/soundwire_qcom/parameters/spx_write_dev0 1
+require_param /sys/module/soundwire_qcom/parameters/spx_write_dev0 \
+	"$SPX_EXPECT_WRITE_DEV0"
 require_param /sys/module/soundwire_qcom/parameters/spx_mirror_banks 0
 require_param /sys/module/soundwire_qcom/parameters/spx_shadow_dp1_enable 1
 require_param /sys/module/soundwire_qcom/parameters/spx_write_twice 0
