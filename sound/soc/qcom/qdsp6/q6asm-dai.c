@@ -80,6 +80,15 @@ struct q6asm_dai_rtd {
 	struct delayed_work write_watchdog;
 	unsigned long period_jiffies;
 	bool write_fallback;
+	/*
+	 * SPX: the firmware ACKs writes but has never been observed to emit a
+	 * consumption event, so the fallback worker fakes period progress and
+	 * ALSA looks healthy whether or not the DSP renders anything. Count
+	 * both paths so a silent stream can be told apart from a dead one.
+	 */
+	unsigned int n_write_done;
+	unsigned int n_fallback;
+	unsigned int n_submitted;
 };
 
 struct q6asm_dai_data {
@@ -274,6 +283,8 @@ static void q6asm_write_watchdog(struct work_struct *work)
 	snd_pcm_period_elapsed(prtd->substream);
 	if (prtd->state != Q6ASM_STREAM_RUNNING)
 		return;
+	prtd->n_fallback++;
+	prtd->n_submitted++;
 	q6asm_write_async(prtd->audio_client, prtd->stream_id,
 			  prtd->pcm_count, 0, 0, 0);
 
@@ -298,6 +309,7 @@ static void event_handler(uint32_t opcode, uint32_t token,
 			 * Fill the DSP queue before starting the paced replacement
 			 * worker, otherwise its first period underruns into silence.
 			 */
+			prtd->n_submitted += prtd->periods;
 			for (i = 0; i < prtd->periods; i++)
 				q6asm_write_async(prtd->audio_client,
 						  prtd->stream_id,
@@ -311,6 +323,7 @@ static void event_handler(uint32_t opcode, uint32_t token,
 		prtd->state = Q6ASM_STREAM_STOPPED;
 		break;
 	case ASM_CLIENT_EVENT_DATA_WRITE_DONE: {
+		prtd->n_write_done++;
 		if (prtd->write_fallback)
 			break;
 		mod_delayed_work(system_wq, &prtd->write_watchdog,
@@ -359,6 +372,9 @@ static int q6asm_dai_prepare(struct snd_soc_component *component,
 	prtd->pcm_count = snd_pcm_lib_period_bytes(substream);
 	prtd->pcm_irq_pos = 0;
 	prtd->write_fallback = false;
+	prtd->n_write_done = 0;
+	prtd->n_fallback = 0;
+	prtd->n_submitted = 0;
 	prtd->period_jiffies = DIV_ROUND_UP((unsigned long)prtd->pcm_count * HZ,
 					   runtime->rate * runtime->channels *
 					   (prtd->bits_per_sample / 8));
@@ -578,6 +594,18 @@ static int q6asm_dai_close(struct snd_soc_component *component,
 	struct q6asm_dai_rtd *prtd = runtime->private_data;
 
 	cancel_delayed_work_sync(&prtd->write_watchdog);
+
+	/*
+	 * SPX: n_write_done == 0 means the ADSP never reported consuming a
+	 * single buffer, so every period ALSA saw was manufactured by the
+	 * fallback worker. In that case the stream was never rendered and no
+	 * downstream (SoundWire/PA/transport) result from it is meaningful.
+	 */
+	dev_info(component->dev,
+		 "SPX ASM stream %u: submitted=%u write_done=%u fallback=%u%s\n",
+		 prtd->stream_id, prtd->n_submitted, prtd->n_write_done,
+		 prtd->n_fallback,
+		 prtd->n_write_done ? "" : "  <-- DSP CONSUMED NOTHING");
 
 	if (prtd->audio_client) {
 		if (prtd->state)
