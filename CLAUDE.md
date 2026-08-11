@@ -456,3 +456,55 @@ power sequence has to leave both amps enabled too.
 mind those modules predate `spx_shadow_dp1_enable` and `spx_snapshot`, so
 booting any v3-v7 entry against them fails to load `soundwire_qcom` on an
 unknown parameter and leaves the machine with no sound card.
+
+## 2026-08-11 — AUDIBLE BASELINE RECOVERED (v15)
+
+The v15 guarded cold boot produced a **clack, then a 440 Hz tone with static** from
+the physical right speaker — the first audible run since 2026-07-28 and the end of
+the eight-boot silent series (v3-v7, v9, v10, v13/14).
+
+The v15 configuration, exactly:
+
+- DTB `sc8180x-surface-pro-x.dtb.speaker-dev0-v12-winfw` = the audited v3 DTB plus
+  two edits: ADSP `firmware-name` -> `qcadsp8180-win.mbn`, and the ADSP carveout
+  restored to 28 MiB (`memory@96e00000` span `0x1c00000`, CDSP shifted to
+  `0x98a00000`/`0x600000`).  Without the carveout the win image fails PAS with -22.
+- **`SPX_AMP_GPIO_ON=0x04`** via `/var/lib/spx-speaker-autotest/test-env` — power
+  the **pin2** amplifier, not pin1.  Everything else is the v6 command line.
+- Attach took 4 samples (`MCP_SLV_STATUS` 0x0,0x0,0x0,0x1), then the normal
+  five-second tone.  `SPX ASM stream 1: submitted=22 write_done=19 fallback=18`.
+
+Two variables changed together (win firmware and pin2); the next single-variable
+boot bisects them.
+
+### What the ASM counters proved
+
+`q6asm-dai` now reports `submitted/write_done/fallback` at stream close.  The result
+is a hard rule for every future test:
+
+**Only the FIRST stream of a boot has `write_done > 0`.**  Every later stream in the
+same boot reports `write_done=0` ("DSP CONSUMED NOTHING") — `spx_persist_stream`
+parks the SLIMbus stream and AFE port, and the DSP never re-attaches to the new
+session.  The fallback worker fakes period progress, so ALSA still looks healthy.
+Any A/B run on a second or later stream of a boot is **meaningless**; several
+mid-session probes on 2026-08-11 were invalidated this way.
+
+### pin1 vs pin2
+
+The pin1 amp (DT `pin1`, physically the RIGHT speaker) has never produced any
+audible sound, not even a power-on click, across the whole silent series.  The pin2
+amp clicked audibly the first time it was ever powered and then produced this tone.
+Suspect pin1's amp or its speaker is dead; work on pin2 from now on.
+
+### Tooling corrections found while probing
+
+- `spx_wsa_seq.ko` rejects any register outside `0x3000-0x36ff`, so every attempt to
+  poke slave DP1 registers (`0x0120`-`0x0134`) through it silently did nothing.  The
+  "audible poke" run was therefore master-writes-only, and neither master bank poke
+  alone reproduced it — the audibility came from that run being the boot's first
+  stream, not from the pokes.
+- `spx-audio-modules` looked up the ADSP at a hardcoded `remoteproc1`; the win-fw
+  boot enumerates it as `remoteproc2`, so the loader timed out and no sound card
+  appeared.  It now searches by `name == adsp`.
+- The autotest unit required `soundwire_qcom.spx_no_assign=1` on the command line,
+  which blocked the era-addressing entries; that condition is removed.
