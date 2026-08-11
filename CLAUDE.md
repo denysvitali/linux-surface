@@ -5,9 +5,13 @@
 Make the built-in speakers work **fully**: clean audio, at maximum volume if wanted,
 from both speakers, surviving normal use (not just one stream after a cold boot).
 
-## Where we are (2026-08-09)
+## Where we are (2026-08-11)
 
-Audio plays, but it is not clean. Live listening on 2026-07-28 confirmed:
+Audio plays, but it is not clean. Live listening through 2026-08-11 confirmed:
+
+0. V16 reproduced the clack and 440 Hz tone with static from the physical right
+   speaker using the stock `qcadsp8180.mbn`.  The Windows ADSP image is not
+   required; powering WCD GPIO pin2 (`SPX_AMP_GPIO_ON=0x04`) recovered output.
 
 1. DAC-only transport: startup clack, then tone with static.
 2. COMP-only transport: low tone with static.
@@ -35,8 +39,9 @@ off. Fifteen independent reviews completed on 2026-08-09. This is still only a
 single-speaker candidate: do not select it until its corrected modules, DTB and
 initramfs have been rebuilt/restaged and the no-audio rescue boot has been proven.
 
-Only the **left** amp (DT `pin1`, physically the RIGHT speaker — the DT names are
-inverted) is brought up. The second amp is untouched.
+Only the amp on **WCD GPIO pin2** is powered. Listening identifies it as the
+physical RIGHT speaker. The forced device-0 attach still uses the DT `left_spkr`
+codec object, so that software label does not identify which physical amp answered.
 
 ## Hard rules
 
@@ -491,10 +496,12 @@ mid-session probes on 2026-08-11 were invalidated this way.
 
 ### pin1 vs pin2
 
-The pin1 amp (DT `pin1`, physically the RIGHT speaker) has never produced any
-audible sound, not even a power-on click, across the whole silent series.  The pin2
-amp clicked audibly the first time it was ever powered and then produced this tone.
-Suspect pin1's amp or its speaker is dead; work on pin2 from now on.
+The pin1 amp has never produced any audible sound, not even a power-on click,
+across the whole silent series.  The pin2 amp clicked audibly the first time it
+was ever powered and then produced this tone from the physical RIGHT speaker.
+Suspect pin1's amp or its speaker is dead; work on pin2 from now on.  Do not infer
+the physical side from the bound `left_spkr` codec object while forced device-0
+addressing is in use.
 
 ### Tooling corrections found while probing
 
@@ -508,3 +515,39 @@ Suspect pin1's amp or its speaker is dead; work on pin2 from now on.
   appeared.  It now searches by `name == adsp`.
 - The autotest unit required `soundwire_qcom.spx_no_assign=1` on the command line,
   which blocked the era-addressing entries; that condition is removed.
+
+## 2026-08-11 — v16 firmware bisect: stock ADSP is audible
+
+V16 changed one variable from v15: it booted the audited stock-firmware DTB and
+therefore loaded `qcom/msft/surface/pro-x-sq2/qcadsp8180.mbn` instead of
+`qcadsp8180-win.mbn`.  It retained `SPX_AMP_GPIO_ON=0x04` and every v6 transport,
+codec, mixer and safety setting.
+
+The user heard the same signature: a clack, then the 440 Hz tone with static from
+the physical right speaker.  The boot log independently validates the A/B:
+
+- remoteproc loaded stock `qcadsp8180.mbn` (10,758,800 bytes);
+- GPIO 0x43 was driven with managed value `0x04` (pin2 only);
+- device 0 was observed after one sample and both active master DP1 banks were
+  `0x01000107`;
+- the first stream closed with `submitted=22 write_done=19 fallback=18`.
+
+Conclusion: **pin2 was the audibility gate; the Windows ADSP firmware and its
+larger carveout are unnecessary.**  Use stock firmware for all further work.
+The static is a separate data-quality problem.
+
+The counters also invalidate the old premise behind forced timer pacing.  Basic
+write acceptance ACKs are filtered in `q6asm.c`, so the 19 `write_done` callbacks
+were real `ASM_DATA_EVENT_WRITE_DONE_V2` events.  V17 should change only
+`q6asm_dai.spx_force_timer_pacing=0`: queue one buffer and replenish it from the
+DSP completion event, retaining the two-period watchdog as a fallback.  If the
+static is caused by timer/DSP drift, this should clean it up; if WRITE_DONE stops,
+the watchdog safely returns to the v16 pacing path.
+
+V17 is staged as GRUB id `spx-speaker-v17-event-pacing`.  Its command line is
+token-identical to v16 except for `q6asm_dai.spx_force_timer_pacing=0`.  The
+vermagic-matched module sha256 is `1fdfbd6d52105ff251d20e8e46b3ace43e4d7515a1031bd150331e893ce3484b`;
+the prior v16 module is preserved as `q6asm-dai.ko.bak-v16-timer-pacing`.
+`mkinitcpio -P` completed for both normal and rescue images.  The persistent
+default remains `spx-audio-rescue`; v17 has not been armed and no reboot was
+performed.

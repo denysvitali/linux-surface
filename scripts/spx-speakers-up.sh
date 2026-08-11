@@ -40,11 +40,11 @@ HARDWARE_TOUCHED=0
 TEST_SUCCEEDED=0
 KERNEL_FAULT=0
 PHYSICAL_DEV0_SEEN=0
-# Amplifier power state. The default reproduces the guarded single-amp runs:
-# boot with both amps parked off, then raise pin1 only. Set SPX_EXPECT_GPIO_VAL
-# and SPX_AMP_GPIO_ON to 0x06 to reproduce the audible 07-26/07-28 two-amp state.
+# Amplifier power state. V15/V16 proved that WCD GPIO pin2 is the audible amp;
+# boot with both amps parked off, then raise pin2 only. Set SPX_EXPECT_GPIO_VAL
+# and SPX_AMP_GPIO_ON to 0x06 only to reproduce the old two-amp state.
 SPX_EXPECT_GPIO_VAL=${SPX_EXPECT_GPIO_VAL:-0x00}
-SPX_AMP_GPIO_ON=${SPX_AMP_GPIO_ON:-0x02}
+SPX_AMP_GPIO_ON=${SPX_AMP_GPIO_ON:-0x04}
 SPX_EXPECT_GPIO_VAL_DEC=$((SPX_EXPECT_GPIO_VAL))
 # Addressing model under test. The audible 07-25/28 era let the amp enumerate
 # naturally (device 1, MCP_SLV_STATUS=0x4) with spx_no_assign=0 spx_write_dev0=0;
@@ -55,6 +55,7 @@ SPX_EXPECT_GPIO_VAL_DEC=$((SPX_EXPECT_GPIO_VAL))
 SPX_EXPECT_NO_ASSIGN=${SPX_EXPECT_NO_ASSIGN:-1}
 SPX_EXPECT_WRITE_DEV0=${SPX_EXPECT_WRITE_DEV0:-1}
 SPX_EXPECT_DEV_STATUS=${SPX_EXPECT_DEV_STATUS:-0x00000001}
+SPX_EXPECT_FORCE_TIMER_PACING=${SPX_EXPECT_FORCE_TIMER_PACING:-1}
 KERNEL_FAULT_RE='soft lockup|hard LOCKUP|rcu.*stall|kernel panic|Oops:'
 KERNEL_FAULT_RE+='|Internal error:|SError|hung task|synchronous external abort'
 KERNEL_FAULT_RE+='|watchdog: BUG'
@@ -278,6 +279,8 @@ require_param /sys/module/snd_soc_wsa881x/parameters/spx_win_pa_seq \
 require_param /sys/module/snd_soc_wsa881x/parameters/spx_sample_edge -1
 require_param /sys/module/snd_soc_wsa881x/parameters/spx_powerdown_gpio 1
 require_param /sys/module/snd_soc_wsa881x/parameters/spx_port_map 0,0,0,0
+require_param /sys/module/q6asm_dai/parameters/spx_force_timer_pacing \
+	"$SPX_EXPECT_FORCE_TIMER_PACING"
 grep -qw 'snd_soc_wsa881x.spx_port_map=0,0,0,0' /proc/cmdline ||
 	fatal "the boot entry did not pin the all-zero WSA port-map override"
 require_param /sys/module/wcd934x/parameters/spx_wsa_en_pin -1

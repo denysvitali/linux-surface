@@ -103,6 +103,20 @@ MODULE_PARM_DESC(spx_period_adjust_ms,
 		 "SPX: signed adjustment to fallback write cadence in milliseconds");
 
 /*
+ * Keep the recovered audible baseline as the default, but allow a guarded
+ * cold-boot A/B against the DSP's real WRITE_DONE events.  The timer path was
+ * added when only immediate WRITE acceptance ACKs were visible.  Those ACKs
+ * are now filtered in q6asm_stream_callback(), and the v15/v16 first streams
+ * each delivered real ASM_DATA_EVENT_WRITE_DONE_V2 events.  Driving the ring
+ * from a wall-clock timer while ignoring those events can race DSP consumption
+ * and is a plausible source of the remaining static.
+ */
+static bool spx_force_timer_pacing = true;
+module_param(spx_force_timer_pacing, bool, 0644);
+MODULE_PARM_DESC(spx_force_timer_pacing,
+		 "SPX: force timer-paced playback writes instead of DSP WRITE_DONE pacing");
+
+/*
  * SPX (2026-06-22): the address the ADSP is told to map = buf->addr | (sid<<32).
  * RE of the Windows codec mgr (qcadcm8180.sys ADCM\SMMU\POIPU_V1) shows the ADSP
  * audio SMMU IOVA window is [0x1_00000000, 0x1_FFFF0000) (bit32 set; ARID
@@ -303,20 +317,31 @@ static void event_handler(uint32_t opcode, uint32_t token,
 		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
 			int i;
 
-			/* Immediate write ACKs are not consumption events on SPX. */
-			prtd->write_fallback = true;
-			/* This firmware ACKs writes but emits no consumption event.
-			 * Fill the DSP queue before starting the paced replacement
-			 * worker, otherwise its first period underruns into silence.
-			 */
-			prtd->n_submitted += prtd->periods;
-			for (i = 0; i < prtd->periods; i++)
+			if (spx_force_timer_pacing) {
+				/* Fill the DSP queue before starting timer pacing. */
+				prtd->write_fallback = true;
+				prtd->n_submitted += prtd->periods;
+				for (i = 0; i < prtd->periods; i++)
+					q6asm_write_async(prtd->audio_client,
+							  prtd->stream_id,
+							  prtd->pcm_count, 0, 0, 0);
+				mod_delayed_work(system_wq,
+						 &prtd->write_watchdog,
+						 max_t(unsigned long, 1,
+						       prtd->period_jiffies));
+			} else {
+				/* Upstream-style one-buffer queue, paced by WRITE_DONE. */
+				prtd->write_fallback = false;
+				prtd->n_submitted++;
 				q6asm_write_async(prtd->audio_client,
 						  prtd->stream_id,
 						  prtd->pcm_count, 0, 0, 0);
-			mod_delayed_work(system_wq, &prtd->write_watchdog,
-					 max_t(unsigned long, 1,
-					       prtd->period_jiffies));
+				/* Fall back safely if this firmware stops reporting done. */
+				mod_delayed_work(system_wq,
+						 &prtd->write_watchdog,
+						 max_t(unsigned long, 1,
+						       prtd->period_jiffies * 2));
+			}
 		}
 		break;
 	case ASM_CLIENT_EVENT_CMD_EOS_DONE:
@@ -331,9 +356,11 @@ static void event_handler(uint32_t opcode, uint32_t token,
 				       prtd->period_jiffies * 2));
 		prtd->pcm_irq_pos += prtd->pcm_count;
 		snd_pcm_period_elapsed(substream);
-		if (prtd->state == Q6ASM_STREAM_RUNNING)
+		if (prtd->state == Q6ASM_STREAM_RUNNING) {
+			prtd->n_submitted++;
 			q6asm_write_async(prtd->audio_client, prtd->stream_id,
 					   prtd->pcm_count, 0, 0, 0);
+		}
 
 		break;
 		}

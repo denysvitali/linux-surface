@@ -2056,3 +2056,36 @@ then replay those {reg,val,mask} writes DIRECTLY against the WCD9340 regmap (AHB
 stream and listen. Helper modules built this session (vermagic-matched, `KBUILD_MODPOST_WARN=1`):
 `spx_slim_info.ko` (dump SLIM e_addr/laddr), `spx_slim_trace.ko`/`spx_en_trace.ko` (kretprobe
 slim_do_transfer / enable_stream).
+
+---
+
+## 23. (2026-08-11) V15/V16 recover audibility; pin2 is the gate, not ADSP firmware
+
+After eight guarded-but-silent boots, v15 changed two variables: it powered WCD
+GPIO pin2 (`SPX_AMP_GPIO_ON=0x04`) and used the Windows ADSP image.  The user heard
+a clack followed by a 440 Hz tone with static from the physical right speaker.
+
+V16 retained pin2 and reverted only the ADSP DTB to stock.  It produced the same
+audible result.  The kernel log proves stock `qcadsp8180.mbn` loaded, device 0 was
+physically observed, both active DP1 banks read `0x01000107`, and the valid first
+stream reported `submitted=22 write_done=19 fallback=18`.
+
+Decisive conclusions:
+
+- Pin2 is the audibility gate. Pin1 has never clicked or played; its amp/speaker
+  may be dead.
+- The Windows ADSP image and enlarged memory carveout are unnecessary. Continue
+  on the audited stock-firmware DTB.
+- Listening identifies pin2 as the physical right speaker. The forced device-0
+  path binds the `left_spkr` codec object, so the DT label is not physical proof.
+- The remaining static is independent of the ADSP firmware choice.
+
+Next single-variable test: the 19 `write_done` callbacks are real
+`ASM_DATA_EVENT_WRITE_DONE_V2` events because immediate write ACKs are filtered in
+`q6asm.c`.  V17 disables forced timer pacing and replenishes one buffer per DSP
+completion, with the existing two-period watchdog retained as a safe fallback.
+
+Staged without rebooting: `q6asm-dai.ko` sha256 `1fdfbd6d…`, normal and rescue
+initramfs rebuilt, and GRUB id `spx-speaker-v17-event-pacing` added. Its kernel
+arguments differ from v16 by exactly `q6asm_dai.spx_force_timer_pacing=0`.
+Persistent GRUB default remains `spx-audio-rescue`; no one-time entry is armed.
