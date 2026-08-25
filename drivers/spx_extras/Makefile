@@ -65,3 +65,4 @@ obj-m += spx_pmic_ldo.o
 obj-m += spx_gpio_read.o
 obj-m += spx_pin_park.o
 obj-m += spx_csiphy_dump.o
+obj-m += spx_spi4_oracle.o

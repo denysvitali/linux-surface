@@ -909,7 +909,33 @@ MODULE_PARM_DESC(spx_sample_edge,
 static int spx_win_pa_seq = 1;
 module_param(spx_win_pa_seq, int, 0644);
 MODULE_PARM_DESC(spx_win_pa_seq,
-		 "SPX: replicate the Windows qcauddev8180 PA bring-up (ANA_CTL latch pulse, DAC ramp, VI-sense teardown, stepped gain ramp)");
+		 "SPX: replicate the selected Windows qcauddev8180 PA bring-up");
+
+static int spx_win_pa_profile;
+module_param(spx_win_pa_profile, int, 0644);
+MODULE_PARM_DESC(spx_win_pa_profile,
+		 "SPX: qcauddev PA profile (0=legacy non-profile-3 path, "
+		 "3=profile-3 OCP path)");
+
+static int spx_win_bias_psrr = -1;
+module_param(spx_win_bias_psrr, int, 0644);
+MODULE_PARM_DESC(spx_win_bias_psrr,
+		 "SPX: pre-PA SPKR_BIAS_PSRR override (-1=keep rev-2 value)");
+
+static int spx_win_temp_op = -1;
+module_param(spx_win_temp_op, int, 0644);
+MODULE_PARM_DESC(spx_win_temp_op,
+		 "SPX: cold TEMP_OP override (-1=keep rev-2 value, 0x0c=Windows profile-3 value)");
+
+static int spx_win_boost_loop_stab = -1;
+module_param(spx_win_boost_loop_stab, int, 0644);
+MODULE_PARM_DESC(spx_win_boost_loop_stab,
+		 "SPX: cold BOOST_LOOP_STABILITY override (-1=composed rev-2 value; Windows writes 0x8f)");
+
+static int spx_win_misc_ctl1 = -1;
+module_param(spx_win_misc_ctl1, int, 0644);
+MODULE_PARM_DESC(spx_win_misc_ctl1,
+		 "SPX: SPKR_MISC_CTL1 override (-1=legacy 0x87 stream value; Windows composes 0xc6 in cold init, 0xc7 at PA time when the gain code is >= 4)");
 
 /*
  * SPX: default OFF. Replaying the ~100-register init table inside PRE_PMU costs
@@ -935,6 +961,24 @@ module_param(spx_replay_supplies, bool, 0644);
 MODULE_PARM_DESC(spx_replay_supplies,
 		 "SPX: replay DCLK, ACLK, bandgap and RDAC state before every PA enable");
 
+static int spx_win_gain_singleshot;
+module_param(spx_win_gain_singleshot, int, 0644);
+MODULE_PARM_DESC(spx_win_gain_singleshot,
+		 "SPX: write SPKR_DRV_GAIN once without the 1 ms/step ramp when the target gain code is >= 4, like Windows (0=legacy ramp)");
+
+/*
+ * SPX: Windows soft-resets the WSA digital core between streams
+ * (SWR_RESET_EN=0x07 then CDC_RST_CTL=0x00) and relies on its open path
+ * re-running the full cold-init table on the next stream. Linux only replays
+ * init on request, so arming this WITHOUT a matching cold-init replay
+ * (spx_init_on_pmu=1, or an spx_wsa_seq/spx_rearm_init call per stream)
+ * leaves the amp dead after the first teardown.
+ */
+static int spx_win_teardown_reset;
+module_param(spx_win_teardown_reset, int, 0644);
+MODULE_PARM_DESC(spx_win_teardown_reset,
+		 "SPX: reset the amp digital core at teardown (0x300b=0x07 then 0x3005=0x00); the NEXT stream must re-run the full cold-init table (pair with spx_init_on_pmu=1)");
+
 static int wsa881x_init(struct wsa881x_priv *wsa881x)
 {
 	struct regmap *rm = wsa881x->regmap;
@@ -946,15 +990,42 @@ static int wsa881x_init(struct wsa881x_priv *wsa881x)
 		ret = wsa881x_update_bits(wsa881x, (_reg), (_mask), (_val)); \
 } while (0)
 
+	if ((spx_win_misc_ctl1 != -1 &&
+	     (spx_win_misc_ctl1 < 0 || spx_win_misc_ctl1 > 0xff)) ||
+	    (spx_win_boost_loop_stab != -1 &&
+	     (spx_win_boost_loop_stab < 0 || spx_win_boost_loop_stab > 0xff)))
+		return -EINVAL;
+
 	if (wsa881x->spx_write_only)
 		dev_info(wsa881x->dev,
 			 "SPX: initializing amplifier at SoundWire device %d\n",
 			 wsa881x->slave->dev_num);
 
 	if (wsa881x->spx_write_only) {
+		if (spx_win_bias_psrr != -1 && spx_win_bias_psrr != 0x45)
+			return -EINVAL;
+		if (spx_win_temp_op != -1 && spx_win_temp_op != 0x0c)
+			return -EINVAL;
+		/* TEMP_OP is a regcache default, not a rev-2 patch entry. */
+		if (spx_win_temp_op == 0x0c) {
+			dev_info(wsa881x->dev,
+				 "SPX: Windows TEMP_OP override 0x%02x\n",
+				 spx_win_temp_op);
+			WSA881X_INIT_WRITE(WSA881X_TEMP_OP, 0xff,
+					    spx_win_temp_op);
+		}
 		for (i = 0; i < ARRAY_SIZE(wsa881x_rev_2_0); i++) {
+			unsigned int def = wsa881x_rev_2_0[i].def;
+
+			if (wsa881x_rev_2_0[i].reg == WSA881X_SPKR_BIAS_PSRR &&
+			    spx_win_bias_psrr == 0x45) {
+				def = spx_win_bias_psrr;
+				dev_info(wsa881x->dev,
+					 "SPX: Windows BIAS_PSRR override 0x%02x\n",
+					 def);
+			}
 			WSA881X_INIT_WRITE(wsa881x_rev_2_0[i].reg, 0xff,
-					    wsa881x_rev_2_0[i].def);
+					    def);
 			if (ret)
 				break;
 		}
@@ -989,6 +1060,14 @@ static int wsa881x_init(struct wsa881x_priv *wsa881x)
 	WSA881X_INIT_WRITE(WSA881X_SPKR_OCP_CTL, 0x02, 0x02);
 	WSA881X_INIT_WRITE(WSA881X_SPKR_MISC_CTL1, 0xC0, 0x80);
 	WSA881X_INIT_WRITE(WSA881X_SPKR_MISC_CTL1, 0x06, 0x06);
+	if (spx_win_misc_ctl1 >= 0) {
+		dev_info(wsa881x->dev,
+			 "SPX: Windows SPKR_MISC_CTL1 init override 0x%02x\n",
+			 spx_win_misc_ctl1);
+		/* Full-width: the intended FINAL byte, not a compose. */
+		WSA881X_INIT_WRITE(WSA881X_SPKR_MISC_CTL1, 0xff,
+				   spx_win_misc_ctl1);
+	}
 	WSA881X_INIT_WRITE(WSA881X_SPKR_BIAS_INT, 0xFF, 0x00);
 	WSA881X_INIT_WRITE(WSA881X_SPKR_PA_INT, 0xF0, 0x40);
 	WSA881X_INIT_WRITE(WSA881X_SPKR_PA_INT, 0x0E, 0x0E);
@@ -1007,6 +1086,14 @@ static int wsa881x_init(struct wsa881x_priv *wsa881x)
 		WSA881X_INIT_WRITE(WSA881X_BOOST_PRESET_OUT1, 0xF0, 0x70);
 
 	WSA881X_INIT_WRITE(WSA881X_BOOST_PRESET_OUT2, 0xF0, 0x30);
+	if (spx_win_boost_loop_stab >= 0) {
+		dev_info(wsa881x->dev,
+			 "SPX: Windows BOOST_LOOP_STABILITY override 0x%02x\n",
+			 spx_win_boost_loop_stab);
+		/* Full-width: the intended FINAL byte, not a compose. */
+		WSA881X_INIT_WRITE(WSA881X_BOOST_LOOP_STABILITY, 0xff,
+				   spx_win_boost_loop_stab);
+	}
 	WSA881X_INIT_WRITE(WSA881X_SPKR_DRV_EN, 0x08, 0x08);
 	WSA881X_INIT_WRITE(WSA881X_BOOST_CURRENT_LIMIT, 0x0F, 0x08);
 	WSA881X_INIT_WRITE(WSA881X_SPKR_OCP_CTL, 0x30, 0x30);
@@ -1016,17 +1103,25 @@ static int wsa881x_init(struct wsa881x_priv *wsa881x)
 	WSA881X_INIT_WRITE(WSA881X_BONGO_RESRV_REG2, 0xFF, 0x05);
 
 	/*
-	 * Remaining cold-init writes made by the live Windows WSA path
-	 * (qcauddev8180!0x140099ec8).  The 0x313a pulse commits the protection
-	 * front-end trim; 0x3110/0x3111 seed its two modulators.
+	 * SPX runs the guarded baseline without the VISENSE port or Qualcomm's
+	 * device-0x45 protection algorithm/calibration. The sequence previously
+	 * placed here (0x313a=66->67->47, 0x3115=11, 0x3110/0x3111=80) is not
+	 * generic Windows cold init: qcauddev8180!0x14009adc8 executes it only
+	 * when speaker protection is enabled. Leaving the current modulator at
+	 * 0x3111=0x80 on our uncalibrated DAC-only path is a concrete Windows/Linux
+	 * state mismatch and a plausible source of analog noise.
+	 *
+	 * Replay DriverStore qcauddev8180.sys at 0x14008e794 (SHA-256
+	 * 47a1b7b7167141fe...) exactly. If Linux later implements
+	 * the protection TX stream plus module 0x1025f calibration, that mode
+	 * needs an explicit opt-in rather than another unconditional cold write.
 	 */
 	if (wsa881x->spx_write_only) {
-		WSA881X_INIT_WRITE(WSA881X_SPKR_PROT_FE_GAIN, 0xff, 0x66);
-		WSA881X_INIT_WRITE(WSA881X_SPKR_PROT_FE_GAIN, 0xff, 0x67);
-		WSA881X_INIT_WRITE(WSA881X_SPKR_PROT_FE_GAIN, 0xff, 0x47);
-		WSA881X_INIT_WRITE(WSA881X_ADC_EN_SEL_IBAIS, 0xff, 0x11);
-		WSA881X_INIT_WRITE(WSA881X_ADC_EN_MODU_V, 0xff, 0x80);
-		WSA881X_INIT_WRITE(WSA881X_ADC_EN_MODU_I, 0xff, 0x80);
+		WSA881X_INIT_WRITE(WSA881X_ADC_EN_MODU_V, 0xff, 0x00);
+		WSA881X_INIT_WRITE(WSA881X_ADC_EN_MODU_I, 0xff, 0x00);
+		WSA881X_INIT_WRITE(WSA881X_SPKR_PROT_FE_VSENSE_VCM, 0xff, 0x95);
+		fsleep(1000);
+		WSA881X_INIT_WRITE(WSA881X_SPKR_PROT_FE_GAIN, 0xff, 0xce);
 	}
 
 #undef WSA881X_INIT_WRITE
@@ -1380,10 +1475,32 @@ static int wsa881x_spkr_pa_event(struct snd_soc_dapm_widget *w,
 		WSA881X_PA_WRITE(WSA881X_SPKR_OCP_CTL,
 				  WSA881X_SPKR_OCP_MASK,
 				  WSA881X_SPKR_OCP_EN);
-		if (!ret)
-			ret = wsa881x_write_sequence(wsa881x,
-						     wsa881x_pre_pmu_pa_2_0,
-						     ARRAY_SIZE(wsa881x_pre_pmu_pa_2_0));
+		if (!ret) {
+			struct reg_sequence
+				pre_pmu_pa[ARRAY_SIZE(wsa881x_pre_pmu_pa_2_0)];
+			int idx;
+
+			for (idx = 0; idx < ARRAY_SIZE(pre_pmu_pa); idx++)
+				pre_pmu_pa[idx] = wsa881x_pre_pmu_pa_2_0[idx];
+
+			/*
+			 * SPX: Windows composes SPKR_MISC_CTL1 0xc6 during
+			 * cold init and raises bit0 to 0xc7 at PA time for
+			 * gain codes >= 4 (qcauddev8180 0x140097ce8/d6c,
+			 * RMW 0x1400982ac-344). Substitute that final value
+			 * for the hard-coded 0x87 when the knob is armed.
+			 */
+			if (spx_win_misc_ctl1 >= 0 &&
+			    pre_pmu_pa[1].reg == WSA881X_SPKR_MISC_CTL1) {
+				dev_info(comp->dev,
+					 "SPX: Windows SPKR_MISC_CTL1 stream value 0x%02x\n",
+					 spx_win_misc_ctl1);
+				pre_pmu_pa[1].def = spx_win_misc_ctl1;
+			}
+
+			ret = wsa881x_write_sequence(wsa881x, pre_pmu_pa,
+						     ARRAY_SIZE(pre_pmu_pa));
+		}
 
 		/*
 		 * SPX: always take the analog gain from the REGISTER, as
@@ -1400,62 +1517,103 @@ static int wsa881x_spkr_pa_event(struct snd_soc_dapm_widget *w,
 				  WSA881X_PA_GAIN_SEL_REG | pa_gain);
 
 		/*
-		 * SPX: replicate the analog bring-up that the Windows driver
-		 * (qcauddev8180.sys, 0x140098af0 / 0x140099058) performs and
-		 * mainline does not. Extracted 2026-07-27; each step matters:
+		 * SPX: replicate the selected analog bring-up that the Windows
+		 * driver performs and mainline does not. DriverStore
+		 * qcauddev8180.sys (SHA-256 47a1b7b7167141fe...) implements this
+		 * at 0x140099058, with the profile branch at 0x140099248:
 		 *
-		 *  - ANA_CTL bit2 pulse: an analog-path latch. Without it the
+		 *  - The surrounding decoded path's ANA_CTL bit2 pulse is an
+		 *    analog-path latch. Without it the
 		 *    chain stays half-configured, which is what our
 		 *    gain-proportional ("multiplicative") static looks like.
-		 *  - SPKR_DAC_CTL 0x62 -> 0x42 -> 0xc2: staged DAC power-up.
-		 *  - VI-sense modulators are explicitly torn down after the PA
-		 *    comes up; leaving the ADCs running injects audible noise.
-		 *  - The PA gain is then walked to the target one code per ms
-		 *    instead of being written in a single step.
+		 *  - Profile 3 writes SPKR_DAC_CTL=0xc2 directly, then pulses the
+		 *    OCP control 0xb4 -> 0xb6 -> 0xb2. The mutually exclusive
+		 *    non-profile-3 path instead stages DAC 0x62 -> 0x42 and runs
+		 *    a VI diagnostic pulse; combining those branches is invalid.
+		 *  - Retain Linux's existing one-code-per-ms gain walk as an
+		 *    approximation of qcauddev's common thresholded gain ramp.
+		 *
+		 * Linux lacks the calibrated protection TX path used by the complete
+		 * Windows profile-3 configuration, so this opt-in changes only the PA
+		 * branch and deliberately leaves VISENSE/protection disabled.
 		 */
 		if (wsa881x->spx_write_only && spx_win_pa_seq) {
 			int step;
+
+			dev_info(comp->dev, "SPX: Windows PA profile %d\n",
+				 spx_win_pa_profile);
 
 			WSA881X_PA_WRITE(WSA881X_ANA_CTL, BIT(2), BIT(2));
 			fsleep(1000);
 			WSA881X_PA_WRITE(WSA881X_ANA_CTL, BIT(2), 0);
 
-			WSA881X_PA_WRITE(WSA881X_SPKR_DAC_CTL, 0xff, 0x62);
-			WSA881X_PA_WRITE(WSA881X_SPKR_DAC_CTL, 0xff, 0x42);
+			if (spx_win_pa_profile != 3) {
+				WSA881X_PA_WRITE(WSA881X_SPKR_DAC_CTL, 0xff,
+						  0x62);
+				WSA881X_PA_WRITE(WSA881X_SPKR_DAC_CTL, 0xff,
+						  0x42);
+			}
 			WSA881X_PA_WRITE(WSA881X_SPKR_DAC_CTL, 0xff, 0xc2);
 			WSA881X_PA_WRITE(WSA881X_SPKR_OCP_CTL, 0xff, 0xb4);
 
-			/*
-			 * Exact non-protection-mode stabilization pulse from
-			 * qcauddev8180!0x140098158.  Windows enables both VI
-			 * front ends while the driver comes up, waits 2 ms,
-			 * then tears them down before walking the gain.
-			 */
-			WSA881X_PA_WRITE(WSA881X_ADC_EN_DET_TEST_I, 0xff, 0x01);
-			WSA881X_PA_WRITE(WSA881X_ADC_EN_MODU_V, 0xff, 0x02);
-			WSA881X_PA_WRITE(WSA881X_ADC_EN_DET_TEST_V, 0xff, 0x10);
-			WSA881X_PA_WRITE(WSA881X_SPKR_PWRSTG_DBG, 0xff, 0xa0);
-			WSA881X_PA_WRITE(WSA881X_SPKR_DRV_EN, 0xff, 0xfc);
-			fsleep(2000);
+			if (spx_win_pa_profile == 3) {
+				WSA881X_PA_WRITE(WSA881X_SPKR_OCP_CTL, 0xff,
+						  0xb6);
+				WSA881X_PA_WRITE(WSA881X_SPKR_OCP_CTL, 0xff,
+						  0xb2);
+				WSA881X_PA_WRITE(WSA881X_SPKR_DRV_EN, 0xff,
+						  0xfc);
+				fsleep(2000);
+			} else {
+				WSA881X_PA_WRITE(WSA881X_ADC_EN_DET_TEST_I, 0xff,
+						  0x01);
+				WSA881X_PA_WRITE(WSA881X_ADC_EN_MODU_V, 0xff,
+						  0x02);
+				WSA881X_PA_WRITE(WSA881X_ADC_EN_DET_TEST_V, 0xff,
+						  0x10);
+				WSA881X_PA_WRITE(WSA881X_SPKR_PWRSTG_DBG, 0xff,
+						  0xa0);
+				WSA881X_PA_WRITE(WSA881X_SPKR_DRV_EN, 0xff,
+						  0xfc);
+				fsleep(2000);
 
-			/* Windows tears these down unless speaker protection
-			 * mode 3 is in use, which we never enable. */
-			WSA881X_PA_WRITE(WSA881X_SPKR_PWRSTG_DBG, 0xff, 0x00);
-			WSA881X_PA_WRITE(WSA881X_ADC_EN_DET_TEST_V, 0xff, 0x00);
-			WSA881X_PA_WRITE(WSA881X_ADC_EN_MODU_V, 0xff, 0x00);
-			WSA881X_PA_WRITE(WSA881X_ADC_EN_DET_TEST_I, 0xff, 0x00);
-			fsleep(1000);
-
-			/* Ramp PAG_GAIN down from the 0 dB floor (code 0xc)
-			 * to the requested code, 1 ms per step. */
-			for (step = 0xc; step > (pa_gain >> 4); step--) {
-				WSA881X_PA_WRITE(WSA881X_SPKR_DRV_GAIN,
-						  WSA881X_SPKR_PAG_GAIN_MASK,
-						  step << 4);
+				WSA881X_PA_WRITE(WSA881X_SPKR_PWRSTG_DBG, 0xff,
+						  0x00);
+				WSA881X_PA_WRITE(WSA881X_ADC_EN_DET_TEST_V, 0xff,
+						  0x00);
+				WSA881X_PA_WRITE(WSA881X_ADC_EN_MODU_V, 0xff,
+						  0x00);
+				WSA881X_PA_WRITE(WSA881X_ADC_EN_DET_TEST_I, 0xff,
+						  0x00);
 				fsleep(1000);
+			}
+
+			/*
+			 * SPX: Windows writes SPKR_DRV_GAIN ONCE when the
+			 * target gain code is >= 4 (compute T=max(requested,4)
+			 * at 0x140098254-94); the 0x30/0x20/0x10 descent fires
+			 * only for requested codes <= 3 (ramp gate
+			 * 0x140098494-548). The unconditional final write below
+			 * stays in both modes.
+			 */
+			if (!spx_win_gain_singleshot || (pa_gain >> 4) < 4) {
+				/* Ramp PAG_GAIN down from the 0 dB floor
+				 * (code 0xc) to the requested code, 1 ms
+				 * per step.
+				 */
+				for (step = 0xc; step > (pa_gain >> 4); step--) {
+					WSA881X_PA_WRITE(WSA881X_SPKR_DRV_GAIN,
+							  WSA881X_SPKR_PAG_GAIN_MASK,
+							  step << 4);
+					fsleep(1000);
+				}
 			}
 			WSA881X_PA_WRITE(WSA881X_SPKR_DRV_GAIN,
 					  WSA881X_SPKR_PAG_GAIN_MASK, pa_gain);
+			/*
+			 * qcauddev gates this final pair on an opaque codec-subtype
+			 * field. Preserve the established SPX subtype behavior.
+			 */
 			WSA881X_PA_WRITE(WSA881X_SPKR_DRV_EN, 0xff, 0xfd);
 			WSA881X_PA_WRITE(WSA881X_SPKR_BIAS_CAL, 0xff, 0xac);
 		}
@@ -1481,6 +1639,20 @@ static int wsa881x_spkr_pa_event(struct snd_soc_dapm_widget *w,
 				     WSA881X_SPKR_OCP_MASK,
 				     WSA881X_SPKR_OCP_EN |
 				     WSA881X_SPKR_OCP_HOLD);
+		if (spx_win_teardown_reset) {
+			/*
+			 * SPX: Windows parks the amp with a digital-core reset
+			 * between streams (PA-off fn 0x14009933c:
+			 * 0x300b=0x07 then 0x3005=0x00, in this exact order).
+			 * Kept last, no sleeps: DAPM is tearing the supplies
+			 * down. The next stream must re-run the full cold-init
+			 * table (see the spx_win_teardown_reset PARM_DESC).
+			 */
+			wsa881x_update_bits(wsa881x, WSA881X_SWR_RESET_EN,
+					     0xff, 0x07);
+			wsa881x_update_bits(wsa881x, WSA881X_CDC_RST_CTL,
+					     0xff, 0x00);
+		}
 		break;
 	}
 #undef WSA881X_PA_WRITE
