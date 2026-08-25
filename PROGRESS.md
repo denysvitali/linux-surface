@@ -2085,7 +2085,2040 @@ Next single-variable test: the 19 `write_done` callbacks are real
 `q6asm.c`.  V17 disables forced timer pacing and replenishes one buffer per DSP
 completion, with the existing two-period watchdog retained as a safe fallback.
 
-Staged without rebooting: `q6asm-dai.ko` sha256 `1fdfbd6d…`, normal and rescue
-initramfs rebuilt, and GRUB id `spx-speaker-v17-event-pacing` added. Its kernel
-arguments differ from v16 by exactly `q6asm_dai.spx_force_timer_pacing=0`.
-Persistent GRUB default remains `spx-audio-rescue`; no one-time entry is armed.
+Pre-boot review found a race in the first v17 build: WRITE_DONE and the watchdog
+could both advance and submit at their boundary. The corrected implementation
+arms the watchdog before submitting and requires a completion to cancel/claim it;
+if the worker is already running, only it changes the stream to timer fallback.
+It also computes the period from ALSA frames, fixing the 4/3 S24_LE deadline error
+caused by confusing 24 significant bits with its 32-bit container.
+
+Restaged without rebooting: corrected `q6asm-dai.ko` sha256 `6dc4f351…`, normal
+and rescue initramfs rebuilt, and GRUB id `spx-speaker-v17-event-pacing` retained.
+Its kernel arguments differ from v16 by exactly
+`q6asm_dai.spx_force_timer_pacing=0`. Persistent GRUB default remains
+`spx-audio-rescue`; no one-time entry was armed at this checkpoint.
+
+Windows source-of-truth refinement: miniport + `Speaker_cal.acdb` prove logical
+device `0x45`, 48 kHz/24-bit/stereo, codec key `0x15200`, AFE port `0x4004`, and
+channels `0xc0/0xc1`. `Codec_cal.acdb` selects endpoint tokens `0x01010004/5`,
+mapped by qcauddev to internal sinks 7/8. No Windows artifact examined labels
+those endpoints, MP1/SP1 vs MP4/SP1, or the enable GPIOs as physical left/right;
+that mapping must come from isolated-channel listening.
+
+---
+
+## 24. (2026-08-11) V17 validates DSP-completion pacing
+
+The autotest first refused the boot before touching hardware because the guard
+compared sysfs boolean `N` with numeric `0`. After normalizing boolean spelling,
+the same boot still had no prior PCM stream and the guarded retry was valid.
+
+Listening result: startup clack, 440 Hz tone, and a bit of static. Kernel result:
+`submitted=20 write_done=20 fallback=0`, active DP1 banks both `0x01000107`, real
+device-0 presence before and after playback, safe PA/GPIO teardown, no fault.
+Completion pacing works and did not fall back to the timer. It does not by itself
+eliminate static.
+
+V18 will change only the logical frontend format to S24_LE, matching the Windows
+miniport, while retaining the known-audible S16/PDM backend. The harness accepts
+`SPX_TONE_FORMAT`, and q6asm close logging now records the actual frontend bits.
+
+---
+
+## 25. (2026-08-11) V18 rejects S24_LE; endpoint-B S16 test staged
+
+V18's first stream was internally healthy: Q6ASM reported
+`bits=24 submitted=28 write_done=28 fallback=0`, with valid DP1 banks, teardown
+and no kernel fault. Listening heard a softer startup clack, low-volume static
+and a shutdown clack, but no 440 Hz tone. This is not a transport stall: S24_LE
+reaches and is consumed by Q6ASM, but it does not render intelligible audio on
+the current legacy path. Restore S16_LE for all routing work.
+
+The next test corrects a topology mismatch in every audible pin2 run. Those
+runs powered GPIO pin2 while binding the `left_spkr` MP1/SPK1 codec. The new
+right-only DT binds the second WSA object and routes RX1 -> INT8/COMP8 -> SPK2,
+slave DP1 -> master DP4 (`<4 5 6 8>`), using GPIO pin2. Windows proves that
+device 0x45's stereo recipe orders endpoint `0x01010005`/sink 8 second, probably
+with C1; joining it to Linux MP4/SPK2 remains a board-topology inference that
+this isolated C1 listening test will validate.
+
+Staged artifacts:
+
+- right-only DTB sha256 `3c32f9a36af310a45859e445fc4c2e8d6d594f3ca45bb2293cbc3b04d0b2ceaa`;
+- DP4-capable `soundwire-qcom.ko` sha256
+  `b493d7fa5014a507f5fc50e2bd0437c6aa9bb3ac377da2b7622b133fd8be2880`;
+- unchanged event-paced `q6asm-dai.ko` sha256
+  `ed54b6de367990efdcca7b786ea8b72e4b5d4446855a43533684c0eb64218fbe`;
+- GRUB one-shot id `spx-speaker-v19-endpoint-b`, with the v17 kernel command
+  line unchanged and only the DTB selection different.
+
+The harness now proves exact DT DAI/map/GPIO/route cells, active S16_LE/48-kHz
+stereo hw_params, front-right-only submission, master DP4 value `0x01000607` in
+both banks, DP1/DP4 shadow enable and disable, and Q6 `bits=16`, `fallback=0`,
+`write_done>0`, `submitted==write_done`. The persistent GRUB default is still
+rescue; the one-shot is armed only after all offline checks pass.
+
+---
+
+## 26. (2026-08-11) Endpoint B / MP4 / C1 is audible on pin2
+
+V19 produced a clack, the 440 Hz tone and a bit of static. The controlled run
+bound only WSA unit 2 on WCD GPIO pin2 with map `4 5 6 8`, opened S16_LE at
+48 kHz/stereo, and selected only C1/front-right. Both active master-DP4 banks
+were `0x01000607`; slave DP1 and master DP4 enable/disable operations were
+shadowed. Q6ASM reported `bits=16 submitted=19 write_done=19 fallback=0`.
+The PA shut down and GPIO returned to `0x00` without a kernel fault.
+
+The systemd unit's status 1 is not a hardware failure. `speaker-test -s 2`
+prints `- Front Right`, while the new guard expected the old all-channel form
+`1 - Front Right`; all later transport/counter conditions can be verified in
+the captured log. The matcher now accepts the single-channel spelling.
+
+This is the first direct empirical join from Windows' second ordered endpoint
+and C1 to Linux MP4/SPK2 and physical pin2. The same slight static exists when
+pin2 is driven through MP1 or MP4, so the former endpoint mismatch did not cause
+it. Next test endpoint A / MP1 / C0 with physical pin1 in the same corrected
+event-paced harness, then build sequential dual-amp enumeration only after both
+isolated diagonals work.
+
+---
+
+## 27. (2026-08-11) Endpoint A completes digitally; pin1 remains silent
+
+V20 passed every automated guard and the user thinks nothing was heard. Unit1
+bound to pin1/map `1 2 3 7`; the physical pin1 amp announced; S16/48-kHz C0 was
+submitted; MP1 B0/B1 were both `0x01000107`; DP1 slave/master shadowing and PA
+events completed; Q6 was `bits=16 submitted=19 write_done=19 fallback=0`.
+Cleanup was exact and there was no fault.
+
+Because endpoint A/MP1 is already audible through pin2 and endpoint B/MP4 is
+also audible through pin2, v20 localizes silence downstream on the physical
+pin1 side. V21 provides the last acoustic cross: use proven endpoint B/MP4/SPK2
+and C1 but override its sole enabled codec to power only pin1 (`0x02`). The
+harness accepts this mismatch only with an explicit `right-on-pin1` cross flag;
+normal left/right path-to-GPIO equality remains mandatory.
+
+If v21 is silent/no-clack, treat pin1 WSA analog output/boost, speaker or wiring
+as defective and do not build dual attach. If it is audible, return to endpoint
+A's MP1/SPK1 WCD routing. Permanent stereo additionally needs the DTS identity
+correction from probed `0217:2110` unique IDs 3/4 and a sequential device1/2
+assignment state machine; current force mode hard-aliases enabled codecs to 1.
+
+### V21 outcome
+
+The user heard nothing. The run itself was complete: endpoint B/C1 at S16/48k,
+DP4 `0x01000607` in both banks, slave-DP1/master-DP4 shadows, PA events, and Q6
+`bits=16 submitted=19 write_done=19 fallback=0`; cleanup and fault guards passed.
+V19 differs semantically only by endpoint B's GPIO pin2 instead of pin1, and was
+audible. Pin1's announcing WSA therefore has a nonfunctional analog output,
+speaker or connection. Keep it powered off; do not build dual attach in software
+until that physical side is repaired. Proceed with the isolated endpoint-B/pin2
+path for static reduction and repeat-stream lifecycle work.
+
+---
+
+## 28. (2026-08-11) V22 disables the stale uncalibrated protection state
+
+Windows reverse engineering corrected an earlier attribution: the WSA writes
+`313a=66->67->47`, `3115=11`, and `3110/3111=80` are qcauddev's conditional
+speaker-protection enable path, not generic cold init. Linux replayed them even
+though its guarded baseline has VISENSE off, transports only the DAC port, and
+does not send device `0x45`'s module `0x1025f` protection calibration. V22
+instead sends Windows' matching disable sequence: `3110=00`, `3111=00`,
+`3140=95`, wait 1 ms, `313a=ce`.
+
+The one-variable endpoint-B/pin2 run passed all machine checks. Loaded module
+SHA-256 is `e3a21aa6e32083884c6fb3e4c85d5fe465d716dadca88a67c7d6c2d9730d0e3a`;
+the idle cold replay completed, active DP4 B0/B1 were `0x01000607`, hw_params
+were S16_LE/48-kHz/stereo with front-right selected, and Q6 was
+`bits=16 submitted=19 write_done=19 fallback=0`. Teardown and parking were
+clean and no fault occurred. Because this forced WSA path cannot read the
+registers back reliably, the logs prove ordered software submission, not each
+write's electrical landing. Acoustic feedback remains pending; compare static
+directly against v19's clack + tone + slight static.
+
+The repeated listening run produced the tone mixed with static and one brief
+interruption, so protection-off did not cure the noise. Host evidence stayed
+clean (`19/19`, fallback zero, DP4 enabled, no XRUN or PA/bank transition).
+The interruption aligns with the harness's active-stream controller snapshot:
+it began about 0.61 seconds after PA-on and consumed roughly 165 ms of shared
+WCD/SLIMbus control traffic. Remove only that in-stream snapshot and repeat the
+same v22 baseline. Pre/post snapshots and shadow enable/disable logs still guard
+the transport without perturbing active sample delivery.
+
+The listened no-snapshot repeat was acoustically negative: clack, low static,
+then clack, with no 440-Hz tone. It nevertheless had the same S16/48k/C1 setup,
+Q6 `19/19/0`, DP1/DP4 shadow sequence and PA events as audible v22, and its
+slave-status latch stayed at `1`. The active controller read is now the only
+operation correlated with confirmed v22 audibility, even though it also caused
+the brief gap when performed over tone samples.
+
+Next run one PCM waveform with three seconds of exact digital zero followed by
+five seconds of right-channel 440 Hz. Take and validate the active snapshot
+during the zero prefix, then make no further control transaction before the
+tone. This tests whether the read is an accidental transport wake/latch while
+moving its 140-165 ms disturbance outside the audible portion.
+
+That first pre-roll run was silent except for clack/static/clack even though the
+active snapshot proved DP4 `0x01000607` in both banks and Q6 was `64/64/0`.
+The generated sine was then found to peak at only -18 dBFS, versus roughly
+-2 dBFS for the earlier speaker-test, and aplay had chosen 6000/24000-frame
+period/buffer sizes. Correct the vector to -2 dBFS and force the proven
+12000/48000-frame geometry before drawing an acoustic conclusion.
+
+The corrected control still produced nothing audible. Its active snapshot
+proved DP4 `0x01000607` in both banks, the right-channel waveform was verified
+at -1.97 dBFS with exact zero preroll, ALSA used 12000/48000 frames, and Q6 was
+`32/32/0`. Host-visible transport setup is therefore insufficient to guarantee
+the write-only WSA's DAC/analog state.
+
+V23 introduces a rollbackable `spx_win_pa_profile=3`. It follows qcauddev's
+mutually exclusive profile-3 PA branch: DAC `c2`, OCP `b4->b6->b2`, driver
+`fc`, 2-ms wait, no non-profile-3 DAC staging or VI pulse/teardown, then the
+existing common gain/final writes. Default profile0 retains v22. Installed WSA
+module SHA-256 is
+`0f6280ea321daca06a1031f3dfd86b96ca74bbb57d00337a2d119f9d0e5b2d2b`.
+This intentionally retains protection-off because Linux lacks the calibrated
+VISENSE/module-`0x1025f` path; it tests the exact PA branch, not full protected
+Windows profile3. One-shot GRUB id is `spx-speaker-v23-pa-profile3`.
+
+---
+
+## 29. (2026-08-20) Every stream renders: the `spx_keep_asm` fix
+
+The "only the first stream of a boot has `write_done > 0`" rule was a Linux bug,
+not a hardware limit. The SPX ADSP never acknowledges `ASM_STREAM_CMD_CLOSE`
+(0x10BCD times out), so the close path tore down state the DSP still held and
+the next session was never re-attached.
+
+`q6asm_dai.spx_keep_asm` (default **on**) parks the ASM `audio_client` across PCM
+close and reuses it on the next open:
+
+- `q6asm.c` gained `q6asm_audio_client_rebind(ac, cb, priv)` (exported);
+- `q6asm-dai.c` gained `q6asm_dai_data.parked[16]`, indexed by front-end DAI id;
+  `open()` reuses and rebinds, `prepare()` skips map/open_write/media-format for a
+  reused client, `close()` detaches the callback and parks instead of freeing.
+
+Validated on the v28 entry (endpoint B / pin2 / S16 / event pacing): two
+consecutive streams both closed `submitted=24 write_done=24 fallback=0`, where the
+second used to report `write_done=0`. PipeWire's repeated open/close therefore
+renders. **The first-stream-only rule in this file and in CLAUDE.md is superseded:
+later streams of a boot are now valid measurements.**
+
+## 30. (2026-08-20) The static survives every amp-side and transport-side knob
+
+With music finally rendering, the user played a full track and heard mostly
+static. The decisive observation is that the static is **also present during the
+three-second digital-zero prefix** of the guarded waveform, so it is added noise,
+not mis-shaped content.
+
+Each of the following was A/B'd *on the audible pin2 baseline* — the first time
+any of them had been judged outside the whole-boot-silence era:
+
+| knob | result |
+|---|---|
+| `spx_sample_edge` (WSA `SAMPLE_EDGE_SEL` 0x3044) | HW reset = tone + static (best); `0x0c` = silence; `0x00` = static only |
+| RX0 orphan routing (RX1 → AIF1_PB only) | static unchanged, and `overflow error on RX port 0` still fired |
+| `spx_win_transport` (block packing 0xff/0xff/0xf0 vs Windows reset values) | 0 and 1 both static |
+
+The `overflow error on RX port 0, value 1` fires once per stream even with RX0
+disconnected, so it is not the static and not an orphaned-left-channel effect.
+
+A downstream-source comparison (LineageOS sm8150 tavil/wcd934x) then closed the
+last amp-side hypothesis: **there is no interpolator→SWR-master routing register.**
+RX7/RX8 output is fix-wired in the WCD9340 die to the SWR master TX data port; the
+codec driver's whole SWR duty is to enable the interpolator, gate the SWR clock
+(0x0d43 bit 0) and notify the master. Master DP framing also matches downstream
+(`si=7, off1=1, off2=0`) and the slave is `read_only_wordlength`.
+
+## 31. (2026-08-21/22) Windows RE round: `docs/windows-re/`
+
+Ten reports plus `00-synthesis.md`, all claims cited to virtual addresses. The
+load-bearing results:
+
+- Windows drives **every** WCD9340 register — including the internal SoundWire
+  master and both WSA881x amps — over **SPI4 at 24 MHz**. Linux reaches the same
+  registers through the SLIMbus AHB bridge; the bridge discipline itself is
+  byte-for-byte the Windows one, so our flaky-read saga is a property of the
+  transport we chose, not a missing sequence.
+- The ADSP firmware image is byte-identical on both operating systems and owns
+  only the SLIMbus data path (`AFESlimbusDriver` → `SlimBusMaster` → BAM-Lite).
+  `AFECdcRegOp` is a stub in both images, so the ADSP has never been able to write
+  codec registers. **This demotes the staged `q6afe.spx_auto_speaker_cal` steps
+  that target `CDC_REG_CFG`: they land in a stub.**
+- Windows **never broadcasts `SCP_FrameCtrl`.** It programs the destination bank
+  completely from per-port records and then writes that bank's frame-control word
+  alone. `spx_mirror_banks=1` was therefore never Windows parity; keeping both
+  banks complete is.
+- Windows opens **all four** WSA descriptors per side, per the static left/right
+  descriptor tables (slave 1/2/3/4 → master 1/2/3/7 and 4/5/6/8).
+
+## 32. (2026-08-22) V31: four WSA descriptors on the audible baseline
+
+Everything the amp and the SoundWire master can be told has now been excluded, so
+the remaining structural difference is the **number of descriptors the stream
+opens**. The guarded baseline opens one (DAC); Windows opens four; mainline
+`wsa881x.c` on db845c opens whichever the mixer switches request — and our own
+mixer path sets `SpkrRight BOOST Switch 1` while the BOOST descriptor is never
+streamed. An amp whose boost-converter control port is enabled in the analog
+domain but starved on the wire is a plausible source of broadband switching
+noise that is independent of PCM content, which is exactly the signature.
+
+Four-port operation was tried once before ("loud startup transient, then
+silence"), but that was during the pin1 whole-boot-silence era and is not a
+result about the audible pin2 baseline.
+
+Staged for one guarded cold boot:
+
+- GRUB id `spx-speaker-v31-fourport`, derived from `spx-speaker-v28-music` by
+  substituting exactly one token: `snd_soc_wsa881x.spx_stream_port_mask=1` →
+  `=5` (DAC + BOOST). Verified token-by-token against v28; nothing else differs.
+  Mask 5, not 15, for the guarded stream: master port 8 is a **DIN** port
+  (`qcom,din-ports = <2>`), so the VISENSE descriptor is an amp→master input,
+  while `wsa881x.c` declares all four slave ports as sinks and adds them to an RX
+  stream. Opening it is the one direction-inconsistent combination, and VI sense
+  is disabled anyway by v22's protection-off state. Endpoint B maps slave DP1/2/3
+  (DAC/COMP/BOOST) to master ports 4/5/6, all DOUT, and slave DP4 (VISENSE) to
+  master port 8, DIN — so masks 5 and 7 are the clean supersets and 15 is the
+  risky one.
+- `scripts/spx-speakers-up.sh` gained `SPX_EXPECT_PORT_MASK` (default 1, so every
+  existing entry is unchanged). It validates the live parameter, requires the mask
+  to appear on the command line when it is not 1, requires the DAC bit, and
+  derives the expected `active_ports` count by popcount instead of hardcoding 1.
+- `drivers/soundwire/qcom.c`: `spx_shadow_dp1_enable` now keeps **both banks
+  complete for every WSA descriptor in use** (slave DP1–DP4 and any master port),
+  not just the DAC pair. This is doc 02's destination-bank model applied to the
+  ports the four-port stream adds; single-port boots are unaffected because only
+  the DAC pair is ever touched there.
+- `scripts/spx-portmask-sweep.sh` A/Bs masks live in one boot (the parameter is
+  0644 and is read at `hw_params`, and §29 makes later streams valid). Candidate
+  order after the guarded first stream: 5 (DAC+BOOST, what the mixer asks for),
+  3 (DAC+COMP), 1 (the v28 control).
+
+The `spx-speaker-v30-cal-bisect` entry was removed: its title claimed live debugfs
+cal firing that its command line did not select. `spx-speaker-v29-acdb-cal` is
+retained but demoted by §31's stub finding. The persistent default remains
+`spx-audio-rescue`.
+
+### V31 staged artifacts (2026-08-22)
+
+| artifact | sha256 |
+|---|---|
+| `/boot/vmlinuz-6.18.3-1-surface+-slimfix` | `c202330dbc6b4145b0629a057109745dc803621b94807ec2965ad705818049d9` |
+| `/boot/dtb/qcom/sc8180x-surface-pro-x.dtb.speaker-right-v19` | `3c32f9a36af310a45859e445fc4c2e8d6d594f3ca45bb2293cbc3b04d0b2ceaa` |
+| `updates/soundwire-qcom.ko` (v31, all-descriptor bank shadow) | `c7e09fe16904d6d81752d651e2da4eb2c5afe5f443627b392889321f02bf7b4c` |
+| `updates/soundwire-qcom.ko.bak-v28-20260822-112032` (rollback) | `5767d0d9f30297a29f912aea8fb2581cd737844663a64f34f2ade88123134562` |
+
+`mkinitcpio -P` was run after installing the module, and **both** images were
+verified to bundle the new `soundwire-qcom.ko` plus unchanged `snd-soc-wsa881x`,
+`snd-soc-wcd934x` and `wcd934x` — the mechanical bundled-vs-installed check the
+harness audit asked for, done by extracting each image and comparing hashes rather
+than trusting mtimes. The rescue entry blacklists `soundwire_qcom` outright, so it
+is unaffected either way.
+
+`test-env` gained `SPX_EXPECT_PORT_MASK=5` (previous copy kept as
+`test-env.bak-v28-*`); every line still matches the autotest's
+`^SPX_[A-Z0-9_]+=[-_.:,0-9a-zA-Z]*$` filter. `grubenv` is
+`saved_entry=spx-audio-rescue`, `next_entry=spx-speaker-v31-fourport`, and the
+`armed` marker exists, so the guarded harness runs once and the machine returns to
+the rescue default afterwards.
+
+---
+
+## 33. (2026-08-22) V31 ran clean and negative; the static does not pass the PA gain
+
+### The v31 boot itself
+
+The guarded one-shot took the armed entry (`spx_stream_port_mask=5` confirmed on
+`/proc/cmdline`, `next_entry` consumed) and passed every gate with exit status 0.
+The BOOST descriptor genuinely streamed for the first time:
+
+```
+SPX: hw_params active_ports=2
+shadow slave  DP1 ChannelEn 0x01     shadow slave  DP3 ChannelEn 0x03
+shadow master DP4 ChannelEn 0x01     shadow master DP6 ChannelEn 0x03
+SPX ASM stream 1: bits=16 submitted=32 write_done=32 fallback=0
+```
+
+The all-descriptor bank shadow added to `qcom.c` for this test worked exactly as
+intended — both banks complete for DP1/DP3 on the slave and DP4/DP6 on the master.
+
+### A harness gap that was invalidating live sweeps
+
+The first live sweep was audible and an immediate replay with byte-identical
+software was near-silent. `scripts/spx-portmask-sweep.sh` was powering the amp,
+firing one force-attach, sleeping 1 s and playing regardless — while the guarded
+harness samples `MCP_SLV_STATUS` until it sees a real `0x1` and refuses to open
+ALSA otherwise. That is why harness runs are reliably audible and ad-hoc replays
+were a coin flip.
+
+The sweep now copies the harness recipe: wait for a genuine device-0 announce
+before touching force-attach, then wait for `SPX FORCE-ATTACH: stable attachment`
+plus the cold-init replay rather than sleeping a guess, and **abort instead of
+playing** if presence never appears. It also takes idle-only serialized snapshots
+(bridge canary, `MCP_SLV_STATUS`, DP4 banks) before and after every tone.
+
+This immediately earned its keep. One "both silent" run read `MCP_SLV_STATUS=0x0`
+at every sample — the amp never announced, so both tones were void measurements,
+not results. The DSP still reported `32/32/0` throughout, which is exactly why this
+failure mode has been so effective at faking success. **Every listening result
+recorded below comes from a run with a proven device-0 attach.**
+
+### The A/Bs, all on a verified-attached audible baseline
+
+| variable | change | result |
+|---|---|---|
+| descriptor count | mask 5 (DAC+BOOST) vs mask 1 (DAC) | static + tone, **identical** |
+| PA gain | `SpkrRight PA Volume` 12 → 0 (+18 dB → 0 dB) | **tone vanished, static remained** |
+| boost converter | `SpkrRight BOOST Switch` 1 → 0, gain back to 12 | static **unchanged** |
+
+The middle row is the important one. `PA Volume` is the WSA881x PA output gain
+(`SPKR_DRV_GAIN`, 0x311b, REG mode). If the static passed through it, an 18 dB cut
+would move signal and noise together and the ratio would hold; instead the tone
+dropped below the noise while the noise stayed put.
+
+**Therefore the static does not traverse the PA gain stage, so it is not the audio
+data.** That retrospectively explains why every digital A/B has failed: framing,
+block packing, sample edge, descriptor count, interpolator routing and the AFE /
+SLIMbus channel mapping all sit upstream of a gain stage the noise does not pass
+through. The entire digital search space was the wrong layer.
+
+Descriptor count is now closed as a static hypothesis (PROGRESS §32 / the
+`spx-static-descriptor-count-hypothesis` memory). The boost converter is closed
+again, this time on a verified-attached audible baseline rather than in the
+07-26 era.
+
+### What remains, and the control that was never run
+
+Candidates that sit at or after the PA gain: PA output-stage instability, and the
+bias/bandgap state left by the cold-init table and by v22's protection-off writes
+(`3110=00`, `3111=00`, `3140=95`, `313a=ce`).
+
+Before any of that, a control this project has never actually established: **is the
+noise coming from the amp at all?** `SPX_ZERO_ONLY=1` plays ten seconds of exact
+digital zero at +18 dB and then parks the amp, so the noise can be timed against
+power-on, stream start and park. If it is present before the stream and after the
+park, then it is ambient and every static A/B ever run has been measuring the room.
+Result pending.
+
+## 34. Four-phase localization (2026-08-22 evening) — the tone itself is gone
+
+`scripts/spx-noise-localize.sh` ran three times, the last two attended and valid
+(real device-0 announce before every play, `COMP_PARAMS=0x016840c6` canary at all
+four snapshots, DP4 banks enabled mid-stream, Q6 counters real, clean teardown).
+Phases: A room baseline (amp off) / B amp powered + PA staged directly via
+`spx_wsa_seq`, no PCM / C one stream = 3 s zero + 5 s 440 Hz + 3 s zero with the
+controller snapshot inside the leading zeros / D parked again.
+
+Results across the evening:
+
+- A: silent — ambient room noise is ruled out as everything ever heard.
+- B: no clicks, at most faint static in one run, nothing in later runs. The
+  directly-staged idle output stage is quiet or dead.
+- C: **no power-up click, no 440 Hz tone** — on a boot whose morning sweeps were
+  audible through this exact transport.
+- D: silent.
+
+The final control raised every software knob to maximum headroom:
+`RX8 Digital Volume` 84 → 124 (+10 dB), `SpkrRight Smart Boost Level` → 15
+(~8.5 V rail), PA gain 12 (+18 dB). The stream provably flowed (`44/44/0`,
+banks `0x01000607` both banks) and was still **completely inaudible**.
+
+Two conclusions, stated separately because they have different consequences:
+
+1. **The morning→evening decay happened without any software change.** Same boot,
+   same modules, same mixer values, more software headroom — sound went from
+   "tone + static" to "nothing". Either the pin2 output chain (amp output /
+   speaker / connector) degraded physically during today's repeated high-gain
+   power cycling — mirroring pin1's day-one failure mode: announces digitally,
+   passes every host-side gate, emits nothing — or the amp silicon drifted into
+   a degenerate bias/bandgap state that our park floor does not clear (CLAUDE.md:
+   parking does not clear that state; only a full power cycle can).
+2. **Every gate we can check is host-side.** WSA writes are never ACKed and
+   bridge reads return fabricated data, so "all gates passed" proves what the
+   host *sent*, never what the amp *is*. A degenerate amp state is NOT excluded
+   by tonight's evidence.
+
+### SPI4 read-oracle: attempted, interface dead from Linux (2026-08-22)
+
+Built `drivers/spx_extras/spx_spi4_oracle.ko` — the read-only half of
+`wcd934x-wdsp.c` (CLKREQ wake → RDSR status → IRR internal reads → MIOR flat
+reads), no WDSP boot, no codec-register writes. Motivation: Windows reaches the
+same register file over SPI4 with reliable reads (docs/windows-re/07); a working
+oracle would end our dependence on the fabricating SLIMbus bridge.
+
+Result: every transfer ACKs electrically but returns flat zeros — RDSR status 0,
+all IRR/MIOR reads 0x00000000, across 8 CLKREQ retries, with MCLK running
+(9.6 MHz, clk_summary `Y`). Controls: the touchscreen (`hid-over-spi`, QUP SE1)
+is bound and working, so board SPI + GENI QUP + pad muxing are fine; our SPI4
+config matches the DSDT `_CRS` byte-for-byte (CS0 active-low, mode 0, 8-bit,
+24 MHz). Remaining explanations: the codec gates its AUDD-SPI slave domain in a
+state only the Windows boot sequence reaches, or it is strap/fuse-disabled on
+this unit. Module kept for future boots; not resolvable cheaply tonight.
+
+### The fork (recorded before asking)
+
+- **Full power-off** (shutdown, wait, cold start): resets all codec/amp silicon
+  state. Sound returns → state, not hardware; continue the software hunt.
+  Still silent → hardware failure near-proven.
+- **Windows dual-boot play test**: definitive oracle. If Windows cannot make
+  this speaker produce sound either, the hardware case is closed regardless of
+  anything else. Needs an armed entry and explicit user authorization.
+
+## 35. Post-poweroff verdict (2026-08-22 21:57) — HARDWARE FAILURE, near-proven
+
+The fork from §34 resolved: full power-off (30 s drain, cold start at 21:33) onto the
+byte-identical v31 configuration produced another fully gated but **completely
+inaudible** four-phase run (`spx-noise-localize` log 215609). Attach proven pre-play
+in both phases, canary OK at every snapshot, DP4 `0x01000607` both banks mid-stream,
+Q6 `44/44/0`, clean PA lifecycle. The user heard nothing anywhere: no click, no
+static, no tone.
+
+The evidence chain is now:
+
+| when | software | result |
+|---|---|---|
+| 2026-08-22 ~12:00 | v31 entry, autotone | clack + tone + static |
+| 2026-08-22 evening | same boot, MORE headroom (RX8 124, boost 15) | silence |
+| 2026-08-22 21:57 | full power-off, byte-identical v31 | silence |
+
+A full power cycle resets every resettable thing: codec silicon (rails, bandgap,
+bias), WSA amp internal state, and the boot-time init sequence re-ran cleanly. The
+degenerate-state hypothesis is disproven. Byte-identical software was audible at
+noon and is silent at night across a power boundary. **The pin2 output chain has
+physically failed** — amp output stage, speaker coil, connector, or a common feed —
+with exactly the signature pin1 showed from day one (announces digitally, passes
+every host-side gate, emits nothing; two independent amps dying identically points
+at a shared physical cause rather than two coincidental chip failures).
+
+Every host-side observation is consistent with a healthy transport because the
+transport IS healthy; nothing downstream of the DAC word exists where software can
+look (WSA writes unACKed, bridge reads fabricated, SPI4 slave interface dead from
+Linux — §34).
+
+Consequences:
+
+- All remaining analog experiments (BIAS_PSRR, profile 3, BIAS_INT, PWM carrier)
+  target static-around-a-tone and are MOOT until a tone physically returns. Do not
+  run them.
+- The goal statement changes: software bring-up is COMPLETE and validated against
+  the Windows ground truth; the blocker is hardware. Re-opening software work
+  requires first re-establishing audibility through a physical change (repair,
+  reseating connectors, or replacement hardware).
+- `scripts/spx-noise-localize.sh` remains THE tool to re-baseline any future boot
+  (e.g. after repair): Phase B/C prove attachment and staging before asking for
+  ears, so a silent run can never masquerade as a software result again.
+
+## §36 — Verdict stress-tested to exhaustion (2026-08-22 23:30)
+
+The user challenged the §35 hardware conclusion ("I'm fairly sure the HW is still
+OK"), which drove three final software campaigns tonight. All three failed in ways
+that *strengthen* the physical verdict:
+
+1. **Natural-enumeration addressing model** (the 07-26/28 audible-era model,
+   `no_assign=0 write_dev0=0`): the amp announces at device 0 but the
+   `SCP_DEVNUMBER` assignment never visibly takes — every verify read returns
+   `id=aa aa aa aa aa aa` (the known fabricated-read wall) and `MCP_SLV_STATUS`
+   stays `0x1` (present at dev0) through init and playback, so per the 07-29
+   precedent the amp never moved to dev1. With `spx_blind_attach=1` (the knob the
+   audible-era GRUB entries actually used) the driver attaches logically and runs
+   a full stream (`44/44/0`) — but all of its writes go to logical dev1 where
+   nothing physically lives. Era mode cannot deliver on this machine today.
+
+2. **Unicast click probe**: `DRV_EN` fc↔7c toggles through the normal
+   forced-dev0 path — silent.
+
+3. **Broadcast click probe (the decisive one)**: added `bcast=1` mode to
+   `spx_wsa_seq.ko` (`sdw_bwrite_no_pm_unlocked` + bus_lock; the qcom master
+   pushes the command before waiting, so `-ENODATA` means "sent, unconfirmed" and
+   must not abort the sequence). Broadcast is the only write class on this master
+   with real hardware confirmation (`SPECIAL_CMD_ID_FINISHED` completion, `rc=0`).
+   With the amp powered, announced, and stably attached ([5564.267] in the boot
+   log), the *entire minimal analog bring-up chain* — reset release, CDC clocks,
+   CLOCK_CONFIG, bias, DAC ctl, misc, boost config, ANA_CTL latch, gain 0x09
+   (+18 dB REG mode), then `DRV_EN` fc↔7c ×4 — went out as 22 broadcast writes,
+   every one `rc=0`. **Zero acoustic output.**
+
+4. **Bare SD_N rise**: powering pin2 alone (GPIO high, no bus traffic) produced
+   no click. This amp's very first power-up (2026-08-11, v15) clicked audibly
+   from SD_N alone — a pure electrical/mechanical event that requires no DAC
+   data, no SoundWire, no ADSP. That click is gone.
+
+A powered, frame-synced, attached amp that receives hardware-confirmed analog
+enable writes and produces nothing — plus a silent power-up transient — cannot be
+explained by any host-side software state. §35's verdict stands with much stronger
+evidence. Remaining physical candidates: amp output stage, speaker coil, or the
+board-to-board connector; two amps dying identically (pin1 day-one, pin2 today)
+points at a shared physical cause (common feed, flex/connector fatigue, or
+assembly-level damage).
+
+New tooling kept for the repair day:
+- `drivers/spx_extras/spx_wsa_seq.ko` `bcast=1` — broadcast register sequences
+  (hardware-confirmed delivery; use only while parked, one amp powered).
+- `scripts/spx-noise-localize.sh` `SPX_EXPECT_STATUS` — attach gate accepts the
+  enumerated-address status for era-model re-baselines.
+- `drivers/spx_extras/spx_spi4_oracle.ko` — SPI4 read oracle (interface currently
+  returns flat zeros from Linux; §34).
+
+## §37 — The challenge audit (2026-08-23 00:15)
+
+The user rejected §36 ("Prove yourself wrong") and was RIGHT to: re-audit found
+the 23:24 "minimal chain" broadcast test used hand-mapped registers that were
+largely WRONG (SPKR_DAC_CTL value written to BONGO_RESRV_REG1, MISC values into
+TEMP regs, boost presets shifted by one, BIAS_INT/PA_INT/OCP never written).
+That test was void. Corrected evidence:
+
+1. **Delivery proven without ears**: a broadcast `SCP_DEVNUMBER` (0x46 <- 6)
+   moved `MCP_SLV_STATUS` 0x1 -> 0x0 within 600 ms of a fresh dev0 announce --
+   the amp RECEIVED and EXECUTED the command. Broadcast reaches this amp; rc=0
+   is meaningful. (Also confirms unicast delivery is what broke in era mode.)
+2. **Faithful replay still silent**: the exact 93-register guarded sequence
+   (cold init -> protection-off -> supplies -> boost -> OCP -> pre-PA ->
+   Windows profile-0 staging incl. DAC ramp, VI pulses, PWRSTG staging, DRV_EN
+   fc, 12-step gain ramp, fd/ac tail), machine-generated from wsa881x.c with
+   shadow-RMW emulation (`/tmp/gen-faithful-seq.py`), delivered over the proven
+   broadcast channel into a freshly powered amp: **complete silence**. Same on
+   pin1.
+3. **Software identity verified at every layer**: kernel cmdline byte-identical
+   to the noon-audible boot (journal diff), no module or DTB file modified
+   after noon (find -newermt empty).
+
+What survives of the hardware verdict: powered amps that provably execute
+received bus commands produce nothing from the full confirmed-delivered analog
+bring-up, on both speakers, after a power cycle, with byte-verified identical
+software to an audible run. What does NOT survive: the earlier broken-chain
+"proof", and overconfidence in SD_N-click absence (v15's click may have been a
+first-power special).
+
+Open alternative that fits every observation: **a thermal/marginal contact**
+(all evening tests ran on a warm device; a contact that opens hot explains
+noon-audible -> evening-silent -> power-off-no-help). Falsifier: leave the
+device OFF overnight, one guarded cold boot in the morning. Audible = verdict
+wrong, chase intermittent connection. Silent = thermal hypothesis dead too.
+
+## §38 — Second challenge audit (2026-08-23 00:45): the verdict has an uncontrolled variable
+
+Re-audit of §34–§37 against `/var/lib/upower/history-charge-M1086677-38-0025151003.dat`
+(the live battery's upower log; entries begin 2026-08-20) and the journal.
+
+**1. The power-state confound.** Every attended silent full-chain test ran on a
+discharging battery below 50%; every audible run on record ran on AC or at ≥50%:
+
+| when | test | power state |
+|---|---|---|
+| 08-20 13:46–15:41 | keep-asm / static A/Bs — AUDIBLE | battery 79→50% then AC |
+| 08-22 11:59 | v31 autotone — AUDIBLE (clack+tone+static) | AC, 47% pending-charge |
+| 08-22 15:58 | AC unplugged (46% discharging) | — |
+| 08-22 19:40 | noise-localize #1 (the UNattended one, §34) | AC, 50% |
+| 08-22 20:14 / 20:19 | noise-localize, attended — tone GONE | battery 49↓ / 47↓ (unplug ~20:10) |
+| 08-22 21:05 | max-headroom control — silent | battery 38↓ |
+| 08-22 21:56 | §35 post-poweroff verdict run — silent | battery 27↓ |
+| 08-22 22:41 | era-model noise-localize — silent | battery 16↓ |
+| 08-22 23:24–23:38 | §36 broadcast campaigns — silent | battery 3–6% |
+| 08-22 23:42 | AC restored | charging 4→50% |
+
+§35's "a full power cycle resets every resettable thing" is wrong for exactly one
+thing: the 21:33 power-off brought the machine back on the same draining battery
+(~30%). The suspect variable was never reset. The WSA881x is a boost-converter
+smart amp drawing its output-stage current from the battery rail, and Surface EC
+power policy at low SOC is unknown; a browned-out or EC-limited boost rail
+produces precisely the observed signature (digital core announces and executes
+commands, analog output absent). The §37 thermal hypothesis is confounded with
+this one: long evening uptime = warm device AND drained battery.
+
+**2. Since AC was restored at 23:42, no sound has been attempted.** The §37
+faithful 93-register replay was register-only. The 00:26 boot (AC, 50% held —
+byte-for-byte the noon-audible power state) has had ZERO PCM streams
+(`dmesg | grep -c "SPX ASM stream"` = 0). Its only probes were the SD_N click
+(an indicator §37 already downgraded) and an 8-write partial PA chain
+(reset/DAC/OCP/DRV_EN — no clocks, no bias/bandgap, no BOOST_EN 0x312a), which
+is not expected to click even on healthy silicon. "Cannot play anything, not
+even static" currently rests on no play attempt in the audible-era power state.
+
+**3. The §37 overnight-cold falsifier was pre-empted**: the machine was rebooted
+9 minutes after shutdown, warm.
+
+**Next (in order, one listen each):**
+1. NOW, on this boot (AC, ≥50%): attended `./scripts/spx-noise-localize.sh`.
+   Audible → hardware verdict DISPROVEN; the gate is power state; re-run on
+   battery <50% to confirm the mechanism. Silent → power confound closed.
+2. If silent: power OFF, leave OFF and CHARGING overnight, one attended guarded
+   cold boot in the morning (kills thermal and charge-state together).
+3. Only if both silent does §35/§36's physical verdict stand — and even then it
+   is "pin2 output chain failed", not "we broke it": nothing host-side ever
+   commanded anything a protected amp shouldn't survive, though note v22 runs
+   protection-OFF, so the §34 "repeated high-gain power cycling" days ran
+   without OCP/OTP guards.
+
+## §39 — OVERTURNED: the speaker is alive (2026-08-23 01:01)
+
+§38's falsifier step 1 was executed and fired positive. Two guarded four-phase
+`scripts/spx-noise-localize.sh` runs (00:51, 01:00 —
+`/tmp/spx-noise-localize-20260823-{005109,010005}.log`, waveform sha256
+`de0c6a6c…ec37de`) on this boot — AC, 50% held pending-charge per the upower
+history (00:26:46 entry), byte-identical software to every run §35/§36 called
+dead — produced **clearly audible static** from the right speaker (user verdict,
+01:01; the user who forced §36 "prove yourself wrong" and §37 was right). Both
+runs were green-gated: device-0 announce in 1–3 samples, stable attachment +
+cold-init replay in both powered phases, `COMP_PARAMS=0x016840c6` canary at all
+snapshots, DP4 `0x01000607` both banks mid-stream, PA DAPM 0x1/0x2/0x8, Q6
+`44/44/0`, clean teardown. **The §35 HARDWARE FAILURE verdict is DISPROVEN.**
+
+**Corrected failure model.** §38's confound is promoted to primary hypothesis:
+silence has an EXTERNAL gate, prime suspect power state (the WSA881x boost
+output stage draws from the battery rail; Surface EC low-SOC policy unknown).
+Yesterday's "progressive afternoon decay" (§34) was not decay but a step: the
+machine left mains at 15:58 and again ~20:10, and every attended silence
+(20:14 → 23:38) occurred while DISCHARGING below ~49% with all host-side gates
+healthy; every audible run sat on mains at the 47–50% hold. Extra evening gain
+headroom could not help because the missing quantity was supply, not signal.
+The 21:33 power-off never tested the variable (it rebooted onto the same
+drained battery) — that is how a brown-out got promoted to "physical failure".
+
+**Honest strains in pure power gating (do not gloss these).** The journal sudo
+trail places sweep sessions at 14:50–14:56 (AC) AND 15:56–16:03, straddling the
+15:58 unplug (upower 46→43% discharging); the delta-sweep forensics
+(2026-08-23) then CONFIRMED from transcripts (`d93b1097` 13:59–14:02Z) that the
+15:56–16:03 A/B block — valid attaches, user heard static+tone on both port
+masks, PA=0 and boost-off A/Bs — was **audible on battery at 44–46%**. So a
+naive instantaneous SOC/voltage gate is REFUTED, not merely strained: audible-
+on-battery@46% precedes silent-on-battery@49% by four hours, and the silent
+evening ran at HIGHER loaded voltage (≥7.40 V) than the audible afternoon
+(7.316 V dip). (§38's own "08-20 audible on battery 79→50%" row is PHANTOM
+per the 08-23 correlation table: boot -10 booted
+`module_blacklist=soundwire_qcom,snd_soc_wsa881x` — zero PCM streams exist in
+that window; its times are the upower discharge span copied as listening
+times. Do not re-cite it.) And uptime fails as a two-way gate (21:57
+fresh-boot still silent). The mid-afternoon "silent" replays themselves are
+attach-race voids
+(`MCP_SLV_STATUS=0x0` at every sample, §33) — a different, characterized
+failure mode, NOT attached-silence evidence. What survives is a COMPOUND
+class: rail policy × marginal contact, intermittent physical connection,
+thermal soak, or wear-with-rest-recovery — see the 08-23 delta-sweep ranking.
+Resolution belongs to discriminating tests, not assumption: the battery
+boost-load-step probe (BAT1 V/I at ≥10 Hz during a discharging play attempt;
+conducting output stage = visible current step at PA enable), announce-latency
+statistics across states, and the AC-replug-at-frozen-SOC listen.
+
+**Status of prior verdicts.**
+- SPI4 read-oracle dead from Linux (§34): still valid (ACKs electrically, flat zeros).
+- Era/natural enumeration undeliverable (§36.1): still valid — the latch still never moves.
+- pin1 physically silent (v20/v21): still valid as recorded; explicit caveat:
+  pre-08-20 sessions carry no power-state log (upower history begins 08-20), so
+  this verdict inherits the same uncontrolled variable.
+- SD_N-click absence: downgraded twice over (§37: likely a first-power special;
+  §38: the partial probe lacked clocks/bias/BOOST_EN — cannot click healthy silicon).
+- Whole-boot-silence class: REOPENED — historic attributions may mix dropped
+  bank switches with battery-state silence; the mid-stream mirror-recovery
+  experiment keeps the bank-switch mechanism itself proven, but not every
+  historic silent boot is thereby explained.
+- Static-does-not-pass-the-PA-gain (§33): unchanged, and reconfirmed tonight on
+  a live speaker.
+
+**Live problem.** The original residual broadband static is again THE quality
+defect, now on a working speaker. Tonight's per-interval observations were not
+filed against the localize interpretation matrix — the next listen must record
+A / B / Cz1 / Ct / Cz2 / D before any new hypothesis.
+
+**Surviving regularities after all ten 08-23 forensic reports** (correlation
+table): (1) TOTAL silence (no static at all) has only ever been observed while
+DISCHARGING — six runs, 49%→19%; no fully-silent run on steady AC exists
+outside void/knob-confounded classes. (2) Static presence is nearly
+power-independent above ~45% SOC; its loudness appears to scale down with SOC
+on battery (clear @46–48%, faint @48%, absent ≤28%) — voltage headroom on the
+noise path, not a tone gate. (3) No H1–H4 survives strictly: AC does not
+guarantee tone (01:01 = static only), discharge does not kill static (16:00
+audible @46%). (4) Something changed on 08-22 evening that no power variable
+explains: AC@50% now yields carrier without tone and clicks are still absent —
+judge TONE separately from STATIC in every future listen.
+
+**Sharpened unplug discriminator:** what matters is the FIRST 60 s after
+unplug at 50%, not the SOC number. Instant total silence ⇒ electrical
+present-state trigger confirmed; static persisting while discharging through
+≤46% ⇒ present-state theories die and the 08-22 evening failure was
+cumulative/thermal/physical. Run `scripts/spx-boost-step-probe.sh` during any
+battery play attempt (conducting output stage = visible BAT1 current step at
+PA enable; zero ears needed). Order: (1) ZERO_ONLY + per-interval matrix on
+this boot; (2) unplug-at-50% listen with the step probe running; (3) resume
+the static hunt per the §34 matrix branches.
+
+## §40 — 2026-08-23 15:30/15:33: faint static on battery @48–49%, no tone, rail flat
+
+Two green-gated `spx-noise-localize.sh` runs on the 00:26 boot (uptime 54.7 ks):
+
+| run | log | power | attach | stream | heard |
+|---|---|---|---|---|---|
+| 15:30:00 | `/tmp/spx-noise-localize-20260823-153000.log` | AC@50% at 15:29:49 → **unplugged during the run**, phase D `adp=0 49%` | `MCP_SLV_STATUS=0x1` post-attach + post-tone, canary OK | `44/44/0`, DP4 `0x01000607` both banks | first reported "nothing" |
+| 15:32:56 | (dmesg 54868–54907) | battery discharging 48%, V 7.48–7.52 | PA PMU 54892, PMD 54904 | `44/44/0` | **right speaker on for a few seconds: super-low static, barely audible; no tone** |
+
+(The user's correction most plausibly describes the second run; treat the
+15:30 "nothing" as low-confidence.)
+
+Consequences:
+- "We broke the speakers" is dead for good: the right speaker emits on
+  battery, attached, green-gated. What is missing is the **tone**, and the
+  static is much fainter than the AC@50% 01:01 result (§39), consistent with
+  the §39 "static loudness scales down off mains" regularity at the top of
+  the discharge curve (48–49%).
+- **Rail-sag brown-out is NOT supported at 48%**: BAT1 `voltage_now` logged
+  at 20 Hz (`/tmp/spx-power-step-20260823-153239.csv`) stayed 7.48–7.52 V
+  through GPIO-on, PA-on, the 11 s stream and park; no dip. If power state
+  gates the speaker it is policy/current-limit, not battery voltage.
+- **Step probe is inconclusive with this telemetry**: BAT1 has no
+  `current_now`; `power_now` is a slow average (5.02 → 5.62 W ramp across the
+  whole 50 s, no resolvable step at PA enable). `scripts/spx-boost-step-probe.sh`
+  cannot answer "does the output stage conduct" on this EC — needs a faster
+  source (PMIC ADC / vph_pwr rail sensor) or the static itself as the proxy.
+- The tone gate has now failed in BOTH power states on this boot (AC 01:01:
+  static only; battery 15:33: faint static only). The tone hunt is
+  orthogonal to the power question; proceed per the §39 matrix branches.
+
+Next listens (same boot): replug AC, wait for "Not charging/50%", one
+`spx-noise-localize.sh` → does static loudness recover on mains (live A/B of
+the power gate, no reboot)? Then the §39 static-interval matrix.
+
+## §41 — 2026-08-23 15:36: mains A/B — same faint static; naive AC gate REFUTED for loudness
+
+`/tmp/spx-noise-localize-20260823-153640.log`: green-gated (attach `0x1` + canary,
+DP4 `0x01000607` both banks, `44/44/0`, clean park), **on mains throughout**
+(`adp=1`, EC hold "Not charging/48%", 7.63–7.64 V at every phase). Heard: faint
+static for ~10 s toward the end (= the phase-C PA-on window), **same loudness as
+the 15:33 battery run**; if the 440 Hz tone was present it was low enough to
+blend into the static. Phase B (PA staged directly, no PCM) silent both runs.
+
+Conclusions:
+- Same boot, same software, 4 min apart, only the power source differed ⇒
+  power source does NOT set static loudness here. The §39 "scales with SOC"
+  regularity is not reproduced at 48%; the 01:01 "clearly audible" vs today's
+  "barely audible" gap is something else (time/uptime/thermal/mechanical).
+- Both the static (bypasses PA gain, §33) AND the tone (through PA gain) are
+  attenuated by roughly the same large factor. A common attenuator DOWNSTREAM
+  of the PA gain stage is therefore the leading model: high-resistance /
+  intermittent speaker contact or connector, a degraded transducer, or the
+  output-stage rail (boost not running ⇒ VBAT-only swing; note `vph=3.38 V`).
+  Anything upstream of the gain (DSP, SLIMbus, SWR framing, DAC word, PA gain
+  register) cannot attenuate static and tone together.
+- Ranking after §40/§41: intermittent/high-R physical contact ≫ output rail
+  (boost) > thermal > AC policy (dead) > brown-out (dead, §40).
+
+Discriminators, cheapest first (each one listen on this boot):
+1. **Press test**: run `spx-noise-localize.sh` while firmly pressing the
+   chassis around the right speaker / nearby edge during phase C. Loudness
+   that changes with pressure = contact/connector; unchanged = transducer or
+   rail.
+2. **Rail test**: `SPX_BOOST_SWITCH=0` vs 1 on this boot (boost off should
+   be *quieter* if boost currently runs; if identical, boost is already not
+   contributing ⇒ rail branch promoted).
+3. Max-headroom control on mains (RX8 124 / boost 15 / PA 12): does loudness
+   scale at all? Scales ⇒ gain chain alive, attenuation is fixed-ratio
+   (contact); clamps ⇒ rail/transducer.
+
+## §42 — 2026-08-23 evening: config diff loud-noon vs faint-today; one delta found
+
+Diff of the noon 08-22 LOUD run (`/var/tmp/spx-speaker-20260822-115925/`,
+clack+tone+static) against today's faint runs (§40/§41, same script family):
+
+| knob | noon LOUD | today FAINT |
+|---|---|---|
+| SPX_PORT_MASK | **5** (DAC+BOOST SoundWire ports) | **1** (DAC only) |
+| PA Volume | 12 | 12 |
+| RX8 Digital Volume | 84 | 84 |
+| Smart Boost Level | 0 | 0 |
+| COMP8 Switch | on | on |
+| SpkrRight COMP/VISENSE | off/off | off/off |
+| hw_params | S16/48k/2ch 12000/48000 | identical |
+
+One software delta: the BOOST descriptor was streaming at noon and is not
+today. The v31 A/B (§32/§33: mask 5 vs 1 static comparison) was judged
+"changed nothing statically" — but §33's mask-5 runs were on a boot whose
+baseline was already loud; nobody has re-checked whether mask 5 restores
+LOUDNESS from today's attenuated state. With Windows verified-good as the new
+premise (user), the boost rail is back in play as the common downstream
+attenuator candidate.
+
+Next listen (one): `SPX_PORT_MASK=5 ./scripts/spx-noise-localize.sh` on mains.
+Loud again → the DAC-only port config starves the output stage (boost not
+actually enabled without its data port — plausible: wsa881x_boost_ctrl() only
+fires when the BOOST DAPM supply toggles); still faint → mask is exonerated,
+attenuation is physical or in un-programmed amp registers.
+
+## §43 — 2026-08-23 16:25: mask-5 rerun FAINT — config exonerated; uptime emerges as the surviving correlate
+
+`SPX_PORT_MASK=5 ./scripts/spx-noise-localize.sh`
+(`/tmp/spx-noise-localize-20260823-155529.log`) reproduced the byte-identical
+noon-LOUD descriptor configuration on this boot. All gates green: stable
+device-0 attachment, C-phase zeros with `MCP_SLV_STATUS=0x00000001`, mid-stream
+DP4 B0/B1=`0x01000607`, Q6 close `bits=16 submitted=44 write_done=44
+fallback=0`, clean park. Power state: battery 43→44% discharging (charger had
+already dropped out at preflight — an attached-faint result, so the run stands).
+
+User: **"Same"** — same faint static, no louder, no distinguishable tone.
+
+⇒ §42's single config delta (PORT_MASK 1 vs 5) is **exonerated**. Combined with
+§40 (BAT1 rail flat under load) and §41 (mains ≡ battery), the loudness gate is
+now known to be *not* config, *not* power source, *not* rail sag.
+
+### Free forensics: journalctl stream-closure timelines
+
+Boot −3 (2026-08-22 11:50 start, 18 closures):
+
+| # | time | uptime | verdict |
+|---|---|---|---|
+| 1 | 11:59 | 0h09m | **LOUD** (clack+tone+static, §42 table) |
+| 8–14 | 15:56–16:03 | 4h06–4h13m | **AUDIBLE on battery** (§38/§39 transcripts) |
+| 15 | 19:41 | 7h51m | silent/faint |
+| 16–18 | 20:14–21:06 | 8h24–9h16m | silent (attended) |
+
+Boot 0 (2026-08-23 00:18 start, 9 closures):
+
+| # | time | uptime | verdict |
+|---|---|---|---|
+| 2 | 01:01 | 0h43m | **AUDIBLE static** (§39) |
+| 3 | 11:09 | 10h51m | faint |
+| 4–9 | 15:30–16:25 | 15h12–16h07m | faint (battery, mains, mask-5 alike) |
+
+### Refuted by these two tables
+
+- **Pure stream count**: boot −3 was audible at stream #14; boot 0 faint at
+  stream #3.
+- **Suspend/resume**: zero PM-suspend events in both journals — machines ran
+  straight through.
+- **Thermal soak**: all thermal zones 34.7–37.6 °C at 16 h uptime — cool.
+- Power source, SOC, voltage: already dead (§40/§41).
+
+### Surviving correlate: TIME SINCE COLD POWER-ON
+
+Audible ≤ ~4.2 h uptime in BOTH boots; faint/silent ≥ ~7.9 h in BOTH boots.
+Some state resets only at full power-off and drifts over hours. Every run
+already replays the cold-init register set, so *replayed register content* is
+excluded — the drift lives in something a register replay cannot restore:
+an unreplayable analog latch (bandgap-class), long-duration ADSP/PMIC state,
+or a slow physical effect. Note Windows works for the user regardless, so if
+this is an analog-drift class it must be a margin our un-calibrated
+(no-0x1025f-runtime-cal) config sits closer to than Windows'.
+
+Next: (a) max-headroom control (`SPX_RX8_VOLUME=124 SPX_BOOST_LEVEL=15`) —
+does ANY software-reachable gain scale the output at all; (b) THE decisive
+test, which needs explicit user authorization: **one cold reboot, then listen
+to the very first stream on battery**. Loud ⇒ gate is power-cycle-reset drift;
+still faint ⇒ re-rank from scratch.
+
+## §44 — 2026-08-23 16:40: max-headroom NULL (compander caveat); cold-boot test staged
+
+`/tmp/spx-noise-localize-20260823-164039.log`, battery 32% discharging,
+7.357 V flat, all gates green (C-leading-zeros DP4 B0/B1=`0x01000607`,
+`bits=16 submitted=44 write_done=44 fallback=0`, clean park). Knobs verified
+APPLIED in mixer.log's final blocks (the file appends across runs — check the
+LAST block): RX8 Digital Volume 84→**124** (0 → **+40 dB**) and Smart Boost
+Level 0→**15** ('6.625 V' → '8.500 V').
+
+User: "Static + tune very low, very very low (same as the other attempts)" —
+no loudness change from +40 dB of upstream digital gain plus a 1.9 V boost
+raise.
+
+Interpretation, carefully: a +40 dB RX8 increase vanishing acoustically is
+only possible if something downstream hard-limits — prime suspect:
+`COMP8 Switch` is ON in this baseline (`mixer_path()` sets it), and a
+compander normalizes exactly this kind of input change — or the perceived
+output is dominated by the gain-independent static floor (§33) with the true
+tone far beneath it. The null therefore does NOT yet prove "attenuation
+outside software reach"; the COMP8-on baseline compresses this probe. A clean
+version would need COMP8 off, but that is the known REG-mode-mute risk on the
+left path — do not spend a listen on it until after the decisive test below.
+
+### DECISIVE TEST STAGED — requires explicit user authorization (never reboot autonomously)
+
+Pre-flight verified 16:45: `next_entry=` empty in grubenv (no stale one-shot),
+default entry = `spx-audio-rescue`, and `/proc/cmdline` already carries the
+full guarded knob set that today's boot ran — so a PLAIN reboot reproduces
+today's exact software environment. No rebuild, no arming, no mkinitcpio.
+
+Protocol for the next session (this session dies with the reboot):
+
+1. USER reboots plainly into the unchanged default entry; keep the charger
+   UNPLUGGED (battery ≈32% is plenty).
+2. After login, run `./scripts/spx-noise-localize.sh` as the literal FIRST
+   PCM open of the boot — nothing may touch the audio card before it.
+   Record power state next to the listen (standing rule).
+3. Verdicts:
+   - LOUD (clack + tone + static, noon-08-22 class) ⇒ the faint gate is a
+     power-cycle-reset drift; immediately rerun once more as stream #2 on the
+     fresh boot to begin mapping how long loudness survives.
+   - FAINT ⇒ the uptime hypothesis dies; re-rank from zero, and design a
+     Windows-side arbitration of the "speakers work in Windows" premise.
+
+## 45. 2026-08-23 17:13–17:42 — warm-reboot first-stream listen: NOTHING; boot-uptime gate dead, cold-power-on-hours survives
+
+Protocol correction first: §44's "plain reboot reproduces today" premise was
+**wrong** — the persistent default is `spx-audio-rescue`, which
+`module_blacklist`s `soundwire_qcom,snd_soc_wsa881x`. That first reboot landed
+on the rescue entry and the localize aborted pre-hardware
+(`FATAL: snd_soc_wsa881x is not loaded`; log
+`/tmp/spx-noise-localize-20260823-170828.log`; boot stayed pristine). Lesson:
+one-shot GRUB selections are consumed by the boot they steer — yesterday's
+session had been *entered* via a consumed one-time pick, masking the true
+default. Fix: armed `next_entry=spx-speaker-v28-music` via grub-editenv
+(verified), rebooted again.
+
+The v28 boot (17:13) is byte-identical guarded software (DTB speaker-right-v19,
+full knob set, panic guards). Two listens, both green-gated:
+
+| stream | wall | uptime | SOC / rail | attach | DP4 mid-stream | Q6 close | heard |
+|---|---|---|---|---|---|---|---|
+| #1 | 17:23 | **~10 min** | 22% dischg 7.25 V | dev0 after 1 sample | B0=B1=0x01000607 | 44/44/0 | unreported ("try again") |
+| #2 | 17:41 | **~28 min** | 18% dischg 7.19 V | dev0 after 1 sample | 0x01000607 both banks | 44/44/0 | **NOTHING** |
+
+Caveat honestly logged: run #2's two in-stream `MCP_SLV_STATUS` samples read
+`0x0` (run #1 read `0x1` during leading zeros). Attach was proven pre-stream,
+so per protocol those are the documented ambiguous/stale latch — but with a
+"nothing" verdict they keep a whole-boot-silence-class escape hatch open for
+this boot.
+
+Consequences:
+
+- **Boot-uptime as the loudness gate is DEAD.** A 10-minute-old boot produced
+  nothing audible where the correlate predicted audible (≤4.2 h). Warm reboots
+  do NOT reset whatever decays.
+- **The surviving form is time since last COLD POWER-ON** (wall-power removal),
+  which warm reboots pass through unchanged. Last true power-off ≈ 08-22
+  ~21:45. On that clock: 01:01 = ~3.3 h AUDIBLE static; 15:33–16:25 = ~18 h
+  FAINT; 17:22/17:41 = ~20 h NOTHING. The decay curve extends smoothly:
+  audible → faint → inaudible over ~hours of powered-on time, independent of
+  reboot count and of stream count.
+- SOC co-drifts on this clock (draining all day) and is NOT yet separated:
+  every audible battery listen was ≥44%, today's faint was 48%, today's
+  nothing was 22→18%. A low-SOC EC rail limit remains fully confounded with
+  powered-hours.
+
+Discriminators, in order:
+
+1. **AC-plug instant test** at the current nothing-state (no reboot): if the
+   same stream turns loud within minutes of plugging in, this is a live-rail /
+   EC-policy gate. Note §41 already showed mains-vs-battery identical at the
+   *faint* stage (~16 h), so the prediction under the hours-hypothesis is
+   "still nothing" — either outcome is information.
+2. **True shutdown → rest ≥ several minutes → cold boot → first-stream
+   listen**: the accumulated-state reset test. §35's "power-off resets
+   everything is void" verdict predates the hours correlation and only voided
+   the total-silence argument; as a loudness-reset probe it has never been run
+   clean (that return was on the same draining battery ~11 min later).
+3. Charge above 60% on mains, then an on-battery listen — separates SOC from
+   powered-hours.
+
+## 46. 2026-08-23 18:30 — 15-agent RCA fleet: two-factor model replaces single-variable uptime gate
+
+All 15 probes returned (11 web, 4 local). Full findings preserved in the
+workflow transcript; this section records what changes.
+
+### The model that fits all 20 verdicts with zero counterexamples
+
+**static loudness = f(hours since last TRUE rails-off power-on) × g(SOC)**,
+with the tone channel gated SEPARATELY:
+
+- **g = SOC floor**: every total-silence verdict ever recorded sits at
+  SOC ≤26% discharging (B1-B3 @26/21/16%, D2 @18%); no counterexample above.
+- **f = hours decay**, proven by the controlled pair C2 vs C3: same boot,
+  same mains 50%-hold — clear static @0.7 h vs faint @10.9 h post-power-on.
+  SOC/AC/stream-count/config all held fixed there.
+- **Tone died independently** between 08-22 16:03 and 19:41 and never came
+  back across all 3 true rails-off cycles — a second, permanent-seeming gate.
+
+### Corrections to our own record (fleet-caught)
+
+1. **§45's warm-reboot conclusion is UNMEASURED, not established.** Journal
+   clock forensics (chronyd-step/RTC-anchor method) show D1/D2 ran at SOC
+   22→18% — inside the g=0 floor where the model predicts silence regardless.
+   Warm-vs-cold reset has never been tested at adequate SOC.
+2. **Only THREE true rails-off cycles exist** (08-21 22:03, 08-22 21:30,
+   08-23 00:17); every other "reboot" boundary was a 44–80 s warm restart.
+   The noon-08-22 LOUD boot was 13.9 h after the last rails-off, and A3 was
+   audible at 17.8 h — which is why single-variable f(h) fails alone.
+3. **The §44 max-headroom null did not test boost headroom.** Multi-level
+   boost presets (6.625–8.5 V) are documented WSA8815-only; a WSA8810 offers
+   6 V-or-bypass. Our probed DevID says 0x2110 (8815-class) but the DTS
+   declares 0x2010 — amp identity itself needs confirming before reusing
+   boost-preset knobs. Also BOOST_EN-vs-bypass was never verified.
+4. Gauge noise ±2–4% means "audible@44–46 vs faint@48" never refuted SOC;
+   and loaded-voltage readings are load-confounded (faint@7.49 V > audible
+   dips @7.32 V), so voltage ordering proves nothing either way.
+
+### Dead hypotheses (with killer)
+
+- Amp-die progressive decay: datasheet has NO mechanism (OCP fixed 5 A,
+  thermal ≥100 °C, SD_N=0 full reset at 0.54 µW; no counters/NVM).
+- Thermal foldback (<5%): thresholds ≥110 °C vs ≤60 °C reachable die;
+  no cumulative-time thermal mechanism exists in any comparable part.
+- SWR clock drift: source-synchronous slave (no slave oscillator), MIPI has
+  no exhaustible tolerance; payload corruption predicts gain-scaling static,
+  refuted by the PA-gain null.
+- Battery chemistry/rail sag: margins ~10× too small to span audible→nothing
+  over 44→18%; amp input sits behind an unseen regulator anyway (pack 7.2 V
+  exceeds VDD_BAT abs-max 6.0 V).
+- Kernel/driver session state: audited — zero hour-scale mechanisms; guarded
+  config uses unconditional shadow writes; codec register-reset per boot.
+- Linux rail voting: Linux holds NO vote on the codec/amp 1.8 V rail (S4a
+  absent from pmc8180-a node; vreg_s4a_1p8 is a dummy fixed placeholder) and
+  vph_pwr in DT is a placeholder ("TODO: measure"). All audio rails are
+  firmware/hardware-owned — they survive warm reboot, collapse at true POR.
+- Field precedent: ZERO external witnesses anywhere (linux-surface #21 open
+  since 2022, nobody else has Pro X speakers working on Linux at all).
+
+### Surviving holders of the decaying state
+
+1. **SOC-floor gate (g)** — binary, policy-shaped. Precedent: iPhones ship
+   battery-condition audio derating (~50/25/10%) persisting until recharge.
+   Mechanism on SPX unknown; EC low-SOC rail policy candidate.
+2. **Powered-hours analog soak (f)** — the ONLY chip domain surviving both
+   SD_N parks and warm reboots is silicon under never-cycled rails:
+   WSA881x boost SMPS/output-stage/bandgap + WCD9340 bandgap/SIDO buck +
+   whatever intermediate buck feeds VDD_BAT. C2→C3 decay happened ON MAINS.
+3. **EC-held policy state** — Surface EC family precedent: Pro 7 stuck-throttle
+   survived shutdown/boot cycles, cleared only by MS forced-shutdown
+   (20 s power hold). `BatteryLimitEnable` EFI var verified ENABLED on this
+   unit; UEFI 7.580.140 predates the 2024 SAM charging-latch fixes. MAX34417
+   accumulators integrate powered-hours and survive warm reboot (I2C5 not
+   exposed under DT).
+4. **Tone-channel death** — separate gate; physical degradation or an
+   SD_N-independent analog state. Windows side-by-side arbitrates.
+
+### Experiment ladder (ranked)
+
+E1. CHARGE >60% on mains → COLD BOOT → first-stream listen. Two-factor
+    predicts CLEAR. Faint/nothing here breaks the model → wear branch jumps.
+E2. Same boot: read OCP/Clip status (SPKR_STATUS1 0x3128.b2, INTR_STATUS
+    0x3022.b3/b4 — nothing services them, flags persist till next SD_N reset)
+    + TSE die-temp recipe (bandgap/clocks/OTP cal → TEMP_MSB 0x3011/LSB
+    0x3012). Zero-risk reads inside spx_wsa_seq's window.
+E3. Register-dump diff fresh-vs-stale: 0x601/0x603/0x629 + CDC_BOOST0/1
+    0xc19–0xc22 (codec-side boost controller!) canary-gated.
+E4. Forced-shutdown EC-reset test (USER must hold power ~20 s, charger off)
+    — separates plain-S5-reset from residual-power EC state.
+E5. Read WCD GPIO dir/val bits 3/4 (Flex 5G switches its speaker rail from
+    wcdgpio pin 4 — SPX pins 3/4 unexplored). READ-ONLY first.
+E6. VI-sense instrumentation (enable VISENSE port + protection cal replay)
+    → objective R0/T0 instead of listening.
+E7. BatteryLimitEnable=0 via efivarfs (reversible) + Windows-side decay
+    reproduction (≥10 h uptime, <40% SOC) to arbitrate the OS question.
+
+## 47. 2026-08-23 night → 08-24 — forensic session: provenance corrections, overdrive refuted, LDO14E rail gap found, objective readback tooling delivered
+
+Overnight autonomous RCA (ultracode fleet + inline completion after the
+session-limit kill). Four results, one of which rewrites the §46 model's
+input data.
+
+### A. Provenance audit — the "loud noon" anchor never existed
+
+The §46 two-factor model is calibrated against a "noon 08-22 LOUD clack+tone"
+anchor. Transcript forensics (`grep` over all session `.jsonl` files) shows:
+
+- **No user verdict exists for any noon listen.** Between 09:49Z and 12:49Z on
+  08-22 the only user messages were "Continue"/"Proceed". The 12:52Z "heard a
+  tune" refers to the **14:50 CEST** sweep (the -19.9 dBFS ffmpeg run), not
+  noon.
+- **Last confirmed tone: 15:58:27 CEST 08-22** ("Static + tone", mains,
+  harness tone at -2 dBFS).
+- **Level confound:** every post-noon listen used the sweep's -19.9 dBFS
+  carrier; every pre-noon audible used the harness -2 dBFS tone. That is an
+  ~18 dB level difference between the compared populations — loud-vs-faint
+  judgments after noon are confounded and cannot calibrate g(SOC).
+- **Intermittence, not monotone decay:** at fixed config within minutes on
+  08-22: tune (14:50) → silent-ish (15:33) → tune+static (15:58). Non-monotone
+  same-config variation is the classic intermittent-contact signature and was
+  invisible under the old data.
+- Consequence for §46: f(hours)×g(SOC) still fits, but so does plain
+  intermittent contact plus the level confound. The model's discriminating
+  power came partly from an anchor that was never measured. E1/E4 remain the
+  decisive tests either way; E2 (register forensics) now runs WITHOUT a
+  listener first (below).
+
+### B. Overdrive/abuse hypothesis REFUTED (hard)
+
+Nothing drove pin2 in the decay window. GPIO 0x43 was parked `0x18` from
+16:03:34 to 19:40:35 08-22 (verified mid-gap), i.e. pins 1/2 low = amps off;
+total PA-on drive across 08-19→08-23 is ~13 minutes. OCP is enabled. The amp
+cannot have been damaged by use it did not receive.
+
+### C. LDO14E parity gap — Windows keeps a codec rail ON that Linux never declared
+
+Windows PEP (\_SB.PEP0.APCC component 4) votes `ldoe14` **1.8 V HPM** whenever
+the audio-codec AUDD device is D0. Linux `sc8180x-surface-pro-x.dts`
+declares no ldo14 in `pmc8180-e-rpmh-regulators`, cmd-db knows the resource
+('ldoe14'), and SPMI reads show PMIC E `EN_CTL` @ `0x4d46 = 0x00` — the rail
+is physically OFF under Linux, always has been.
+
+- Constant-off ⇒ candidate explanation for baseline marginality (the static),
+  NOT for the decay (decay happened with the rail equally off throughout).
+  But note WSA VDD_BAT sits behind a buck fed from this domain; Windows'
+  analog margins may simply be better.
+- Parent supply `vreg_s5e_2p04` (2.04 V) is present — an LDO can legally make
+  1.8 V from it.
+- **Staged:** `arch/arm64/boot/dts/qcom/sc8180x-surface-pro-x-speaker-ldo14e.dts`
+  (base + ldo14 1.8 V HPM always-on), DTB built and verified by fdtdump.
+  NOT installed to /boot, NOT referenced by any GRUB entry. One-variable test:
+  boot v28 cmdline against this DTB, listen + register-readback.
+- Related unexplored rails: WCD GPIO dir/val bits 3/4 float high since 08-11
+  (`dir=0x06 val=0x18`). Flex 5G switches its speaker rail from wcdgpio
+  pin 4. qcauddev8180-LIVE.sys scan of PAGEwcda found only WPP trace IDs in
+  the 0x40–0x44 cluster (no register writes) — pin semantics unknown; keep
+  READ-ONLY until a Flex-style RE lands.
+
+### D. Windows ground-truth premise carries a caveat
+
+The standing "Windows drives these speakers fine" premise is quoted from a
+07-29 note. There is NO Windows install on this disk (Boot0000 partition GUID
+absent); the SPX-Win box at 192.168.30.143 is a different, currently offline
+machine. The premise is plausible but unverified on THIS unit — and the
+§46-C3 EC-state holder predicts Windows would ALSO sound degraded here until
+a forced shutdown clears it. Side-by-side arbitration belongs to E7.
+
+### E. Objective readback tooling — E2 is now runnable with no listener
+
+- `drivers/spx_extras/spx_wsa_seq.c`: new `reads=` mode — read-only register
+  forensics, two passes per register per device with UNSTABLE flagging,
+  nothing written. Installed to updates/, initramfs rebuilt.
+- `scripts/spx-speakers-up.sh`: new `SPX_REG_READS` env knob inside the
+  existing `SPX_READBACK_ONLY=1` branch → dumps to
+  `<run>/wsa-reg-reads.log`.
+- `scripts/spx-power-snapshot.sh`: VPH_PWR read resolved by channel name
+  (iio slot 0 can be stolen by an apds9960).
+- Recipe (next v28 boot, desktop user, no sudo):
+
+```sh
+SPX_READBACK_ONLY=1 \
+SPX_REG_READS="0x3000,0x3001,0x3002,0x3003,0x3011,0x3012,0x3021,0x3022,0x3080,0x3081,0x3082,0x3083,0x3084,0x3100,0x3103,0x311a,0x311b,0x311c,0x311f,0x3127,0x3128,0x3129,0x312e,0x3130" \
+./scripts/spx-speakers-up.sh
+```
+
+  Covers: chip ID, raw TEMP_MSB/LSB (0x3011/12), INTR_STATUS latch (0x3022 —
+  OCP/burn flags persist until next SD_N reset per §46-E2), OTP slice
+  0x3080–84, BIAS_BIAS, TEMP_OP, DRV_EN/GAIN/DAC_CTL, OCP_CTL, BIAS_PSRR,
+  SPKR_STATUS1/2, BOOST_PRESET_OUT2/LDO_PROG. Canary: CHIP_ID must read
+  0x01/0x00/0x00/0x0A-class identity before trusting anything else; compare
+  fresh-cold-boot dump vs stale-boot dump for E3.
+- Reads go through `sdw_read_no_pm` on the slave — unreliable bridge reads
+  remain a known limit (double-pass stability check flags them).
+
+### Updated experiment ladder
+
+E1 unchanged (charge >60% → true cold boot → first-stream listen).
+**E2 FIRST, autonomously, on the next guarded boot — no listener needed.**
+E3 = diff E2 dumps fresh vs stale. E4 (forced shutdown) unchanged — now also
+arbitrates intermittent-contact vs EC-held-state. E5 pins 3/4 stays READ-ONLY.
+LDO14E boot slots in as its own one-variable cold-boot test after E1/E2.
+
+### F. E2 executed autonomously (2026-08-24 08:41) — slave reads are UNOBSERVABLE; E3-as-designed is dead
+
+The one-time v28 boot ran with the readback-only env. All gates green:
+`COMP_PARAMS=0x016840c6`, `MCP_SLV_STATUS=0x1` after ONE sample, cold-init
+replay completed, amp parked, no fault (`/var/tmp/spx-speaker-20260824-084101`).
+
+The forensics themselves returned nothing readable:
+
+- dedicated physical-dev0 readback: `SPX SLAVE READBACK BIAS_PSRR pass=1 rc=4
+  UNOBSERVABLE`;
+- `spx_wsa_seq reads=` double-pass over 24 registers on both slaves: every
+  read either `rc=-5 (-EIO)` or `rc=0 val=0x00`; device 2 (unpowered pin1)
+  uniformly `-EIO` as expected for an SD_N-low amp.
+
+This re-confirms the June hard wall ([[spx-slimbus-reads-stuck]]) with two
+independent paths on a proven-attached amp: **WSA881x slave registers cannot
+be read from APPS** — not OTP, not temperature, not INTR_STATUS latches.
+Combined with the dead SPI4 oracle (§34) and the stubbed ADSP regop, no
+objective register-level window into the amp exists on this side of the TZ
+gate. OCP/burn-flag forensics (E2) and fresh-vs-stale register diffing (E3)
+are therefore NOT DELIVERABLE as designed.
+
+What the run still bought: an objective attach proof on this boot (first-
+sample device-0 + valid canary), and a definitive tooling verdict so no
+future session burns a boot on slave reads again.
+
+Operational lesson: arming an automatic run requires BOTH
+`grub-editenv set next_entry=<entry>` AND the state file
+`/var/lib/spx-speaker-autotest/armed` (the unit's ConditionPathExists);
+GRUB arming alone boots the entry but the autotest skips silently. Also:
+test-env had accumulated a stale `SPX_EXPECT_PORT_MASK=5` (from the §42/43
+mask experiments) that aborts step [0] against the stock v28 cmdline
+(`mask=1`); restored to the coherent v28 baseline afterwards.
+
+Ladder update: E6 (VI-sense instrumentation through the ADSP path) is the
+ONLY remaining objective measurement; everything else audible-gated. E1
+(charge >60% → true cold boot → first-stream listen) and E4 (forced
+shutdown) need the user and remain decisive for the decay model vs
+intermittent-contact question.
+
+## §48 (2026-08-24) — Seven-step Windows-vs-Linux driver delta hunt (one RE agent per step)
+
+The user's directive: "Check how the Windows driver works. Dedicate one agent
+per step and figure out where it's different." Seven offline agents diffed the
+Windows stack (qcauddev8180-LIVE.sys / qcadcm8180-LIVE.sys / DSDT / INF /
+ACDB) against this tree, step by step of the playback path. Raw output:
+/tmp/spx-step-deltas.md (regenerated from the workflow journal). Every claim
+below was re-verified in-tree before being recorded — and verification
+MATTERED: two of the fleet's "critical" claims dissolved under correct
+masked-write composition (see 48.4).
+
+### 48.1 What is now PROVEN IDENTICAL (stop re-testing these)
+
+| Area | Parity proof |
+|---|---|
+| Paged register framing | Both OSes: page byte -> wire 0x800, data at 0x800+(reg&0xFF) |
+| Per-port SWR transport params | Windows static table @0x140020F30 == Linux DT bit-for-bit on all 8 master ports incl. DP4 -> 0x01000607 |
+| Register surface with spx_win_transport=1 | Windows writes only CHANNELEN/SAMPLECTRL1/OFFSETCTRL1(+2); Linux knob skips exactly the rest (BlockCtrl/HCTRL/Lane stay at reset) |
+| Four-port allocation NOT required | Port records are per-port atomic; Windows streams 4 ports/amp WITH reset BlockCtrls — single-port+reset-blockctrl is self-consistent |
+| SCP_FrameCtrl broadcast | Windows DOES broadcast dev15 0x60/0x70 after composing both banks (older doc claiming otherwise was wrong); so do we |
+| CMD FIFO cfg + drain discipline | 0x314<-0x03, post-write drain+retries: parity already implemented |
+| Frame-shape field layout + SSP period byte | Same GENMASK layout; our 0x10000 write matches Windows' bus-start value |
+| ADM/AFE lifecycle order | ASM->ADM open->matrix map->AFE DEVICE_START (0x100E5)->data->PA unmute: same order both OSes |
+| Protection-DISABLE state | v22 block is byte-exact vs qcauddev 0x14008d62c (protection-off mirrors Windows' own optional config) |
+| Boost finals (composed) | START_CTL=0xA0, SLOPE=0x74, CURRENT_LIMIT=0x78, BOOST_EN=0x98 (+settle wait): Linux masked writes compose to EXACTLY Windows' staged finals |
+
+### 48.2 Verified REAL deltas, ranked by leverage
+
+1. **SLIM data-channel management (CRITICAL).** Windows sends
+   CDC_SLIMBUS_SLAVE_CFG 0x10235 + SLIMBUS_SLAVE_PORT_CFG 0x10233 (module
+   CDC_DEV_CFG 0x10234) to the ADSP, whose firmware runs a native SLIMbus
+   channel stack ("open data channels"/"ReConfigNow()"); the apps side never
+   programs the RX PGD watermark regs for the DAC port. Linux instead blind-
+   writes WCD934X_SLIM_PGD_RX_PORT_CFG(p)=0x05 (12-byte watermark) +
+   MULTI_CHNL over the flaky AHB bridge (wcd934x.c:1771/:1780), and the codec
+   RX0 overflow fires ONCE PER STREAM forever (PROGRESS §42 table,
+   spx-static-sample-edge-ruled-out). Windows' init loop does touch TX-class
+   PGD regs (0xff->0x101+4p/0x181+4p; 5->0x40+p; 0xb->0x50+p @0x14007b108-b198)
+   — different family, different values. **This is the only delta that maps
+   onto an existing per-stream defect signature.** Testable WITHOUT listening:
+   v29 `spx_auto_speaker_cal=1` replays the ADSP param set; watch the RX0
+   overflow line.
+2. **BOOST_LOOP_STABILITY 0x3133 = 0x00 (guarded Linux, rev2 patch) vs 0x8F
+   (Windows cold-init)** — unconditional, one register, boost loop
+   compensation. BIAS_PSRR 0x44-vs-0x45 and MISC_CTL1 0xC7-vs-0xC6 are one-bit
+   stragglers (knob exists for PSRR). One spx_wsa_seq replay A/B:
+   `seq=0x3133:0x8f` after cold init.
+3. **Interrupt policy (major).** Windows masks enum-chatter IRQs OFF
+   (0x204<-0x1c3fd: NEW_SLAVE_ATTACHED/SPECIAL_CMD/AUTO_ENUM_FAILED/
+   TABLE_FULL/BUS_RESET never interrupt) and NEVER writes SCP_DEVNUMBER — it
+   follows HW auto-enum tables only. We unmask everything AND force-write
+   DevNumber + route all writes to dev0. The 0x1c3fd path already exists
+   behind `soundwire_qcom.spx_exact_windows_init` (boot-only, currently off).
+4. **Idle park (major).** Windows broadcast CLK_STP_NOW (dev15, reg 0x44=2)
+   whenever no stream holds a reference; verified live today: SPX controller
+   sits runtime-'active' indefinitely — amp bus framed continuously for days.
+   Matches the §46 analog-soak decay model directly.
+5. **Teardown soft-reset (major).** Windows PA-off ends with SWR_RESET_EN
+   0x300b=0x07 + CDC_RST_CTL 0x3005=0x00 (full digital-core reset between
+   streams, full re-init next stream); we latch OCP hold only and carry state.
+6. **Gain shape (minor).** Windows single-shots gain for targets >= code 4
+   (ramp only below); we always ramp ~12 steps (trace: 24 x 0x311b writes).
+7. **Readback adaptation (structural).** Windows derives BOOST presets from
+   OTP reads and RMWs MISC_CTL1 from readback; slave reads are UNOBSERVABLE
+   here (§47-F) so a perfect port is impossible — constants must be pinned
+   from OTP once, if ever readable.
+8. **Chip-version branching (unknown).** Every Windows analog sequence keys on
+   an in-chip version field (V1/V2 vs V3 paths differ in BBM_CTL 0x3121=0x02,
+   PS/ZX_CTL 0x80/0x14-vs-skip, DAC staging). Our part's version class is
+   unresolved (DevID probe said 0x2110, DTS says 0x2010).
+9. **LDO14E + CXO_BUFFERS_BBCLK2_A (rails, known §47-C, now exact):**
+   comp4 votes LDO14_E {1.8 V, mode 7} on D0 and actively releases to
+   {0 V, mode 5}; comp0 toggles the BBCLK2 pad buffer with D-state. Staged
+   parity DTB covers the first; nothing on rpmh can vote the second.
+10. **ADM open opcode anomaly (unresolved).** qcadcm builds device-open with
+    opcode 0x10327 (~0x250-byte payload, NULL_COPP topology 0x10312); Linux
+    sends OPEN_V5 0x10326 and defines 0x10327 as CLOSE_V5 (q6adm.c:30).
+    Either polymorphic dispatch by payload size or a real mismatch — needs an
+    outgoing-APR capture to settle; risky to poke blind.
+
+### 48.5 Verification corrections to the fleet's raw output (read before trusting /tmp/spx-step-deltas.md)
+
+- wsa881x INIT_WRITE(reg, MASK, val) is a MASKED update; naive comparison of
+  immediates against Windows' absolute writes overstated the boost gap. After
+  composing masks, four of five boost registers MATCH exactly. Only 0x3133
+  survives (and gets WORSE on the guarded path: rev2 patch drives it to 0x00).
+- BIAS_INT final 0x00 and PA_INT final 0x4E match Windows exactly (agent
+  claimed divergence).
+- adsp-datapath attribution fix stands: the whole AFE/ADM command-builder set
+  lives in qcadcm8180-LIVE.sys PAGEqq6, not qcauddev.
+
+### 48.6 Cheapest objective test ladder out of §48 (no listener needed for 1-3)
+
+1. v29 boot (`spx_auto_speaker_cal=1`, staged since June): grep dmesg for the
+   RX0 overflow line across first+second streams. Kills or confirms delta #1.
+2. Live A/B on any audible-boot first stream: spx_wsa_seq seq=0x3133:0x8f
+   after cold init (delta #2), listen once.
+3. Runtime check (done today, baseline recorded): controller runtime_status
+   stays 'active' between streams — implement/test the CLK_STP_NOW idle park
+   for the soak hypothesis (delta #4).
+4. Boot-only knob A/B: spx_exact_windows_init=1 (interrupt mask + enum
+   discipline, delta #3) — watch MCP_SLV_STATUS flicker statistics.
+5. Teardown reset replay between streams (delta #5) against the SS46
+   non-monotone carried-state pattern.
+
+## §49 (2026-08-24) — All ten §48 deltas implemented behind legacy-default knobs
+
+User directive: "use 10 agents to implement the differences". Fleet run
+`wf_531db964-861`: 6 build groups (wsa-values → wsa-pa serialized on
+wsa881x.c) + 2 adversarial reviewers + 1 fix agent, all offline (no boots,
+no module loads, no /lib/modules or /boot writes). Spec:
+`/tmp/spx48-spec.md` (authoritative; corrects two stale §48 claims).
+Personal verification: every hunk diffed against the pre-fleet snapshot
+(`/tmp/spx48-baseline-pre-fleet.diff`), constants checked against the spec
+ledger, and a full tree `make modules` exit 0 with the new params visible in
+all four rebuilt `.ko`s. **Nothing is installed** — `/lib/modules` and the
+initramfs still carry the old modules; deployment follows the guarded
+one-variable-per-boot rules when we next boot-test.
+
+### Knobs landed (ALL default to legacy; defaults ⇒ behavior identical)
+
+| Module | Knob (0644 int) | Default | Effect when armed |
+|---|---|---|---|
+| snd-soc-wsa881x | `spx_win_boost_loop_stab` | −1 | full-width final BOOST_LOOP_STABILITY after init compose (Windows 0x8F; note guarded path already composes 0x8F — this pins it and covers the legacy path) |
+| snd-soc-wsa881x | `spx_win_misc_ctl1` | −1 | init override AND replaces the pre_pmu_pa_2_0 stream-time entry (0x87 → e.g. 0xC6/0xC7) via a stack copy of the table, reorder-guarded on `pre_pmu_pa[1].reg == SPKR_MISC_CTL1` |
+| snd-soc-wsa881x | `spx_win_gain_singleshot` | 0 | skip the 1 ms/step PAG_GAIN ramp only when target code ≥ 4 (Windows T=max(req,4)); unconditional final write kept in both modes |
+| snd-soc-wsa881x | `spx_win_teardown_reset` | 0 | POST_PMD tail: SWR_RESET_EN=0x07 THEN CDC_RST_CTL=0x00 (exact Windows order). PAIR WITH cold-init replay next stream (`spx_init_on_pmu=1`) or the amp stays dead — documented in PARM_DESC |
+| soundwire-qcom | `spx_idle_clk_stop_ms` | 0 | retime idle autosuspend (100..600000 ms, else probe −EINVAL); existing swrm_runtime_suspend/resume MIPI handshake does the park; probe-time validated |
+| q6afe | `spx_slim_slave_eaddr_lsw` / `_msw` | −1 | patch CDC_SLIMBUS_SLAVE_CFG 0x10235 enum-address words at apply time (only under spx_auto_speaker_cal=1) |
+| q6afe | `spx_slim_port_pgd_la` / `_intfdev_la` | −1 | patch SLIMBUS_SLAVE_PORT_CFG 0x10233 LA u16 fields likewise |
+| snd-soc-wcd934x | `spx_pgd_rx_port_cfg` | −1 | substitute the RX PGD watermark byte (legacy 0x05) in the playback branch — A/B input for the RX0-overflow grep, not a claimed fix |
+| scripts | `scripts/spx-delta-ab.sh` | — | two-stream A/B runner: power-state logging, device-0 announce + FORCE-ATTACH gates, SPX_WSA_SEQ / SPX_TEARDOWN_RESET / SPX_GREP_RX0 knobs |
+| scripts | `scripts/spx-idle-park-check.sh` | — | read-only runtime_status validator (SPX_IDLE_MINUTES), force-attach-hold aware |
+
+Deliberately NOT implemented: intr-mask runtime knob (`spx_exact_windows_init`
+already covers delta #3 boot-only; making intr_mask writable broke device-0
+clash recovery before), slave program-order parity (stream.c blast radius),
+optional ANA_CTL-pulse relocation (skipped by fix agent as optional/colliding).
+
+### Corrections the fleet proved against the tree (supersede earlier claims)
+
+1. **"Autosuspend never enabled" was WRONG**: HEAD's probe already calls
+   pm_runtime_use_autosuspend + delay 3000. The controller sits 'active'
+   forever because the force-attach path holds ONE permanent runtime-PM
+   reference (`spx_pm_held`, :1465, dropped only in remove()). Therefore
+   `spx_idle_clk_stop_ms` can ONLY be validated on a boot WITHOUT
+   `spx_force_attach=1`; on guarded boots the hold intentionally blocks the
+   park (a clock-stop suspend desyncs the force-attached amp).
+2. The builder correctly REFUSED my brief's `pm_runtime_put_autosuspend` at
+   probe end: usage count is 0 there and a put would drive it to −1,
+   consuming the first stream's get_sync and defeating later parks.
+
+### Next (needs boots; one variable per boot)
+
+0. Deploy step when ready: install the four modules to updates/, sudo
+   mkinitcpio -P, arm a fresh audited one-time entry.
+1. v29 objective test unchanged: `q6afe.spx_auto_speaker_cal=1` boot → grep
+   "overflow error on RX port 0" across first+second streams (or use
+   spx-delta-ab.sh SPX_GREP_RX0=1).
+2. wsa register deltas via SPX_WSA_SEQ or the new knobs on the audible pin2
+   baseline (0xC6 MISC_CTL1 first — biggest unmapped bit).
+3. Idle park: separate non-force-attach boot with spx_idle_clk_stop_ms +
+   spx-idle-park-check.sh (no listening needed).
+4. Teardown reset: spx_win_teardown_reset=1 paired with spx_init_on_pmu=1,
+   judged against the SS46 non-monotone pattern.
+
+### 49.1 v29 boot result (2026-08-24 22:01, listen-free) — delta #1 NEGATIVE, RX0 metric reclassified
+
+Boot `spx-speaker-v29-acdb-cal` (one-time; consumed; `saved_entry=spx-audio-rescue`
+verified afterwards; `armed` flag consumed). Power: AC online, BAT 47 % "Not charging".
+Coherence: `q6afe.spx_auto_speaker_cal=1` + `spx_wsa_gpio_val=0x00` on cmdline; all
+§49 knobs present in sysfs (`snd_soc_wsa881x` 4x `spx_win_*` new, `soundwire_qcom
+spx_idle_clk_stop_ms`, `q6afe spx_slim_*` x4, `snd_soc_wcd934x spx_pgd_rx_port_cfg`),
+all at legacy defaults. Kernel: no oops/BUG, no `callbacks suppressed`.
+
+Cal path fired: `SPX: speaker V3 AFE calibration applied` at 22:01:25.57 (uptime
+41.29 s), 45 ms BEFORE PA PRE_PMU, i.e. CDC_SLIMBUS_SLAVE_CFG 0x10235 +
+SLIMBUS_SLAVE_PORT_CFG 0x10233 went to the ADSP before the AFE port started.
+
+| stream | Q6 counters | RX0 overflow (uptime) | relative to PA |
+|---|---|---|---|
+| 1 (autotest tone, 5 s) | `bits=16 32/32/0` | 49.868 | +80 ms after POST_PMD 0x8 (teardown) |
+| 2 (`spx-play-right.sh`, 10 s tune) | `40/40/0` | 1050.400 | −9 ms before PRE_PMU 0x1 (start) |
+| BASELINE 08-22 v28 (no cal), stream 1 | `32/32/0` | 132.220 | +72 ms after POST_PMD (teardown) |
+
+Autotest stream 1 passed every gate (device-0 announce after 1 sample, cold init,
+DP4 `B0=B1=0x01000607`, post-stream `MCP_SLV_STATUS=0x1`, parking verified, status 0).
+Stream 2 used the play script, which does not sample MCP_SLV_STATUS — its counters
+are valid, its attach is unproven (irrelevant for this metric; nobody listened).
+
+**Verdict: delta #1 (ADSP-managed SLIM channel cfg) does NOT change the RX0
+overflow signature.** Identical one-hit-per-stream pattern with and without cal.
+
+**Metric reclassification (read before ever counting this line again):**
+`wcd934x_slim_irq_handler` (wcd934x.c:2388-2400) CLEARS the port's
+`PGD_PORT_INT_EN` bit on the first overflow/underflow; it is only re-armed by
+`wcd934x_codec_enable_int_port` (:4205) from the AIF DAPM enable at the next
+stream. So the count is a self-masking 0/1 "did any overflow occur since re-arm"
+flag, NOT a rate — `dev_err_ratelimited` was never the limiting factor.
+And the single hit sits at a PORT BOUNDARY every time (teardown after PA-off,
+or start before PA-on, when the RX0 FIFO is fed while the SWR/interp side is not
+consuming). It is not mid-stream, so it cannot be the continuous static, and the
+§48 premise that #1 was "the only delta matching a live defect" is withdrawn:
+RX0 overflow is a bring-up/teardown artifact. Stop treating it as a static proxy.
+The SLIM RX0 channel carries C0 (left, digital zero in the right-only tone) —
+the overflow is on the idle channel.
+
+Remaining §49 ladder is therefore listener-gated (deltas #2 0x3133/boost octet,
+#3 boot-only enum-IRQ mask, #5 teardown reset) or idle-park objective (#4, needs a
+non-force-attach boot). Live A/B for #2 on this boot (same boot is valid):
+`SPX_GREP_RX0=0 SPX_WSA_SEQ=0x3133:0x8f,0x3135:0xa3,0x3135:0xa0,0x3131:0x75,0x3131:0x74,0x312c:0x80,0x3134:0x14,0x312b:0x78,0x312a:0x98 ./scripts/spx-delta-ab.sh`
+(stream 1 = legacy control, stream 2 = delta) — needs a listener + power record.
+
+### 49.2 Delta #2 (boost octet, 0x3133=0x8F etc.) played 2026-08-24 22:20 — AWAITING LISTENING TESTIMONY
+
+`SPX_WSA_SEQ=0x3133:0x8f,0x3135:0xa3,0x3135:0xa0,0x3131:0x75,0x3131:0x74,0x312c:0x80,0x3134:0x14,0x312b:0x78,0x312a:0x98 ./scripts/spx-delta-ab.sh`
+on the v29 boot (log `/tmp/spx-delta-ab-20260824-221948.log`). NOTE: the script
+applies the seq after EVERY cold-init, so BOTH streams carried the delta — the
+legacy controls are the 22:01 autotest tone and the 22:12 play-right tune on the
+same boot. Both delta streams valid: device-0 announce after 1 sample, stable
+attach + cold-init replay, 9/9 seq writes, PA Volume 0->12, `MCP_SLV_STATUS=0x1`
+during the leading zeros, DP4 `B0=B1=0x01000607`, `44/44/0`, one boundary RX0
+hit each (pre-PA), AC online / BAT 47 % / vph 3.377 V. Tone windows:
+22:20:07-22:20:12 and 22:20:38-22:20:43 CEST (440 Hz right, 3 s zeros each side).
+User testimony: PENDING — do not score this rung without it.
+
+### 49.3 Toward an objective listener: built-in mic capture (2026-08-24 22:40)
+
+Every remaining ladder step is listener-gated, so I probed whether the machine
+can listen to itself. Capture PCMs exist (MultiMedia1-3, `SLIM Capture` link on
+`SLIMBUS_0_TX` -> `wcd9340` DAI 1), the codec exposes DMIC MUX0-8 (DMIC0-5),
+ADC MUX (DMIC/AMIC), AMIC MUX (ADC1-4), and Windows' ACDB names
+`AUDIO_DEVICE_FLUENCE_QUAD_MIC` (a 4-mic array exists).
+
+Probe: DMIC0 -> DEC0 -> SLIM TX0 -> AIF1_CAP -> SLIMBUS_0_TX -> MultiMedia2,
+`arecord plughw:0,1 S16 48k mono 4 s`. RESULT: transport WORKS — 192000 frames
+delivered in real time (capture has no fallback watchdog, so these were real
+READ_DONE events), TX port 0 closed cleanly — but the data was digital zero
+(peak 1, 21 nonzero samples). So the mic SOURCE (DMIC0 / DMIC clock / bias /
+wrong input) is the open question, not the ASM/SLIM path.
+
+**HAZARD (new hard rule):** the stock capture close path (CMD_CLOSE + MEM_UNMAP,
+never ACKed by this ADSP) timed out and wedged the ASM service: every later
+MEM_MAP -110, including the parked PLAYBACK session (`write_done=0`). The v29
+boot's speaker path is dead from 22:41 — reboot required. `spx_keep_asm`
+parking covered playback only.
+
+Fix (built, see below): q6asm-dai parks capture clients too (`parked[2][16]`,
+per direction), re-queues read buffers on a reused capture client, and counts
+READ_DONE as DSP progress. New `scripts/spx-mic-capture.sh [src|sweep] [secs]`.
+Next boot: v28 entry (autotest for playback proof), then the mic source sweep.
+If any input yields signal, the §49 ladder becomes objective (record the
+speaker through the mic; compare spectra A/B without a human).
+
+**49.2 follow-up (22:25 retry VOID; ASM wedged by concurrent capture work).**
+User testimony on the 22:20 delta run: "heard something like static" (tone not
+clearly identified) — inconclusive, and the retry requested at 22:25
+(`SPX_SEQ_STREAM2_ONLY=1`, new script option: stream1 = legacy control,
+stream2 = boost octet) is VOID: aplay `write error: Input/output error` on
+both streams, `submitted=0 write_done=0`. Cause: a concurrent Claude session
+(`linux-surface-kernel-41`) ran DMIC capture probes `SPX_CAP_dmic0..5` at
+22:21:49–22:23 on this boot; the first capture close produced
+`command[0x10bdb] not expecting rsp` + `Port Closed TX port 0`, and EVERY ASM
+command since times out (`CMD 10d94/10d92 timeout -110`, mem-map/alloc
+failures). Playback is dead for the rest of this boot; the peer session is
+patching q6asm-dai.c to park capture clients too (same mechanism as
+spx_keep_asm). User heard "something and a bit of static" during the 22:25 run
+with ZERO samples delivered — a fresh data point that the static is present
+with no audio data at all (consistent with §33). AC was unplugged at 22:23:45
+(BAT 47 %, discharging) — power state differs from the 22:20 run.
+Delta #2 remains UNSCORED; rerun on the next boot with
+`SPX_SEQ_STREAM2_ONLY=1` before any capture experiment.
+
+### 49.4 v28 boot 22:39 (2026-08-24) — first stream TESTIMONY: "Static and then an almost clean tune"
+
+Boot `spx-speaker-v28-music` (one-time, consumed; default still spx-audio-rescue),
+new q6asm-dai with capture parking loaded (log: "parking ASM playback session").
+**Power: AC OFF, battery 44 %, discharging.** Autotest attempt `20260824T203926Z-929`,
+status 0: device-0 presence after 1 sample (`MCP_SLV_STATUS=0x1`, canary
+0x016840c6), cold init, endpoint-B mixer path, 5 s 440 Hz S16 tone, mid-stream
+DP4 `B0=B1=0x01000607`, Q6 `bits=16 32/32/0`, PA-on at uptime 39.87 s, parking
+verified. Nothing else played before the testimony.
+
+User (live, 22:4x): **"Static and then an almost clean tune."** — i.e. static
+first, then the tone came through almost clean. Reading: (a) the boot is AUDIBLE
+on battery at 44 %, first stream after cold boot ⇒ another refutation of a plain
+SOC-floor gate at boot; (b) the static-then-clean ordering matches the earlier
+"static during the zero preroll" signature ([[spx-static-zeros-preroll]]): the
+noise lives at/after PA-on before the data settles, and this time it largely
+resolved. Objective correlates for this stream: RX0 overflow (self-masking
+boundary flag) — see §49.1, not a static proxy.
+
+Peer session (linux-surface-kernel-38) runs the delta-#2 A/B next on this boot;
+the mic-capture sweep (§49.3) follows after its "done".
+
+### 49.5 Delta #2 (Windows boost octet) live A/B on the v28 boot, 22:34:58 / 22:35:29 — AWAITING TESTIMONY
+
+`SPX_SEQ_STREAM2_ONLY=1 SPX_WSA_SEQ=0x3133:0x8f,0x3135:0xa3,0x3135:0xa0,0x3131:0x75,0x3131:0x74,0x312c:0x80,0x3134:0x14,0x312b:0x78,0x312a:0x98 ./scripts/spx-delta-ab.sh`
+Log: `/tmp/spx-delta-ab-20260824-223443.log`. Power both streams: AC OFF, BAT 44 %
+discharging, vph 3.378 V. Both streams: device-0 presence after 1 sample, stable
+attachment + cold-init replay, PA Volume 0→12, 11 s vector (3 s zeros | 5 s
+440 Hz right | 3 s zeros), DP4 `B0=B1=0x01000607` during leading zeros, Q6
+`44/44/0`, one RX0 boundary flag each.
+- stream 1 (22:34:58) = legacy control, `MCP_SLV_STATUS=0x1` post-attach AND
+  during leading zeros.
+- stream 2 (22:35:29) = boost octet applied after cold init (9/9 writes ok);
+  `MCP_SLV_STATUS=0x0` post-attach and during zeros (latch ambiguity per the
+  standing rule — presence WAS proven in the GPIO-high window).
+Testimony to record: stream 1 vs stream 2 static level.
+
+### 49.6 Mic-capture sweep on the v28 boot (22:4x) — transport proven, DMICs silent, MCLK refuted
+
+Capture parking works (`parking/reusing ASM capture session for DAI 1`, real
+READ_DONE counts 25-49 per run, no MEM_MAP timeout; playback afterwards
+`48/48/0`). Sweep `scripts/spx-mic-capture.sh sweep 3` (DEC0 -> SLIM TX0 ->
+SLIMBUS_0_TX -> MultiMedia2, 48 k mono S16):
+
+| input | rms | peak | verdict |
+|---|---|---|---|
+| DMIC0/1/2/3/4/5 | 0.0-0.2 | 0-12 | digital zero (DMIC3/5 exactly 0) |
+| ADC1/3/4 | 1.3-2.2 | 8-19 | live analog noise floor (no signal) |
+| ADC2 (headset-jack AMIC2) | 18.1 | 453 | real analog noise ⇒ SLIM TX transport + ADSP capture path WORK |
+
+Windows RE (Explore agent, ACDB decode): mic array = ACDB device 0x21
+`HANDSET_MIC_STEREO`, codec key 0x021207 `DMIC_2_1_STEREO` = WCD9340 **DMIC1 +
+DMIC0** (2 mics, ±21 mm linear), AFE `SLIMBUS_3_TX` (0x4007) shared channels
+177/178, 48 k. So the DMIC pair is the right target; TX channel numbering is
+NOT the blocker (ADC2 data flows with our default map).
+
+DAPM during a DMIC1 capture: DMIC1/DMIC1 Pin/MIC BIAS1/DMIC MUX0/ADC MUX0/SLIM
+TX0/AIF1 CAP all On; **MCLK Off** (only route to MCLK is `RX_BIAS`, same as
+db845c). Repeated the capture DURING speaker playback (MCLK On, RX_BIAS On):
+DMIC1 still zero ⇒ MCLK is not the gate. Remaining DMIC suspects: mic VDD rail
+(LDO14E 1.8 V, §47 — Windows votes it, Linux leaves it OFF; staged parity DTB
+`sc8180x-surface-pro-x-speaker-ldo14e.dtb` tests mic AND speaker rail in one
+boot), DMIC pad drive (`TEST_DEBUG_PAD_DRVCTL_0` bits[3:2] = 0 vs Qualcomm
+default 0x2), DMIC pin/pad config not in mainline.
+
+**Testimony (22:4x, v28 boot, AC OFF / BAT 42 %) for the play-during-capture
+stream (`48/48/0`, tune.wav 12 s, PA Volume 12):** "Clack + low static + tune,
+but really low." Same boot whose first stream was "almost clean" at 22:39.
+Loudness has dropped within ~10 min on battery (faint-carrier pattern, §47);
+static now "low". A DMIC1 capture (MIC BIAS1 on, DMIC clock on) ran
+concurrently — confound noted, not established.
+
+### 49.7 LDO14E live probe (22:5x) — rail is pre-programmed at Windows' vote, but APPS may not write it
+
+`spx_pmic_ldo.ko sid=9 ldo=14 dump=1` (PMIC E LDOs sit on SPMI SID 9; base
+0x4d00, TYPE=0x04 SUBTYPE=0x72): `VSET_LB/UB (0x40/0x41) = 08 07` ⇒ **1800 mV
+already programmed**, `MODE (0x45) = 0x07` ⇒ HPM, `EN_CTL (0x46) = 0x00` ⇒
+OFF. The PMIC holds exactly Windows' `ldoe14 1.8 V HPM` vote persistently; only
+the enable bit differs. `enable=1` ⇒ **`EN_CTL write failed (-1)` = -EPERM**:
+the PMIC arbiter rejects APPS writes to that peripheral (owned by another EE),
+so the rail cannot be flipped live. Remaining route = RPMh vote via DT
+(`sc8180x-surface-pro-x-speaker-right-ldo14e.dts`, includes the speaker-right
+DTS, ldo14 1.8 V HPM always-on; DTB sha256 045f5853…, installed as
+`/boot/dtb/qcom/sc8180x-surface-pro-x.dtb.speaker-right-ldo14e`; GRUB id
+`spx-speaker-v32-ldo14e`, cmdline byte-identical to v28, NOT armed).
+Risk to weigh before arming: APPS RPMh votes to PEP-owned rails (`ldoa14`) time
+out and a second vote hangs the RSC uninterruptibly (spx_pmic_ldo.c header);
+`ldoe14` ownership unknown. Boot has panic=10/hung_task_panic ⇒ worst case is
+an automatic fall-back to spx-audio-rescue.
+cmd-db aux class: `ldoa14 [00]` (the rail whose APPS vote timed out), ordinary
+E rails `[01]`, `ldoe14 [02]` (same class as ldoe7/ldoe15) — not the known-bad
+class. Arming `spx-speaker-v32-ldo14e` + autotest at 22:5x; first-stream tone =
+LDO14E listen; then DMIC capture (objective) on that boot.
+
+### 49.8 v32 LDO14E boot (22:55, AC OFF, BAT 39→38 % discharging) — SILENT with the rail ON
+
+Vote landed: `ldo14: Setting 1800000-1800000uV`, `/sys/class/regulator/regulator.21
+ldo14 state=enabled 1800000`, SPMI `EN_CTL=0x80` (ON). No RPMh timeout, no RSC
+hang. Autotest status 0, presence after 1 sample, **`MCP_SLV_STATUS=0x1` held
+through active-stream AND post-stream** (usually clears mid-stream), DP4
+`B0=B1=0x01000607`, `32/32/0`. User: **"Now it was just clack and silence."**
+Second stream (`spx-play-right.sh`, 12 s tune, `48/48/0`, BAT 38 %): **"Clack +
+silence."** DMIC0/DMIC1 capture with the rail on: still digital zero ⇒ LDO14E
+is NOT the DMIC supply.
+
+Two variables vs the audible 22:39 v28 boot (BAT 44 %): rail ON, battery −5 %
+/ +16 min. Control: immediate v28 reboot (rail OFF) at BAT 38 %.
+
+### 49.8 v32 LDO14E boot (22:55, AC OFF, BAT 39→38 % discharging) — rail ON, no cure; DMICs still zero
+
+RPMh vote WORKED: `regulator.21 ldo14 enabled 1800000 uV`, SPMI `EN_CTL=0x80`
+(no RSC timeout/hang; cmd-db class `[02]` is votable from APPS). Autotest
+stream 1: all gates, `MCP_SLV_STATUS=0x1` before, DURING and after the stream
+(first time the latch held mid-stream), DP4 `B0=B1=0x01000607`, `32/32/0`.
+**Testimony: "clack and silence."** Second stream (`spx-play-right.sh`, 12 s
+tune, `48/48/0`, BAT 38 %): **"A bit of static and then 5 s or so of tune on
+top of that low static."** ⇒ not whole-boot silence; silent-tone-then-audible-
+tune within one boot again (non-monotone, cf. §47). LDO14E: no audible cure,
+no change in static class; keep the DTB as Windows parity (harmless, rail
+stays on) but it is NOT the gate. DMIC0/DMIC1 capture with the rail on:
+still digital zero ⇒ LDO14E is not the mic array's supply either.
+CORRECTION: the v32 boot was rebooted at 22:57:38 (systemd-reboot, source
+below) and the box came back on a v28-class DTB (no ldo14 node, LDO14E
+`EN_CTL=0x00` OFF, watchdog node present), autotest ran again (attempt
+`20260824T210521Z-909`, all gates, `32/32/0`, BAT 37 %, AC off). The pad-drive
+test below therefore ran with LDO14E OFF.
+DMIC pad drive `0x803b` bits[3:2] = 0x2 (0x08) and 0x3 (0x0c), written live via
+spx_vol_write.ko (raw readback confirmed): DMIC1/DMIC0 still digital zero ⇒
+pad drive is not the DMIC gate either. Remaining DMIC hypotheses: DMIC clock
+rate (Windows codec cal may run 2.4 MHz; ours 4.8 MHz), a codec DMIC pin mux/
+enable not in mainline (`CPE_SS_DMIC_CFG` 0x21b), or the mic VDD on yet another
+rail (Windows PEP audio component list: check which other rails comp4 votes).
+
+### 49.9 Boot timeline 22:39–23:00 and the one objective LDO14E difference
+
+| boot | entry | LDO14E | first stream (autotest) | later stream | BAT |
+|---|---|---|---|---|---|
+| 22:39 | v28 | OFF | "static, then almost clean tone" | 22:4x tune: "clack + low static + tune, really low" | 44→42 % |
+| 22:47 | v32 | **ON** (RPMh vote OK) | "clack and silence"; latch `MCP_SLV_STATUS=0x1` held before/DURING/after | 22:56 tune `48/48/0`: "bit of static, then ~5 s of tune over low static" | 39→38 % |
+| 22:57 | v28 (accidental re-run of the v28 arming command) | OFF | `32/32/0`, latch cleared post-stream (0x0) as usual | DMIC pad-drive test only | 37 % |
+
+Objective note: the v32 (rail ON) boot is the first run where the slave-status
+latch stayed 0x1 through the active stream; every rail-OFF boot clears it
+mid-stream. n=1, but it is a bus-level effect of the rail and cheap to
+re-check on the next v32 boot (autotest logs it for free). Audibly the rail
+did not remove the static nor prevent a silent first tone. Both DMIC pins stay
+digital zero with the rail on and with pad drive raised.
+DMIC clock: the driver was ALREADY at DIV_4 = 2.4 MHz (`0x218` before=0x05,
+FS-based downgrade), so the 2.4-vs-4.8 MHz hypothesis was moot; live rewrites
+to 1.2 MHz (0x09) and 0.6 MHz (0x0b) mid-capture and `DMIC_CFG 0x21b=0x00` all
+still read digital zero. Codec-register-level DMIC knobs are EXHAUSTED; the
+remaining gate is outside the codec's DMIC block (mic VDD / bias rail, pin
+routing). Side note: raw codec readbacks over SLIM returned the written values
+tonight (0x218/0x21b/0x803b), unlike the 06-29 "reads stuck at zero" era.
+MIC BIAS2/3/4 forced on (`ANA_MICB2/3/4 = 0x40`, raw readback ok) + DAPM's
+MIC BIAS1: DMIC0/1/2/4 still zero (peaks ≤18 = dither). Restored to 0x00.
+=> With clock (all dividers), all four biases, MCLK, pad drive, DMIC_CFG and
+LDO14E each excluded, NO codec-register knob makes a DMIC pin produce data.
+Next: decode the 120-byte Windows codec-cal payload for `DMIC_2_1_STEREO`
+(RE agent) and the PEP resource list of the codec's D0 components for a mic
+rail; WCD GPIO pins 3/4 remain READ-ONLY (CLAUDE.md) until RE names them.
+
+### 49.10 Delta #2 A/B re-run 23:22:30 / 23:23:00 (AC OFF, BAT 32 %) — log /tmp/spx-delta-ab-20260824-232214.log
+Both streams gate-perfect (device-0 presence, stable attachment + cold init,
+`44/44/0`); stream 2 had the boost octet applied (9/9 writes). Testimony
+arriving mid-run (attributed to stream 1 = baseline): **"A rather loud clack +
+a long tune mixed with static."** Stream 2 verdict: pending.
+**Stream 2 testimony: "Both A and B were the same."** ⇒ §48 delta #2 (Windows
+boost octet incl. 0x3133=0x8F) CLOSED NEGATIVE for static. Remaining §48
+ladder: #3 enum-IRQ mask (boot-only, `spx_exact_windows_init=1`), #4 idle
+CLK_STP park (non-force-attach boot + `spx_idle_clk_stop_ms`), #5 teardown
+reset (`spx_win_teardown_reset=1` + `spx_init_on_pmu=1`, listener-gated).
+Tonight's audibility ledger on v28-class boots: 44 % audible, 39 % silent
+tone (v32), 37 % ?, 32 % audible (loud clack + tune + static).
+
+### 49.11 Delta #5 teardown-reset A/B 23:24:05 / 23:24:35 (AC OFF, BAT 32 %) — log /tmp/spx-delta-ab-20260824-232348.log
+Stream 1 baseline `44/44/0`: **"Same as before, tune + static."** Then Windows
+soft-reset (0x300b=0x07, 0x3005=0x00, 2/2 ok), re-bring-up with cold-init
+replay (presence after 1 sample, post-attach latch 0x1), stream 2 `44/44/0`:
+**"Clack + sound."** (static level for stream 2 not stated — see follow-up).
+Reset does not kill the amp (re-arm works) and produces no reported change.
+Re-run 23:35:10 / 23:35:39 (BAT 30→29 %, log /tmp/spx-delta-ab-20260824-233454.log,
+both `44/44/0`, reset 2/2): **"Clack + almost silent static (both times)"** —
+the tone vanished within 11 minutes of the 23:24 audible pair (BAT 32 %).
+Delta #5 CLOSED (no change either way). In-boot loudness ledger: 32 % audible,
+29-30 % silent — consistent with a SOC-dependent gate near 30 %.
+
+### 49.12 BREAKTHROUGH 23:4x — WCD9340 DMICs produce data (objective listener within reach)
+
+RE agent (Codec_cal.acdb full decode, PROGRESS-worthy facts): CDCLUT0 payload
+for `DMIC_2_1_STEREO` = source DMIC1+DMIC0 → SLIMBUS TX; TLVs: **MICBIAS3 then
+MICBIAS1, both 1800 mV**; DMIC-only TLV `0x1008/7 = 8` (mclk/8 = 1.2 MHz?);
+no codec register blobs anywhere in the ACDB; DSDT/INF: the codec's only
+votes are BBCLK2 (MCLK) and LDO14_E; no mic GPIO/rail exists; Yoga C630 uses
+AMIC — SPX would be the first mainline WCD9340 DMIC board. Top suspicion:
+`ADC MUXn` enum default index 0 = "DMIC" so `cset DMIC` never fires put() and
+`TXn_TX_PATH_CFG0` bit7 (0=ADC, 1=DMIC) stays at its power-on ADC value.
+
+Test (v28 boot, BAT 29 %): `ADC MUX0` AMIC→DMIC toggle (forces put) +
+`ANA_MICB3/MICB1 = 0x50` (ENABLE + 1.8 V; my earlier 0x40 was ENABLE at 1.0 V)
+⇒ **DMIC0 rms 4.5 / DMIC1 rms 6.7, 168-172k nonzero samples** (vs 0 before).
+`TX0_TX_PATH_CFG0 (0x0a32)` read back 0xd0 after the toggle (bit7 = DMIC set);
+writing 0x80 raised DMIC0 to rms 159 (−46 dBFS). Isolation of bias-vs-bit7 in
+§49.13.
+
+### 49.13 DMIC gate ISOLATED = MIC BIAS1 voltage (1.0 V vs 1.8 V); bit7 irrelevant
+
+2×2 on DMIC0 (v28 boot, BAT 25-29 %), everything else fixed:
+| MICB1 vout | TX0_PATH_CFG0 bit7 | result |
+|---|---|---|
+| 0x10 (1.8 V) | 1 (DMIC) | rms 4.5, 168k nonzero — LIVE |
+| 0x10 (1.8 V) | 0 (ADC) | rms 4.4, 168k nonzero — LIVE |
+| 0x00 (1.0 V) | 1 | rms 0.1 — dead |
+DMIC1 with 1.8 V: rms 6.2 — LIVE. MICBIAS3 not required (A: MB3 off, still
+live). ⇒ The mainline driver leaves `ANA_MICB1[5:0]` = 0 (1.0 V) so DAPM's
+"MIC BIAS1" enables a 1.0 V rail; SPX's DMICs need 1.8 V (DT declares
+`qcom,micbias1-microvolt = 1800000`; Windows ACDB says 1800 mV). Root cause of
+the vout=0 is in the driver's init path (§49.14). Objective-listener proof
+(mic records the speaker) pending a boot with the speaker audible — at 25 %
+battery the speaker is silent by the §46 gate, Goertzel@440 Hz shows nothing.
+
+### 49.14 Root cause of the 1.0 V bias and the fix
+
+`wcd934x_init_dmic()` writes `ANA_MICBn[5:0] = common.micb_vout[n]`, but
+wcd934x.c never calls `wcd_dt_parse_micbias_info()` (wcd937x/938x/939x do), so
+micb_vout[] is all-zero ⇒ vout code 0 = 1.0 V on every bias, regardless of
+`qcom,micbiasN-microvolt` (regmap cache confirmed 0x622 = 0x00 before any
+live write). Fix: call `wcd_dt_parse_micbias_info(&wcd->common)` in
+wcd934x_codec_probe after `common.max_bias = 4` (+ dev_info of the parsed
+values). Built as snd-soc-wcd934x.ko; deploy = install + mkinitcpio (module is
+in the initramfs MODULES list). Upstream-worthy.
+DEPLOYED 2026-08-24 23:59: `/lib/modules/6.18.3-1-surface+/updates/snd-soc-wcd934x.ko`
+sha256 003ab134… (backup `.bak-pre-micbias`), `mkinitcpio -P` done, module
+present in the initramfs. Next boot (v28, autotest armed): expect
+`SPX: micbias vout ctl 16/16/16/16 (1800/... mV)`, DMIC capture live without
+any live register write, then the mic-records-speaker proof (needs AC/battery
+> ~32 %: ask the user to plug in).
+
+### 49.15 00:12 boot (2026-08-25) — micbias fix live; first tone AUDIBLE at BAT 20 %
+
+Boot at 00:10-00:12 (not armed by me; GRUB clean), `snd-soc-wcd934x` with the
+micbias parse: `SPX: micbias vout ctl 16/16/16/16 (1800/1800/1800/1800 mV)`.
+Autotest `32/32/0`, attach 0x1 before+during, **AC OFF, BAT 20 % discharging**.
+User: **"Heard a rather clean tone after a lot of static."** ⇒ a cold boot at
+20 % is audible while the previous boot went silent at 29-30 % after ~55 min
+uptime ⇒ the gate tracks time-since-boot/soak, NOT battery SOC (§46 two-factor
+model: the powered-hours term dominates).
+00:2x same boot: 440 Hz play (`40/40/0`) = **"Clack + a bit of static"** — no
+tone ⇒ the speaker decayed to silent within ~10 min of boot again (audible
+00:18 at 20 %). Mic Goertzel null therefore uninformative. 15 s DMIC1 capture
+with the user making noise: 0.5-s RMS 4→35, peak 1945 (weak but varying).
+Next: capture DMIC1 INSIDE the autotest tone window (first minute after boot,
+speaker reliably audible) and Goertzel@440 — an objective per-boot metric.
+
+### 49.16 Harness gains an objective listener (00:3x 2026-08-25)
+
+`scripts/spx-speakers-up.sh`: `SPX_MIC_CAPTURE=1` routes DMIC1 -> DEC0 -> SLIM
+TX0 -> SLIMBUS_0_TX -> MultiMedia2, records 9 s (`<run>/mic-DMIC1.wav`) across
+the tone window and prints `SPX MIC: ... 440Hz=… neighbours=… ratio=… (TONE
+DETECTED|no tone)` (`<run>/mic-goertzel.txt`). Never fatal. Added
+`SPX_MIC_CAPTURE=1` to `/var/lib/spx-speaker-autotest/test-env` so every
+future autotest boot scores its own first tone without a human.
+Harness mic block dry-run OK (standalone: `SPX MIC: frames=432000 ... (no tone)`
+with the speaker silent). Arming `spx-speaker-v28-music` + autotest with
+`SPX_MIC_CAPTURE=1` at 00:4x (BAT 20 %, AC off) for the mic-scores-tone proof.
+
+### 49.17 OBJECTIVE LISTENER PROVEN (00:24 2026-08-25, boot 00:16, AC OFF, BAT 19 %)
+
+Autotest attempt `20260824T222407Z-943` with `SPX_MIC_CAPTURE=1`: playback
+`32/32/0`; DMIC1 capture closed with `write_done=75` (real READ_DONEs);
+**`SPX MIC: tone-window rms=169.1 440Hz=18.11 neighbours=0.14 ratio=128.0
+(TONE DETECTED)`** — the built-in mic recorded the right speaker's 440 Hz.
+User (same tone): "static and then tune + static." First boot-scoped, human-free
+speaker measurement on this machine. Run dir
+`/var/tmp/spx-speaker-20260825-002408` (`mic-DMIC1.wav`, `mic-goertzel.txt`).
+Static can now be quantified from the same file (out-of-band energy in the
+tone window vs the zero-prefix window). Autotest exit 1 = follow-up (§49.18).
+Volume: user asked for quieter runs ⇒ `SPX_PA_VOLUME` (harness + play-right)
+and `SPX_TONE_GAIN` env knobs; test-env now `SPX_PA_VOLUME=4 SPX_TONE_GAIN=1.6`.
+
+### 49.18 First objective static measurement + harness fixes (00:3x 2026-08-25)
+
+`/var/tmp/spx-speaker-20260825-002408/mic-DMIC1.wav` (autotest, PA Volume 12,
+tone −2 dBFS): room floor before the PCM opened rms 12; **digital-zero prefix
+with the PA on rms 128 = the static, +20.6 dB over the room floor, with NO
+audio data flowing** (objective confirmation of §33: static is not the data);
+tone window rms 166, 440 Hz fundamental 18.7 but harmonics 880/1320 Hz =
+25/59 (driver roll-off and/or distortion). New `scripts/spx-mic-analyze.py`
+prints room/static/tone metrics + "static index"; harness now runs it
+(`<run>/mic-analyze.txt`). Harness fix: the Q6 counter gate now ignores the
+capture session's close line (`submitted=0`), which caused exit 1 at 00:24.
+Quiet defaults in test-env: `SPX_PA_VOLUME=4 SPX_TONE_GAIN=1.6` (user request).
+Static A/Bs can now be scored per boot with no listener: compare the
+zero-prefix static index across knobs (PA volume, port mask, boost, LDO14E,
+enum-IRQ mask, idle park), one variable per boot, autotest armed.
+No further reboots tonight (late; user asked for quiet).
+
+### 49.19 What the mic says about the static (silent analysis, 00:5x 2026-08-25)
+
+From `spx-speaker-20260825-002408/mic-DMIC1.wav` (synced boot, tone present):
+- Static = **stationary broadband hiss** (1 ms envelope sd/mean 0.16), flat
+  2-12 kHz (−6 dB/band re total), max around 3.5-4.1 kHz, shelf 16-20 kHz;
+  raw autocorr negative at lags 3-8 samples. No single tone, no clock bursts.
+  Reads as white-ish noise coloured by the driver/enclosure response.
+- Tone harmonics re 440 Hz: 2nd +2.6, **3rd +9.9**, 5th +6.3, 7th +3.3, **9th
+  +8.8 dB** — odd-dominant with a real 2nd. Either symmetric clipping or the
+  driver's low-frequency roll-off at 440 Hz. Decider: a 1 kHz tone.
+From `spx-track-20260825-003423.wav` (00:34, PA Volume 4, the run the user
+called far too loud, tone ABSENT): static rms 322-384 (vs 128), **bursty**
+(sd/mean 0.55), envelope autocorr ~0.86 across 1-11 ms. This is the
+"loud static + no tone = amp desynced from the bus with the PA on" state, now
+measured: the in-boot loudness collapse is a **bus desync**, not analog decay,
+and lowering PA volume does nothing to it. The mic can classify every run as
+SYNCED (tone + hiss ~130) or DESYNCED (no tone, hiss ≥300, bursty).
+
+Hard rule added (CLAUDE.md + memory): no sound without an explicit "play" for
+that run; volume knobs do not make a run quiet.
+
+Tomorrow's silent-first plan (each sound needs the user's go, daytime):
+1. 1 kHz tone at −20 dBFS, PA 0 vs 12: odd-harmonic clipping vs roll-off; static
+   index vs PA gain (resolves the §33 by-ear claim objectively).
+2. Per-boot autotest scoring with `SPX_MIC_CAPTURE=1` (already armed in
+   test-env) for the boot-scoped knobs: enum-IRQ mask (#3), idle park (#4),
+   LDO14E, port mask 5, `spx_sample_edge`, `spx_win_transport` — compare
+   static index + sync class, one variable per boot.
+3. Desync tracker: after a synced boot, sample sync class every N minutes to
+   find the desync moment and correlate with the SoundWire error/IRQ log.
+
+### 49.20 COMP_STATUS ("frame-gen=") is not a sync predictor; desync is UPSTREAM of the amp
+
+`SPX FORCE-ATTACH: after N resets frame-gen=0x…` prints SWRM_COMP_STATUS. Across
+seven boots the first two attaches (probe + autotest) always read 0x2a01 and
+every later attach reads a different upper byte (0xb501, 0x4901, 0xbc01, …):
+a free-running field, not a state. Only anomaly: the LDO14E boot (22:55, silent
+first tone) read 0x0001 twice. Not usable as a silent predictor.
+
+Inference from the 00:34 desynced run: `spx-play-right.sh` had just parked the
+amp for 10 s, re-powered pin2, re-run force-attach ("stable attachment") and
+replayed cold init — i.e. the AMP was power-cycled and re-attached — and the
+stream was still desynced (no tone, loud bursty hiss). So the desync state is
+NOT in the amp: it lives in what survives an amp power cycle — the WCD9340
+SoundWire master / interpolator, the persistent SLIMbus stream, or the AFE port
+kept running (`spx_persist_stream=1`, `spx_keep_asm`, port stop parked). A cold
+boot clears it. Daytime test (each run needs the user's "play"): after a boot
+reaches the desynced class, tear the persistent pieces down one at a time —
+(1) `snd_soc_wcd934x.spx_persist_stream=0` + reopen, (2) real AFE port stop,
+(3) SWR master soft reset (`SWRM_COMP_SW_RESET`) + re-attach — and let the mic
+say which one restores SYNCED. If one does, that is the static/desync fix path.
+
+### 49.21 Quiet runs, PA-gain curve, and a THIRD output state (00:57-01:05, BAT 10 %, AC off, uptime 40-45 min)
+
+User: "You can play, just not super loud." Tracker runs (mic-scored, tone
+−24/−14 dBFS):
+| PA Volume | tone gain | static rms (zero prefix) | tone | class |
+|---|---|---|---|---|
+| 0 | 0.5 | 16 (= room floor) | none | — |
+| 4 | 1.6 | 33 | none | — |
+| 8 | 1.6 | 5.9 (below room floor) | none | — |
+Reference: SYNCED first stream 00:24 = hiss 128 + tone; DESYNCED 00:34 = hiss
+322-384 bursty, no tone. Now, 40+ min into the boot: neither hiss nor tone at
+any gain ⇒ **SILENT class** (the user's "clack + silence"). Sequence within
+this boot: SYNCED (0:24) → DESYNCED-LOUD (0:34) → SILENT (0:57+). The
+by-ear "PA 12→0 kills tone not static" (§33) cannot be re-evaluated from
+these runs (output dead); needs a SYNCED boot: PA 0/4/8/12 within the first
+minutes, mic-scored. Practical: quiet runs (PA ≤4, tone ≤1.6) are fine for
+sync classification; the loud event is the DESYNCED hiss, which no gain
+setting controls — avoid re-bringing the amp up after a DESYNCED reading.
+
+### 49.22 (2026-08-25 12:04-13:10, AC OFF→unplugged mid-session) — DESYNCED survives a full amp-side reset; parked ASM sessions are UNDESTROYABLE live; boot wedged (by experiment design)
+
+Boot: v28-class quiet autotest at ~09:53 (first stream TONE DETECTED,
+ratio=171.7 — objective-listener pipeline validated on an untouched fresh
+boot). Then the machine sat idle 2 h.
+
+**12:04 probe (BAT 24 %):** static-track on the idle boot → rms 558 ≈ tone
+rms 553, 440 Hz ratio 0.3 ⇒ **DESYNCED** (loud bursty hiss). This is the
+2-h-old state of a boot that started SYNCED — consistent with §49.21's
+SYNCED→DESYNCED→SILENT progression.
+
+**Teardown-rescue ladder, revised then executed:** persist_stream is
+registered 0444 (cannot flip live — module-param writability is fixed at
+`module_param()` registration; chmod only changes the sysfs inode mode), and
+`spx_no_port_stop=0` cannot stop AFE-port parking because
+`q6afe_dai_keep_port_running()` hard-ORs `SLIMBUS_2_RX &&
+of_machine_is_compatible("microsoft,surface-pro-x")`. The only live lever was
+`q6asm_dai.spx_keep_asm` (0644). Split experiment:
+
+- **Phase 2** (amp+controls up, NO new PCM, parked sessions intact): VOID as
+  a sync probe — with every switch already in its set state and no PCM open,
+  DAPM fired no events and the path stayed unpowered. Measured rms≈6 =
+  powered amp + idle path = silence. Incidental finding: the DESYNCED hiss
+  needs the *active stream path*; a powered amp alone does not hiss.
+- **Phase 3b** (`keep_asm=0`, reopen parked playback session): open reused
+  the parked client ("reusing parked ASM playback session"), then prepare
+  sent **OPEN_WRITE_V3 (0x10db3) → DSP error 0x9** ("Audio Client already
+  active" class: session still open DSP-side). Prepare failed; close path
+  (keep_asm now 0) ran the real teardown: CMD_CLOSE (no ACK expected) +
+  **UNMAP_REGIONS → timeout −110** — the exact capture-wedge signature.
+  Every later ASM command times out (phase 3c capture open: CMD timeout).
+  **The boot's ASM path is dead by experiment design.**
+- **Phase 3c**: no recording possible; capture open timed out.
+
+**Conclusions:**
+1. A parked ASM session can never be really closed from Linux: the DSP never
+   ACKed its original OPEN (session still "active" DSP-side), so CLOSE
+   never completes and UNMAP times out −110. Parking is load-bearing for the
+   whole boot lifetime — do NOT ship keep_asm=0 flips on live boots.
+2. Desync-rescue therefore CANNOT be tested below the amp on this kernel:
+   the candidate carriers (parked ASM session, kept-running AFE port,
+   persistent SLIM stream, codec interpolator) are all pinned open by
+   spx_keep_asm/persist_stream/AFE-parking, and each of those is either
+   0444-fixed or hard-OR'd to the machine. The rescue question moves to
+   BOOT-TIME knobs: e.g. a cmdline with spx_keep_asm=0 + spx_persist_stream=
+   0 + AFE-stop enabled would give truly-fresh sessions per stream — worth
+   ONE guarded boot vs today's baseline if desync ever shows again.
+3. Phase-2 side result stands: powered amp without an active stream is
+   silent — the hiss lives in the data/streaming path, not in analog bias.
+
+State after: ASM wedged (expected), amp parked val=0x00, GRUB default
+spx-audio-rescue, nothing armed. Session aborted early — battery hit 9 %
+discharging (AC got unplugged); no further boots or audible windows until
+mains power returns.
+
+## §50 (2026-08-25 afternoon) — mic listener turns the whole-boot-silence class OBJECTIVE; warm-reboot rail hypothesis
+
+### The n=3 matrix (all v28-class, BAT 50 %, mains, byte-identical software)
+
+| boot | predecessor | first stream (mic-scored) | Q6 | attach |
+|---|---|---|---|---|
+| `5f22c275` 14:32 | rescue (**audio modules blacklisted**) | **CLEAN TONE**: rms 231.5, 440 Hz ratio 51.5, +15.7 dB over prefix; **zero-prefix static −0.2 dB vs room = NO static** | 32/32/0 | proven, latch flickered mid-stream |
+| `70655b28` 15:42 | v28 (audio active) | SILENT: static index **−15.1 dB vs room** — amp emitted literally nothing | 32/32/0 | proven, latch held mid-stream |
+| `b2fe59f6` 16:39 | v28 (audio active) | SILENT: static index **−15.5 dB vs room** | 32/32/0 | proven after 3 samples |
+
+Two firsts in one afternoon:
+
+1. **The whole-boot-silence class is now objectively measurable without any
+   listener.** Both silent boots show the amp emitting ~15 dB BELOW room floor
+   during the zero prefix with the PA on — not "static without tone", but
+   nothing at all. Q6 counters (`submitted=write_done=32`, fallback=0), DP4
+   banks (`0x01000607` both banks), attach proof and RX0 boundary flag are
+   bit-identical between audible and silent boots. Software-visible state
+   CANNOT distinguish them; only the mic can.
+2. **The "residual static" defect did NOT reproduce on the clean boot** —
+   zero prefix measured at room floor. Static is also intermittent, not a
+   persistent baseline. (Boot -1 was killed ~16 min in by an accidental
+   duplicate reboot before soak probes could run; its first-stream data
+   survived and is what this table uses.)
+
+### §49.22 correction
+
+The morning's DESYNCED classification was taken at **BAT 24 % discharging** —
+below the documented ~26–30 % SOC collapse floor. Its use as evidence that
+"desync lives upstream of the amp" is WITHDRAWN pending healthy-SOC data.
+The CSV rows that motivated it all sit at low SOC off-AC with RMS falling as
+SOC falls = rail-sag signature, not a streaming-path defect.
+
+### Warm-reboot-rails hypothesis: REFUTED same-day (§50.1) — predecessor chain verified from journal
+
+The hypothesis as staged above attributed predecessors by memory and got the
+mapping **inverted**. `journalctl -b <id> -k | grep 'Kernel command line'` per
+boot (`module_blacklist=soundwire_qcom,snd_soc_wsa881x` = rails never
+requested):
+
+| boot | cmdline | outcome |
+|---|---|---|
+| -6 `57e445a2` 09:59–14:24 | audio-active v28 | (DESYNC@24 % SOC — void, below floor) |
+| -5 `5f22c275` | audio-active v28 | **CLEAN** |
+| -4 `594daa74` 14:48–15:35 | **blacklisted rescue** | — |
+| -3 `70655b28` | audio-active v28 | **SILENT** |
+| -2 `b2fe59f6` | audio-active v28 | **SILENT** |
+| -1/0 rescue dwells | blacklisted | — |
+
+CLEAN followed an *audio-active* boot; a SILENT boot followed the
+*rails-dropped* rescue — both directions contradict "rails persist across
+warm reboots cause silence". The staged dwell test was in fact already run
+(rescue → v28 came out SILENT). Also checked and found NON-discriminative:
+mid-stream `MCP_SLV_STATUS` latch state (TONE DETECTED with latch held at
+00:24; silent with latch cleared at 01:14 — counterexamples both ways), and a
+one-off probe-time `SWR bus clsh` on one silent boot only. The sanitized
+service logs of clean vs silent runs are byte-identical.
+
+**Consequence:** whole-boot silence is a per-boot random draw (~50 % today,
+n=3 + last night's n=2) with NO software-visible or predecessor predictor.
+The class behaves like a coin flip decided before/at codec bring-up. Next
+discriminators to try when a listen window exists: full power-OFF (not warm
+reboot) vs warm reboot A/B at fixed config, since that is the only remaining
+state axis that differs from everything already held equal.
+
+**Reboot status:** none needed for this correction. The current unarmed
+rescue dwell (18:09) stands; nothing armed; persistent default remains
+`spx-audio-rescue`.
+
+### Harness/tooling deltas shipped today
+
+- `/usr/local/sbin/spx-speaker-autotest`: power-state logging before+after
+  every run (`power-state-{before,after}.txt`); `SPX_EXPECT_PERSIST_STREAM`
+  knob relaxes the persist_stream cmdline gate for future A/B; test-env
+  parsing moved before the cmdline gate. Backup `.bak-20260825-powerlog`.
+- `grub-editenv` MUST be called with explicit file path
+  (`sudo grub-editenv /boot/grub/grubenv …`) — bare form silently fails to
+  WRITE here ("hostdisk//dev/nvme0n1p1: not found") while reads fall back.
+- Repo `AGENTS.md` created: mandatory pre-reboot state check (interrupted
+  tool call ≠ failed command; two duplicate reboots destroyed boots today).
