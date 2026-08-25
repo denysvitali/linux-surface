@@ -627,6 +627,25 @@ void q6asm_audio_client_free(struct audio_client *ac)
 }
 EXPORT_SYMBOL_GPL(q6asm_audio_client_free);
 
+/**
+ * q6asm_audio_client_rebind() - rebind a parked client to a new owner
+ *
+ * @ac: parked audio client
+ * @cb: new event callback
+ * @priv: new private data (the new PCM runtime)
+ *
+ * The SPX ADSP never ACKs ASM_STREAM_CMD_CLOSE, so q6asm-dai parks a live
+ * audio_client across PCM closes instead of freeing it. The parked client's
+ * cb/priv still point at the old, freed runtime; repoint them to the new owner
+ * before reuse so WRITE_DONE events land on the current substream.
+ */
+void q6asm_audio_client_rebind(struct audio_client *ac, q6asm_cb cb, void *priv)
+{
+	ac->cb = cb;
+	ac->priv = priv;
+}
+EXPORT_SYMBOL_GPL(q6asm_audio_client_rebind);
+
 static struct audio_client *q6asm_get_audio_client(struct q6asm *a,
 						   int session_id)
 {

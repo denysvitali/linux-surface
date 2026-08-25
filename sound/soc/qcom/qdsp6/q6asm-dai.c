@@ -89,12 +89,24 @@ struct q6asm_dai_rtd {
 	unsigned int n_write_done;
 	unsigned int n_fallback;
 	unsigned int n_submitted;
+	bool client_reused;	/* SPX: audio_client was parked across a close */
 };
 
 struct q6asm_dai_data {
 	struct snd_soc_dai_driver *dais;
 	int num_dais;
 	long long int sid;
+	/*
+	 * SPX: the Microsoft ADSP never ACKs ASM session close, so CMD_CLOSE +
+	 * unmap + free on every PCM close leaks DSP-side session state and the
+	 * next stream re-maps the same phys into a dangling session -> the DSP
+	 * consumes nothing (write_done=0). Park the audio client here instead
+	 * and reuse it, mirroring spx_keep_copp at the ADM layer. One slot per
+	 * direction and FE DAI (ids 0..15): a capture client that took the stock
+	 * CLOSE+UNMAP path wedged every later MEM_MAP on the ADSP (2026-08-24),
+	 * killing the boot's playback too, so capture is parked as well.
+	 */
+	struct audio_client *parked[2][16];
 };
 
 static int spx_period_adjust_ms;
@@ -115,6 +127,19 @@ static bool spx_force_timer_pacing = true;
 module_param(spx_force_timer_pacing, bool, 0644);
 MODULE_PARM_DESC(spx_force_timer_pacing,
 		 "SPX: force timer-paced playback writes instead of DSP WRITE_DONE pacing");
+
+/*
+ * SPX: the Microsoft ADSP never ACKs ASM_STREAM_CMD_CLOSE, so the upstream
+ * close path (CMD_CLOSE + unmap + client free) leaks DSP-side session state.
+ * The very next stream re-maps the same phys and the DSP never consumes it
+ * (write_done=0). Park the audio client across close and reuse it, exactly as
+ * spx_keep_copp preserves the COPP/matrix route at the ADM layer. This makes
+ * repeated streams (music) render instead of only the first after cold boot.
+ */
+static bool spx_keep_asm = true;
+module_param(spx_keep_asm, bool, 0644);
+MODULE_PARM_DESC(spx_keep_asm,
+		 "SPX: park and reuse the ASM audio client across PCM closes");
 
 /*
  * SPX (2026-06-22): the address the ADSP is told to map = buf->addr | (sid<<32).
@@ -292,7 +317,7 @@ static void q6asm_write_watchdog(struct work_struct *work)
 	if (prtd->state != Q6ASM_STREAM_RUNNING || !prtd->substream)
 		return;
 
-	prtd->write_fallback = true;
+	WRITE_ONCE(prtd->write_fallback, true);
 	prtd->pcm_irq_pos += prtd->pcm_count;
 	snd_pcm_period_elapsed(prtd->substream);
 	if (prtd->state != Q6ASM_STREAM_RUNNING)
@@ -333,14 +358,14 @@ static void event_handler(uint32_t opcode, uint32_t token,
 				/* Upstream-style one-buffer queue, paced by WRITE_DONE. */
 				prtd->write_fallback = false;
 				prtd->n_submitted++;
-				q6asm_write_async(prtd->audio_client,
-						  prtd->stream_id,
-						  prtd->pcm_count, 0, 0, 0);
-				/* Fall back safely if this firmware stops reporting done. */
+				/* Arm before submit so an immediate completion can claim it. */
 				mod_delayed_work(system_wq,
 						 &prtd->write_watchdog,
 						 max_t(unsigned long, 1,
 						       prtd->period_jiffies * 2));
+				q6asm_write_async(prtd->audio_client,
+						  prtd->stream_id,
+						  prtd->pcm_count, 0, 0, 0);
 			}
 		}
 		break;
@@ -349,15 +374,28 @@ static void event_handler(uint32_t opcode, uint32_t token,
 		break;
 	case ASM_CLIENT_EVENT_DATA_WRITE_DONE: {
 		prtd->n_write_done++;
-		if (prtd->write_fallback)
+		if (READ_ONCE(prtd->write_fallback))
 			break;
-		mod_delayed_work(system_wq, &prtd->write_watchdog,
-				 max_t(unsigned long, 1,
-				       prtd->period_jiffies * 2));
+		/*
+		 * The completion and watchdog are competing producers.  Claim the
+		 * outstanding period by cancelling its pending watchdog before
+		 * advancing ALSA or submitting the replacement buffer.  If the
+		 * watchdog is already running, it owns this boundary and switches
+		 * the stream permanently to timer pacing; processing this completion
+		 * as well would double-elapse and double-submit one period.
+		 */
+		if (!cancel_delayed_work(&prtd->write_watchdog)) {
+			WRITE_ONCE(prtd->write_fallback, true);
+			break;
+		}
 		prtd->pcm_irq_pos += prtd->pcm_count;
 		snd_pcm_period_elapsed(substream);
 		if (prtd->state == Q6ASM_STREAM_RUNNING) {
 			prtd->n_submitted++;
+			/* Arm before submit so an immediate completion can claim it. */
+			mod_delayed_work(system_wq, &prtd->write_watchdog,
+					 max_t(unsigned long, 1,
+					       prtd->period_jiffies * 2));
 			q6asm_write_async(prtd->audio_client, prtd->stream_id,
 					   prtd->pcm_count, 0, 0, 0);
 		}
@@ -365,6 +403,7 @@ static void event_handler(uint32_t opcode, uint32_t token,
 		break;
 		}
 	case ASM_CLIENT_EVENT_DATA_READ_DONE:
+		prtd->n_write_done++;	/* SPX: real DSP progress, capture side */
 		prtd->pcm_irq_pos += prtd->pcm_count;
 		snd_pcm_period_elapsed(substream);
 		if (prtd->state == Q6ASM_STREAM_RUNNING)
@@ -402,9 +441,15 @@ static int q6asm_dai_prepare(struct snd_soc_component *component,
 	prtd->n_write_done = 0;
 	prtd->n_fallback = 0;
 	prtd->n_submitted = 0;
-	prtd->period_jiffies = DIV_ROUND_UP((unsigned long)prtd->pcm_count * HZ,
-					   runtime->rate * runtime->channels *
-					   (prtd->bits_per_sample / 8));
+	/*
+	 * Derive the deadline from ALSA frames, not significant sample bits.
+	 * S24_LE occupies a 32-bit container, so bits_per_sample / 8 would make
+	 * its watchdog period 4/3 too long even though the PCM buffer size is
+	 * correct.
+	 */
+	prtd->period_jiffies = DIV_ROUND_UP(
+		(unsigned long)bytes_to_frames(runtime, prtd->pcm_count) * HZ,
+		runtime->rate);
 	if (spx_period_adjust_ms) {
 		long adjusted = (long)prtd->period_jiffies +
 			DIV_ROUND_CLOSEST((long)spx_period_adjust_ms * HZ, 1000);
@@ -421,30 +466,38 @@ static int q6asm_dai_prepare(struct snd_soc_component *component,
 					 substream->stream);
 	}
 
-	ret = q6asm_map_memory_regions(substream->stream, prtd->audio_client,
-				       prtd->phys,
-				       (prtd->pcm_size / prtd->periods),
-				       prtd->periods);
+	/*
+	 * SPX: a reused (parked) client already has the DSP session open, its
+	 * memory mapped, and its format set. Re-issuing map/open would collide on
+	 * the still-live session (the ADSP never ACKed the CLOSE that parked it)
+	 * and make the DSP consume nothing. Skip the ASM (re)setup for it.
+	 */
+	if (!prtd->client_reused) {
+		ret = q6asm_map_memory_regions(substream->stream,
+					       prtd->audio_client, prtd->phys,
+					       (prtd->pcm_size / prtd->periods),
+					       prtd->periods);
 
-	if (ret < 0) {
-		dev_err(dev, "Audio Start: Buffer Allocation failed rc = %d\n",
-							ret);
-		return -ENOMEM;
-	}
+		if (ret < 0) {
+			dev_err(dev, "Audio Start: Buffer Allocation failed rc = %d\n",
+								ret);
+			return -ENOMEM;
+		}
 
-	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
-		ret = q6asm_open_write(prtd->audio_client, prtd->stream_id,
-				       FORMAT_LINEAR_PCM,
-				       0, prtd->bits_per_sample, false);
-	} else if (substream->stream == SNDRV_PCM_STREAM_CAPTURE) {
-		ret = q6asm_open_read(prtd->audio_client, prtd->stream_id,
-				      FORMAT_LINEAR_PCM,
-				      prtd->bits_per_sample);
-	}
+		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+			ret = q6asm_open_write(prtd->audio_client, prtd->stream_id,
+					       FORMAT_LINEAR_PCM,
+					       0, prtd->bits_per_sample, false);
+		} else if (substream->stream == SNDRV_PCM_STREAM_CAPTURE) {
+			ret = q6asm_open_read(prtd->audio_client, prtd->stream_id,
+					      FORMAT_LINEAR_PCM,
+					      prtd->bits_per_sample);
+		}
 
-	if (ret < 0) {
-		dev_err(dev, "%s: q6asm_open_write failed\n", __func__);
-		goto open_err;
+		if (ret < 0) {
+			dev_err(dev, "%s: q6asm_open_write failed\n", __func__);
+			goto open_err;
+		}
 	}
 
 	prtd->session_id = q6asm_get_session_id(prtd->audio_client);
@@ -455,7 +508,14 @@ static int q6asm_dai_prepare(struct snd_soc_component *component,
 		goto routing_err;
 	}
 
-	if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+	if (prtd->client_reused) {
+		/* The parked session keeps its prior media format. */
+		ret = 0;
+		/* A reused capture session still needs its read buffers queued. */
+		if (substream->stream == SNDRV_PCM_STREAM_CAPTURE)
+			for (i = 0; i < runtime->periods; i++)
+				q6asm_read(prtd->audio_client, prtd->stream_id);
+	} else if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
 		ret = q6asm_media_format_block_multi_ch_pcm(
 				prtd->audio_client, prtd->stream_id,
 				runtime->rate, runtime->channels, NULL,
@@ -548,14 +608,34 @@ static int q6asm_dai_open(struct snd_soc_component *component,
 
 	prtd->substream = substream;
 	INIT_DELAYED_WORK(&prtd->write_watchdog, q6asm_write_watchdog);
-	prtd->audio_client = q6asm_audio_client_alloc(dev,
-				(q6asm_cb)event_handler, prtd, stream_id,
-				LEGACY_PCM_MODE);
-	if (IS_ERR(prtd->audio_client)) {
-		dev_info(dev, "%s: Could not allocate memory\n", __func__);
-		ret = PTR_ERR(prtd->audio_client);
-		kfree(prtd);
-		return ret;
+	/*
+	 * SPX: the ADSP never ACKs ASM_STREAM_CMD_CLOSE, so the previous stream's
+	 * audio client was parked in pdata->parked[] instead of freed. Reuse it so
+	 * the DSP keeps consuming the same mapped session instead of colliding on
+	 * a fresh one (write_done=0). The FE DAI id (stream_id) indexes the slot.
+	 */
+	if (spx_keep_asm &&
+	    of_machine_is_compatible("microsoft,surface-pro-x") &&
+	    stream_id < ARRAY_SIZE(pdata->parked[0]) &&
+	    pdata->parked[substream->stream][stream_id]) {
+		prtd->audio_client = pdata->parked[substream->stream][stream_id];
+		pdata->parked[substream->stream][stream_id] = NULL;
+		prtd->client_reused = true;
+		q6asm_audio_client_rebind(prtd->audio_client,
+					  (q6asm_cb)event_handler, prtd);
+		dev_info(dev, "SPX: reusing parked ASM %s session for DAI %d\n",
+			 substream->stream == SNDRV_PCM_STREAM_PLAYBACK ?
+			 "playback" : "capture", stream_id);
+	} else {
+		prtd->audio_client = q6asm_audio_client_alloc(dev,
+					(q6asm_cb)event_handler, prtd, stream_id,
+					LEGACY_PCM_MODE);
+		if (IS_ERR(prtd->audio_client)) {
+			dev_info(dev, "%s: Could not allocate memory\n", __func__);
+			ret = PTR_ERR(prtd->audio_client);
+			kfree(prtd);
+			return ret;
+		}
 	}
 
 	/* DSP expects stream id from 1 */
@@ -618,7 +698,10 @@ static int q6asm_dai_close(struct snd_soc_component *component,
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct snd_soc_pcm_runtime *soc_prtd = snd_soc_substream_to_rtd(substream);
+	struct snd_soc_dai *cpu_dai = snd_soc_rtd_to_cpu(soc_prtd, 0);
+	struct q6asm_dai_data *pdata = snd_soc_component_get_drvdata(component);
 	struct q6asm_dai_rtd *prtd = runtime->private_data;
+	int fe_dai = cpu_dai->driver->id;
 
 	cancel_delayed_work_sync(&prtd->write_watchdog);
 
@@ -629,12 +712,31 @@ static int q6asm_dai_close(struct snd_soc_component *component,
 	 * downstream (SoundWire/PA/transport) result from it is meaningful.
 	 */
 	dev_info(component->dev,
-		 "SPX ASM stream %u: submitted=%u write_done=%u fallback=%u%s\n",
-		 prtd->stream_id, prtd->n_submitted, prtd->n_write_done,
-		 prtd->n_fallback,
+		 "SPX ASM stream %u: bits=%u submitted=%u write_done=%u fallback=%u%s\n",
+		 prtd->stream_id, prtd->bits_per_sample, prtd->n_submitted,
+		 prtd->n_write_done, prtd->n_fallback,
 		 prtd->n_write_done ? "" : "  <-- DSP CONSUMED NOTHING");
 
-	if (prtd->audio_client) {
+	/*
+	 * SPX: the ADSP never ACKs ASM_STREAM_CMD_CLOSE, so issuing it here
+	 * (a 5 s timeout) and freeing the client leaks DSP-side session state;
+	 * the next stream then collides on a fresh session and the DSP consumes
+	 * nothing. Park the still-open client in the per-DAI slot and reuse it on
+	 * the next open. Detach the callback first so a late WRITE_DONE event on
+	 * the parked session cannot dereference the prtd we are about to free.
+	 */
+	if (spx_keep_asm &&
+	    of_machine_is_compatible("microsoft,surface-pro-x") &&
+	    prtd->state && prtd->audio_client &&
+	    fe_dai < ARRAY_SIZE(pdata->parked[0])) {
+		q6asm_audio_client_rebind(prtd->audio_client, NULL, NULL);
+		pdata->parked[substream->stream][fe_dai] = prtd->audio_client;
+		prtd->audio_client = NULL;
+		dev_info(component->dev,
+			 "SPX: parking ASM %s session for DAI %d across close\n",
+			 substream->stream == SNDRV_PCM_STREAM_PLAYBACK ?
+			 "playback" : "capture", fe_dai);
+	} else if (prtd->audio_client) {
 		if (prtd->state)
 			q6asm_cmd(prtd->audio_client, prtd->stream_id,
 				  CMD_CLOSE);

@@ -5,6 +5,7 @@
 #include <dt-bindings/sound/qcom,q6afe.h>
 #include <linux/slab.h>
 #include <linux/kernel.h>
+#include <linux/unaligned.h>
 #include <linux/uaccess.h>
 #include <linux/wait.h>
 #include <linux/jiffies.h>
@@ -390,6 +391,31 @@ static bool spx_auto_speaker_cal;
 module_param(spx_auto_speaker_cal, bool, 0644);
 MODULE_PARM_DESC(spx_auto_speaker_cal,
 		 "Surface Pro X: experimentally replay speaker AFE records on SLIMBUS_2_RX start (default off)");
+
+/* SPX: builder-facing overrides for the two staged SLIM data-channel blobs
+ * below (q6afe_spx_cdc_slimbus_slave_cfg / q6afe_spx_slimbus_slave_port_cfg)
+ * whose real values Windows takes from ACDB property 0xadae20a5 at runtime.
+ * -1 keeps the staged byte; anything else patches the body at apply time.
+ * All four only matter when spx_auto_speaker_cal=1. */
+static int spx_slim_slave_eaddr_lsw = -1;
+module_param(spx_slim_slave_eaddr_lsw, int, 0644);
+MODULE_PARM_DESC(spx_slim_slave_eaddr_lsw,
+		 "Surface Pro X: override CDC_SLIMBUS_SLAVE_CFG device_enum_addr LSW word, e.g. 0x02500100 (-1 = keep staged value; only used when spx_auto_speaker_cal=1)");
+
+static int spx_slim_slave_eaddr_msw = -1;
+module_param(spx_slim_slave_eaddr_msw, int, 0644);
+MODULE_PARM_DESC(spx_slim_slave_eaddr_msw,
+		 "Surface Pro X: override CDC_SLIMBUS_SLAVE_CFG device_enum_addr MSW word, e.g. 0x00000217 (-1 = keep staged value; only used when spx_auto_speaker_cal=1)");
+
+static int spx_slim_port_pgd_la = -1;
+module_param(spx_slim_port_pgd_la, int, 0644);
+MODULE_PARM_DESC(spx_slim_port_pgd_la,
+		 "Surface Pro X: override SLIMBUS_SLAVE_PORT_CFG slave_dev_pgd_la, 0..0xffff (-1 = keep staged value; only used when spx_auto_speaker_cal=1)");
+
+static int spx_slim_port_intfdev_la = -1;
+module_param(spx_slim_port_intfdev_la, int, 0644);
+MODULE_PARM_DESC(spx_slim_port_intfdev_la,
+		 "Surface Pro X: override SLIMBUS_SLAVE_PORT_CFG slave_dev_intfdev_la, 0..0xffff (-1 = keep staged value; only used when spx_auto_speaker_cal=1)");
 
 struct q6afe {
 	struct apr_device *apr;
@@ -1442,6 +1468,10 @@ static int q6afe_spx_apply_speaker_cal(struct q6afe_port *port)
 		},
 	};
 	struct q6afe *afe = port->afe;
+	u8 slim_cfg_buf[sizeof(q6afe_spx_cdc_slimbus_slave_cfg)];
+	u8 port_cfg_buf[sizeof(q6afe_spx_slimbus_slave_port_cfg)];
+	char overrides[96];
+	size_t n = 0;
 	int ret;
 	int i;
 
@@ -1455,8 +1485,78 @@ static int q6afe_spx_apply_speaker_cal(struct q6afe_port *port)
 	    port->id != AFE_PORT_ID_SLIMBUS_MULTI_CHAN_2_RX)
 		return 0;
 
+	/* SPX: reject impossible override values instead of silently truncating
+	 * them into the payload. The eaddr words are u32 on the wire and int
+	 * cannot exceed 0xffffffff, so any value below the -1 sentinel is out
+	 * of range; the logical-address fields cap at 0xffff. */
+	if ((spx_slim_slave_eaddr_lsw != -1 && spx_slim_slave_eaddr_lsw < 0) ||
+	    (spx_slim_slave_eaddr_msw != -1 && spx_slim_slave_eaddr_msw < 0) ||
+	    (spx_slim_port_pgd_la != -1 &&
+	     (spx_slim_port_pgd_la < 0 || spx_slim_port_pgd_la > 0xffff)) ||
+	    (spx_slim_port_intfdev_la != -1 &&
+	     (spx_slim_port_intfdev_la < 0 ||
+	      spx_slim_port_intfdev_la > 0xffff))) {
+		dev_err(afe->dev,
+			"SPX: invalid SLIM cfg override (lsw=%d msw=%d pgd_la=%d intfdev_la=%d)\n",
+			spx_slim_slave_eaddr_lsw, spx_slim_slave_eaddr_msw,
+			spx_slim_port_pgd_la, spx_slim_port_intfdev_la);
+		return -EINVAL;
+	}
+
+	if (spx_slim_slave_eaddr_lsw != -1)
+		n += scnprintf(overrides + n, sizeof(overrides) - n,
+			       " eaddr_lsw=0x%08x", (u32)spx_slim_slave_eaddr_lsw);
+	if (spx_slim_slave_eaddr_msw != -1)
+		n += scnprintf(overrides + n, sizeof(overrides) - n,
+			       " eaddr_msw=0x%08x", (u32)spx_slim_slave_eaddr_msw);
+	if (spx_slim_port_pgd_la != -1)
+		n += scnprintf(overrides + n, sizeof(overrides) - n,
+			       " pgd_la=0x%04x", (u16)spx_slim_port_pgd_la);
+	if (spx_slim_port_intfdev_la != -1)
+		n += scnprintf(overrides + n, sizeof(overrides) - n,
+			       " intfdev_la=0x%04x", (u16)spx_slim_port_intfdev_la);
+	if (n)
+		dev_info(afe->dev, "SPX: SLIM cfg param overrides:%s\n",
+			 overrides);
+
 	for (i = 0; i < ARRAY_SIZE(steps); i++) {
-		ret = q6afe_spx_set_param_v3(afe, port, steps[i].data,
+		const void *data = steps[i].data;
+
+		/* Patchable bodies are const arrays; work on a stack copy so a
+		 * knob only changes the payload of its own step send. */
+		if (steps[i].param_id == AFE_PARAM_ID_CDC_SLIMBUS_SLAVE_CFG &&
+		    (spx_slim_slave_eaddr_lsw != -1 ||
+		     spx_slim_slave_eaddr_msw != -1)) {
+			memcpy(slim_cfg_buf, steps[i].data, sizeof(slim_cfg_buf));
+			/* body: {u32 minor_version; u32 device_enum_addr_lsw;
+			 * u32 device_enum_addr_msw; u16 tx_slave_port_offset;
+			 * u16 rx_slave_port_offset} */
+			if (spx_slim_slave_eaddr_lsw != -1)
+				put_unaligned_le32((u32)spx_slim_slave_eaddr_lsw,
+						   &slim_cfg_buf[4]);
+			if (spx_slim_slave_eaddr_msw != -1)
+				put_unaligned_le32((u32)spx_slim_slave_eaddr_msw,
+						   &slim_cfg_buf[8]);
+			data = slim_cfg_buf;
+		}
+
+		if (steps[i].param_id == AFE_PARAM_ID_SLIMBUS_SLAVE_PORT_CFG &&
+		    (spx_slim_port_pgd_la != -1 ||
+		     spx_slim_port_intfdev_la != -1)) {
+			memcpy(port_cfg_buf, steps[i].data, sizeof(port_cfg_buf));
+			/* body: {u32 minor_version; u16 slimbus_dev_id;
+			 * u16 slave_dev_pgd_la; u16 slave_dev_intfdev_la;
+			 * ...} */
+			if (spx_slim_port_pgd_la != -1)
+				put_unaligned_le16((u16)spx_slim_port_pgd_la,
+						   &port_cfg_buf[6]);
+			if (spx_slim_port_intfdev_la != -1)
+				put_unaligned_le16((u16)spx_slim_port_intfdev_la,
+						   &port_cfg_buf[8]);
+			data = port_cfg_buf;
+		}
+
+		ret = q6afe_spx_set_param_v3(afe, port, data,
 					     steps[i].param_id,
 					     steps[i].module_id,
 					     steps[i].size, false);

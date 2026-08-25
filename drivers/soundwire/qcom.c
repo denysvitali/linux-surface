@@ -1768,7 +1768,7 @@ MODULE_PARM_DESC(spx_reenum, "SPX: write to re-run the diag/enum on the live bus
 static int spx_snapshot_set(const char *val, const struct kernel_param *kp)
 {
 	struct qcom_swrm_ctrl *ctrl;
-	u32 comp, status, slv, dp1_b0, dp1_b1;
+	u32 comp, status, slv, dp1_b0, dp1_b1, dp4_b0, dp4_b1;
 	int ret;
 
 	mutex_lock(&spx_dbg_lock);
@@ -1793,10 +1793,16 @@ static int spx_snapshot_set(const char *val, const struct kernel_param *kp)
 	ret = ctrl->reg_read(ctrl, SWRM_DP_PORT_CTRL_BANK(1, 1), &dp1_b1);
 	if (ret)
 		goto read_fail;
+	ret = ctrl->reg_read(ctrl, SWRM_DP_PORT_CTRL_BANK(4, 0), &dp4_b0);
+	if (ret)
+		goto read_fail;
+	ret = ctrl->reg_read(ctrl, SWRM_DP_PORT_CTRL_BANK(4, 1), &dp4_b1);
+	if (ret)
+		goto read_fail;
 
 	dev_info(ctrl->dev,
-		 "SPX SNAPSHOT: COMP_PARAMS=0x%08x MCP_STATUS=0x%08x MCP_SLV_STATUS=0x%08x DP1_B0=0x%08x DP1_B1=0x%08x\n",
-		 comp, status, slv, dp1_b0, dp1_b1);
+		 "SPX SNAPSHOT: COMP_PARAMS=0x%08x MCP_STATUS=0x%08x MCP_SLV_STATUS=0x%08x DP1_B0=0x%08x DP1_B1=0x%08x DP4_B0=0x%08x DP4_B1=0x%08x\n",
+		 comp, status, slv, dp1_b0, dp1_b1, dp4_b0, dp4_b1);
 	ret = 0;
 	goto out;
 
@@ -1814,6 +1820,86 @@ static const struct kernel_param_ops spx_snapshot_ops = {
 module_param_cb(spx_snapshot, &spx_snapshot_ops, NULL, 0200);
 MODULE_PARM_DESC(spx_snapshot,
 		 "SPX: write to log a controller-serialized transport snapshot");
+
+/*
+ * Diagnostic-only physical-device readback. Force-attach represents the WSA
+ * as logical device 1, but spx_write_dev0 deliberately sends its unicast
+ * traffic to the still-unassigned physical address 0. Read that same address
+ * directly after cold init so submitted writes are not mistaken for retained
+ * amplifier state. This trigger never writes a codec register or enables PA.
+ */
+static int spx_slave_readback_set(const char *val,
+				  const struct kernel_param *kp)
+{
+	struct qcom_swrm_ctrl *ctrl;
+	u32 slv = 0, ist = 0;
+	u8 temp[2] = { 0 }, psrr[2] = { 0 };
+	int i, rc, ret = 0;
+
+	mutex_lock(&spx_dbg_lock);
+	ctrl = spx_dbg_ctrl;
+	if (!ctrl || ctrl->spx_stopping) {
+		ret = -ENODEV;
+		goto out;
+	}
+
+	ctrl->reg_read(ctrl, SWRM_MCP_SLV_STATUS, &slv);
+	if (!(slv & SWRM_MCP_SLV_STATUS_MASK)) {
+		dev_warn(ctrl->dev,
+			 "SPX SLAVE READBACK physical device 0 absent status=0x%08x\n",
+			 slv);
+		ret = -ENODEV;
+		goto out;
+	}
+	ctrl->reg_read(ctrl, ctrl->reg_layout[SWRM_REG_INTERRUPT_STATUS], &ist);
+	dev_info(ctrl->dev,
+		 "SPX SLAVE READBACK begin dev=0 slv_status=0x%08x int_status=0x%08x\n",
+		 slv, ist);
+
+	mutex_lock(&ctrl->bus.msg_lock);
+	mutex_lock(&ctrl->controller_lock);
+	for (i = 0; i < 2; i++) {
+		rc = qcom_swrm_cmd_fifo_rd_cmd(ctrl, 0, 0x3103, 1,
+					       &temp[i]);
+		if (rc) {
+			dev_warn(ctrl->dev,
+				 "SPX SLAVE READBACK TEMP_OP pass=%d rc=%d UNOBSERVABLE\n",
+				 i, rc);
+			ret = -EIO;
+			break;
+		}
+		rc = qcom_swrm_cmd_fifo_rd_cmd(ctrl, 0, 0x3127, 1,
+					       &psrr[i]);
+		if (rc) {
+			dev_warn(ctrl->dev,
+				 "SPX SLAVE READBACK BIAS_PSRR pass=%d rc=%d UNOBSERVABLE\n",
+				 i, rc);
+			ret = -EIO;
+			break;
+		}
+	}
+	mutex_unlock(&ctrl->controller_lock);
+	mutex_unlock(&ctrl->bus.msg_lock);
+
+	if (!ret)
+		dev_info(ctrl->dev,
+			 "SPX SLAVE READBACK dev=0 status=0x%08x TEMP_OP=0x%02x/0x%02x expected=0x0c BIAS_PSRR=0x%02x/0x%02x expected=0x45\n",
+			 slv, temp[0], temp[1], psrr[0], psrr[1]);
+
+	ctrl->reg_read(ctrl, ctrl->reg_layout[SWRM_REG_INTERRUPT_STATUS], &ist);
+	dev_info(ctrl->dev, "SPX SLAVE READBACK end int_status=0x%08x\n",
+		 ist);
+out:
+	mutex_unlock(&spx_dbg_lock);
+	return ret;
+}
+
+static const struct kernel_param_ops spx_slave_readback_ops = {
+	.set = spx_slave_readback_set,
+};
+module_param_cb(spx_slave_readback, &spx_slave_readback_ops, NULL, 0200);
+MODULE_PARM_DESC(spx_slave_readback,
+		 "SPX: write to read a bounded cold-register signature from physical device 0");
 
 static irqreturn_t qcom_swrm_wake_irq_handler(int irq, void *dev_id)
 {
@@ -2486,14 +2572,27 @@ route_write:
 						mirror = addr - 0x10;
 				}
 				if (!mirror && spx_shadow_dp1_enable) {
-					if (addr == SDW_DPN_CHANNELEN_B0(1))
-						mirror = SDW_DPN_CHANNELEN_B1(1);
-					else if (addr == SDW_DPN_CHANNELEN_B1(1))
-						mirror = SDW_DPN_CHANNELEN_B0(1);
+					unsigned int p;
+
+					/*
+					 * Keep both banks complete for every WSA
+					 * descriptor in use, not just the DAC one:
+					 * Windows programs the destination bank from
+					 * per-port records, so a four-port stream must
+					 * be enabled in both banks too.
+					 */
+					for (p = 1; p <= 4; p++) {
+						if (addr == SDW_DPN_CHANNELEN_B0(p))
+							mirror = SDW_DPN_CHANNELEN_B1(p);
+						else if (addr == SDW_DPN_CHANNELEN_B1(p))
+							mirror = SDW_DPN_CHANNELEN_B0(p);
+						if (mirror)
+							break;
+					}
 					if (mirror)
 						dev_info(ctrl->dev,
-							 "SPX: shadow slave DP1 ChannelEn value=0x%02x reg 0x%04x->0x%04x\n",
-							 msg->buf[i], addr, mirror);
+							 "SPX: shadow slave DP%u ChannelEn value=0x%02x reg 0x%04x->0x%04x\n",
+							 p, msg->buf[i], addr, mirror);
 				}
 				if (spx_write_twice && addr != SDW_SCP_DEVNUMBER)
 					reps = 2;
@@ -2574,6 +2673,26 @@ static int spx_verify_bank;
 module_param(spx_verify_bank, int, 0644);
 MODULE_PARM_DESC(spx_verify_bank,
 		 "SPX: verify bank switch via COMP_STATUS[5:4]==2 and re-broadcast on failure (Windows qcauddev8180 handshake; field does not match this master)");
+
+/*
+ * SPX: Windows broadcasts CLK_STP_NOW (slave dev 0xF reg 0x44 SDW_SCP_CTRL
+ * val 2) whenever its idle refcount hits zero, then msleep(1) -- idle park at
+ * qcauddev8180.sys 0x14009b28c-b2a4. This driver already implements the
+ * equivalent MIPI handshake in swrm_runtime_suspend/swrm_runtime_resume
+ * (sdw_bus_prep_clk_stop + sdw_bus_clk_stop incl. the CLK_STP_NOW
+ * broadcasts; resume exits clock stop); probe arms autosuspend with a fixed
+ * 3000 ms delay. Streams release their runtime reference in
+ * qcom_swrm_shutdown(), so the park only fires between streams -- exactly
+ * the Windows semantic. No raw register writes are added here. On the
+ * force-attach path spx_pm_held keeps the master runtime-active regardless
+ * (a clock-stop suspend desyncs the force-attached amp), so this knob only
+ * retimes boots without that hold. Validated once at probe; runtime writes
+ * take effect after the next boot.
+ */
+static int spx_idle_clk_stop_ms;
+module_param(spx_idle_clk_stop_ms, int, 0644);
+MODULE_PARM_DESC(spx_idle_clk_stop_ms,
+		 "SPX: idle-autosuspend delay (ms) before swrm_runtime_suspend parks the bus in clock stop between streams (100..600000, else probe fails -EINVAL; 0=legacy fixed 3000 ms)");
 
 static int qcom_swrm_post_bank_switch(struct sdw_bus *bus)
 {
@@ -2790,9 +2909,10 @@ static int qcom_swrm_port_enable(struct sdw_bus *bus,
 	ret = qcom_swrm_port_enable_bank(bus, enable_ch, bank);
 	if (!ret && spx_mirror_banks)
 		ret = qcom_swrm_port_enable_bank(bus, enable_ch, bank ? 0 : 1);
-	else if (!ret && spx_shadow_dp1_enable && enable_ch->port_num == 1) {
+	else if (!ret && spx_shadow_dp1_enable && enable_ch->port_num) {
 		dev_info(ctrl->dev,
-			 "SPX: shadow master DP1 ChannelEn value=0x%02x bank %u->%u\n",
+			 "SPX: shadow master DP%u ChannelEn value=0x%02x bank %u->%u\n",
+			 enable_ch->port_num,
 			 enable_ch->enable ? enable_ch->ch_mask : 0,
 			 bank, bank ? 0 : 1);
 		ret = qcom_swrm_port_enable_bank(bus, enable_ch, bank ? 0 : 1);
@@ -3279,6 +3399,17 @@ static int qcom_swrm_probe(struct platform_device *pdev)
 	mutex_init(&ctrl->ahb_lock);
 	mutex_init(&ctrl->controller_lock);
 
+	/* Fail fast on an out-of-range spx_idle_clk_stop_ms cmdline value
+	 * instead of silently ignoring it at activation time.
+	 */
+	if (spx_idle_clk_stop_ms &&
+	    (spx_idle_clk_stop_ms < 100 || spx_idle_clk_stop_ms > 600000)) {
+		dev_err(dev,
+			"SPX: spx_idle_clk_stop_ms=%d outside 100..600000\n",
+			spx_idle_clk_stop_ms);
+		return -EINVAL;
+	}
+
 	/*
 	 * Match the live qcauddev8180.sys path.  It exposes both physical
 	 * slaves to one hardware auto-enumeration pass; it never invents an
@@ -3543,6 +3674,23 @@ static int qcom_swrm_probe(struct platform_device *pdev)
 	pm_runtime_mark_last_busy(dev);
 	pm_runtime_set_active(dev);
 	pm_runtime_enable(dev);
+
+	/*
+	 * SPX: retime the idle park (Windows CLK_STP_NOW-on-idle parity). The
+	 * usage count is 0 here and probe deliberately holds no reference: a
+	 * put_autosuspend would drive it to -1, silently consuming the next
+	 * stream's get_sync and defeating both later parks and the
+	 * force-attach spx_pm_held hold. The existing stream-close
+	 * put_autosuspend sites schedule suspend with this delay instead.
+	 */
+	if (spx_idle_clk_stop_ms) {
+		pm_runtime_use_autosuspend(dev);
+		pm_runtime_set_autosuspend_delay(dev, spx_idle_clk_stop_ms);
+		pm_runtime_mark_last_busy(dev);
+		dev_info(dev,
+			 "SPX: idle bus clock-stop park armed (%d ms idle -> swrm_runtime_suspend MIPI handshake)\n",
+			 spx_idle_clk_stop_ms);
+	}
 
 #ifdef CONFIG_DEBUG_FS
 	ctrl->debugfs = debugfs_create_dir("qualcomm-sdw", ctrl->bus.debugfs);

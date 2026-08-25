@@ -1497,6 +1497,24 @@ module_param(spx_clear_npl, int, 0644);
 MODULE_PARM_DESC(spx_clear_npl,
 	"SPX: clear the SWR-clock NPL delay (reg 0x803e bit 0x10) before SWR clock enable");
 
+/*
+ * SPX: the apps side never programs the codec SLIM PGD RX-port watermark in
+ * Windows (the ADSP owns that channel stack), so the legacy
+ * WCD934X_SLIM_WATER_MARK_VAL (0x05) is not a Windows-verified value.  This is
+ * an A/B input for the RX0-overflow counter grep (PROGRESS §48 #1), paired
+ * conceptually with the ADSP-managed config (spx_auto_speaker_cal), NOT a
+ * claimed fix: the bus is fire-and-forget, so the write itself is unobservable.
+ */
+static int spx_pgd_rx_port_cfg = -1;
+module_param(spx_pgd_rx_port_cfg, int, 0644);
+MODULE_PARM_DESC(spx_pgd_rx_port_cfg,
+	"SPX: playback SLIM_PGD_RX_PORT_CFG(port) watermark override "
+	"(-1=legacy WCD934X_SLIM_WATER_MARK_VAL 0x05, 0x00..0xFF=that byte, "
+	"else EINVAL). Playback/RX branch only; TX ports and the computed "
+	"MULTI_CHNL payload are untouched. A/B input for the RX0-overflow "
+	"counter grep, pairs with spx_auto_speaker_cal; not a claimed fix");
+static bool spx_pgd_rx_announced;
+
 static int wcd934x_swrm_clock(struct wcd934x_codec *wcd, bool enable)
 {
 	if (enable) {
@@ -1747,6 +1765,10 @@ static int wcd934x_slim_set_hw_params(struct wcd934x_codec *wcd,
 	u16 payload = 0;
 	int ret, i;
 
+	/* SPX: reject an out-of-range PGD override before touching hardware. */
+	if (spx_pgd_rx_port_cfg < -1 || spx_pgd_rx_port_cfg > 0xff)
+		return -EINVAL;
+
 	cfg->ch_count = 0;
 	cfg->direction = direction;
 	cfg->port_mask = 0;
@@ -1775,8 +1797,17 @@ static int wcd934x_slim_set_hw_params(struct wcd934x_codec *wcd,
 				goto err;
 
 			/* configure the slave port for water mark and enable*/
+			if (spx_pgd_rx_port_cfg >= 0 && !spx_pgd_rx_announced) {
+				spx_pgd_rx_announced = true;
+				dev_info(wcd->dev,
+					 "SPX: PGD RX watermark override 0x%02x (legacy 0x%02x)\n",
+					 spx_pgd_rx_port_cfg,
+					 WCD934X_SLIM_WATER_MARK_VAL);
+			}
 			ret = regmap_write(wcd->if_regmap,
 					WCD934X_SLIM_PGD_RX_PORT_CFG(ch->port),
+					spx_pgd_rx_port_cfg >= 0 ?
+					spx_pgd_rx_port_cfg :
 					WCD934X_SLIM_WATER_MARK_VAL);
 			if (ret < 0)
 				goto err;
@@ -5956,6 +5987,21 @@ static int wcd934x_codec_probe(struct platform_device *pdev)
 	ret = wcd934x_codec_parse_data(wcd);
 	if (ret)
 		return ret;
+
+	/*
+	 * SPX: like wcd937x/938x/939x, fill micb_vout[] from the DT
+	 * qcom,micbiasN-microvolt properties. Without this every MIC BIAS is
+	 * programmed to the 1.0 V floor (vout 0) in wcd934x_init_dmic(), and the
+	 * Surface Pro X DMIC array (needs 1.8 V) reads digital zero.
+	 */
+	ret = wcd_dt_parse_micbias_info(&wcd->common);
+	if (ret)
+		return ret;
+	dev_info(dev, "SPX: micbias vout ctl %u/%u/%u/%u (%u/%u/%u/%u mV)\n",
+		 wcd->common.micb_vout[0], wcd->common.micb_vout[1],
+		 wcd->common.micb_vout[2], wcd->common.micb_vout[3],
+		 wcd->common.micb_mv[0], wcd->common.micb_mv[1],
+		 wcd->common.micb_mv[2], wcd->common.micb_mv[3]);
 
 	ret = devm_add_action_or_reset(dev, wcd934x_put_device_action, &wcd->sidev->dev);
 	if (ret)
