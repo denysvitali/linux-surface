@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: GPL-2.0
+
+/*
+ * Endpoint-B (right speaker, pin2) guarded DTB + LDO14E parity. Windows' PEP
+ * votes ldoe14 to 1.8 V HPM whenever the audio codec is active; Linux never
+ * declared the rail (SPMI EN_CTL=0x00). One-variable delta against
+ * sc8180x-surface-pro-x-speaker-right.dts: the rail, always-on at Windows'
+ * vote. Candidate supply for the WCD9340 analog domain AND the DMIC array.
+ */
+#include "sc8180x-surface-pro-x-speaker-right.dts"
+
+&apps_rsc {
+	pmc8180-e-rpmh-regulators {
+		vreg_l14e_1p8: ldo14 {
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-always-on;
+		};
+	};
+};
