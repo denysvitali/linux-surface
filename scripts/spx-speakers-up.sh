@@ -56,6 +56,109 @@ SPX_EXPECT_NO_ASSIGN=${SPX_EXPECT_NO_ASSIGN:-1}
 SPX_EXPECT_WRITE_DEV0=${SPX_EXPECT_WRITE_DEV0:-1}
 SPX_EXPECT_DEV_STATUS=${SPX_EXPECT_DEV_STATUS:-0x00000001}
 SPX_EXPECT_FORCE_TIMER_PACING=${SPX_EXPECT_FORCE_TIMER_PACING:-1}
+# Persistent-WCD-SLIMbus-teardown policy armed on the command line. Default 1
+# (the audited v28 baseline); a persist_stream=0 A/B boot sets SPX_EXPECT_
+# PERSIST_STREAM=0 in the test env so both cmdline and sysfs checks follow it.
+SPX_EXPECT_PERSIST_STREAM=${SPX_EXPECT_PERSIST_STREAM:-1}
+case $SPX_EXPECT_PERSIST_STREAM in
+0) SPX_EXPECT_PERSIST_STREAM_YN=N ;;
+1) SPX_EXPECT_PERSIST_STREAM_YN=Y ;;
+*) fatal "SPX_EXPECT_PERSIST_STREAM must be 0 or 1, got '$SPX_EXPECT_PERSIST_STREAM'" ;;
+esac
+SPX_EXPECT_WIN_PA_PROFILE=${SPX_EXPECT_WIN_PA_PROFILE:-0}
+SPX_EXPECT_WIN_BIAS_PSRR=${SPX_EXPECT_WIN_BIAS_PSRR:--1}
+SPX_EXPECT_WIN_TEMP_OP=${SPX_EXPECT_WIN_TEMP_OP:--1}
+SPX_READBACK_ONLY=${SPX_READBACK_ONLY:-0}
+# The guarded baseline transports only the WSA DAC descriptor (slave port 1).
+# Windows and mainline db845c both open all four (mask 15). Naming the mask up
+# front keeps the guard able to reject a boot that disagrees with what was armed.
+SPX_EXPECT_PORT_MASK=${SPX_EXPECT_PORT_MASK:-1}
+[[ $SPX_EXPECT_PORT_MASK =~ ^[0-9]+$ ]] &&
+	(( SPX_EXPECT_PORT_MASK >= 1 && SPX_EXPECT_PORT_MASK <= 15 )) ||
+	fatal "guarded WSA port mask must be 1..15, got '$SPX_EXPECT_PORT_MASK'"
+# The DAC descriptor (bit 0) carries the audio; a mask without it is never a
+# speaker configuration.
+(( SPX_EXPECT_PORT_MASK & 1 )) ||
+	fatal "guarded WSA port mask must include the DAC descriptor (bit 0)"
+SPX_EXPECT_ACTIVE_PORTS=0
+for ((SPX_PM_BIT = 0; SPX_PM_BIT < 4; SPX_PM_BIT++)); do
+	if (( SPX_EXPECT_PORT_MASK & (1 << SPX_PM_BIT) )); then
+		SPX_EXPECT_ACTIVE_PORTS=$((SPX_EXPECT_ACTIVE_PORTS + 1))
+	fi
+done
+SPX_TONE_FORMAT=${SPX_TONE_FORMAT:-S16_LE}
+SPX_EXPECT_SPK_PATH=${SPX_EXPECT_SPK_PATH:-left}
+SPX_ALLOW_CROSS_GPIO=${SPX_ALLOW_CROSS_GPIO:-0}
+case $SPX_EXPECT_FORCE_TIMER_PACING in
+0) SPX_EXPECT_FORCE_TIMER_PACING=N ;;
+1) SPX_EXPECT_FORCE_TIMER_PACING=Y ;;
+esac
+case $SPX_TONE_FORMAT in
+S16_LE|S24_LE) ;;
+*) fatal "unsupported guarded tone format '$SPX_TONE_FORMAT'" ;;
+esac
+case $SPX_EXPECT_SPK_PATH in
+left)
+	SPX_NATIVE_GPIO_PIN=1
+	SPX_SPK_UNIT=1
+	SPX_OTHER_SPK_UNIT=2
+	SPX_SPK_PREFIX=SpkrLeft
+	SPX_MACHINE_WIDGET='Left Spk'
+	SPX_FORBIDDEN_ROUTE_RE='Right Spk|SpkrRight'
+	SPX_PORT_MAP_HEX=00000001000000020000000300000007
+	SPX_MASTER_PORT=1
+	SPX_MASTER_CTRL=0x01000107
+	SPX_TONE_PAN='pan=stereo|c0=c0|c1=0*c0'
+	SPX_WCD_INTERP='RX INT7_1 MIX1 INP0'
+	SPX_WCD_SOURCE=RX0
+	SPX_WCD_COMP='COMP7 Switch'
+	SPX_WCD_VOLUME='RX7 Digital Volume'
+	SPX_ROUTE_PAIR_1='Left Spk|SpkrLeft SPKR|'
+	SPX_ROUTE_PAIR_2='SpkrLeft IN|SPK1 OUT|'
+	;;
+right)
+	SPX_NATIVE_GPIO_PIN=2
+	SPX_SPK_UNIT=2
+	SPX_OTHER_SPK_UNIT=1
+	SPX_SPK_PREFIX=SpkrRight
+	SPX_MACHINE_WIDGET='Right Spk'
+	SPX_FORBIDDEN_ROUTE_RE='Left Spk|SpkrLeft'
+	SPX_PORT_MAP_HEX=00000004000000050000000600000008
+	SPX_MASTER_PORT=4
+	SPX_MASTER_CTRL=0x01000607
+	SPX_TONE_PAN='pan=stereo|c0=0*c0|c1=c0'
+	SPX_WCD_INTERP='RX INT8_1 MIX1 INP0'
+	SPX_WCD_SOURCE=RX1
+	SPX_WCD_COMP='COMP8 Switch'
+	SPX_WCD_VOLUME='RX8 Digital Volume'
+	SPX_ROUTE_PAIR_1='Right Spk|SpkrRight SPKR|'
+	SPX_ROUTE_PAIR_2='SpkrRight IN|SPK2 OUT|'
+	;;
+*) fatal "unsupported guarded speaker path '$SPX_EXPECT_SPK_PATH'" ;;
+esac
+SPX_EXPECT_GPIO_PIN=${SPX_EXPECT_GPIO_PIN:-$SPX_NATIVE_GPIO_PIN}
+case $SPX_EXPECT_GPIO_PIN in
+1)
+	SPX_PATH_GPIO_MASK=0x02
+	SPX_GPIO_PIN_HEX=00000001
+	;;
+2)
+	SPX_PATH_GPIO_MASK=0x04
+	SPX_GPIO_PIN_HEX=00000002
+	;;
+*) fatal "unsupported guarded WSA GPIO pin '$SPX_EXPECT_GPIO_PIN'" ;;
+esac
+if [[ $SPX_EXPECT_GPIO_PIN != "$SPX_NATIVE_GPIO_PIN" ]]; then
+	[[ $SPX_ALLOW_CROSS_GPIO == 1 && $SPX_EXPECT_SPK_PATH == right &&
+	   $SPX_EXPECT_GPIO_PIN == 1 ]] ||
+		fatal "non-native path/GPIO pairing requires the audited right-on-pin1 cross mode"
+fi
+[[ $SPX_AMP_GPIO_ON == "$SPX_PATH_GPIO_MASK" ]] ||
+	fatal "GPIO pin $SPX_EXPECT_GPIO_PIN requires isolated mask $SPX_PATH_GPIO_MASK, got $SPX_AMP_GPIO_ON"
+case $SPX_TONE_FORMAT in
+S16_LE) SPX_EXPECT_BITS=16 ;;
+S24_LE) SPX_EXPECT_BITS=24 ;;
+esac
 KERNEL_FAULT_RE='soft lockup|hard LOCKUP|rcu.*stall|kernel panic|Oops:'
 KERNEL_FAULT_RE+='|Internal error:|SError|hung task|synchronous external abort'
 KERNEL_FAULT_RE+='|watchdog: BUG'
@@ -64,7 +167,7 @@ stop_tone()
 	local i
 
 	[[ -n ${TONE_PID:-} ]] || return 0
-	# speaker-test and timeout run in a private session. Stop and reap that
+	# The guarded player and timeout run in a private session. Stop and reap that
 	# whole group before touching PA/GPIO state on any active-stream failure.
 	kill -TERM -- "-$TONE_PID" 2>/dev/null ||
 		kill -TERM "$TONE_PID" 2>/dev/null || true
@@ -92,7 +195,7 @@ cleanup()
 	if (( HARDWARE_TOUCHED && !KERNEL_FAULT )); then
 		if [[ -n ${SPX_CARD:-} ]]; then
 			timeout 2 amixer -q -c "$SPX_CARD" cset \
-				name='SpkrLeft PA Volume' 0 >/dev/null 2>&1 || true
+				name="$SPX_SPK_PREFIX PA Volume" 0 >/dev/null 2>&1 || true
 		fi
 		if set_amp_gpio 0x00; then
 			echo "SPX: amplifier parking was verified after the controlled test"
@@ -151,7 +254,11 @@ fresh_regs()
 	SPX_MCP_STATUS=$(sed -n 's/.*MCP_STATUS=\(0x[0-9a-fA-F]\+\).*/\1/p' <<<"$line")
 	SPX_DP1_B0=$(sed -n 's/.*DP1_B0=\(0x[0-9a-fA-F]\+\).*/\1/p' <<<"$line")
 	SPX_DP1_B1=$(sed -n 's/.*DP1_B1=\(0x[0-9a-fA-F]\+\).*/\1/p' <<<"$line")
-	[[ -n $SPX_COMP_PARAMS && -n $SPX_SLV_STATUS && -n $SPX_MCP_STATUS ]] ||
+	SPX_DP4_B0=$(sed -n 's/.*DP4_B0=\(0x[0-9a-fA-F]\+\).*/\1/p' <<<"$line")
+	SPX_DP4_B1=$(sed -n 's/.*DP4_B1=\(0x[0-9a-fA-F]\+\).*/\1/p' <<<"$line")
+	[[ -n $SPX_COMP_PARAMS && -n $SPX_SLV_STATUS && -n $SPX_MCP_STATUS &&
+	   -n $SPX_DP1_B0 && -n $SPX_DP1_B1 &&
+	   -n $SPX_DP4_B0 && -n $SPX_DP4_B1 ]] ||
 		fatal "could not parse the fresh register dump"
 	printf '  %s: COMP_PARAMS=%s MCP_SLV_STATUS=%s\n' \
 		"$tag" "$SPX_COMP_PARAMS" "$SPX_SLV_STATUS"
@@ -187,7 +294,7 @@ fresh_regs()
 		# a garbled DevID). That is the configuration under test, not a
 		# fault, so accept any nonzero address as proof that an amp
 		# announced. The single-amp default still rejects it.
-		if [[ $SPX_AMP_GPIO_ON != 0x02 ]]; then
+		if [[ $SPX_AMP_GPIO_ON == 0x06 ]]; then
 			PHYSICAL_DEV0_SEEN=1
 			echo "  NOTE: multi-amp mode, slave status $SPX_SLV_STATUS accepted as presence"
 		else
@@ -196,11 +303,19 @@ fresh_regs()
 		;;
 	esac
 	if [[ $tag == active-stream ]]; then
-		printf '  MCP_STATUS=%s DP1 banks: B0=%s B1=%s\n' \
-			"$SPX_MCP_STATUS" "$SPX_DP1_B0" "$SPX_DP1_B1"
-		[[ $SPX_DP1_B0 == 0x01000107 ]] ||
+		if [[ $SPX_MASTER_PORT == 1 ]]; then
+			SPX_MASTER_B0=$SPX_DP1_B0
+			SPX_MASTER_B1=$SPX_DP1_B1
+		else
+			SPX_MASTER_B0=$SPX_DP4_B0
+			SPX_MASTER_B1=$SPX_DP4_B1
+		fi
+		printf '  MCP_STATUS=%s DP%s banks: B0=%s B1=%s\n' \
+			"$SPX_MCP_STATUS" "$SPX_MASTER_PORT" \
+			"$SPX_MASTER_B0" "$SPX_MASTER_B1"
+		[[ $SPX_MASTER_B0 == "$SPX_MASTER_CTRL" ]] ||
 			fatal "master bank 0 does not contain the enabled DAC transport"
-		[[ $SPX_DP1_B1 == 0x01000107 ]] ||
+		[[ $SPX_MASTER_B1 == "$SPX_MASTER_CTRL" ]] ||
 			fatal "master bank 1 does not contain the shadowed DAC transport"
 	fi
 }
@@ -271,28 +386,59 @@ require_param /sys/module/soundwire_qcom/parameters/spx_actual_phase 0
 require_param /sys/module/soundwire_qcom/parameters/spx_clk_div 0
 require_param /sys/module/snd_soc_wsa881x/parameters/spx_write_only Y
 require_param /sys/module/snd_soc_wsa881x/parameters/spx_blind_rmw N
-require_param /sys/module/snd_soc_wsa881x/parameters/spx_stream_port_mask 1
+require_param /sys/module/snd_soc_wsa881x/parameters/spx_stream_port_mask \
+	"$SPX_EXPECT_PORT_MASK"
+if [[ $SPX_EXPECT_PORT_MASK != 1 ]]; then
+	grep -qw "snd_soc_wsa881x.spx_stream_port_mask=$SPX_EXPECT_PORT_MASK" \
+		/proc/cmdline ||
+		fatal "the boot entry did not select the guarded WSA port mask"
+fi
 require_param /sys/module/snd_soc_wsa881x/parameters/spx_replay_supplies Y
 require_param /sys/module/snd_soc_wsa881x/parameters/spx_init_on_pmu 0
 require_param /sys/module/snd_soc_wsa881x/parameters/spx_win_pa_seq \
 	"${SPX_EXPECT_WIN_PA_SEQ:-1}"
+require_param /sys/module/snd_soc_wsa881x/parameters/spx_win_pa_profile \
+	"$SPX_EXPECT_WIN_PA_PROFILE"
+require_param /sys/module/snd_soc_wsa881x/parameters/spx_win_bias_psrr \
+	"$SPX_EXPECT_WIN_BIAS_PSRR"
+[[ $SPX_EXPECT_WIN_BIAS_PSRR == -1 || $SPX_EXPECT_WIN_BIAS_PSRR == 69 ]] ||
+	fatal "guarded BIAS_PSRR expectation must be -1 or decimal 69 (0x45)"
+require_param /sys/module/snd_soc_wsa881x/parameters/spx_win_temp_op \
+	"$SPX_EXPECT_WIN_TEMP_OP"
+[[ $SPX_EXPECT_WIN_TEMP_OP == -1 || $SPX_EXPECT_WIN_TEMP_OP == 12 ]] ||
+	fatal "guarded TEMP_OP expectation must be -1 or decimal 12 (0x0c)"
+if [[ $SPX_EXPECT_WIN_PA_PROFILE != 0 ]]; then
+	grep -qw "snd_soc_wsa881x.spx_win_pa_profile=$SPX_EXPECT_WIN_PA_PROFILE" \
+		/proc/cmdline || fatal "the boot entry did not select the guarded PA profile"
+fi
+if [[ $SPX_EXPECT_WIN_BIAS_PSRR != -1 ]]; then
+	grep -qw "snd_soc_wsa881x.spx_win_bias_psrr=0x45" /proc/cmdline ||
+		fatal "the boot entry did not select the guarded BIAS_PSRR override"
+fi
+if [[ $SPX_EXPECT_WIN_TEMP_OP != -1 ]]; then
+	grep -qw "snd_soc_wsa881x.spx_win_temp_op=0x0c" /proc/cmdline ||
+		fatal "the boot entry did not select the guarded TEMP_OP override"
+fi
 require_param /sys/module/snd_soc_wsa881x/parameters/spx_sample_edge -1
 require_param /sys/module/snd_soc_wsa881x/parameters/spx_powerdown_gpio 1
 require_param /sys/module/snd_soc_wsa881x/parameters/spx_port_map 0,0,0,0
 require_param /sys/module/q6asm_dai/parameters/spx_force_timer_pacing \
 	"$SPX_EXPECT_FORCE_TIMER_PACING"
+[[ -e /sys/module/soundwire_qcom/parameters/spx_slave_readback ]] ||
+	fatal "the physical-device readback trigger is unavailable"
 grep -qw 'snd_soc_wsa881x.spx_port_map=0,0,0,0' /proc/cmdline ||
 	fatal "the boot entry did not pin the all-zero WSA port-map override"
 require_param /sys/module/wcd934x/parameters/spx_wsa_en_pin -1
 require_param /sys/module/wcd934x/parameters/spx_wsa_gpio_dir 6
 require_param /sys/module/wcd934x/parameters/spx_wsa_gpio_val \
 	"$SPX_EXPECT_GPIO_VAL_DEC"
-grep -qw 'snd_soc_wcd934x.spx_persist_stream=1' /proc/cmdline ||
-	fatal "the boot entry did not arm persistent WCD SLIMbus teardown protection"
+grep -qw "snd_soc_wcd934x.spx_persist_stream=$SPX_EXPECT_PERSIST_STREAM" /proc/cmdline ||
+	fatal "the boot entry did not arm persistent WCD SLIMbus teardown protection (expected =$SPX_EXPECT_PERSIST_STREAM)"
 grep -qw 'q6afe_dai.spx_no_port_stop=0' /proc/cmdline ||
 	fatal "the boot entry did not pin the scoped AFE teardown policy"
 if [[ -e /sys/module/snd_soc_wcd934x/parameters/spx_persist_stream ]]; then
-	require_param /sys/module/snd_soc_wcd934x/parameters/spx_persist_stream Y
+	require_param /sys/module/snd_soc_wcd934x/parameters/spx_persist_stream \
+		"$SPX_EXPECT_PERSIST_STREAM_YN"
 fi
 if [[ -e /sys/module/q6afe_dai/parameters/spx_no_port_stop ]]; then
 	require_param /sys/module/q6afe_dai/parameters/spx_no_port_stop N
@@ -303,34 +449,55 @@ DAI_PROP="$DT/sound/slim-playback-dai-link/codec/sound-dai"
 [[ $(stat -c %s "$DAI_PROP") == 20 ]] ||
 	fatal "live playback DAI link is not the proven WCD + one WSA + SWM topology"
 mapfile -t WCD_PHANDLE < <(find "$DT" -path '*/slim@1/codec@1,0/phandle')
-mapfile -t LEFT_PHANDLE < <(find "$DT" -path '*/soundwire@c85/speaker@0,1/phandle')
+mapfile -t SPK_PHANDLE < <(find "$DT" \
+	-path "*/soundwire@c85/speaker@0,$SPX_SPK_UNIT/phandle")
 mapfile -t SWM_PHANDLE < <(find "$DT" -path '*/soundwire@c85/phandle')
-(( ${#WCD_PHANDLE[@]} == 1 && ${#LEFT_PHANDLE[@]} == 1 &&
+(( ${#WCD_PHANDLE[@]} == 1 && ${#SPK_PHANDLE[@]} == 1 &&
    ${#SWM_PHANDLE[@]} == 1 )) || fatal "could not resolve exact live DAI phandles"
 hex_file()
 {
 	od -An -v -tx1 "$1" | tr -d ' \n'
 }
 EXPECTED_DAI=$(hex_file "${WCD_PHANDLE[0]}")
-EXPECTED_DAI+="00000000$(hex_file "${LEFT_PHANDLE[0]}")"
+EXPECTED_DAI+="00000000$(hex_file "${SPK_PHANDLE[0]}")"
 EXPECTED_DAI+="$(hex_file "${SWM_PHANDLE[0]}")00000000"
 [[ $(hex_file "$DAI_PROP") == "$EXPECTED_DAI" ]] ||
-	fatal "live DAI cells do not reference exactly WCD + left WSA + SWM"
-mapfile -t LEFT_PORT_MAP < <(find "$DT" \
-	-path '*/soundwire@c85/speaker@0,1/qcom,port-mapping')
-(( ${#LEFT_PORT_MAP[@]} == 1 )) ||
-	fatal "could not resolve the live left-WSA port mapping"
-[[ $(hex_file "${LEFT_PORT_MAP[0]}") == 00000001000000020000000300000007 ]] ||
-	fatal "live left-WSA port mapping is not the proven 1,2,3,7 topology"
-RIGHT_STATUS=$(find "$DT" -path '*/soundwire@c85/speaker@0,2/status' -print -quit)
-[[ -n $RIGHT_STATUS && $(tr -d '\0' <"$RIGHT_STATUS") == disabled ]] ||
-	fatal "right WSA codec is not disabled in the live DT"
+	fatal "live DAI cells do not reference exactly WCD + $SPX_EXPECT_SPK_PATH WSA + SWM"
+mapfile -t SPK_PORT_MAP < <(find "$DT" \
+	-path "*/soundwire@c85/speaker@0,$SPX_SPK_UNIT/qcom,port-mapping")
+(( ${#SPK_PORT_MAP[@]} == 1 )) ||
+	fatal "could not resolve the live $SPX_EXPECT_SPK_PATH-WSA port mapping"
+[[ $(hex_file "${SPK_PORT_MAP[0]}") == "$SPX_PORT_MAP_HEX" ]] ||
+	fatal "live $SPX_EXPECT_SPK_PATH-WSA port mapping disagrees with Windows endpoint data"
+mapfile -t SPK_POWERDOWN_GPIO < <(find "$DT" \
+	-path "*/soundwire@c85/speaker@0,$SPX_SPK_UNIT/powerdown-gpios")
+(( ${#SPK_POWERDOWN_GPIO[@]} == 1 )) ||
+	fatal "could not resolve the selected WSA powerdown GPIO"
+SPK_POWERDOWN_HEX=$(hex_file "${SPK_POWERDOWN_GPIO[0]}")
+[[ ${SPK_POWERDOWN_HEX: -16} == "${SPX_GPIO_PIN_HEX}00000001" ]] ||
+	fatal "selected WSA does not use the expected active-low GPIO pin"
+SPK_STATUS=$(find "$DT" \
+	-path "*/soundwire@c85/speaker@0,$SPX_SPK_UNIT/status" -print -quit)
+[[ -z $SPK_STATUS || $(tr -d '\0' <"$SPK_STATUS") == okay ]] ||
+	fatal "selected WSA codec is disabled in the live DT"
+OTHER_STATUS=$(find "$DT" \
+	-path "*/soundwire@c85/speaker@0,$SPX_OTHER_SPK_UNIT/status" -print -quit)
+[[ -n $OTHER_STATUS && $(tr -d '\0' <"$OTHER_STATUS") == disabled ]] ||
+	fatal "non-test WSA codec is not disabled in the live DT"
 ROUTING=$(tr '\0' '\n' <"$DT/sound/audio-routing")
-grep -qx 'Left Spk' <<<"$ROUTING" || fatal "left speaker route is absent"
-if grep -qE 'Right Spk|SpkrRight' <<<"$ROUTING"; then
-	fatal "right speaker route is still present"
+ROUTING_PAIRS=$(tr '\0' '|' <"$DT/sound/audio-routing")
+grep -qx "$SPX_MACHINE_WIDGET" <<<"$ROUTING" ||
+	fatal "$SPX_EXPECT_SPK_PATH speaker route is absent"
+grep -Fq "$SPX_ROUTE_PAIR_1" <<<"$ROUTING_PAIRS" ||
+	fatal "selected machine-to-WSA route pair is absent"
+grep -Fq "$SPX_ROUTE_PAIR_2" <<<"$ROUTING_PAIRS" ||
+	fatal "selected WCD-to-WSA route pair is absent"
+if grep -qE "$SPX_FORBIDDEN_ROUTE_RE" <<<"$ROUTING"; then
+	fatal "non-test speaker route is still present"
 fi
 BOOT_LOG=$(sudo dmesg)
+grep -qE "wsa881x-codec sdw:.*:00:$SPX_SPK_UNIT: SPX: SD_N on wcd-gpio pin $SPX_EXPECT_GPIO_PIN" \
+	<<<"$BOOT_LOG" || fatal "boot did not bind the selected WSA codec/GPIO pair"
 if grep -qE 'SPX: hw_params active_ports=|SPX: PA DAPM event' <<<"$BOOT_LOG"; then
 	fatal "speaker transport was already opened this boot; use a fresh guarded boot"
 fi
@@ -371,7 +538,8 @@ mapfile -t SPX_CARDS < <(awk '/sdm845|Surface Pro X/{print $1}' /proc/asound/car
 SPX_CARD=${SPX_CARDS[0]}
 [[ $SPX_CARD =~ ^[0-9]+$ ]] || fatal "no Surface Pro X ALSA card"
 echo "  ALSA card $SPX_CARD"
-require_param /sys/module/snd_soc_wcd934x/parameters/spx_persist_stream Y
+require_param /sys/module/snd_soc_wcd934x/parameters/spx_persist_stream \
+	"$SPX_EXPECT_PERSIST_STREAM_YN"
 require_param /sys/module/q6afe_dai/parameters/spx_no_port_stop N
 for PARAM_MODULE in soundwire_qcom snd_soc_wsa881x snd_soc_wcd934x q6afe_dai; do
 	mkdir -p "$LOG_DIR/$PARAM_MODULE-parameters"
@@ -408,7 +576,24 @@ kmsg_marker enum
 ENUM_MARKER=$SPX_KMSG_MARKER
 echo 1 | sudo tee /sys/module/soundwire_qcom/parameters/spx_force_attach >/dev/null
 echo 1 | sudo tee /sys/module/soundwire_qcom/parameters/spx_reenum >/dev/null
-sleep 25
+
+# Re-enumeration itself initializes the newly attached logical device. Do not
+# leave the write-only amplifier idle for an arbitrary 25 seconds afterward:
+# unicast writes have no acknowledgement, and the physical-presence latch can
+# disappear during that gap. Follow the actual completion messages instead.
+for ((i = 0; i < 300; i++)); do
+	ENUM_LOG=$(logs_since_marker "$ENUM_MARKER")
+	if grep -q 'SPX FORCE-ATTACH: stable attachment' <<<"$ENUM_LOG" &&
+	   grep -q 'SPX: initializing amplifier at SoundWire device 1' <<<"$ENUM_LOG" &&
+	   { [[ $SPX_EXPECT_WIN_BIAS_PSRR == -1 ]] ||
+	     grep -q 'SPX: Windows BIAS_PSRR override 0x45' <<<"$ENUM_LOG"; } &&
+	   { [[ $SPX_EXPECT_WIN_TEMP_OP == -1 ]] ||
+	     grep -q 'SPX: Windows TEMP_OP override 0x0c' <<<"$ENUM_LOG"; }
+	then
+		break
+	fi
+	sleep 0.1
+done
 
 ENUM_LOG=$(logs_since_marker "$ENUM_MARKER")
 grep -q 'soundwire_qcom: spx_reenum: schedule work (force=1' <<<"$ENUM_LOG" ||
@@ -417,11 +602,62 @@ grep -q 'SPX FORCE-ATTACH: stable attachment' <<<"$ENUM_LOG" ||
 	fatal "force-attach did not reach its stable state"
 grep -q 'SPX: initializing amplifier at SoundWire device 1' <<<"$ENUM_LOG" ||
 	fatal "fresh attach did not replay the amplifier cold-init table"
-fresh_regs pre-stream
+if [[ $SPX_EXPECT_WIN_TEMP_OP != -1 ]]; then
+	grep -q 'SPX: Windows TEMP_OP override 0x0c' <<<"$ENUM_LOG" ||
+		fatal "controlled cold init did not issue the TEMP_OP override"
+fi
 
-echo "=== [3] safe cold-init replay while the stream is idle ==="
-echo 1 | sudo tee /sys/module/snd_soc_wsa881x/parameters/spx_rearm_init >/dev/null
-sleep 1
+echo "=== [3] use the presence-bound automatic cold init ==="
+# Do not issue the old explicit replay here. In v24 it ran 25 seconds after
+# presence, when MCP_SLV_STATUS had already vanished. The force-attach path has
+# just initialized logical device 1 while the physical amplifier was present.
+
+if [[ $SPX_READBACK_ONLY == 1 ]]; then
+	echo "=== [4] bounded physical-device-0 register readback (no PCM/PA) ==="
+	kmsg_marker slave-readback
+	READBACK_MARKER=$SPX_KMSG_MARKER
+	set +e
+	echo 1 | sudo tee \
+		/sys/module/soundwire_qcom/parameters/spx_slave_readback >/dev/null
+	READBACK_RC=$?
+	set -e
+	READBACK_LOG=$(logs_since_marker "$READBACK_MARKER")
+	grep -q 'SPX SLAVE READBACK begin dev=0' <<<"$READBACK_LOG" ||
+		fatal "physical-device readback did not start"
+	if (( READBACK_RC == 0 )); then
+		grep -q 'SPX SLAVE READBACK dev=0' <<<"$READBACK_LOG" ||
+			fatal "physical-device readback returned without a result"
+	else
+		grep -q 'SPX SLAVE READBACK .*UNOBSERVABLE' <<<"$READBACK_LOG" ||
+			fatal "physical-device readback failed without diagnostic evidence"
+	fi
+	printf '%s\n' "$READBACK_LOG" >"$LOG_DIR/slave-readback.log"
+
+	# Optional wider WSA881x register forensics (still no PCM/PA): dump the
+	# listed registers from the attached logical device via spx_wsa_seq's
+	# reads mode. SPX_REG_READS is a comma list of register addresses.
+	if [[ -n ${SPX_REG_READS:-} ]]; then
+		echo "=== [4b] WSA881x register forensics (reads only) ==="
+		kmsg_marker wsa-reg-reads
+		REG_MARKER=$SPX_KMSG_MARKER
+		set +e
+		sudo insmod drivers/spx_extras/spx_wsa_seq.ko \
+			"reads=$SPX_REG_READS" 2>/dev/null
+		REG_RC=$?
+		set -e
+		# The module always fails its load with -EAGAIN by design.
+		REG_LOG=$(logs_since_marker "$REG_MARKER")
+		grep -q 'SPX seq-read' <<<"$REG_LOG" ||
+			fatal "register-forensics module produced no reads"
+		printf '%s\n' "$REG_LOG" >"$LOG_DIR/wsa-reg-reads.log"
+		echo "register forensics captured (rc=$REG_RC; -EAGAIN expected)"
+	fi
+
+	TEST_SUCCEEDED=1
+	sync
+	echo "SPX: diagnostic-only readback complete; PCM and PA were never opened"
+	exit 0
+fi
 
 echo "=== [4] required single-speaker mixer path ==="
 set_ctl()
@@ -436,31 +672,81 @@ set_ctl()
 set_ctl 'SLIMBUS_2_RX Audio Mixer MultiMedia1' 1
 set_ctl 'SLIM RX0 MUX' AIF1_PB
 set_ctl 'SLIM RX1 MUX' AIF1_PB
-set_ctl 'RX INT7_1 MIX1 INP0' RX0
-set_ctl 'COMP7 Switch' 1
-set_ctl 'RX7 Digital Volume' 84
-set_ctl 'RX8 Digital Volume' 84
-set_ctl 'SpkrLeft COMP Switch' 0
-set_ctl 'SpkrLeft VISENSE Switch' 0
-set_ctl 'SpkrLeft BOOST Switch' 1
-set_ctl 'SpkrLeft DAC Switch' 1
+set_ctl "$SPX_WCD_INTERP" "$SPX_WCD_SOURCE"
+set_ctl "$SPX_WCD_COMP" 1
+set_ctl "$SPX_WCD_VOLUME" 84
+set_ctl "$SPX_SPK_PREFIX COMP Switch" 0
+set_ctl "$SPX_SPK_PREFIX VISENSE Switch" 0
+set_ctl "$SPX_SPK_PREFIX BOOST Switch" 1
+set_ctl "$SPX_SPK_PREFIX DAC Switch" 1
 # Force a real control transition after the cold-init replay.  Code 12 is the
 # exact +18 dB setting used by the historically audible recovery runs; the
 # guarded v3-v5 tests at code 8 were all silent despite correct transport.
-set_ctl 'SpkrLeft PA Volume' 0
-set_ctl 'SpkrLeft PA Volume' 12
-set_ctl 'SpkrLeft Smart Boost Level' 0
+# SPX_PA_VOLUME: PA gain force-written after cold init (12 = +18 dB, the
+# historical guarded value; lower it for late-night runs).
+set_ctl "$SPX_SPK_PREFIX PA Volume" 0
+set_ctl "$SPX_SPK_PREFIX PA Volume" "${SPX_PA_VOLUME:-12}"
+set_ctl "$SPX_SPK_PREFIX Smart Boost Level" 0
 
-echo "=== [5] short 48 kHz S16_LE stereo tone ==="
-TONE_LOG=/tmp/spx-speaker-test.log
+echo "=== [5] short 48 kHz $SPX_TONE_FORMAT stereo tone ==="
+TONE_LOG=/tmp/spx-aplay.log
+TONE_WAV="$LOG_DIR/preroll-tone.wav"
+[[ $SPX_TONE_FORMAT == S16_LE ]] ||
+	fatal "the silent-pre-roll proof is defined only for the S16_LE baseline"
+# Keep one PCM handle open for three seconds of exact digital zero followed by
+# five seconds of 440 Hz on only the selected logical channel.  The active
+# controller snapshot runs entirely within the zero prefix, so its shared-bus
+# traffic cannot cut the audible tone and no live mixer write is required.
+ffmpeg -nostdin -v error \
+	-f lavfi -i anullsrc=r=48000:cl=stereo:d=3 \
+	-f lavfi -i sine=frequency=440:sample_rate=48000:duration=5 \
+	-filter_complex "[1:a]volume=${SPX_TONE_GAIN:-6.4},$SPX_TONE_PAN[tone];[0:a][tone]concat=n=2:v=0:a=1[out]" \
+	-map '[out]' -c:a pcm_s16le -y "$TONE_WAV" \
+	2>"$LOG_DIR/ffmpeg.log" || fatal "failed to build the guarded pre-roll waveform"
+# Optional objective listener (SPX_MIC_CAPTURE=1): record the built-in DMIC1
+# through DEC0 -> SLIM TX0 -> SLIMBUS_0_TX -> MultiMedia2 for the whole tone
+# window and score 440 Hz against neighbouring bins afterwards.  Needs the
+# capture-parking q6asm-dai (2026-08-24) and the wcd934x micbias parse (1.8 V).
+# Never fatal: it only adds evidence to the run directory.
+MIC_PID=
+MIC_WAV="$LOG_DIR/mic-DMIC1.wav"
+if [[ ${SPX_MIC_CAPTURE:-0} == 1 ]]; then
+	for c in 'MultiMedia2 Mixer SLIMBUS_0_TX:1' 'AIF1_CAP Mixer SLIM TX0:1' \
+		'CDC_IF TX0 MUX:DEC0' 'ADC MUX0:DMIC' 'DMIC MUX0:DMIC1' 'DEC0 Volume:84'; do
+		amixer -c "$SPX_CARD" cset name="${c%%:*}" "${c##*:}" >/dev/null 2>&1 ||
+			echo "  mic: mixer write failed: $c"
+	done
+	setsid timeout -k 2 14 arecord -q -D "plughw:${SPX_CARD},1" -f S16_LE -r 48000 -c 1 \
+		-d 9 "$MIC_WAV" >"$LOG_DIR/arecord.log" 2>&1 &
+	MIC_PID=$!
+	sleep 0.3
+fi
 kmsg_marker tone
 TONE_MARKER=$SPX_KMSG_MARKER
 set +e
-setsid timeout -k 2 5 speaker-test -D "plughw:${SPX_CARD},0" -c 2 -r 48000 \
-	-F S16_LE -t sine -f 440 >"$TONE_LOG" 2>&1 &
+setsid timeout -k 2 10 aplay -D "plughw:${SPX_CARD},0" \
+	--period-size=12000 --buffer-size=48000 "$TONE_WAV" \
+	>"$TONE_LOG" 2>&1 &
 TONE_PID=$!
 set -e
 sleep 1
+PCM_HW_PARAMS=/proc/asound/card${SPX_CARD}/pcm0p/sub0/hw_params
+[[ -r $PCM_HW_PARAMS ]] || fatal "active PCM hw_params are unavailable"
+cp "$PCM_HW_PARAMS" "$LOG_DIR/hw_params-active"
+grep -qx "format: $SPX_TONE_FORMAT" "$PCM_HW_PARAMS" ||
+	fatal "active PCM format disagrees with the requested guarded format"
+grep -qx 'channels: 2' "$PCM_HW_PARAMS" ||
+	fatal "active PCM is not stereo"
+grep -qE '^rate: 48000( \(48000/1\))?$' "$PCM_HW_PARAMS" ||
+	fatal "active PCM is not 48 kHz"
+grep -qx 'period_size: 12000' "$PCM_HW_PARAMS" ||
+	fatal "active PCM does not use the proven 12000-frame period"
+grep -qx 'buffer_size: 48000' "$PCM_HW_PARAMS" ||
+	fatal "active PCM does not use the proven 48000-frame buffer"
+# The seven-register controller read takes roughly 140-165 ms through the
+# shared WCD/SLIMbus bridge.  It is now safely inside the waveform's three
+# seconds of digital zero, with ample settling time before the first sine
+# sample reaches the already-open PCM stream.
 fresh_regs active-stream
 set +e
 wait "$TONE_PID"
@@ -469,9 +755,35 @@ TONE_PID=
 set -e
 if (( TONE_RC != 0 && TONE_RC != 124 && TONE_RC != 137 )); then
 	sed -n '1,120p' "$TONE_LOG" >&2
-	fatal "speaker-test failed with exit code $TONE_RC"
+	fatal "aplay failed with exit code $TONE_RC"
 fi
-# With the deliberately persistent WCD/AFE teardown policy, speaker-test can
+if [[ -n $MIC_PID ]]; then
+	wait "$MIC_PID" 2>/dev/null || true
+	MIC_PID=
+	if [[ -s $MIC_WAV ]]; then
+		python3 - "$MIC_WAV" <<'PY' | tee "$LOG_DIR/mic-goertzel.txt" || true
+import sys, wave, struct, math
+w = wave.open(sys.argv[1]); fs = w.getframerate()
+v = struct.unpack('<%dh' % w.getnframes(), w.readframes(w.getnframes()))
+def g(f, x):
+    k = 2*math.cos(2*math.pi*f/fs); s1 = s2 = 0.0
+    for s in x:
+        s0 = s + k*s1 - s2; s2 = s1; s1 = s0
+    return math.sqrt(max(s1*s1 + s2*s2 - k*s1*s2, 0)) / len(x) * math.sqrt(2)
+# tone occupies 3..8 s of the aplay window; capture started ~0.3 s earlier
+x = v[int(3.5*fs):int(7.5*fs)] if len(v) > 8*fs else v
+rms = math.sqrt(sum(a*a for a in x)/len(x)) if x else 0
+t = g(440, x) if x else 0
+nb = max(g(f, x) for f in (330, 400, 480, 560)) if x else 0
+print(f"SPX MIC: frames={len(v)} tone-window rms={rms:.1f} 440Hz={t:.2f} neighbours={nb:.2f} ratio={t/max(nb,1e-9):.1f}  ({'TONE DETECTED' if t > 5*nb and t > 1 else 'no tone'})")
+PY
+		python3 "$(dirname "$0")/spx-mic-analyze.py" "$MIC_WAV" 2>/dev/null |
+			tee "$LOG_DIR/mic-analyze.txt" || true
+	else
+		echo "  mic: no capture file (arecord failed, see arecord.log)"
+	fi
+fi
+# With the deliberately persistent WCD/AFE teardown policy, aplay can
 # remain in PCM close after timeout sends SIGTERM and then be reaped by the
 # two-second SIGKILL deadline (137).  ALSA DAPM also applies its normal delayed
 # power-down several seconds after the process is gone.  Both are bounded here;
@@ -481,27 +793,58 @@ for ((i = 0; i < 80; i++)); do
 	grep -q 'SPX: PA DAPM event 0x8' <<<"$TONE_KERNEL_LOG" && break
 	sleep 0.1
 done
-grep -q '0 - Front Left' "$TONE_LOG" ||
-	fatal "speaker-test never reported submitting the left channel"
+grep -Fq "Playing WAVE '$TONE_WAV' : Signed 16 bit Little Endian, Rate 48000 Hz, Stereo" \
+	"$TONE_LOG" || fatal "aplay never reported the guarded stereo waveform"
 TONE_KERNEL_LOG=$(logs_since_marker "$TONE_MARKER")
 if grep -qiE "$KERNEL_FAULT_RE" <<<"$TONE_KERNEL_LOG"; then
 	KERNEL_FAULT=1
 	fatal "kernel fault signature appeared during the controlled test"
 fi
-grep -q 'SPX: hw_params active_ports=1' <<<"$TONE_KERNEL_LOG" ||
-	fatal "WSA DAC-only stream setup was not observed"
+grep -q "SPX: hw_params active_ports=$SPX_EXPECT_ACTIVE_PORTS" \
+	<<<"$TONE_KERNEL_LOG" ||
+	fatal "WSA stream setup did not open $SPX_EXPECT_ACTIVE_PORTS descriptor(s)"
 grep -q 'SPX: PA DAPM event 0x1' <<<"$TONE_KERNEL_LOG" ||
 	fatal "speaker PA PRE_PMU event was not observed"
+grep -q "SPX: Windows PA profile $SPX_EXPECT_WIN_PA_PROFILE" \
+	<<<"$TONE_KERNEL_LOG" || fatal "the selected Windows PA branch was not observed"
+if [[ $SPX_EXPECT_WIN_BIAS_PSRR != -1 ]]; then
+	# The override is part of Windows' cold configuration and therefore
+	# precedes the tone marker; it is intentionally not a PRE_PMU write.
+	grep -q 'SPX: Windows BIAS_PSRR override 0x45' <<<"$(sudo dmesg)" ||
+		fatal "the selected Windows BIAS_PSRR write was not observed"
+fi
+if [[ $SPX_EXPECT_WIN_TEMP_OP != -1 ]]; then
+	grep -q 'SPX: Windows TEMP_OP override 0x0c' <<<"$(sudo dmesg)" ||
+		fatal "the selected Windows TEMP_OP cold write was not observed"
+fi
 grep -q 'SPX: shadow slave DP1 ChannelEn value=0x01' <<<"$TONE_KERNEL_LOG" ||
 	fatal "slave DP1 enable was not shadowed into both banks"
-grep -q 'SPX: shadow master DP1 ChannelEn value=0x01' <<<"$TONE_KERNEL_LOG" ||
-	fatal "master DP1 enable was not shadowed into both banks"
+grep -q "SPX: shadow master DP$SPX_MASTER_PORT ChannelEn value=0x01" \
+	<<<"$TONE_KERNEL_LOG" ||
+	fatal "master DP$SPX_MASTER_PORT enable was not shadowed into both banks"
 grep -q 'SPX: PA DAPM event 0x8' <<<"$TONE_KERNEL_LOG" ||
 	fatal "speaker PA POST_PMD teardown event was not observed"
 grep -q 'SPX: shadow slave DP1 ChannelEn value=0x00' <<<"$TONE_KERNEL_LOG" ||
 	fatal "slave DP1 disable was not shadowed into both banks"
-grep -q 'SPX: shadow master DP1 ChannelEn value=0x00' <<<"$TONE_KERNEL_LOG" ||
-	fatal "master DP1 disable was not shadowed into both banks"
+grep -q "SPX: shadow master DP$SPX_MASTER_PORT ChannelEn value=0x00" \
+	<<<"$TONE_KERNEL_LOG" ||
+	fatal "master DP$SPX_MASTER_PORT disable was not shadowed into both banks"
+# The capture-parking q6asm-dai also logs the mic session's close (submitted=0,
+# write_done=N); keep only playback lines (submitted>0) for the gate.
+Q6_SUMMARY=$(grep 'SPX ASM stream .*bits=.*submitted=[1-9][0-9]*.*write_done=.*fallback=' \
+	<<<"$TONE_KERNEL_LOG" | tail -1)
+[[ -n $Q6_SUMMARY ]] || fatal "Q6ASM did not log a completed stream summary"
+Q6_BITS=$(sed -n 's/.*bits=\([0-9]\+\).*/\1/p' <<<"$Q6_SUMMARY")
+Q6_SUBMITTED=$(sed -n 's/.*submitted=\([0-9]\+\).*/\1/p' <<<"$Q6_SUMMARY")
+Q6_WRITE_DONE=$(sed -n 's/.*write_done=\([0-9]\+\).*/\1/p' <<<"$Q6_SUMMARY")
+Q6_FALLBACK=$(sed -n 's/.*fallback=\([0-9]\+\).*/\1/p' <<<"$Q6_SUMMARY")
+[[ $Q6_BITS == "$SPX_EXPECT_BITS" ]] ||
+	fatal "Q6ASM used $Q6_BITS significant bits, expected $SPX_EXPECT_BITS"
+(( Q6_WRITE_DONE > 0 )) || fatal "DSP did not consume any submitted buffer"
+[[ $Q6_FALLBACK == 0 ]] ||
+	fatal "Q6ASM watchdog fallback ran; completion-pacing result is inconclusive"
+[[ $Q6_SUBMITTED == "$Q6_WRITE_DONE" ]] ||
+	fatal "Q6ASM submitted/completed counts disagree ($Q6_SUBMITTED/$Q6_WRITE_DONE)"
 
 sleep 2
 fresh_regs post-stream
@@ -511,10 +854,10 @@ if grep -qiE "$KERNEL_FAULT_RE" <<<"$POST_LOG"; then
 	fatal "kernel fault signature appeared during the controlled test"
 fi
 TEST_SUCCEEDED=1
-cp "$TONE_LOG" "$LOG_DIR/speaker-test.log"
+cp "$TONE_LOG" "$LOG_DIR/aplay.log"
 sync
 
 echo
 echo "ALSA submitted the guarded 5-second tone; the amp remained at device 0."
-echo "Did you hear a 440 Hz tone from the physical right speaker?"
+echo "Which physical speaker produced the 440 Hz tone, and was it clean?"
 echo "The amplifier will be parked off and PipeWire left stopped on exit."
