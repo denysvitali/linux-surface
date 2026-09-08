@@ -775,6 +775,13 @@ int qca_uart_setup(struct hci_dev *hdev, uint8_t baudrate,
 	else
 		rom_ver = ((soc_ver & 0x00000f00) >> 0x04) | (soc_ver & 0x0000000f);
 
+	/* Some WCN3998 chips report ROM version 0x01 instead of 0x21.
+	 * Override to match the actual firmware files (crbtfw21.tlv,
+	 * crnv21.bin) that Windows uses for this hardware.
+	 */
+	if (soc_type == QCA_WCN3998 && rom_ver == 0x01)
+		rom_ver = 0x21;
+
 	if (soc_type == QCA_WCN6750)
 		qca_send_patch_config_cmd(hdev);
 

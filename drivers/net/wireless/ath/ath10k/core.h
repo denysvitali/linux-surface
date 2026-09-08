@@ -1033,6 +1033,7 @@ struct ath10k {
 	u32 hw_min_tx_power;
 	u32 hw_max_tx_power;
 	u32 hw_eeprom_rd;
+	bool hw_regdom_from_world;
 	u32 ht_cap_info;
 	u32 vht_cap_info;
 	u32 vht_supp_mcs;

@@ -3170,6 +3170,71 @@ static void ath10k_bss_assoc(struct ieee80211_hw *hw,
 
 	arvif->is_up = true;
 
+	if (QCA_REV_WCN3990(ar) && ar->hif.bus == ATH10K_BUS_SNOC) {
+		ret = ath10k_wmi_vdev_set_param(ar, arvif->vdev_id,
+						ar->wmi.vdev_param->listen_interval,
+						1);
+		if (ret)
+			ath10k_warn(ar,
+				    "failed to force listen interval=1 on vdev %d: %d\n",
+				    arvif->vdev_id, ret);
+
+		arvif->ps = false;
+		ret = ath10k_mac_vif_setup_ps(arvif);
+		if (ret)
+			ath10k_warn(ar,
+				    "failed to reapply disabled sta ps on vdev %d: %d\n",
+				    arvif->vdev_id, ret);
+
+		arvif->u.sta.uapsd = 0;
+		ret = ath10k_wmi_set_sta_ps_param(ar, arvif->vdev_id,
+						  WMI_STA_PS_PARAM_UAPSD, 0);
+		if (ret)
+			ath10k_warn(ar,
+				    "failed to clear sta uapsd on vdev %d: %d\n",
+				    arvif->vdev_id, ret);
+
+		ret = ath10k_wmi_set_sta_ps_param(ar, arvif->vdev_id,
+						  WMI_STA_PS_PARAM_RX_WAKE_POLICY,
+						  WMI_STA_PS_RX_WAKE_POLICY_WAKE);
+		if (ret)
+			ath10k_warn(ar,
+				    "failed to force rx wake policy on vdev %d: %d\n",
+				    arvif->vdev_id, ret);
+
+		ret = ath10k_mac_vif_recalc_ps_wake_threshold(arvif);
+		if (ret)
+			ath10k_warn(ar,
+				    "failed to recalc ps wake threshold on vdev %d: %d\n",
+				    arvif->vdev_id, ret);
+
+		ret = ath10k_mac_vif_recalc_ps_poll_count(arvif);
+		if (ret)
+			ath10k_warn(ar,
+				    "failed to recalc ps poll count on vdev %d: %d\n",
+				    arvif->vdev_id, ret);
+	}
+
+	/* Configure firmware A-MPDU/A-MSDU aggregation sizes.
+	 * Required for HL firmware (e.g. WCN3990) where aggregation
+	 * is handled entirely by firmware.
+	 */
+	if (ar->hw_params.tx_data_inline) {
+		ret = ath10k_wmi_tlv_set_custom_aggr_size(
+			ar, arvif->vdev_id, 64, 64,
+			WMI_VDEV_CUSTOM_AGGR_TYPE_AMPDU);
+		if (ret)
+			ath10k_warn(ar, "failed to set custom AMPDU aggr size on vdev %i: %d\n",
+				    arvif->vdev_id, ret);
+
+		ret = ath10k_wmi_tlv_set_custom_aggr_size(
+			ar, arvif->vdev_id, 3, 3,
+			WMI_VDEV_CUSTOM_AGGR_TYPE_AMSDU);
+		if (ret)
+			ath10k_warn(ar, "failed to set custom AMSDU aggr size on vdev %i: %d\n",
+				    arvif->vdev_id, ret);
+	}
+
 	ath10k_mac_set_sar_power(ar);
 
 	/* Workaround: Some firmware revisions (tested with qca6174
@@ -3522,6 +3587,16 @@ static void ath10k_regd_update(struct ath10k *ar)
 
 	regpair = ar->ath_common.regulatory.regpair;
 
+	if (QCA_REV_WCN3990(ar) && ar->hif.bus == ATH10K_BUS_SNOC)
+		ath10k_info(ar,
+			    "regd update: alpha2=%c%c current_rd=0x%x regpair=0x%x dfs=%d\n",
+			    ar->ath_common.regulatory.alpha2[0],
+			    ar->ath_common.regulatory.alpha2[1],
+			    ar->ath_common.regulatory.current_rd,
+			    regpair ? regpair->reg_domain : 0,
+			    ar->dfs_detector ? ar->dfs_detector->region :
+					       NL80211_DFS_UNSET);
+
 	if (IS_ENABLED(CONFIG_ATH10K_DFS_CERTIFIED) && ar->dfs_detector) {
 		nl_dfs_reg = ar->dfs_detector->region;
 		wmi_dfs_reg = ath10k_mac_get_dfs_region(nl_dfs_reg);
@@ -3563,9 +3638,36 @@ static void ath10k_reg_notifier(struct wiphy *wiphy,
 {
 	struct ieee80211_hw *hw = wiphy_to_ieee80211_hw(wiphy);
 	struct ath10k *ar = hw->priv;
+	struct regulatory_request user_request;
+	const struct ieee80211_regdomain *wiphy_regd;
 	bool result;
+	int ret;
 
-	ath_reg_notifier_apply(wiphy, request, &ar->ath_common.regulatory);
+	if (QCA_REV_WCN3990(ar) && ar->hif.bus == ATH10K_BUS_SNOC && request)
+		ath10k_info(ar,
+			    "reg notifier request: initiator=%d alpha2=%c%c dfs=%d current_rd=0x%x regpair=0x%x flags=0x%x\n",
+			    request->initiator,
+			    request->alpha2[0],
+			    request->alpha2[1],
+			    request->dfs_region,
+			    ar->ath_common.regulatory.current_rd,
+			    ar->ath_common.regulatory.regpair ?
+				ar->ath_common.regulatory.regpair->reg_domain : 0,
+			    ar->hw->wiphy->regulatory_flags);
+
+	if (ar->hw_regdom_from_world && request &&
+	    request->initiator == NL80211_REGDOM_SET_BY_DRIVER &&
+	    request->alpha2[0] != '0' && request->alpha2[1] != '0' &&
+	    ar->ath_common.regulatory.alpha2[0] == '0' &&
+	    ar->ath_common.regulatory.alpha2[1] == '0') {
+		user_request = *request;
+		user_request.initiator = NL80211_REGDOM_SET_BY_USER;
+		ath_reg_notifier_apply(wiphy, &user_request,
+				       &ar->ath_common.regulatory);
+	} else {
+		ath_reg_notifier_apply(wiphy, request,
+				       &ar->ath_common.regulatory);
+	}
 
 	if (IS_ENABLED(CONFIG_ATH10K_DFS_CERTIFIED) && ar->dfs_detector) {
 		ath10k_dbg(ar, ATH10K_DBG_REGULATORY, "dfs region 0x%x\n",
@@ -3585,6 +3687,34 @@ static void ath10k_reg_notifier(struct wiphy *wiphy,
 	if (ar->phy_capability & WHAL_WLAN_11A_CAPABILITY)
 		ath10k_mac_update_channel_list(ar,
 					       ar->hw->wiphy->bands[NL80211_BAND_5GHZ]);
+
+	if (ar->hw_regdom_from_world && request &&
+	    ar->ath_common.regulatory.alpha2[0] != '0' &&
+	    ar->ath_common.regulatory.alpha2[1] != '0') {
+		wiphy_regd = get_wiphy_regdom(wiphy);
+		if (!wiphy_regd ||
+		    memcmp(wiphy_regd->alpha2,
+			   ar->ath_common.regulatory.alpha2, 2)) {
+			ret = regulatory_hint(wiphy,
+					      ar->ath_common.regulatory.alpha2);
+			if (ret)
+				ath10k_warn(ar,
+					    "failed to sync wiphy regdomain to %c%c: %d\n",
+					    ar->ath_common.regulatory.alpha2[0],
+					    ar->ath_common.regulatory.alpha2[1],
+					    ret);
+		}
+	}
+
+	if (QCA_REV_WCN3990(ar) && ar->hif.bus == ATH10K_BUS_SNOC)
+		ath10k_info(ar,
+			    "reg notifier result: alpha2=%c%c current_rd=0x%x regpair=0x%x flags=0x%x\n",
+			    ar->ath_common.regulatory.alpha2[0],
+			    ar->ath_common.regulatory.alpha2[1],
+			    ar->ath_common.regulatory.current_rd,
+			    ar->ath_common.regulatory.regpair ?
+				ar->ath_common.regulatory.regpair->reg_domain : 0,
+			    ar->hw->wiphy->regulatory_flags);
 }
 
 static void ath10k_stop_radar_confirmation(struct ath10k *ar)
@@ -4570,6 +4700,11 @@ static int ath10k_scan_stop(struct ath10k *ar)
 
 	lockdep_assert_held(&ar->conf_mutex);
 
+	if (QCA_REV_WCN3990(ar) && ar->hif.bus == ATH10K_BUS_SNOC)
+		ath10k_info(ar, "scan stop requested: state=%s is_roc=%d\n",
+			    ath10k_scan_state_str(ar->scan.state),
+			    ar->scan.is_roc);
+
 	ret = ath10k_wmi_stop_scan(ar, &arg);
 	if (ret) {
 		ath10k_warn(ar, "failed to stop wmi scan: %d\n", ret);
@@ -4606,6 +4741,11 @@ static void ath10k_scan_abort(struct ath10k *ar)
 
 	lockdep_assert_held(&ar->conf_mutex);
 
+	if (QCA_REV_WCN3990(ar) && ar->hif.bus == ATH10K_BUS_SNOC)
+		ath10k_info(ar, "scan abort requested: state=%s is_roc=%d\n",
+			    ath10k_scan_state_str(ar->scan.state),
+			    ar->scan.is_roc);
+
 	spin_lock_bh(&ar->data_lock);
 
 	switch (ar->scan.state) {
@@ -4640,6 +4780,12 @@ void ath10k_scan_timeout_work(struct work_struct *work)
 	struct ath10k *ar = container_of(work, struct ath10k,
 					 scan.timeout.work);
 
+	if (QCA_REV_WCN3990(ar) && ar->hif.bus == ATH10K_BUS_SNOC)
+		ath10k_info(ar, "scan timeout fired: state=%s is_roc=%d roc_freq=%u\n",
+			    ath10k_scan_state_str(ar->scan.state),
+			    ar->scan.is_roc,
+			    ar->scan.roc_freq);
+
 	mutex_lock(&ar->conf_mutex);
 	ath10k_scan_abort(ar);
 	mutex_unlock(&ar->conf_mutex);
@@ -4651,6 +4797,19 @@ static int ath10k_start_scan(struct ath10k *ar,
 	int ret;
 
 	lockdep_assert_held(&ar->conf_mutex);
+
+	if (QCA_REV_WCN3990(ar) && ar->hif.bus == ATH10K_BUS_SNOC)
+		ath10k_info(ar,
+			    "scan start: vdev=%u n_channels=%u first_freq=%u max_time=%u dwell_active=%u dwell_passive=%u burst=%u flags=0x%x is_roc=%d\n",
+			    arg->vdev_id,
+			    arg->n_channels,
+			    arg->n_channels ? arg->channels[0] : 0,
+			    arg->max_scan_time,
+			    arg->dwell_time_active,
+			    arg->dwell_time_passive,
+			    arg->burst_duration_ms,
+			    arg->scan_ctrl_flags,
+			    ar->scan.is_roc);
 
 	ret = ath10k_wmi_start_scan(ar, arg);
 	if (ret)
@@ -5283,10 +5442,22 @@ static int ath10k_start(struct ieee80211_hw *hw)
 	}
 
 	param = ar->wmi.pdev_param->idle_ps_config;
-	ret = ath10k_wmi_pdev_set_param(ar, param, 1);
-	if (ret && ret != -EOPNOTSUPP) {
-		ath10k_warn(ar, "failed to enable idle_ps_config: %d\n", ret);
-		goto err_core_stop;
+	if (QCA_REV_WCN3990(ar) && ar->hif.bus == ATH10K_BUS_SNOC) {
+		ret = ath10k_wmi_pdev_set_param(ar, param, 0);
+		if (ret && ret != -EOPNOTSUPP) {
+			ath10k_warn(ar,
+				    "failed to disable idle_ps_config: %d\n",
+				    ret);
+			goto err_core_stop;
+		}
+	} else {
+		ret = ath10k_wmi_pdev_set_param(ar, param, 1);
+		if (ret && ret != -EOPNOTSUPP) {
+			ath10k_warn(ar,
+				    "failed to enable idle_ps_config: %d\n",
+				    ret);
+			goto err_core_stop;
+		}
 	}
 
 	__ath10k_set_antenna(ar, ar->cfg_tx_chainmask, ar->cfg_rx_chainmask);
@@ -5566,7 +5737,8 @@ static int ath10k_add_interface(struct ieee80211_hw *hw,
 	int i;
 	u32 vdev_param;
 
-	vif->driver_flags |= IEEE80211_VIF_SUPPORTS_UAPSD;
+	if (!(QCA_REV_WCN3990(ar) && ar->hif.bus == ATH10K_BUS_SNOC))
+		vif->driver_flags |= IEEE80211_VIF_SUPPORTS_UAPSD;
 
 	mutex_lock(&ar->conf_mutex);
 
@@ -6404,6 +6576,18 @@ static int ath10k_hw_scan(struct ieee80211_hw *hw,
 	u32 scan_timeout;
 
 	mutex_lock(&ar->conf_mutex);
+
+	if (QCA_REV_WCN3990(ar) && ar->hif.bus == ATH10K_BUS_SNOC &&
+	    vif->type == NL80211_IFTYPE_STATION && arvif->is_up) {
+		ath10k_info(ar,
+			    "blocking connected-state hw scan on WCN3990 STA vdev=%u ssids=%u channels=%u flags=0x%x\n",
+			    arvif->vdev_id,
+			    req->n_ssids,
+			    req->n_channels,
+			    req->flags);
+		ret = -EOPNOTSUPP;
+		goto exit;
+	}
 
 	if (ath10k_mac_tdls_vif_stations_count(hw, vif) > 0) {
 		ret = -EBUSY;
@@ -7940,6 +8124,15 @@ static int ath10k_remain_on_channel(struct ieee80211_hw *hw,
 
 	mutex_lock(&ar->conf_mutex);
 
+	if (QCA_REV_WCN3990(ar) && ar->hif.bus == ATH10K_BUS_SNOC)
+		ath10k_info(ar,
+			    "roc request: vdev=%u freq=%u duration=%d type=%d state=%s\n",
+			    arvif->vdev_id,
+			    chan->center_freq,
+			    duration,
+			    type,
+			    ath10k_scan_state_str(ar->scan.state));
+
 	if (ath10k_mac_tdls_vif_stations_count(hw, vif) > 0) {
 		ret = -EBUSY;
 		goto exit;
@@ -8027,6 +8220,11 @@ static int ath10k_cancel_remain_on_channel(struct ieee80211_hw *hw,
 	struct ath10k *ar = hw->priv;
 
 	mutex_lock(&ar->conf_mutex);
+
+	if (QCA_REV_WCN3990(ar) && ar->hif.bus == ATH10K_BUS_SNOC)
+		ath10k_info(ar, "roc cancel requested: state=%s roc_freq=%u\n",
+			    ath10k_scan_state_str(ar->scan.state),
+			    ar->scan.roc_freq);
 
 	spin_lock_bh(&ar->data_lock);
 	ar->scan.roc_notify = false;
@@ -9964,6 +10162,21 @@ static int ath10k_mac_init_rd(struct ath10k *ar)
 		rd = ar->hw_eeprom_rd;
 	}
 
+	ar->hw_regdom_from_world = false;
+
+	/* EEPROM regdomain 0x0 is not programmed (common on Qualcomm WoA
+	 * platforms like Surface Pro X).  The ath common code maps 0x0 to
+	 * CTRY_UNITED_STATES which conflicts with userspace regulatory
+	 * (e.g. CRDA/DE).  Map to WOR0_WORLD (0x60) instead so the world
+	 * regulatory domain is used and userspace settings take effect.
+	 */
+	if (rd == 0) {
+		ath10k_dbg(ar, ATH10K_DBG_BOOT,
+			   "EEPROM regdomain is 0, using world regulatory domain\n");
+		ar->hw_regdom_from_world = true;
+		rd = 0x60; /* WOR0_WORLD */
+	}
+
 	ar->ath_common.regulatory.current_rd = rd;
 	return 0;
 }
@@ -10070,8 +10283,15 @@ int ath10k_mac_register(struct ath10k *ar)
 
 	if (!test_bit(ATH10K_FW_FEATURE_NO_PS,
 		      ar->running_fw->fw_file.fw_features)) {
-		ieee80211_hw_set(ar->hw, SUPPORTS_PS);
-		ieee80211_hw_set(ar->hw, SUPPORTS_DYNAMIC_PS);
+		if (QCA_REV_WCN3990(ar) && ar->hif.bus == ATH10K_BUS_SNOC) {
+			ath10k_info(ar,
+				    "leaving 802.11 station power save disabled on WCN3990 SNOC\n");
+			ar->hw->uapsd_queues = 0;
+			ar->hw->uapsd_max_sp_len = 0;
+		} else {
+			ieee80211_hw_set(ar->hw, SUPPORTS_PS);
+			ieee80211_hw_set(ar->hw, SUPPORTS_DYNAMIC_PS);
+		}
 	}
 
 	ieee80211_hw_set(ar->hw, MFP_CAPABLE);
@@ -10305,6 +10525,18 @@ int ath10k_mac_register(struct ath10k *ar)
 	if (ret) {
 		ath10k_err(ar, "failed to initialise regulatory: %i\n", ret);
 		goto err_dfs_detector_exit;
+	}
+
+	if (ar->hw_regdom_from_world) {
+		/* Preserve the userspace-selected regdomain when the device has
+		 * no programmed country/regpair and we had to synthesize a
+		 * world regdomain fallback. In this case the device should
+		 * follow cfg80211's global/user regdomain instead of staying
+		 * pinned to a custom per-phy "99" regdomain.
+		 */
+		ar->hw->wiphy->regulatory_flags &= ~(REGULATORY_CUSTOM_REG |
+						     REGULATORY_STRICT_REG);
+		ar->hw->wiphy->regulatory_flags |= REGULATORY_COUNTRY_IE_IGNORE;
 	}
 
 	if (test_bit(WMI_SERVICE_SPOOF_MAC_SUPPORT, ar->wmi.svc_map)) {

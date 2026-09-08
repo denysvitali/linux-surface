@@ -2523,6 +2523,35 @@ ath10k_wmi_tlv_op_gen_vdev_wmm_conf(struct ath10k *ar, u32 vdev_id,
 	return skb;
 }
 
+int ath10k_wmi_tlv_set_custom_aggr_size(struct ath10k *ar, u32 vdev_id,
+					u32 tx_aggr_size, u32 rx_aggr_size,
+					u32 aggr_type)
+{
+	struct wmi_vdev_set_custom_aggr_size_cmd *cmd;
+	struct wmi_tlv *tlv;
+	struct sk_buff *skb;
+
+	skb = ath10k_wmi_alloc_skb(ar, sizeof(*tlv) + sizeof(*cmd));
+	if (!skb)
+		return -ENOMEM;
+
+	tlv = (void *)skb->data;
+	tlv->tag = __cpu_to_le16(WMI_TLV_TAG_STRUCT_VDEV_SET_CUSTOM_AGGR_SIZE_CMD);
+	tlv->len = __cpu_to_le16(sizeof(*cmd));
+	cmd = (void *)tlv->value;
+	cmd->vdev_id = __cpu_to_le32(vdev_id);
+	cmd->tx_aggr_size = __cpu_to_le32(tx_aggr_size);
+	cmd->rx_aggr_size = __cpu_to_le32(rx_aggr_size);
+	cmd->aggr_type = __cpu_to_le32(aggr_type);
+
+	ath10k_dbg(ar, ATH10K_DBG_WMI,
+		   "wmi tlv vdev %d set custom aggr size tx %u rx %u type %u\n",
+		   vdev_id, tx_aggr_size, rx_aggr_size, aggr_type);
+
+	return ath10k_wmi_cmd_send(ar, skb,
+				   WMI_TLV_VDEV_SET_CUSTOM_AGGR_SIZE_CMDID);
+}
+
 static struct sk_buff *
 ath10k_wmi_tlv_op_gen_sta_keepalive(struct ath10k *ar,
 				    const struct wmi_sta_keepalive_arg *arg)

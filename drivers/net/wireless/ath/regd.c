@@ -25,6 +25,11 @@
 
 static int __ath_regd_init(struct ath_regulatory *reg);
 
+static bool allow_user_regd;
+module_param_named(allow_user_regd, allow_user_regd, bool, 0644);
+MODULE_PARM_DESC(allow_user_regd,
+		 "Allow userspace regulatory-domain changes for ath devices");
+
 /*
  * This is a set of common rules used by our world regulatory domains.
  * We have 12 world regulatory domains. To save space we consolidate
@@ -116,6 +121,9 @@ static const struct ieee80211_regdomain ath_world_regdom_67_68_6A_6C = {
 
 static bool dynamic_country_user_possible(struct ath_regulatory *reg)
 {
+	if (allow_user_regd)
+		return true;
+
 	if (IS_ENABLED(CONFIG_ATH_REG_DYNAMIC_USER_CERT_TESTING))
 		return true;
 
@@ -188,7 +196,8 @@ static bool dynamic_country_user_possible(struct ath_regulatory *reg)
 
 static bool ath_reg_dyn_country_user_allow(struct ath_regulatory *reg)
 {
-	if (!IS_ENABLED(CONFIG_ATH_REG_DYNAMIC_USER_REG_HINTS))
+	if (!allow_user_regd &&
+	    !IS_ENABLED(CONFIG_ATH_REG_DYNAMIC_USER_REG_HINTS))
 		return false;
 	if (!dynamic_country_user_possible(reg))
 		return false;

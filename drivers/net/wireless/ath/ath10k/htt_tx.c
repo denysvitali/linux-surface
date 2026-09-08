@@ -1809,6 +1809,170 @@ static const struct ath10k_htt_tx_ops htt_tx_ops_32 = {
 	.htt_h2t_aggr_cfg_msg = ath10k_htt_h2t_aggr_cfg_msg_32,
 };
 
+/* Hybrid HL TX function for WCN3990 SNOC: uses 32-bit HL-style HTT
+ * descriptors with inline frame data, but bypasses HTC credits and uses
+ * the same DMA/CE send path and firmware TX completion as the LL path.
+ * This allows the HL firmware to see inline frame data and aggregate
+ * them into A-MPDUs, while avoiding HTC credit starvation.
+ */
+static int ath10k_htt_tx_snoc_hl(struct ath10k_htt *htt,
+				 enum ath10k_hw_txrx_mode txmode,
+				 struct sk_buff *msdu)
+{
+	struct ath10k *ar = htt->ar;
+	struct device *dev = ar->dev;
+	struct ieee80211_tx_info *info = IEEE80211_SKB_CB(msdu);
+	struct ath10k_skb_cb *skb_cb = ATH10K_SKB_CB(msdu);
+	struct ath10k_hif_sg_item sg_items[2];
+	struct ath10k_htt_txbuf_64 *txbuf;
+	struct htt_data_tx_desc *tx_desc;
+	bool is_eth = (txmode == ATH10K_HW_TXRX_ETHERNET);
+	u8 vdev_id = ath10k_htt_tx_get_vdev_id(ar, msdu);
+	u8 tid = ath10k_htt_tx_get_tid(msdu, is_eth);
+	int res;
+	u8 flags0 = 0;
+	u16 msdu_id, flags1 = 0;
+	u16 freq = 0;
+	dma_addr_t txbuf_paddr;
+
+	res = ath10k_htt_tx_alloc_msdu_id(htt, msdu);
+	if (res < 0)
+		goto err;
+
+	msdu_id = res;
+
+	txbuf = htt->txbuf.vaddr_txbuff_64 + msdu_id;
+	txbuf_paddr = htt->txbuf.paddr +
+		      (sizeof(struct ath10k_htt_txbuf_64) * msdu_id);
+
+	if (!is_eth) {
+		struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)msdu->data;
+
+		if ((ieee80211_is_action(hdr->frame_control) ||
+		     ieee80211_is_deauth(hdr->frame_control) ||
+		     ieee80211_is_disassoc(hdr->frame_control)) &&
+		     ieee80211_has_protected(hdr->frame_control)) {
+			skb_put(msdu, IEEE80211_CCMP_MIC_LEN);
+		} else if (!(skb_cb->flags & ATH10K_SKB_F_NO_HWCRYPT) &&
+			   txmode == ATH10K_HW_TXRX_RAW &&
+			   ieee80211_has_protected(hdr->frame_control)) {
+			skb_put(msdu, IEEE80211_CCMP_MIC_LEN);
+		}
+	}
+
+	skb_cb->paddr = dma_map_single(dev, msdu->data, msdu->len,
+				       DMA_TO_DEVICE);
+	res = dma_mapping_error(dev, skb_cb->paddr);
+	if (res) {
+		res = -EIO;
+		goto err_free_msdu_id;
+	}
+
+	if (unlikely(info->flags & IEEE80211_TX_CTL_TX_OFFCHAN))
+		freq = ar->scan.roc_freq;
+
+	switch (txmode) {
+	case ATH10K_HW_TXRX_RAW:
+	case ATH10K_HW_TXRX_NATIVE_WIFI:
+		flags0 |= HTT_DATA_TX_DESC_FLAGS0_MAC_HDR_PRESENT;
+		fallthrough;
+	case ATH10K_HW_TXRX_ETHERNET:
+		flags0 |= SM(txmode, HTT_DATA_TX_DESC_FLAGS0_PKT_TYPE);
+		break;
+	case ATH10K_HW_TXRX_MGMT:
+		flags0 |= SM(ATH10K_HW_TXRX_MGMT,
+			     HTT_DATA_TX_DESC_FLAGS0_PKT_TYPE);
+		flags0 |= HTT_DATA_TX_DESC_FLAGS0_MAC_HDR_PRESENT;
+		break;
+	}
+
+	/* Bypass HTC, fill header directly like the LL path */
+	txbuf->htc_hdr.eid = htt->eid;
+	txbuf->htc_hdr.len = __cpu_to_le16(sizeof(txbuf->cmd_hdr) +
+					   sizeof(struct htt_data_tx_desc) +
+					   msdu->len);
+	txbuf->htc_hdr.flags = 0;
+
+	if (skb_cb->flags & ATH10K_SKB_F_NO_HWCRYPT)
+		flags0 |= HTT_DATA_TX_DESC_FLAGS0_NO_ENCRYPT;
+
+	flags1 |= SM((u16)vdev_id, HTT_DATA_TX_DESC_FLAGS1_VDEV_ID);
+	flags1 |= SM((u16)tid, HTT_DATA_TX_DESC_FLAGS1_EXT_TID);
+	if (msdu->ip_summed == CHECKSUM_PARTIAL &&
+	    !test_bit(ATH10K_FLAG_RAW_MODE, &ar->dev_flags)) {
+		flags1 |= HTT_DATA_TX_DESC_FLAGS1_CKSUM_L3_OFFLOAD;
+		flags1 |= HTT_DATA_TX_DESC_FLAGS1_CKSUM_L4_OFFLOAD;
+	}
+
+	flags1 |= HTT_DATA_TX_DESC_FLAGS1_POSTPONED;
+
+	/* 32-bit HL descriptor: inline data, no DMA fragment table */
+	txbuf->cmd_hdr.msg_type = HTT_H2T_MSG_TYPE_TX_FRM;
+	tx_desc = (struct htt_data_tx_desc *)&txbuf->cmd_tx;
+	tx_desc->flags0 = flags0;
+	tx_desc->flags1 = __cpu_to_le16(flags1);
+	tx_desc->len = __cpu_to_le16(msdu->len);
+	tx_desc->id = __cpu_to_le16(msdu_id);
+	tx_desc->frags_paddr = 0; /* inline data follows */
+	if (ath10k_mac_tx_frm_has_freq(ar)) {
+		tx_desc->offchan_tx.peerid =
+				__cpu_to_le16(HTT_INVALID_PEERID);
+		tx_desc->offchan_tx.freq =
+				__cpu_to_le16(freq);
+	} else {
+		tx_desc->peerid =
+				__cpu_to_le32(HTT_INVALID_PEERID);
+	}
+
+	trace_ath10k_htt_tx(ar, msdu_id, msdu->len, vdev_id, tid);
+	ath10k_dbg(ar, ATH10K_DBG_HTT,
+		   "htt tx snoc_hl flags0 %u flags1 %u len %d id %u vdev %u tid %u\n",
+		   flags0, flags1, msdu->len, msdu_id, vdev_id, tid);
+
+	sg_items[0].transfer_id = 0;
+	sg_items[0].transfer_context = NULL;
+	sg_items[0].vaddr = &txbuf->htc_hdr;
+	sg_items[0].paddr = txbuf_paddr +
+			    sizeof(txbuf->frags);
+	sg_items[0].len = sizeof(txbuf->htc_hdr) +
+			  sizeof(txbuf->cmd_hdr) +
+			  sizeof(struct htt_data_tx_desc);
+
+	sg_items[1].transfer_id = 0;
+	sg_items[1].transfer_context = NULL;
+	sg_items[1].vaddr = msdu->data;
+	sg_items[1].paddr = skb_cb->paddr;
+	sg_items[1].len = msdu->len;
+
+	res = ath10k_hif_tx_sg(htt->ar,
+			       htt->ar->htc.endpoint[htt->eid].ul_pipe_id,
+			       sg_items, ARRAY_SIZE(sg_items));
+	if (res)
+		goto err_unmap_msdu;
+
+	return 0;
+
+err_unmap_msdu:
+	dma_unmap_single(dev, skb_cb->paddr, msdu->len, DMA_TO_DEVICE);
+err_free_msdu_id:
+	spin_lock_bh(&htt->tx_lock);
+	ath10k_htt_tx_free_msdu_id(htt, msdu_id);
+	spin_unlock_bh(&htt->tx_lock);
+err:
+	return res;
+}
+
+static const struct ath10k_htt_tx_ops htt_tx_ops_snoc_hl = {
+	.htt_send_rx_ring_cfg = ath10k_htt_send_rx_ring_cfg_64,
+	.htt_send_frag_desc_bank_cfg = ath10k_htt_send_frag_desc_bank_cfg_64,
+	.htt_alloc_frag_desc = ath10k_htt_tx_alloc_cont_frag_desc_64,
+	.htt_free_frag_desc = ath10k_htt_tx_free_cont_frag_desc_64,
+	.htt_tx = ath10k_htt_tx_snoc_hl,
+	.htt_alloc_txbuff = ath10k_htt_tx_alloc_cont_txbuf_64,
+	.htt_free_txbuff = ath10k_htt_tx_free_cont_txbuf_64,
+	.htt_h2t_aggr_cfg_msg = ath10k_htt_h2t_aggr_cfg_msg_v2,
+};
+
 static const struct ath10k_htt_tx_ops htt_tx_ops_64 = {
 	.htt_send_rx_ring_cfg = ath10k_htt_send_rx_ring_cfg_64,
 	.htt_send_frag_desc_bank_cfg = ath10k_htt_send_frag_desc_bank_cfg_64,

@@ -2048,6 +2048,14 @@ static void ath10k_wmi_event_scan_started(struct ath10k *ar)
 {
 	lockdep_assert_held(&ar->data_lock);
 
+	if (QCA_REV_WCN3990(ar) && ar->hif.bus == ATH10K_BUS_SNOC)
+		ath10k_info(ar,
+			    "scan event: started state=%s is_roc=%d vdev=%u roc_freq=%u\n",
+			    ath10k_scan_state_str(ar->scan.state),
+			    ar->scan.is_roc,
+			    ar->scan.vdev_id,
+			    ar->scan.roc_freq);
+
 	switch (ar->scan.state) {
 	case ATH10K_SCAN_IDLE:
 	case ATH10K_SCAN_RUNNING:
@@ -2071,6 +2079,11 @@ static void ath10k_wmi_event_scan_start_failed(struct ath10k *ar)
 {
 	lockdep_assert_held(&ar->data_lock);
 
+	if (QCA_REV_WCN3990(ar) && ar->hif.bus == ATH10K_BUS_SNOC)
+		ath10k_info(ar, "scan event: start_failed state=%s is_roc=%d\n",
+			    ath10k_scan_state_str(ar->scan.state),
+			    ar->scan.is_roc);
+
 	switch (ar->scan.state) {
 	case ATH10K_SCAN_IDLE:
 	case ATH10K_SCAN_RUNNING:
@@ -2089,6 +2102,13 @@ static void ath10k_wmi_event_scan_start_failed(struct ath10k *ar)
 static void ath10k_wmi_event_scan_completed(struct ath10k *ar)
 {
 	lockdep_assert_held(&ar->data_lock);
+
+	if (QCA_REV_WCN3990(ar) && ar->hif.bus == ATH10K_BUS_SNOC)
+		ath10k_info(ar,
+			    "scan event: completed state=%s is_roc=%d freq=%u\n",
+			    ath10k_scan_state_str(ar->scan.state),
+			    ar->scan.is_roc,
+			    ar->scan_channel ? ar->scan_channel->center_freq : 0);
 
 	switch (ar->scan.state) {
 	case ATH10K_SCAN_IDLE:
@@ -2116,6 +2136,11 @@ static void ath10k_wmi_event_scan_bss_chan(struct ath10k *ar)
 {
 	lockdep_assert_held(&ar->data_lock);
 
+	if (QCA_REV_WCN3990(ar) && ar->hif.bus == ATH10K_BUS_SNOC)
+		ath10k_info(ar, "scan event: bss_chan state=%s is_roc=%d\n",
+			    ath10k_scan_state_str(ar->scan.state),
+			    ar->scan.is_roc);
+
 	switch (ar->scan.state) {
 	case ATH10K_SCAN_IDLE:
 	case ATH10K_SCAN_STARTING:
@@ -2133,6 +2158,14 @@ static void ath10k_wmi_event_scan_bss_chan(struct ath10k *ar)
 static void ath10k_wmi_event_scan_foreign_chan(struct ath10k *ar, u32 freq)
 {
 	lockdep_assert_held(&ar->data_lock);
+
+	if (QCA_REV_WCN3990(ar) && ar->hif.bus == ATH10K_BUS_SNOC)
+		ath10k_info(ar,
+			    "scan event: foreign_chan state=%s is_roc=%d freq=%u roc_freq=%u\n",
+			    ath10k_scan_state_str(ar->scan.state),
+			    ar->scan.is_roc,
+			    freq,
+			    ar->scan.roc_freq);
 
 	switch (ar->scan.state) {
 	case ATH10K_SCAN_IDLE:

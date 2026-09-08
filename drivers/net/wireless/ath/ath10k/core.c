@@ -745,6 +745,7 @@ static const struct ath10k_hw_params ath10k_hw_params_list[] = {
 		.hw_restart_disconnect = true,
 		.use_fw_tx_credits = false,
 		.delay_unmap_buffer = true,
+		.tx_data_inline = true,
 		.mcast_frame_registration = false,
 	},
 };
