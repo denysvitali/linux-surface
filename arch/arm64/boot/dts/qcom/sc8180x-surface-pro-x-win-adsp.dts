@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: GPL-2.0
+
+/*
+ * Windows ADSP speaker experiment.
+ *
+ * The newer Microsoft image spans 28 MiB. Preserve the full MPSS carveout
+ * required by Wi-Fi and extend ADSP to 28 MiB. CDSP is disabled for this
+ * isolation boot because its PAS firmware rejects a relocated carveout.
+ * APPS SoundWire is disabled so the ADSP owns WSA bring-up.
+ */
+#include "sc8180x-surface-pro-x.dts"
+
+&adsp_mem {
+	reg = <0x0 0x96e00000 0x0 0x1c00000>;
+};
+
+&cdsp_mem {
+	reg = <0x0 0x98a00000 0x0 0x600000>;
+};
+
+&remoteproc_adsp {
+	firmware-name = "qcom/msft/surface/pro-x-sq2/qcadsp8180-win.mbn";
+};
+
+&remoteproc_cdsp {
+	status = "disabled";
+};
+
+&swm {
+	status = "disabled";
+};
+
+/ {
+	sound {
+		audio-routing =
+			"RX_BIAS", "MCLK",
+			"Int Mic", "DMIC0",
+			"AMIC1", "MIC BIAS1",
+			"AMIC2", "MIC BIAS2",
+			"AMIC3", "MIC BIAS3",
+			"AMIC4", "MIC BIAS4",
+			"DMIC0", "MIC BIAS1",
+			"DMIC1", "MIC BIAS1",
+			"DMIC2", "MIC BIAS3",
+			"DMIC3", "MIC BIAS3",
+			"Headphone Jack", "HPHL",
+			"Headphone Jack", "HPHR",
+			"Headset Mic", "AMIC2",
+			"Left Spk", "SPK1 OUT",
+			"Right Spk", "SPK2 OUT";
+
+		slim-playback-dai-link {
+			codec {
+				sound-dai = <&wcd9340 0>;
+			};
+		};
+	};
+};

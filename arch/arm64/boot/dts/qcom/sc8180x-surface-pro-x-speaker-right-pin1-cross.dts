@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: GPL-2.0
+
+/*
+ * Diagnostic cross-test only: retain endpoint B's proven MP4/SPK2/C1 software
+ * path, but give its sole enabled logical WSA the physical pin1 power control.
+ * Pin2 remains off. This distinguishes endpoint-A routing from a silent pin1
+ * amplifier/output path; it is not a production board description.
+ */
+#include "sc8180x-surface-pro-x-speaker-right.dts"
+
+&right_spkr {
+	powerdown-gpios = <&wcdgpio 1 GPIO_ACTIVE_LOW>;
+};

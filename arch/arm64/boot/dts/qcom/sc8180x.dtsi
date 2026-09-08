@@ -17,6 +17,8 @@
 #include <dt-bindings/interrupt-controller/arm-gic.h>
 #include <dt-bindings/phy/phy-qcom-qmp.h>
 #include <dt-bindings/power/qcom-rpmpd.h>
+#include <dt-bindings/soc/qcom,apr.h>
+#include <dt-bindings/clock/qcom,lpass-sdm845.h>
 #include <dt-bindings/soc/qcom,rpmh-rsc.h>
 #include <dt-bindings/thermal/thermal.h>
 
@@ -533,6 +535,13 @@
 		device_type = "memory";
 		/* We expect the bootloader to fill in the size */
 		reg = <0x0 0x80000000 0x0 0x0>;
+	};
+
+	mmcx_reg: mmcx-reg {
+		compatible = "regulator-fixed-domain";
+		power-domains = <&rpmhpd SC8180X_MMCX>;
+		required-opps = <&rpmhpd_opp_nom>;
+		regulator-name = "MMCX";
 	};
 
 	pmu {
@@ -3002,6 +3011,18 @@
 					     "mdp1-mem",
 					     "cpu-cfg";
 
+			/*
+			 * Mainline value. NOTE (SPX): the IORT (\_SB.GPU0 ->
+			 * apps_smmu @0x15000000) lists display SIDs 0x800/0x801/
+			 * 0x820/0x821/0xC00/0xC01/0xC20/0xC21 (even+odd). Widening
+			 * this mask to 0x421 to cover the odd ones was TRIED and
+			 * caused an early black-screen boot (no journal/pstore) on
+			 * 2026-06-22 -- DO NOT re-apply 0x421 blindly. That change
+			 * was made together with dropping arm-smmu.disable_bypass=0,
+			 * so the two were never isolated. Keep 0x420 until a
+			 * single-variable test on a NON-default boot entry proves a
+			 * safe value.
+			 */
 			iommus = <&apps_smmu 0x800 0x420>;
 
 			#address-cells = <2>;
@@ -3126,7 +3147,7 @@
 					      "bus";
 
 				operating-points-v2 = <&dsi_opp_table>;
-				power-domains = <&rpmhpd SC8180X_MMCX>;
+				mmcx-supply = <&mmcx_reg>;
 
 				phys = <&mdss_dsi0_phy>;
 				phy-names = "dsi";
@@ -3730,6 +3751,74 @@
 			dma-coherent;
 		};
 
+		slimbam: dma-controller@17184000 {
+			compatible = "qcom,bam-v1.7.0";
+			qcom,controlled-remotely;
+			reg = <0 0x17184000 0 0x2a000>;
+			num-channels = <23>;
+			interrupts = <GIC_SPI 164 IRQ_TYPE_LEVEL_HIGH>;
+			#dma-cells = <1>;
+			qcom,ee = <1>;
+			qcom,num-ees = <4>;
+			/*
+			 * DISABLED on SPX: 0x1806 is the sdm845 SID and is WRONG
+			 * for the SPX (the IORT puts the audio SLIMbus path in
+			 * the 0x1B2x+ bank; exact BAM SID undetermined). When
+			 * probed with the wrong SID, the kernel-side BAM attach
+			 * to apps_smmu and/or its DMA transactions have been
+			 * observed to corrupt the GPU memory window, producing
+			 * a black screen until the GPU client (Hyprland) re-
+			 * initializes the display, with random noise artifacts
+			 * after that. Keep disabled while the NGD runs in
+			 * spx_pio_mode (no DMA used).
+			 */
+			status = "disabled";
+			iommus = <&apps_smmu 0x1806 0x0>;
+			/*
+			 * The BAM sits behind the LPASS APB/AHB. The AP has to vote
+			 * LPASS_Q6SS_AHBS_AON_CLK on, otherwise the AHB bridge is
+			 * gated and any register access hangs the CPU. bam_dma will
+			 * enable this clock itself (the bam_clk it looks up) at
+			 * probe time.
+			 */
+			clocks = <&lpasscc LPASS_Q6SS_AHBS_AON_CLK>;
+			clock-names = "bam_clk";
+		};
+
+		slim: slim-ngd@171c0000 {
+			compatible = "qcom,slim-ngd-v2.1.0";
+			reg = <0 0x171c0000 0 0x2c000>;
+			interrupts = <GIC_SPI 163 IRQ_TYPE_LEVEL_HIGH>;
+
+			dmas = <&slimbam 3>, <&slimbam 4>;
+			dma-names = "rx", "tx";
+
+			/*
+			 * iommus intentionally omitted: the only known SID for
+			 * this device is 0x1806 (sdm845, wrong for SPX). Attaching
+			 * slim-ngd to apps_smmu with the wrong SID was observed to
+			 * leave apps_smmu in a state that breaks the GPU/display
+			 * bring-up (zap shader load fails, GMU OOB times out, panel
+			 * shows noise/black) even though the NGD itself only runs
+			 * in PIO mode (spx_pio_mode=1) where the CPU does PIO MMIO
+			 * (no DMA, no SMMU traffic). The CPU-side PIO writes do NOT
+			 * go through apps_smmu, so leaving the iommus binding out
+			 * is safe for PIO mode. Re-add the binding only if a real
+			 * SPX SID is determined AND DMA mode is enabled.
+			 */
+			#address-cells = <1>;
+			#size-cells = <0>;
+		};
+
+		lpasscc: clock-controller@17014000 {
+			compatible = "qcom,sdm845-lpasscc";
+			reg = <0 0x17014000 0 0x1f004>,
+			      <0 0x17300000 0 0x200>;
+			reg-names = "cc", "qdsp6ss";
+			#clock-cells = <1>;
+			status = "disabled";
+		};
+
 		remoteproc_adsp: remoteproc@17300000 {
 			compatible = "qcom,sc8180x-adsp-pas";
 			reg = <0x0 0x17300000 0x0 0x4040>;
@@ -3760,6 +3849,71 @@
 				label = "lpass";
 				qcom,remote-pid = <2>;
 				mboxes = <&apss_shared 8>;
+
+				apr {
+					compatible = "qcom,apr-v2";
+					qcom,glink-channels = "apr_audio_svc";
+					qcom,domain = <APR_DOMAIN_ADSP>;
+					#address-cells = <1>;
+					#size-cells = <0>;
+					qcom,intents = <512 20>;
+
+					service@3 {
+						reg = <APR_SVC_ADSP_CORE>;
+						compatible = "qcom,q6core";
+						qcom,protection-domain = "avs/audio", "msm/adsp/audio_pd";
+					};
+
+					q6afe: service@4 {
+						compatible = "qcom,q6afe";
+						reg = <APR_SVC_AFE>;
+						qcom,protection-domain = "avs/audio", "msm/adsp/audio_pd";
+						q6afedai: dais {
+							compatible = "qcom,q6afe-dais";
+							#address-cells = <1>;
+							#size-cells = <0>;
+							#sound-dai-cells = <1>;
+						};
+					};
+
+					q6asm: service@7 {
+						compatible = "qcom,q6asm";
+						reg = <APR_SVC_ASM>;
+						qcom,protection-domain = "avs/audio", "msm/adsp/audio_pd";
+						q6asmdai: dais {
+							compatible = "qcom,q6asm-dais";
+							#address-cells = <1>;
+							#size-cells = <0>;
+							#sound-dai-cells = <1>;
+							/*
+							 * The ADSP ORs the low nibble of
+							 * the mem-map MSW onto its own SID
+							 * base (0x1B20 on sc8180x per the
+							 * SPX IORT) and emits 0x1B21 when
+							 * reading the PCM buffer. The
+							 * sdm845 value 0x1821 left that
+							 * stream unmatched -> USF abort ->
+							 * fabric wedge on playback start.
+							 * The earlier "0x1B21 hung the
+							 * display" incident was a corrupt
+							 * DTB (missing sound block), not
+							 * this SID: DT boots never parse
+							 * the IORT, no SMR conflict exists.
+							 */
+							iommus = <&apps_smmu 0x1b21 0x0>;
+						};
+					};
+
+					q6adm: service@8 {
+						compatible = "qcom,q6adm";
+						reg = <APR_SVC_ADM>;
+						qcom,protection-domain = "avs/audio", "msm/adsp/audio_pd";
+						q6routing: routing {
+							compatible = "qcom,q6adm-routing";
+							#sound-dai-cells = <0>;
+						};
+					};
+				};
 			};
 		};
 

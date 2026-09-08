@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: GPL-2.0
+
+/*
+ * Guarded endpoint-B speaker test. The Windows qcauddev data describes this
+ * WSA881x path as slave DP1 -> SoundWire master port 4 (the <4 5 6 8> port
+ * family) and codec endpoint 0x01010005. Physical left/right is intentionally
+ * not asserted until a one-channel listening test identifies the amplifier.
+ */
+#include "sc8180x-surface-pro-x.dts"
+
+/* Keep the hardware watchdog available throughout the one-shot test. */
+&soc {
+	watchdog@17c10000 {
+		compatible = "qcom,apss-wdt-sm8150", "qcom,kpss-wdt";
+		reg = <0 0x17c10000 0 0x1000>;
+		clocks = <&sleep_clk>;
+		interrupts = <GIC_SPI 0 IRQ_TYPE_EDGE_RISING>;
+	};
+};
+
+&left_spkr {
+	status = "disabled";
+};
+
+&{/sound/slim-playback-dai-link/codec} {
+	sound-dai = <&wcd9340 0>, <&right_spkr>, <&swm 0>;
+};
+
+&{/sound} {
+	audio-routing =
+		"RX_BIAS", "MCLK",
+		"Int Mic", "DMIC0",
+		"AMIC1", "MIC BIAS1",
+		"AMIC2", "MIC BIAS2",
+		"AMIC3", "MIC BIAS3",
+		"AMIC4", "MIC BIAS4",
+		"DMIC0", "MIC BIAS1",
+		"DMIC1", "MIC BIAS1",
+		"DMIC2", "MIC BIAS3",
+		"DMIC3", "MIC BIAS3",
+		"Headphone Jack", "HPHL",
+		"Headphone Jack", "HPHR",
+		"Headset Mic", "AMIC2",
+		"Right Spk", "SpkrRight SPKR",
+		"SpkrRight IN", "SPK2 OUT";
+};

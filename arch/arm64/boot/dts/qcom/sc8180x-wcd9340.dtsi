@@ -1,0 +1,204 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * SC8180X WCD9340 audio codec on SLIMbus NGD1.
+ *
+ * The Surface Pro X has the WCD9340 (slim217,250) on SLIMbus and two
+ * WSA-class smart speaker amps on the codec SoundWire master. Windows
+ * advertises SlaveInfo=2 and speaker-protection calibration for the internal
+ * speaker endpoint; Linux enumerates the amps as sdw10217201000.
+ *
+ *
+ * The codec's external INT is described in the DSDT as
+ *   \_SB.ADSP.SLM1.ADCM.AUDD, GpioInt pin 0x100 on \_SB.GIO0
+ * where GIO0 is the QCOM040D "MSM GPIO Class Extension Driver" ACPI
+ * controller. GIO0 aggregates external TLMM GPIO interrupts through the
+ * firmware-programmed PDC to dedicated GIC SPIs (0x249/0x25B/0x259/0x295/
+ * 0x293/0x223 — see GIO0._CRS). The QCOM040D ACPI GPIO driver is not in
+ * mainline, so the AGGREGATED GPIO namespace is unresolved at runtime;
+ * we wire the codec INTR directly to the firmware-aggregated GIC SPI.
+ *
+ * The first such SPI in GIO0._CRS order is 0x249; this matches the
+ * implicit polarity of the codec GpioInt (Edge/ActiveHigh). If firmware
+ * routes pin 0x100 to a different GIC SPI on this board, the regmap-irq
+ * chip's status read in probe() will simply not fire — which is exactly
+ * the symptom of the IRQ-less build we are replacing. In that case the
+ * codec MFD's ddata->irq>0 path still completes (child devices bind),
+ * and the IRQF_TRIGGER_HIGH request returns -ENXIO; we'd then need to
+ * probe the alternate SPI. For now we wire 0x249 and rebuild.
+ */
+
+&slim {
+	status = "okay";
+
+	slim@1 {
+		reg = <1>;
+		/*
+		 * The NGD device (this node) must vote the LPASS core power
+		 * domain ON before touching the BAM, because the SPX ADSP
+		 * firmware does not power the LPASS island for the AP in
+		 * response to the SLIMbus QMI power request (unlike sdm845).
+		 */
+		power-domains = <&rpmhpd SC8180X_LCX>;
+		#address-cells = <2>;
+		#size-cells = <0>;
+
+		wcd9340_ifd: ifd@0,0 {
+			compatible = "slim217,250";
+			reg = <0 0>;
+		};
+
+		wcd9340: codec@1,0 {
+			compatible = "slim217,250";
+			reg = <1 0>;
+			slim-ifc-dev = <&wcd9340_ifd>;
+
+			/*
+			 * Codec external INTR is NOT wired. The DSDT routes it to
+			 * \_SB.GIO0 pin 0x100 (256) on the ACPI GPIO namespace, but
+			 * the sc8180x TLMM pinctrl-msm driver only supports pins
+			 * 0-190 (gpio-ranges) and there is no upstream QCOM040D ACPI
+			 * GPIO driver, so no clean Linux IRQ path exists for this
+			 * pin. The wcd934x MFD driver is patched to tolerate a
+			 * missing codec IRQ and continue (see drivers/mfd/wcd934x.c),
+			 * so the sound card can still come up IRQ-less. This means
+			 * IRQ-gated codec init (MBHC, etc.) is skipped, but the
+			 * WCD9340 codec and the SLIMbus path work for the working
+			 * APPS soundwire enumeration.
+			 */
+			/*
+			 * SPX: codec external INTR (DSDT GIO0 pin 0x100) is firmware-
+			 * routed to GIC SPI GSIV 0x25b == GIC_SPI 571. EMPIRICALLY
+			 * CONFIRMED 2026-06-23: a probe module armed all six GIO0._CRS
+			 * candidate SPIs and toggled the codec INTR -- ONLY GIC_SPI 571
+			 * fired, in lockstep (4/4 cycles), every other candidate 0.
+			 * Firmware already aggregates pin 0x100 to this SPI, so wire it
+			 * straight to the GIC. This restores the db845c IRQ-driven path:
+			 * the wcd934x regmap-irq chip comes up (IRQF_TRIGGER_HIGH) and
+			 * soundwire@c85 can take codec IRQ 20 for IRQ-driven enumeration.
+			 */
+			interrupts-extended = <&intc GIC_SPI 571 IRQ_TYPE_LEVEL_HIGH>;
+			interrupt-controller;
+			#interrupt-cells = <1>;
+
+			/*
+			 * From the SPX DSDT: \_SB.ADSP.SLM1.ADCM.AUDD carries a
+			 * GpioIo on TLMM pin 0x8F (143) — the codec SYS_RST_N.
+			 * Without a reset pulse the codec never announces on the
+			 * bus and the manager answers ADDR_QUERY with zeros.
+			 */
+			reset-gpios = <&tlmm 143 GPIO_ACTIVE_HIGH>;
+
+			/*
+			 * SPX: the wcd934x MFD REQUIRES these 5 supplies
+			 * (drivers/mfd/wcd934x.c regulator_bulk_get/enable). They
+			 * were MISSING here, so the driver got dummy regulators and
+			 * never voted the codec's buck/analog rails on -- leaving the
+			 * internal SoundWire master + WSA interface underpowered
+			 * (frame-gen intermittent, device-0 arbitration garbled). All
+			 * map to pm8150 S4 1.8V (vreg_s4a_1p8), exactly as db845c
+			 * (sdm845-db845c.dts) wires the same codec.
+			 */
+			vdd-buck-supply = <&vreg_s4a_1p8>;
+			vdd-buck-sido-supply = <&vreg_s4a_1p8>;
+			vdd-tx-supply = <&vreg_s4a_1p8>;
+			vdd-rx-supply = <&vreg_s4a_1p8>;
+			vdd-io-supply = <&vreg_s4a_1p8>;
+
+			#sound-dai-cells = <1>;
+
+			clock-names = "extclk";
+			clocks = <&rpmhcc RPMH_LN_BB_CLK2>;
+			#clock-cells = <0>;
+			clock-frequency = <9600000>;
+			clock-output-names = "mclk";
+
+			qcom,micbias1-microvolt = <1800000>;
+			qcom,micbias2-microvolt = <1800000>;
+			qcom,micbias3-microvolt = <1800000>;
+			qcom,micbias4-microvolt = <1800000>;
+
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			wcdgpio: gpio-controller@42 {
+				compatible = "qcom,wcd9340-gpio";
+				gpio-controller;
+				#gpio-cells = <2>;
+				reg = <0x42 0x2>;
+			};
+
+			/*
+			 * SPX speakers = 2x WSA881x on the WCD9340's *internal*
+			 * SoundWire master. The master is a register block INSIDE the
+			 * codec (offset 0xc85) driven by soundwire-qcom over this
+			 * SLIMbus regmap — the same APPS-owned topology db845c uses,
+			 * where the WSA881x enumerate and play with identical code.
+			 * The ADSP is NOT involved in SWR bring-up (its firmware has no
+			 * SoundWire driver), so this path sidesteps the stubbed codec-reg
+			 * op. Port parameters below are byte-identical to sdm845's
+			 * soundwire@c85 (the known-good reference).
+			 *
+			 * The codec is its own interrupt controller (see wcd9340 above);
+			 * IRQ #20 on it is the SWR-attached interrupt (see
+			 * sdm845-wcd9340.dtsi for the equivalent wiring).
+			 */
+			swm: soundwire@c85 {
+				compatible = "qcom,soundwire-v1.3.0";
+				reg = <0xc85 0x40>;
+
+				qcom,dout-ports = <6>;
+				qcom,din-ports = <2>;
+				qcom,ports-sinterval-low = /bits/ 8  <0x07 0x1f 0x3f 0x7 0x1f 0x3f 0x0f 0x0f>;
+				qcom,ports-offset1 = /bits/ 8 <0x01 0x02 0x0c 0x6 0x12 0x0d 0x07 0x0a>;
+				qcom,ports-offset2 = /bits/ 8 <0x00 0x00 0x1f 0x00 0x00 0x1f 0x00 0x00>;
+
+				#sound-dai-cells = <1>;
+				clocks = <&wcd9340>;
+				clock-names = "iface";
+				/* SPX: codec is now an interrupt-controller (external INTR
+				 * wired to GIC_SPI 571); take the SWR-attached IRQ 20 so
+				 * the master runs IRQ-driven enumeration like db845c. */
+				interrupts-extended = <&wcd9340 20>;
+				#address-cells = <2>;
+				#size-cells = <0>;
+
+				left_spkr: speaker@0,3 {
+					compatible = "sdw10217211000";
+					reg = <0 3>;
+					qcom,port-mapping = <1 2 3 7>;
+					/* SPX: measured physical HIGH = amp on, LOW = off.
+					 * The active-low powerdown descriptor represents that.
+					 */
+					powerdown-gpios = <&wcdgpio 1 GPIO_ACTIVE_LOW>;
+					#thermal-sensor-cells = <0>;
+					sound-name-prefix = "SpkrLeft";
+					#sound-dai-cells = <0>;
+				};
+
+				right_spkr: speaker@0,4 {
+					compatible = "sdw10217211000";
+					reg = <0 4>;
+					qcom,port-mapping = <4 5 6 8>;
+					/* SPX: measured physical HIGH = amp on, LOW = off.
+					 * The active-low powerdown descriptor represents that.
+					 *
+					 * This MUST be a different pin from left_spkr. Both
+					 * nodes previously named pin 1, so both amps powered
+					 * up together, both sat unenumerated at device 0 and
+					 * both answered PING at once -> bus clash -> the
+					 * master reported MCP_SLV_STATUS=0x0 and every DevID
+					 * read came back 0xaa. Verified live: holding one amp
+					 * in shutdown makes the other one appear (slv=0x1,
+					 * part_id 0x2010 readable). Matches db845c and the
+					 * Yoga C630 fix (45021d35fcb2), which give each WSA
+					 * its own powerdown pin.
+					 */
+					powerdown-gpios = <&wcdgpio 2 GPIO_ACTIVE_LOW>;
+					#thermal-sensor-cells = <0>;
+					sound-name-prefix = "SpkrRight";
+					#sound-dai-cells = <0>;
+				};
+			};
+		};
+	};
+};

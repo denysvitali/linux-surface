@@ -1,0 +1,22 @@
+// SPDX-License-Identifier: GPL-2.0
+
+/*
+ * LDO14E parity test. Windows' PEP votes ldoe14 to 1.8 V HPM whenever the
+ * audio codec AUDD device is active (\_SB.PEP0.APCC component 4), but the
+ * Linux DTS never declared the rail and SPMI reads show EN_CTL=0x00 -- the
+ * codec's analog domain has been running without a rail that Windows keeps
+ * on. This variant declares the rail at Windows' vote and holds it always-on
+ * so speaker A/Bs run with the Windows rail state.
+ */
+#include "sc8180x-surface-pro-x.dts"
+
+&apps_rsc {
+	pmc8180-e-rpmh-regulators {
+		vreg_l14e_1p8: ldo14 {
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-always-on;
+		};
+	};
+};
