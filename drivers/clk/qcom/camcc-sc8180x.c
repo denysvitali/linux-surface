@@ -528,6 +528,8 @@ static struct clk_rcg2 cam_cc_cci_3_clk_src = {
 
 static const struct freq_tbl ftbl_cam_cc_cphy_rx_clk_src[] = {
 	F(19200000, P_BI_TCXO, 1, 0, 0),
+	/* ACPI MPCS F-state 0 programs every SC8180X CSIPHY at 300 MHz. */
+	F(300000000, P_CAM_CC_PLL0_OUT_EVEN, 2, 0, 0),
 	F(400000000, P_CAM_CC_PLL0_OUT_ODD, 1, 0, 0),
 	{ }
 };

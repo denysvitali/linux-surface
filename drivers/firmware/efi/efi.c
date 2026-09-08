@@ -21,6 +21,7 @@
 #include <linux/device.h>
 #include <linux/efi.h>
 #include <linux/of.h>
+#include <linux/of.h>
 #include <linux/initrd.h>
 #include <linux/io.h>
 #include <linux/kexec.h>
@@ -405,6 +406,10 @@ static int __init efipostcore_init(void)
 {
 	if (!efi_enabled(EFI_RUNTIME_SERVICES))
 		efi.runtime_supported_mask = 0;
+
+	/* Surface firmware does not implement ResetSystem. */
+	if (of_machine_is_compatible("microsoft,surface-pro-x"))
+		efi.runtime_supported_mask &= ~EFI_RT_SUPPORTED_RESET_SYSTEM;
 
 	if (efi.runtime_supported_mask) {
 		/*

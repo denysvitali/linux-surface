@@ -44,7 +44,9 @@ config UCSI_ACPI
 	  This driver enables UCSI support on platforms that expose UCSI
 	  interface as ACPI device. On new Intel Atom based platforms starting
 	  from Broxton SoCs and Core platforms stating from Skylake, UCSI is an
-	  ACPI enumerated device.
+	  ACPI enumerated device. This driver also supports the Qualcomm ACPI
+	  UCSI participant (ACPI ID QCOM04A9) used on Surface Pro X and other
+	  Qualcomm-based devices.
 
 	  To compile the driver as a module, choose M here: the module will be
 	  called ucsi_acpi

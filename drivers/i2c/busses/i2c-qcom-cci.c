@@ -3,6 +3,8 @@
 // Copyright (c) 2017-2022 Linaro Limited.
 
 #include <linux/clk.h>
+#include <linux/clk-provider.h>
+#include <linux/delay.h>
 #include <linux/completion.h>
 #include <linux/i2c.h>
 #include <linux/io.h>
@@ -130,6 +132,10 @@ struct cci {
 	struct cci_master master[NUM_MASTERS];
 };
 
+static bool spx_irq_debug;
+module_param_named(spx_irq_debug, spx_irq_debug, bool, 0644);
+MODULE_PARM_DESC(spx_irq_debug, "SPX: log every CCI IRQ status word");
+
 static irqreturn_t cci_isr(int irq, void *dev)
 {
 	struct cci *cci = dev;
@@ -139,6 +145,15 @@ static irqreturn_t cci_isr(int irq, void *dev)
 	val = readl(cci->base + CCI_IRQ_STATUS_0);
 	writel(val, cci->base + CCI_IRQ_CLEAR_0);
 	writel(0x1, cci->base + CCI_IRQ_GLOBAL_CLEAR_CMD);
+
+	/* SPX DEBUG: which IRQ bits actually arrive during a failing transfer */
+	if (spx_irq_debug)
+		pr_info("spxcci: IRQ_STATUS_0=0x%08x%s%s%s%s%s\n", val,
+			(val & CCI_IRQ_STATUS_0_RST_DONE_ACK) ? " RST_DONE" : "",
+			(val & CCI_IRQ_STATUS_0_I2C_M0_Q0_REPORT) ? " M0_Q0_REPORT" : "",
+			(val & CCI_IRQ_STATUS_0_I2C_M0_Q0Q1_HALT_ACK) ? " M0_HALT_ACK" : "",
+			(val & CCI_IRQ_STATUS_0_I2C_M0_ERROR) ? " M0_ERROR" : "",
+			(val & CCI_IRQ_STATUS_0_I2C_M0_Q0_NACK_ERR) ? " M0_NACK" : "");
 
 	if (val & CCI_IRQ_STATUS_0_RST_DONE_ACK) {
 		complete(&cci->master[0].irq_complete);
@@ -295,9 +310,64 @@ static int cci_run_queue(struct cci *cci, u8 master, u8 queue)
 	val = readl(cci->base + CCI_I2C_Mm_Qn_CUR_WORD_CNT(master, queue));
 	writel(val, cci->base + CCI_I2C_Mm_Qn_EXEC_WORD_CNT(master, queue));
 
+	/*
+	 * SPX DEBUG: if the queue words never landed, CUR_WORD_CNT is 0, so
+	 * EXEC_WORD_CNT is 0 and CCI_QUEUE_START starts nothing - the engine
+	 * raises no interrupt at all and every transfer times out.
+	 */
+	if (spx_irq_debug)
+	{
+		int k;
+
+		if (spx_irq_debug)
+			pr_info("spxcci: run m%d q%d: HW_VERSION=0x%08x CUR_WORD_CNT=%u\n",
+				master, queue,
+				readl(cci->base + CCI_HW_VERSION), val);
+		/*
+		 * Register access proves the AHB/config clock. The I2C engine
+		 * runs off a separate functional clock - if that one is not
+		 * enabled the queue is loaded but never executes, and no
+		 * interrupt is ever raised.
+		 */
+		for (k = 0; spx_irq_debug && k < cci->nclocks; k++)
+			pr_info("spxcci:   clk[%d] %-14s rate=%lu enabled=%d\n",
+				k, cci->clocks[k].id,
+				clk_get_rate(cci->clocks[k].clk),
+				__clk_is_enabled(cci->clocks[k].clk));
+	}
+
 	reinit_completion(&cci->master[master].irq_complete);
 	val = BIT(master * 2 + queue);
+
+	if (spx_irq_debug)
+		pr_info("spxcci: PRE  m%d q%d: IRQ_MASK=0x%08x IRQ_STAT=0x%08x HALT_REQ=0x%08x CUR_CMD=0x%08x RPT_STAT=0x%08x EXEC=%u\n",
+			master, queue,
+			readl(cci->base + CCI_IRQ_MASK_0),
+			readl(cci->base + CCI_IRQ_STATUS_0),
+			readl(cci->base + CCI_HALT_REQ),
+			readl(cci->base + CCI_I2C_Mm_Qn_CUR_CMD(master, queue)),
+			readl(cci->base + CCI_I2C_Mm_Qn_REPORT_STATUS(master, queue)),
+			readl(cci->base + CCI_I2C_Mm_Qn_EXEC_WORD_CNT(master, queue)));
+
 	writel(val, cci->base + CCI_QUEUE_START);
+
+	/*
+	 * Sample again once the engine has had ample time to execute. If
+	 * CUR_WORD_CNT has not moved and REPORT_STATUS is still 0, the state
+	 * machine never started - which is what a stall waiting for an idle
+	 * bus looks like (CCI has no bus timeout, so it reports nothing).
+	 */
+	if (spx_irq_debug) {
+		msleep(20);
+		pr_info("spxcci: POST m%d q%d: IRQ_STAT=0x%08x HALT_REQ=0x%08x CUR_CMD=0x%08x RPT_STAT=0x%08x CUR_WORD_CNT=%u RD_BUF=%u\n",
+			master, queue,
+			readl(cci->base + CCI_IRQ_STATUS_0),
+			readl(cci->base + CCI_HALT_REQ),
+			readl(cci->base + CCI_I2C_Mm_Qn_CUR_CMD(master, queue)),
+			readl(cci->base + CCI_I2C_Mm_Qn_REPORT_STATUS(master, queue)),
+			readl(cci->base + CCI_I2C_Mm_Qn_CUR_WORD_CNT(master, queue)),
+			readl(cci->base + CCI_I2C_Mm_READ_BUF_LEVEL(master)));
+	}
 
 	if (!wait_for_completion_timeout(&cci->master[master].irq_complete,
 					 CCI_TIMEOUT)) {

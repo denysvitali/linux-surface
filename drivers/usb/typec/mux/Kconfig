@@ -85,6 +85,17 @@ config TYPEC_MUX_TUSB1046
 	  changes, as well as muxing DisplayPort and sideband signals to a
 	  common Type-C connector.
 
+config TYPEC_MUX_MSFT0005
+	tristate "Microsoft Display Mux (MSFT0005) driver"
+	depends on ACPI
+	help
+	  Say Y or M if your system has a Microsoft Display Mux device
+	  (ACPI ID MSFT0005), found on the Surface Pro X and possibly
+	  other ARM64 Surface devices. This driver provides a stub
+	  typec_switch and typec_mux registration for the device.
+
+	  If compiled as a module, the module will be named msft0005.
+
 config TYPEC_MUX_WCD939X_USBSS
 	tristate "Qualcomm WCD939x USBSS Analog Audio Switch driver"
 	depends on I2C
