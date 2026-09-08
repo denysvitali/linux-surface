@@ -5,7 +5,9 @@
 
 #include <dt-bindings/sound/qcom,q6afe.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
+#include <linux/string.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/pcm_params.h>
@@ -30,6 +32,18 @@
 #define SLIM_MAX_TX_PORTS 16
 #define SLIM_MAX_RX_PORTS 13
 #define WCD934X_DEFAULT_MCLK_RATE	9600000
+
+#define SPX_SPKR_SLIM_CH0		192
+#define SPX_SPKR_SLIM_CH1		193
+#define SPX_LEFT_SPKR_NODE_PATH \
+	"/soc@0/slim-ngd@171c0000/slim@1/codec@1,0/soundwire@c85/speaker@0,1"
+#define SPX_SWM_NODE_PATH \
+	"/soc@0/slim-ngd@171c0000/slim@1/codec@1,0/soundwire@c85"
+
+static int spx_slimbus_rx = 2;
+module_param(spx_slimbus_rx, int, 0444);
+MODULE_PARM_DESC(spx_slimbus_rx,
+		 "Surface Pro X speaker SLIMbus RX backend (0 or 2)");
 
 struct sdm845_snd_data {
 	struct snd_soc_jack jack;
@@ -76,12 +90,19 @@ static int sdm845_slim_snd_hw_params(struct snd_pcm_substream *substream,
 			continue;
 		}
 
-		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
+		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
+			if (of_machine_is_compatible("microsoft,surface-pro-x") &&
+			    cpu_dai->id == SLIMBUS_2_RX) {
+				rx_ch[0] = SPX_SPKR_SLIM_CH0;
+				rx_ch[1] = SPX_SPKR_SLIM_CH1;
+				rx_ch_cnt = 2;
+			}
 			ret = snd_soc_dai_set_channel_map(cpu_dai, 0, NULL,
 							  rx_ch_cnt, rx_ch);
-		else
+		} else {
 			ret = snd_soc_dai_set_channel_map(cpu_dai, tx_ch_cnt,
 							  tx_ch, 0, NULL);
+		}
 		if (ret != 0 && ret != -ENOTSUPP) {
 			dev_err(rtd->dev, "failed to set cpu chan map, err:%d\n", ret);
 			return ret;
@@ -246,6 +267,7 @@ static int sdm845_dai_init(struct snd_soc_pcm_runtime *rtd)
 	unsigned int tx_ch[SLIM_MAX_TX_PORTS] = {128, 129, 130, 131, 132, 133,
 					    134, 135, 136, 137, 138, 139,
 					    140, 141, 142, 143};
+	unsigned int rx_ch_cnt = ARRAY_SIZE(rx_ch);
 	int rval, i;
 
 
@@ -292,11 +314,18 @@ static int sdm845_dai_init(struct snd_soc_pcm_runtime *rtd)
 		if (pdata->slim_port_setup || !link->no_pcm)
 			return 0;
 
+		if (of_machine_is_compatible("microsoft,surface-pro-x") &&
+		    cpu_dai->id == SLIMBUS_2_RX) {
+			rx_ch[0] = SPX_SPKR_SLIM_CH0;
+			rx_ch[1] = SPX_SPKR_SLIM_CH1;
+			rx_ch_cnt = 2;
+		}
+
 		for_each_rtd_codec_dais(rtd, i, codec_dai) {
 			rval = snd_soc_dai_set_channel_map(codec_dai,
 							  ARRAY_SIZE(tx_ch),
 							  tx_ch,
-							  ARRAY_SIZE(rx_ch),
+							  rx_ch_cnt,
 							  rx_ch);
 			if (rval != 0 && rval != -ENOTSUPP)
 				return rval;
@@ -503,6 +532,7 @@ static int sdm845_be_hw_params_fixup(struct snd_soc_pcm_runtime *rtd,
 
 	rate->min = rate->max = DEFAULT_SAMPLE_RATE_48K;
 	channels->min = channels->max = 2;
+	snd_mask_none(fmt);
 	snd_mask_set_format(fmt, SNDRV_PCM_FORMAT_S16_LE);
 
 	return 0;
@@ -535,6 +565,110 @@ static void sdm845_add_ops(struct snd_soc_card *card)
 	}
 }
 
+static int sdm845_spx_select_slimbus_rx(struct snd_soc_card *card)
+{
+	struct snd_soc_dai_link *link;
+	const char *dai_name;
+	unsigned int dai_id;
+	int i;
+
+	if (!of_machine_is_compatible("microsoft,surface-pro-x"))
+		return 0;
+
+	switch (spx_slimbus_rx) {
+	case 0:
+		dai_name = "SLIMBUS_0_RX";
+		dai_id = SLIMBUS_0_RX;
+		break;
+	case 2:
+		dai_name = "SLIMBUS_2_RX";
+		dai_id = SLIMBUS_2_RX;
+		break;
+	default:
+		dev_err(card->dev, "unsupported SPX SLIMbus RX backend %d\n",
+			spx_slimbus_rx);
+		return -EINVAL;
+	}
+
+	for_each_card_prelinks(card, i, link) {
+		if (strcmp(link->name, "SLIM Playback"))
+			continue;
+
+		link->cpus[0].dai_name = dai_name;
+		link->id = dai_id;
+		dev_info(card->dev, "SPX speaker backend: %s\n", dai_name);
+		return 0;
+	}
+
+	dev_err(card->dev, "SPX SLIM Playback link not found\n");
+	return -ENODEV;
+}
+
+static int sdm845_spx_add_speaker_codecs(struct snd_soc_card *card)
+{
+	struct snd_soc_dai_link_component *codecs;
+	struct snd_soc_dai_link *link;
+	struct device_node *left_spkr;
+	struct device_node *swm;
+	struct of_phandle_args args = {};
+	int ret;
+	int i;
+
+	if (!of_machine_is_compatible("microsoft,surface-pro-x"))
+		return 0;
+
+	for_each_card_prelinks(card, i, link)
+		if (!strcmp(link->name, "SLIM Playback"))
+			goto found;
+
+	return -ENODEV;
+
+found:
+	if (link->num_codecs != 1)
+		return 0;
+
+	left_spkr = of_find_node_by_path(SPX_LEFT_SPKR_NODE_PATH);
+	if (!left_spkr)
+		return -ENODEV;
+
+	swm = of_find_node_by_path(SPX_SWM_NODE_PATH);
+	if (!swm) {
+		of_node_put(left_spkr);
+		return -ENODEV;
+	}
+
+	codecs = devm_kcalloc(card->dev, 3, sizeof(*codecs), GFP_KERNEL);
+	if (!codecs) {
+		ret = -ENOMEM;
+		goto err_put_nodes;
+	}
+
+	args.np = left_spkr;
+	ret = snd_soc_get_dlc(&args, &codecs[1]);
+	if (ret)
+		goto err_put_nodes;
+
+	args.np = swm;
+	args.args_count = 1;
+	args.args[0] = 0;
+	ret = snd_soc_get_dlc(&args, &codecs[2]);
+	if (ret)
+		goto err_put_nodes;
+
+	codecs[0] = link->codecs[0];
+	link->codecs = codecs;
+	link->num_codecs = 3;
+	dev_info(card->dev,
+		 "SPX: added missing WSA881x and SoundWire master DAIs\n");
+
+	return 0;
+
+err_put_nodes:
+	of_node_put(swm);
+	of_node_put(left_spkr);
+	return ret;
+}
+
 static int sdm845_snd_platform_probe(struct platform_device *pdev)
 {
 	struct snd_soc_card *card;
@@ -560,6 +694,12 @@ static int sdm845_snd_platform_probe(struct platform_device *pdev)
 	card->owner = THIS_MODULE;
 	dev_set_drvdata(dev, card);
 	ret = qcom_snd_parse_of(card);
+	if (ret)
+		return ret;
+	ret = sdm845_spx_add_speaker_codecs(card);
+	if (ret)
+		return ret;
+	ret = sdm845_spx_select_slimbus_rx(card);
 	if (ret)
 		return ret;
 

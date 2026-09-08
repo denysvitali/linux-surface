@@ -26,6 +26,11 @@
 
 #define DRV_NAME "q6routing-component"
 
+static bool spx_keep_copp = true;
+module_param(spx_keep_copp, bool, 0644);
+MODULE_PARM_DESC(spx_keep_copp,
+		 "SPX: preserve the live COPP/matrix route across PCM closes");
+
 #define Q6ROUTING_RX_MIXERS(id)						\
 	SOC_SINGLE_EXT("MultiMedia1", id,				\
 	MSM_FRONTEND_DAI_MULTIMEDIA1, 1, 0, msm_routing_get_audio_mixer,\
@@ -376,6 +381,25 @@ struct msm_routing_data {
 
 static struct msm_routing_data *routing_data;
 
+/*
+ * SPX speaker bring-up knobs (default 0 = mainline behaviour). The SPX WSA
+ * speakers are ADSP-owned; Windows opens the RX COPP with a real speaker
+ * topology + ACDB device id (0x45) rather than NULL_COPP. These let us drive a
+ * non-NULL playback COPP topology / app_type / acdb_id from userspace to find
+ * what the ADSP needs, without a rebuild. acdb_id/app_type are only carried on
+ * the wire by an ADM_CMD_DEVICE_OPEN_V6+ packet (V5 drops them), so today they
+ * are informational until the open is upgraded; spx_rx_topology IS effective.
+ */
+static uint spx_rx_topology;
+module_param(spx_rx_topology, uint, 0644);
+MODULE_PARM_DESC(spx_rx_topology, "SPX: override playback ADM COPP topology id (0=NULL_COPP)");
+static uint spx_rx_acdb_id;
+module_param(spx_rx_acdb_id, uint, 0644);
+MODULE_PARM_DESC(spx_rx_acdb_id, "SPX: ADM/ACDB device id for playback COPP (speaker=0x45)");
+static uint spx_rx_app_type;
+module_param(spx_rx_app_type, uint, 0644);
+MODULE_PARM_DESC(spx_rx_app_type, "SPX: ADM app_type for playback COPP");
+
 /**
  * q6routing_stream_open() - Register a new stream for route setup
  *
@@ -417,12 +441,38 @@ int q6routing_stream_open(int fedai_id, int perf_mode,
 	session->channels = pdata->channels;
 	session->bits_per_sample = pdata->bits_per_sample;
 
+	/* The Microsoft ADSP never acknowledges COPP close. The DSP-side COPP
+	 * and matrix route remain valid, so reuse the matching session instead
+	 * of issuing a duplicate MATRIX_MAP that returns ADSP_EALREADY.
+	 */
+	if (spx_keep_copp &&
+	    of_machine_is_compatible("microsoft,surface-pro-x") &&
+	    session->path_type == ADM_PATH_PLAYBACK &&
+	    session->copp_map) {
+		dev_info(routing_data->dev,
+			 "SPX: reusing preserved COPP/matrix route for session %d\n",
+			 stream_id);
+		mutex_unlock(&routing_data->lock);
+		return 0;
+	}
+
 	payload.num_copps = 0; /* only RX needs to use payload */
 	topology = NULL_COPP_TOPOLOGY;
+	/*
+	 * SPX: allow overriding the playback COPP topology/app_type/acdb_id so
+	 * the ADSP can be told to instantiate the speaker post-proc graph. Gate
+	 * on the playback path so capture COPPs are untouched. Defaults keep
+	 * mainline behaviour (NULL_COPP, app_type/acdb_id 0).
+	 */
+	if (session->path_type == ADM_PATH_PLAYBACK && spx_rx_topology)
+		topology = spx_rx_topology;
+	session->acdb_id = spx_rx_acdb_id;
+	session->app_type = spx_rx_app_type;
 	copp = q6adm_open(routing_data->dev, session->port_id,
 			      session->path_type, session->sample_rate,
 			      session->channels, topology, perf_mode,
-			      session->bits_per_sample, 0, 0);
+			      session->bits_per_sample,
+			      session->app_type, session->acdb_id);
 
 	if (IS_ERR_OR_NULL(copp)) {
 		mutex_unlock(&routing_data->lock);
@@ -480,6 +530,15 @@ void q6routing_stream_close(int fedai_id, int stream_type)
 	session = get_session_from_id(routing_data, fedai_id);
 	if (!session)
 		return;
+
+	if (spx_keep_copp &&
+	    of_machine_is_compatible("microsoft,surface-pro-x") &&
+	    session->path_type == ADM_PATH_PLAYBACK && session->copp_map) {
+		dev_info(routing_data->dev,
+			 "SPX: preserving live COPP/matrix route across close\n");
+		session->fedai_id = -1;
+		return;
+	}
 
 	for_each_set_bit(idx, &session->copp_map, MAX_COPPS_PER_PORT) {
 		if (session->copps[idx]) {

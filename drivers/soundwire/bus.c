@@ -1474,6 +1474,10 @@ static int sdw_initialize_slave(struct sdw_slave *slave)
 	 */
 	val = prop->scp_int1_mask;
 
+	/* A zero mask requests no SCP interrupts and needs no bus access. */
+	if (!val)
+		return 0;
+
 	/* Enable SCP interrupts */
 	ret = sdw_update_no_pm(slave, SDW_SCP_INTMASK1, val, val);
 	if (ret < 0) {

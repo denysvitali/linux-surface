@@ -94,6 +94,8 @@ struct audio_client;
 struct audio_client *q6asm_audio_client_alloc(struct device *dev,
 					      q6asm_cb cb, void *priv,
 					      int session_id, int perf_mode);
+void q6asm_audio_client_rebind(struct audio_client *ac, q6asm_cb cb,
+			       void *priv);
 void q6asm_audio_client_free(struct audio_client *ac);
 int q6asm_write_async(struct audio_client *ac, uint32_t stream_id, uint32_t len,
 		      uint32_t msw_ts, uint32_t lsw_ts, uint32_t wflags);

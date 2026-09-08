@@ -2335,6 +2335,16 @@ config MFD_WCD934X
 	  This driver provides common support WCD934x audio codec and its
 	  associated Pin Controller, Soundwire Controller and Audio codec.
 
+config MFD_WCD934X_WDSP
+	tristate "WCD9340 WDSP firmware loader over SPI"
+	depends on MFD_WCD934X
+	depends on SPI
+	default MFD_WCD934X
+	help
+	  Boot the Xtensa WDSP integrated into a WCD9340 through its AUDD SPI
+	  interface.  This is required by the internal speaker path on the
+	  Microsoft Surface Pro X.
+
 config MFD_ATC260X
 	tristate
 	select MFD_CORE

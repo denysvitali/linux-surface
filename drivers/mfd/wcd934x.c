@@ -2,6 +2,7 @@
 // Copyright (c) 2019, Linaro Limited
 
 #include <linux/clk.h>
+#include <linux/debugfs.h>
 #include <linux/gpio/consumer.h>
 #include <linux/interrupt.h>
 #include <linux/kernel.h>
@@ -15,6 +16,7 @@
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/slimbus.h>
+#include <linux/uaccess.h>
 
 #define WCD934X_REGMAP_IRQ_REG(_irq, _off, _mask)		\
 	[_irq] = {						\
@@ -30,6 +32,44 @@
 			.type_rising_val = 0,			\
 		},						\
 	}
+
+/*
+ * SPX: the two internal WSA881x speaker amps share a codec-GPIO enable line
+ * that the stock wsa881x driver never drives (it only manages the per-amp
+ * "powerdown" GPIO on wcd-gpio pin 1, like db845c). On the Surface Pro X the
+ * amps also hang off wcd-gpio pin 2. Direct electrical probing established
+ * that physical HIGH powers an amp and LOW turns it off. This legacy one-pin
+ * override is boot-only and opt-in; default -1 leaves all boards unchanged.
+ *   set: wcd934x.spx_wsa_en_pin=2   (the wcd-gpio pin index to power on)
+ */
+static int spx_wsa_en_pin = -1;
+module_param(spx_wsa_en_pin, int, 0444);
+MODULE_PARM_DESC(spx_wsa_en_pin,
+	"SPX: force this wcd934x GPIO pin output-high at bring-up to power one WSA amp (-1=off)");
+
+/*
+ * SPX: raw boot-time control of the wcd934x GPIO block, applied before the
+ * SoundWire master child is added.
+ *
+ * The two WSA881x amps are gated by pins 1 and 2. Only those managed bits are
+ * changed; unrelated WCD GPIO state is preserved.
+ *
+ *   wcd934x.spx_wsa_gpio_dir=0x06 wcd934x.spx_wsa_gpio_val=0x06
+ */
+static int spx_wsa_gpio_dir = -1;
+module_param(spx_wsa_gpio_dir, int, 0444);
+MODULE_PARM_DESC(spx_wsa_gpio_dir,
+	"SPX: raw wcd934x GPIO direction reg 0x42 value at bring-up (-1=off)");
+
+static int spx_wsa_gpio_val = -1;
+module_param(spx_wsa_gpio_val, int, 0444);
+MODULE_PARM_DESC(spx_wsa_gpio_val,
+	"SPX: raw wcd934x GPIO value reg 0x43 value at bring-up (-1=off)");
+
+/* wcd934x GPIO block (see drivers/gpio/gpio-wcd934x.c): dir/value at 0x42/0x43 */
+#define WCD934X_GPIO_DIR_CTL	0x42
+#define WCD934X_GPIO_VAL_CTL	0x43
+#define SPX_WSA_GPIO_MASK	0x06
 
 static const struct mfd_cell wcd934x_devices[] = {
 	{
@@ -53,6 +93,8 @@ static const struct regmap_irq wcd934x_irqs[] = {
 	WCD934X_REGMAP_IRQ_REG(WCD934X_IRQ_MBHC_BUTTON_RELEASE_DET, 1, BIT(3)),
 	WCD934X_REGMAP_IRQ_REG(WCD934X_IRQ_MBHC_ELECT_INS_REM_LEG_DET, 1, BIT(4)),
 	WCD934X_REGMAP_IRQ_REG(WCD934X_IRQ_SOUNDWIRE, 2, BIT(4)),
+	WCD934X_REGMAP_IRQ_REG(WCD934X_IRQ_CPE_ERROR, 2, BIT(7)),
+	WCD934X_REGMAP_IRQ_REG(WCD934X_IRQ_CPE1_INTR, 3, BIT(5)),
 };
 
 static const unsigned int wcd934x_config_regs[] = {
@@ -153,6 +195,49 @@ static int wcd934x_bring_up(struct wcd934x_ddata *ddata)
 	return 0;
 }
 
+/* SPX: userspace regmap write helper. The regmap debugfs `access` file is
+ * absent on this build, so expose a minimal write helper for the speaker
+ * replay script to drive codec + SWR master + WSA registers from APPS.
+ * Usage (root):
+ *   echo "0xREG 0xVAL" > /sys/kernel/debug/wcd934x/<addr>/write_reg
+ */
+static ssize_t spx_write_reg_write(struct file *f, const char __user *buf,
+				   size_t count, loff_t *ppos)
+{
+	struct wcd934x_ddata *ddata = file_inode(f)->i_private;
+	unsigned int reg, val, ret;
+	char kbuf[32];
+
+	/*
+	 * buf is a __user pointer: sscanf()-ing it directly faults on hardened
+	 * usercopy (kernel access to user memory) and oopses. Copy into a kernel
+	 * buffer first.
+	 */
+	if (count >= sizeof(kbuf))
+		return -EINVAL;
+	if (copy_from_user(kbuf, buf, count))
+		return -EFAULT;
+	kbuf[count] = '\0';
+
+	if (sscanf(kbuf, "%x %x", &reg, &val) != 2)
+		return -EINVAL;
+	ret = regmap_write(ddata->regmap, reg, val);
+	if (ret) {
+		dev_err(ddata->dev, "spx write_reg 0x%04x=0x%02x failed: %d\n",
+			reg, val, ret);
+		return ret;
+	}
+	dev_dbg(ddata->dev, "spx write_reg 0x%04x=0x%02x ok\n", reg, val);
+	return count;
+}
+
+static const struct file_operations spx_write_reg_fops = {
+	.owner = THIS_MODULE,
+	.open = simple_open,
+	.write = spx_write_reg_write,
+	.llseek = noop_llseek,
+};
+
 static int wcd934x_slim_status_up(struct slim_device *sdev)
 {
 	struct device *dev = &sdev->dev;
@@ -173,13 +258,41 @@ static int wcd934x_slim_status_up(struct slim_device *sdev)
 		return ret;
 	}
 
-	ret = devm_regmap_add_irq_chip(dev, ddata->regmap, ddata->irq,
-				       IRQF_TRIGGER_HIGH, 0,
-				       &wcd934x_regmap_irq_chip,
-				       &ddata->irq_data);
-	if (ret) {
-		dev_err(dev, "Failed to add IRQ chip: err = %d\n", ret);
-		return ret;
+	/*
+	 * SPX legacy one-pin override: physical HIGH powers the selected amp.
+	 */
+	if (spx_wsa_en_pin >= 0 && spx_wsa_en_pin < 5) {
+		u32 m = BIT(spx_wsa_en_pin);
+
+		regmap_update_bits(ddata->regmap, WCD934X_GPIO_DIR_CTL, m, m);
+		regmap_update_bits(ddata->regmap, WCD934X_GPIO_VAL_CTL, m, m);
+		dev_info(dev, "SPX: forced wcd-gpio pin %d output-high to power one WSA amp\n",
+			 spx_wsa_en_pin);
+	}
+
+	/* Managed two-pin override, applied after the single-pin helper above. */
+	if (spx_wsa_gpio_dir >= 0)
+		regmap_update_bits(ddata->regmap, WCD934X_GPIO_DIR_CTL,
+				   SPX_WSA_GPIO_MASK, spx_wsa_gpio_dir);
+	if (spx_wsa_gpio_val >= 0)
+		regmap_update_bits(ddata->regmap, WCD934X_GPIO_VAL_CTL,
+				   SPX_WSA_GPIO_MASK, spx_wsa_gpio_val);
+	if (spx_wsa_gpio_dir >= 0 || spx_wsa_gpio_val >= 0)
+		dev_info(dev,
+			 "SPX: wcd-gpio managed bits 0x06 dir=0x%02x val=0x%02x\n",
+			 spx_wsa_gpio_dir & SPX_WSA_GPIO_MASK,
+			 spx_wsa_gpio_val & SPX_WSA_GPIO_MASK);
+
+	/* SPX: skip the regmap IRQ chip when no codec IRQ is wired. */
+	if (ddata->irq > 0) {
+		ret = devm_regmap_add_irq_chip(dev, ddata->regmap, ddata->irq,
+					       IRQF_TRIGGER_HIGH, 0,
+					       &wcd934x_regmap_irq_chip,
+					       &ddata->irq_data);
+		if (ret) {
+			dev_err(dev, "Failed to add IRQ chip: err = %d\n", ret);
+			return ret;
+		}
 	}
 
 	ret = mfd_add_devices(dev, PLATFORM_DEVID_AUTO, wcd934x_devices,
@@ -189,6 +302,12 @@ static int wcd934x_slim_status_up(struct slim_device *sdev)
 			ret);
 		return ret;
 	}
+
+	/* SPX: expose a userspace regmap write helper for the speaker replay. */
+	ddata->dbgdir = debugfs_create_dir(dev_name(dev), NULL);
+	debugfs_create_file("write_reg", 0200,
+			    ddata->dbgdir, ddata,
+			    &spx_write_reg_fops);
 
 	return ret;
 }
@@ -222,9 +341,15 @@ static int wcd934x_slim_probe(struct slim_device *sdev)
 		return	-ENOMEM;
 
 	ddata->irq = of_irq_get(np, 0);
-	if (ddata->irq < 0)
-		return dev_err_probe(ddata->dev, ddata->irq,
-				     "Failed to get IRQ\n");
+	if (ddata->irq < 0) {
+		/* SPX: codec IRQ is not wired in the DT (DSDT GIO0 pin 0x100
+		 * sits beyond the TLMM pinctrl-msm gpio-ranges, and no
+		 * QCOM040D ACPI GPIO driver is upstream). Continue without
+		 * the codec IRQ so the sound card can still come up; the
+		 * IRQ-gated codec init (MBHC, etc.) is simply skipped. */
+		dev_warn(dev, "no codec IRQ (sp): %d\n", ddata->irq);
+		ddata->irq = 0;
+	}
 
 	ddata->extclk = devm_clk_get(dev, "extclk");
 	if (IS_ERR(ddata->extclk))

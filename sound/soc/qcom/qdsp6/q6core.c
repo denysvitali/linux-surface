@@ -6,6 +6,8 @@
 #include <linux/wait.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/debugfs.h>
+#include <linux/uaccess.h>
 #include <linux/sched.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
@@ -22,6 +24,9 @@
 #define AVCS_GET_VERSIONS_RSP   0x00012906
 #define AVCS_CMD_GET_FWK_VERSION	0x001292c
 #define AVCS_CMDRSP_GET_FWK_VERSION	0x001292d
+/* Surface Pro X Windows audio initialization uses this AVCS exchange. */
+#define AVCS_CMD_SPX_AUDIO_INIT		0x00012914
+#define AVCS_CMDRSP_SPX_AUDIO_INIT	0x00012915
 
 struct avcs_svc_info {
 	uint32_t service_id;
@@ -50,6 +55,13 @@ struct avcs_cmdrsp_get_fwk_version {
 	struct avcs_svc_api_info svc_api_info[];
 } __packed;
 
+struct avcs_cmd_spx_audio_init {
+	struct apr_hdr hdr;
+	u32 value;
+	u16 index;
+	u16 reserved;
+} __packed;
+
 struct q6core {
 	struct apr_device *adev;
 	wait_queue_head_t wait;
@@ -63,6 +75,10 @@ struct q6core {
 	bool get_state_supported;
 	bool get_version_supported;
 	bool is_version_requested;
+	bool spx_init_received;
+	bool spx_init_done;
+	u32 spx_init_status;
+	struct dentry *dbg_dir;
 };
 
 static struct q6core *g_core;
@@ -92,6 +108,10 @@ static int q6core_callback(struct apr_device *adev, const struct apr_resp_pkt *d
 			if (result->status == ADSP_EUNSUPPORTED)
 				core->get_state_supported = false;
 			core->resp_received = true;
+			break;
+		case AVCS_CMD_SPX_AUDIO_INIT:
+			core->spx_init_status = result->status;
+			core->spx_init_received = true;
 			break;
 		}
 		break;
@@ -136,13 +156,19 @@ static int q6core_callback(struct apr_device *adev, const struct apr_resp_pkt *d
 
 		core->resp_received = true;
 		break;
+	case AVCS_CMDRSP_SPX_AUDIO_INIT:
+		/* qcadcm waits for this dedicated response, not only BASIC_RSP. */
+		core->spx_init_status = 0;
+		core->spx_init_received = true;
+		dev_dbg(&adev->dev, "SPX AVCS init response received\n");
+		break;
 	default:
 		dev_err(&adev->dev, "Message id from adsp core svc: 0x%x\n",
 			hdr->opcode);
 		break;
 	}
 
-	if (core->resp_received)
+	if (core->resp_received || core->spx_init_received)
 		wake_up(&core->wait);
 
 	return 0;
@@ -235,6 +261,78 @@ static bool __q6core_is_adsp_ready(struct q6core *core)
 
 	return false;
 }
+
+int q6core_spx_audio_init(void)
+{
+	struct q6core *core = g_core;
+	struct avcs_cmd_spx_audio_init cmd = { };
+	long timeout;
+	int rc;
+
+	if (!core)
+		return -ENODEV;
+
+	mutex_lock(&core->lock);
+	if (core->spx_init_done) {
+		rc = 0;
+		goto done;
+	}
+	core->spx_init_received = false;
+	core->spx_init_status = ADSP_EFAILED;
+	cmd.hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
+					  APR_HDR_LEN(APR_HDR_SIZE), APR_PKT_VER);
+	cmd.hdr.pkt_size = sizeof(cmd);
+	/* qcadcm sends this AVCS request as APPS service 2 to ADSP service 3. */
+	cmd.hdr.src_svc = 2;
+	cmd.hdr.opcode = AVCS_CMD_SPX_AUDIO_INIT;
+
+	rc = apr_send_pkt(core->adev, (struct apr_pkt *)&cmd);
+	if (rc < 0)
+		goto done;
+
+	timeout = wait_event_timeout(core->wait, core->spx_init_received,
+				     msecs_to_jiffies(Q6_READY_TIMEOUT_MS));
+	if (!timeout)
+		rc = -ETIMEDOUT;
+	else if (core->spx_init_status)
+		rc = -EREMOTEIO;
+	else
+		rc = 0;
+	if (!rc)
+		core->spx_init_done = true;
+
+done:
+	dev_info(&core->adev->dev, "SPX AVCS init: rc=%d status=0x%x\n",
+		 rc, core->spx_init_status);
+	mutex_unlock(&core->lock);
+	return rc;
+}
+EXPORT_SYMBOL_GPL(q6core_spx_audio_init);
+
+static ssize_t q6core_spx_audio_init_write(struct file *file,
+					    const char __user *ubuf,
+					    size_t count, loff_t *ppos)
+{
+	char value[8];
+	int rc;
+
+	if (!count || count >= sizeof(value))
+		return -EINVAL;
+	if (copy_from_user(value, ubuf, count))
+		return -EFAULT;
+	value[count] = '\0';
+	if (strcmp(value, "1\n") && strcmp(value, "1"))
+		return -EINVAL;
+
+	rc = q6core_spx_audio_init();
+	return rc ? rc : count;
+}
+
+static const struct file_operations q6core_spx_audio_init_fops = {
+	.open = simple_open,
+	.write = q6core_spx_audio_init_write,
+	.llseek = noop_llseek,
+};
 
 /**
  * q6core_get_svc_api_info() - Get version number of a service.
@@ -336,6 +434,9 @@ static int q6core_probe(struct apr_device *adev)
 	mutex_init(&g_core->lock);
 	g_core->adev = adev;
 	init_waitqueue_head(&g_core->wait);
+	g_core->dbg_dir = debugfs_create_dir("q6core", NULL);
+	debugfs_create_file("spx_audio_init", 0200, g_core->dbg_dir, g_core,
+			    &q6core_spx_audio_init_fops);
 	return 0;
 }
 
@@ -349,6 +450,7 @@ static void q6core_exit(struct apr_device *adev)
 		kfree(core->svc_version);
 
 	g_core = NULL;
+	debugfs_remove_recursive(core->dbg_dir);
 	kfree(core);
 }
 

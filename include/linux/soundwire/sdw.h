@@ -406,6 +406,7 @@ struct sdw_slave_prop {
 };
 
 #define SDW_SLAVE_QUIRKS_INVALID_INITIAL_PARITY	BIT(0)
+#define SDW_SLAVE_QUIRKS_WRITE_ONLY_PORTCTRL	BIT(1)
 
 /**
  * struct sdw_master_prop - Master properties

@@ -23,6 +23,32 @@
 #include "q6dsp-errno.h"
 #include "q6dsp-common.h"
 
+static int spx_memmap_debug;
+module_param_named(memmap_debug, spx_memmap_debug, int, 0644);
+MODULE_PARM_DESC(memmap_debug, "SPX: dump ASM_CMD_SHARED_MEM_MAP_REGIONS payload before send");
+
+/*
+ * SPX falsification probes (address-safe: these never change the buffer address,
+ * which stays inside the ADSP POIPU_V1 window [0x1_00000000,0x1_FFFF0000), so
+ * they cannot cause an out-of-window ADSP crash; worst case is a graceful
+ * EFAILED/timeout). The ADSP VCM map handler may key "this is an SMMU-mapped
+ * virtual region" off property_flag or mem_pool_id; default values reproduce the
+ * stock payload.
+ */
+static int spx_property_flag;	/* try 0x01 to mark the region SMMU/virtual */
+module_param_named(property_flag, spx_property_flag, int, 0644);
+MODULE_PARM_DESC(property_flag, "SPX: ASM mem-map property_flag (default 0)");
+
+/*
+ * SPX default = 4 (the SMMU/virtual pool the ADSP VCM context owns). Verified
+ * 2026-06-22: pool 3 (stock SHMEM8_4K) stalls the map with -110; pool 4 ACKs and
+ * the full ASM->AFE->SLIMbus playback path runs clean, paired with the high-IOVA
+ * alias in q6asm-dai.c. -1 restores the stock pool for A/B testing.
+ */
+static int spx_mem_pool = 4;
+module_param_named(mem_pool, spx_mem_pool, int, 0644);
+MODULE_PARM_DESC(mem_pool, "SPX: ASM mem-map mem_pool_id (default 4=SMMU pool; -1=stock 3)");
+
 #define ASM_STREAM_CMD_CLOSE			0x00010BCD
 #define ASM_STREAM_CMD_FLUSH			0x00010BCE
 #define ASM_SESSION_CMD_PAUSE			0x00010BD3
@@ -318,8 +344,9 @@ static int q6asm_apr_send_session_pkt(struct q6asm *a, struct audio_client *ac,
 		dev_err(a->dev, "CMD %x timeout\n", hdr->opcode);
 		rc = -ETIMEDOUT;
 	} else if (ac->result.status > 0) {
-		dev_err(a->dev, "DSP returned error[%x]\n",
-			ac->result.status);
+		dev_err(a->dev, "DSP returned error[%x] opcode=%x token=%x\n",
+			ac->result.status, hdr->opcode, hdr->token);
+		dev_err(a->dev, "DSP packet: token=%x opcode=%x\n", hdr->token, hdr->opcode);
 		rc = -EINVAL;
 	}
 
@@ -460,23 +487,31 @@ static int __q6asm_memory_map_regions(struct audio_client *ac, int dir,
 	pkt->hdr.token = ((ac->session << 8) | dir);
 	pkt->hdr.opcode = ASM_CMD_SHARED_MEM_MAP_REGIONS;
 
-	cmd->mem_pool_id = ADSP_MEMORY_MAP_SHMEM8_4K_POOL;
+	cmd->mem_pool_id = (spx_mem_pool >= 0) ? spx_mem_pool :
+						  ADSP_MEMORY_MAP_SHMEM8_4K_POOL;
 	cmd->num_regions = num_regions;
-	cmd->property_flag = 0x00;
+	cmd->property_flag = spx_property_flag;
 
 	spin_lock_irqsave(&ac->lock, flags);
 	port = &ac->port[dir];
 
+	ab = &port->buf[0];
 	for (i = 0; i < num_regions; i++) {
-		ab = &port->buf[i];
-		mregions->shm_addr_lsw = lower_32_bits(ab->phys);
-		mregions->shm_addr_msw = upper_32_bits(ab->phys);
+		mregions->shm_addr_lsw = lower_32_bits(port->buf[i].phys);
+		mregions->shm_addr_msw = upper_32_bits(port->buf[i].phys);
 		mregions->mem_size_bytes = buf_sz;
 		++mregions;
 	}
 	spin_unlock_irqrestore(&ac->lock, flags);
 
-	return q6asm_apr_send_session_pkt(a, ac, pkt, ASM_CMDRSP_SHARED_MEM_MAP_REGIONS);
+	if (spx_memmap_debug)
+		dev_info(a->dev, "mem_map req: phys=0x%llx lsw=0x%x msw=0x%x sz=%u regions=%u pool=%u token=0x%x\n",
+			 (unsigned long long)ab->phys, lower_32_bits(ab->phys),
+			 upper_32_bits(ab->phys), buf_sz, num_regions,
+			 cmd->mem_pool_id, pkt->hdr.token);
+
+	return q6asm_apr_send_session_pkt(a, ac, pkt,
+					ASM_CMDRSP_SHARED_MEM_MAP_REGIONS);
 }
 
 /**
@@ -530,7 +565,27 @@ int q6asm_map_memory_regions(unsigned int dir, struct audio_client *ac,
 
 	rc = __q6asm_memory_map_regions(ac, dir, period_sz, periods, 1);
 	if (rc < 0) {
-		dev_err(ac->dev, "Memory_map_regions failed\n");
+		dev_err(ac->dev, "Memory_map_regions failed rc=%d\n", rc);
+		/*
+		 * SPX: the ADSP may have committed the pool-3 entry even
+		 * though it returned ADSP_EFAILED. The kernel never received
+		 * a handle, so __q6asm_memory_unmap() refuses to send an
+		 * unmap. Force-issue an unmap by temporarily setting the
+		 * handle to 0xFFFF — the ADSP ignores the unmap if no entry
+		 * exists, and evicts the stale entry if one does. Without
+		 * this, the next prepare collides on the same
+		 * [addr,addr+size) and EFAILEDs again until NGD reset
+		 * (TLMM 143).
+		 */
+		if (ac->port[dir].buf) {
+			unsigned long unmap_flags;
+
+			spin_lock_irqsave(&ac->lock, unmap_flags);
+			ac->port[dir].mem_map_handle = 0xFFFF;
+			spin_unlock_irqrestore(&ac->lock, unmap_flags);
+			__q6asm_memory_unmap(ac, phys, dir);
+		}
+		ac->port[dir].mem_map_handle = 0;
 		q6asm_audio_client_free_buf(ac, &ac->port[dir]);
 	}
 
@@ -564,6 +619,25 @@ void q6asm_audio_client_free(struct audio_client *ac)
 	kref_put(&ac->refcount, q6asm_audio_client_release);
 }
 EXPORT_SYMBOL_GPL(q6asm_audio_client_free);
+
+/**
+ * q6asm_audio_client_rebind() - rebind a parked client to a new owner
+ *
+ * @ac: parked audio client
+ * @cb: new event callback
+ * @priv: new private data (the new PCM runtime)
+ *
+ * The SPX ADSP never ACKs ASM_STREAM_CMD_CLOSE, so q6asm-dai parks a live
+ * audio_client across PCM closes instead of freeing it. The parked client's
+ * cb/priv still point at the old, freed runtime; repoint them to the new owner
+ * before reuse so WRITE_DONE events land on the current substream.
+ */
+void q6asm_audio_client_rebind(struct audio_client *ac, q6asm_cb cb, void *priv)
+{
+	ac->cb = cb;
+	ac->priv = priv;
+}
+EXPORT_SYMBOL_GPL(q6asm_audio_client_rebind);
 
 static struct audio_client *q6asm_get_audio_client(struct q6asm *a,
 						   int session_id)

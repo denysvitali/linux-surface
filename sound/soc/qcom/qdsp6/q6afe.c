@@ -5,12 +5,14 @@
 #include <dt-bindings/sound/qcom,q6afe.h>
 #include <linux/slab.h>
 #include <linux/kernel.h>
+#include <linux/unaligned.h>
 #include <linux/uaccess.h>
 #include <linux/wait.h>
 #include <linux/jiffies.h>
 #include <linux/sched.h>
 #include <linux/module.h>
 #include <linux/kref.h>
+#include <linux/debugfs.h>
 #include <linux/of.h>
 #include <linux/of_platform.h>
 #include <linux/spinlock.h>
@@ -29,12 +31,25 @@
 #define AFE_PORT_CMD_DEVICE_STOP	0x000100E6
 #define AFE_PORT_CMD_SET_PARAM_V2	0x000100EF
 #define AFE_SVC_CMD_SET_PARAM		0x000100f3
+/* SPX: the SPX ADSP expects the instance-aware SET_PARAM (16-byte param hdr,
+ * mirroring the q6adm SET_PP_PARAMS_V6 finding). Windows fires the codec/SLIMbus
+ * AFE params via these opcodes; the legacy 12-byte-header 0x100EF/0x100f3 are
+ * (we suspect) silently dropped for the speaker codec params. */
+#define AFE_SVC_CMD_SET_PARAM_V3	0x000100fa
+#define AFE_PORT_CMD_SET_PARAM_V3	0x000100fc
 #define AFE_PORT_CMDRSP_GET_PARAM_V2	0x00010106
+#define AFE_PORT_CMD_GET_PARAM_V2	0x000100F0
+#define AFE_GET_PARAM_MAX		256
 #define AFE_PARAM_ID_HDMI_CONFIG	0x00010210
 #define AFE_MODULE_AUDIO_DEV_INTERFACE	0x0001020C
 #define AFE_MODULE_TDM			0x0001028A
+#define AFE_MODULE_CDC_DEV_CFG		0x00010234
+#define AFE_MODULE_HW_MAD		0x00010230
 
 #define AFE_PARAM_ID_CDC_SLIMBUS_SLAVE_CFG 0x00010235
+#define AFE_PARAM_ID_CDC_REG_CFG	0x00010236
+#define AFE_PARAM_ID_CDC_REG_CFG_INIT	0x00010237
+#define AFE_PARAM_ID_CDC_REG_PAGE_CFG	0x00010296
 #define AFE_PARAM_ID_USB_AUDIO_DEV_PARAMS    0x000102A5
 #define AFE_PARAM_ID_USB_AUDIO_DEV_LPCM_FMT 0x000102AA
 
@@ -42,6 +57,7 @@
 #define AFE_PARAM_ID_INT_DIGITAL_CDC_CLK_CONFIG	0x00010239
 
 #define AFE_PARAM_ID_SLIMBUS_CONFIG    0x00010212
+#define AFE_PARAM_ID_SLIMBUS_SLAVE_PORT_CFG	0x00010233
 #define AFE_PARAM_ID_I2S_CONFIG	0x0001020D
 #define AFE_PARAM_ID_TDM_CONFIG	0x0001029D
 #define AFE_PARAM_ID_PORT_SLOT_MAPPING_CONFIG	0x00010297
@@ -387,6 +403,36 @@
 #define AFE_CMD_RESP_NONE	1
 #define AFE_CLK_TOKEN		1024
 
+static bool spx_auto_speaker_cal;
+module_param(spx_auto_speaker_cal, bool, 0644);
+MODULE_PARM_DESC(spx_auto_speaker_cal,
+		 "Surface Pro X: experimentally replay speaker AFE records on SLIMBUS_2_RX start (default off)");
+
+/* SPX: builder-facing overrides for the two staged SLIM data-channel blobs
+ * below (q6afe_spx_cdc_slimbus_slave_cfg / q6afe_spx_slimbus_slave_port_cfg)
+ * whose real values Windows takes from ACDB property 0xadae20a5 at runtime.
+ * -1 keeps the staged byte; anything else patches the body at apply time.
+ * All four only matter when spx_auto_speaker_cal=1. */
+static int spx_slim_slave_eaddr_lsw = -1;
+module_param(spx_slim_slave_eaddr_lsw, int, 0644);
+MODULE_PARM_DESC(spx_slim_slave_eaddr_lsw,
+		 "Surface Pro X: override CDC_SLIMBUS_SLAVE_CFG device_enum_addr LSW word, e.g. 0x02500100 (-1 = keep staged value; only used when spx_auto_speaker_cal=1)");
+
+static int spx_slim_slave_eaddr_msw = -1;
+module_param(spx_slim_slave_eaddr_msw, int, 0644);
+MODULE_PARM_DESC(spx_slim_slave_eaddr_msw,
+		 "Surface Pro X: override CDC_SLIMBUS_SLAVE_CFG device_enum_addr MSW word, e.g. 0x00000217 (-1 = keep staged value; only used when spx_auto_speaker_cal=1)");
+
+static int spx_slim_port_pgd_la = -1;
+module_param(spx_slim_port_pgd_la, int, 0644);
+MODULE_PARM_DESC(spx_slim_port_pgd_la,
+		 "Surface Pro X: override SLIMBUS_SLAVE_PORT_CFG slave_dev_pgd_la, 0..0xffff (-1 = keep staged value; only used when spx_auto_speaker_cal=1)");
+
+static int spx_slim_port_intfdev_la = -1;
+module_param(spx_slim_port_intfdev_la, int, 0644);
+MODULE_PARM_DESC(spx_slim_port_intfdev_la,
+		 "Surface Pro X: override SLIMBUS_SLAVE_PORT_CFG slave_dev_intfdev_la, 0..0xffff (-1 = keep staged value; only used when spx_auto_speaker_cal=1)");
+
 struct q6afe {
 	struct apr_device *apr;
 	struct device *dev;
@@ -396,6 +442,18 @@ struct q6afe {
 	wait_queue_head_t wait;
 	struct list_head port_list;
 	spinlock_t port_list_lock;
+#ifdef CONFIG_DEBUG_FS
+	/* SPX speaker bring-up probe (see q6afe_spx_debugfs_init) */
+	struct dentry *dbg_dir;
+	struct mutex dbg_lock;
+	void *dbg_payload;
+	size_t dbg_payload_len;
+	u32 dbg_module_id;
+	u32 dbg_param_id;
+	u32 dbg_port_index;
+	bool dbg_use_svc;
+	bool dbg_hdr_v3;	/* use 16-byte instance param hdr + V3 opcodes */
+#endif
 };
 
 struct afe_port_cmd_device_start {
@@ -416,6 +474,16 @@ struct afe_port_param_data_v2 {
 	u16 reserved;
 } __packed;
 
+/* SPX: 16-byte instance-based param header (param_hdr_v3) used with the
+ * AFE_*_SET_PARAM_V3 opcodes. */
+struct afe_param_data_v3 {
+	u32 module_id;
+	u16 instance_id;
+	u16 reserved;
+	u32 param_id;
+	u32 param_size;
+} __packed;
+
 struct afe_svc_cmd_set_param {
 	uint32_t payload_size;
 	uint32_t payload_address_lsw;
@@ -429,6 +497,26 @@ struct afe_port_cmd_set_param_v2 {
 	u32 payload_address_lsw;
 	u32 payload_address_msw;
 	u32 mem_map_handle;
+} __packed;
+
+/* SPX: AFE GET_PARAM read-back so the speaker probe can confirm a param
+ * actually stuck (the DSP acks SET_PARAM with rc=0 regardless of effect). */
+struct afe_port_cmd_get_param_v2 {
+	u16 port_id;
+	u16 payload_size;
+	u32 payload_address_lsw;
+	u32 payload_address_msw;
+	u32 mem_map_handle;
+	u32 module_id;
+	u32 param_id;
+	u16 param_max_size;
+	u16 reserved;
+} __packed;
+
+struct afe_port_cmdrsp_get_param_v2 {
+	u32 status;
+	struct afe_port_param_data_v2 pdata;
+	/* param payload bytes follow */
 } __packed;
 
 struct afe_param_id_hdmi_multi_chan_audio_cfg {
@@ -657,6 +745,10 @@ struct q6afe_port {
 	struct q6afe *afe;
 	struct kref refcount;
 	struct list_head node;
+	/* SPX GET_PARAM read-back staging */
+	u32 get_param_status;
+	int get_param_len;
+	u32 get_param[AFE_GET_PARAM_MAX / 4];
 };
 
 struct afe_cmd_remote_lpass_core_hw_vote_request {
@@ -1026,6 +1118,8 @@ static int q6afe_callback(struct apr_device *adev, const struct apr_resp_pkt *da
 		case AFE_PORT_CMD_DEVICE_STOP:
 		case AFE_PORT_CMD_DEVICE_START:
 		case AFE_SVC_CMD_SET_PARAM:
+		case AFE_SVC_CMD_SET_PARAM_V3:
+		case AFE_PORT_CMD_SET_PARAM_V3:
 			port = q6afe_find_port(afe, hdr->token);
 			if (port) {
 				port->result = *res;
@@ -1036,12 +1130,52 @@ static int q6afe_callback(struct apr_device *adev, const struct apr_resp_pkt *da
 				wake_up(&afe->wait);
 			}
 			break;
+		case AFE_PORT_CMD_GET_PARAM_V2:
+			/*
+			 * Error basic-rsp to a GET. afe_apr_send_pkt() waits on
+			 * result.opcode == AFE_PORT_CMDRSP_GET_PARAM_V2, but
+			 * res->opcode here is the command id, so force the rsp
+			 * opcode or the GET would spuriously time out.
+			 */
+			port = q6afe_find_port(afe, hdr->token);
+			if (port) {
+				port->result.opcode = AFE_PORT_CMDRSP_GET_PARAM_V2;
+				port->result.status = res->status;
+				port->get_param_status = res->status;
+				port->get_param_len = 0;
+				wake_up(&port->wait);
+				kref_put(&port->refcount, q6afe_port_free);
+			}
+			break;
 		default:
 			dev_err(afe->dev, "Unknown cmd 0x%x\n",	res->opcode);
 			break;
 		}
 	}
 		break;
+	case AFE_PORT_CMDRSP_GET_PARAM_V2: {
+		struct afe_port_cmdrsp_get_param_v2 *g = data->payload;
+		int avail = (int)data->payload_size - (int)sizeof(*g);
+
+		port = q6afe_find_port(afe, hdr->token);
+		if (port) {
+			port->get_param_status = g->status;
+			port->get_param_len = min_t(int, g->pdata.param_size,
+						    AFE_GET_PARAM_MAX);
+			if (port->get_param_len > avail)
+				port->get_param_len = avail;
+			if (port->get_param_len < 0)
+				port->get_param_len = 0;
+			memcpy(port->get_param,
+			       (u8 *)data->payload + sizeof(*g),
+			       port->get_param_len);
+			port->result.status = g->status;
+			port->result.opcode = hdr->opcode;
+			wake_up(&port->wait);
+			kref_put(&port->refcount, q6afe_port_free);
+		}
+		break;
+	}
 	case AFE_CMD_RSP_REMOTE_LPASS_CORE_HW_VOTE_REQUEST:
 		afe->result.opcode = hdr->opcode;
 		afe->result.status = res->status;
@@ -1209,6 +1343,321 @@ static int q6afe_port_set_param_v2(struct q6afe_port *port, void *data,
 		dev_err(afe->dev, "AFE enable for port 0x%x failed %d\n",
 		       port_id, ret);
 
+	return ret;
+}
+
+/* SPX: SET_PARAM with the 16-byte instance param header (param_hdr_v3) + the V3
+ * opcodes (svc 0x100fa / port 0x100fc) the SPX ADSP expects for its speaker
+ * codec path; the normal q6afe paths keep the legacy v2 header untouched. */
+static int q6afe_spx_set_param_v3(struct q6afe *afe, struct q6afe_port *port,
+				  const void *data, int param_id, int module_id,
+				  int psize, bool use_svc)
+{
+	/* V3 set-param preamble (both svc 0x100fa and port 0x100fc): the SPX ADSP
+	 * expects {u32 lsw; u32 msw; u32 handle; u32 payload_size} with NO port_id
+	 * (port conveyed via the APR token, dest_port=0) - decoded byte-exact from
+	 * the Windows qcadcm builder. The legacy v2 layout (port_id first,
+	 * payload_size u16) is what made these EBADPARAM. */
+	struct afe_cmd_set_param_v3_hdr {
+		u32 payload_address_lsw;
+		u32 payload_address_msw;
+		u32 mem_map_handle;
+		u32 payload_size;
+	} __packed *c;
+	struct afe_param_data_v3 *pdata;
+	struct apr_pkt *pkt;
+	int ret, pkt_size;
+	void *p, *pl;
+	u32 opcode;
+
+	pkt_size = APR_HDR_SIZE + sizeof(*c) + sizeof(*pdata) + psize;
+	p = kzalloc(pkt_size, GFP_KERNEL);
+	if (!p)
+		return -ENOMEM;
+
+	pkt = p;
+	c = p + APR_HDR_SIZE;
+	pdata = p + APR_HDR_SIZE + sizeof(*c);
+	pl = p + APR_HDR_SIZE + sizeof(*c) + sizeof(*pdata);
+	memcpy(pl, data, psize);
+
+	opcode = use_svc ? AFE_SVC_CMD_SET_PARAM_V3 : AFE_PORT_CMD_SET_PARAM_V3;
+	pkt->hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
+					   APR_HDR_LEN(APR_HDR_SIZE), APR_PKT_VER);
+	pkt->hdr.pkt_size = pkt_size;
+	pkt->hdr.src_port = 0;
+	pkt->hdr.dest_port = 0;
+	pkt->hdr.token = port->token;
+	pkt->hdr.opcode = opcode;
+
+	c->payload_address_lsw = 0;
+	c->payload_address_msw = 0;
+	c->mem_map_handle = 0;
+	c->payload_size = sizeof(*pdata) + psize;
+
+	pdata->module_id = module_id;
+	pdata->instance_id = 0;
+	pdata->reserved = 0;
+	pdata->param_id = param_id;
+	pdata->param_size = psize;
+
+	ret = afe_apr_send_pkt(afe, pkt, port, opcode);
+	kfree(pkt);
+	return ret;
+}
+
+static const u8 q6afe_spx_cdc_slimbus_slave_cfg[] = {
+	0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00,
+};
+
+static const u8 q6afe_spx_cdc_reg_page_cfg[] = {
+	0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00,
+};
+
+static const u8 q6afe_spx_slimbus_slave_port_cfg[] = {
+	0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x02, 0x00,
+	0xc0, 0x00, 0xc1, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+};
+
+static const u8 q6afe_spx_slimbus_config[] = {
+	0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x10, 0x00,
+	0x00, 0x00, 0x02, 0x00, 0xc0, 0xc1, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x80, 0xbb, 0x00, 0x00,
+};
+
+static const u8 q6afe_spx_codec_cal_15200[] = {
+	0x00, 0x52, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x84, 0x00, 0x00, 0x00, 0x84, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x04, 0x00, 0x01, 0x01, 0x05, 0x00, 0x01, 0x01,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x15, 0x00, 0x03, 0x10,
+	0x05, 0x00, 0x00, 0x00,
+};
+static_assert(sizeof(q6afe_spx_codec_cal_15200) == 0x78);
+
+static const u8 q6afe_spx_codec_cal_commit[] = {
+	0x00,
+};
+
+struct q6afe_spx_cal_step {
+	const char *name;
+	int module_id;
+	int param_id;
+	const u8 *data;
+	int size;
+};
+
+static int q6afe_spx_apply_speaker_cal(struct q6afe_port *port)
+{
+	static const struct q6afe_spx_cal_step steps[] = {
+		{
+			"CDC_SLIMBUS_SLAVE_CFG",
+			AFE_MODULE_CDC_DEV_CFG,
+			AFE_PARAM_ID_CDC_SLIMBUS_SLAVE_CFG,
+			q6afe_spx_cdc_slimbus_slave_cfg,
+			sizeof(q6afe_spx_cdc_slimbus_slave_cfg),
+		},
+		{
+			"CDC_REG_PAGE_CFG",
+			AFE_MODULE_CDC_DEV_CFG,
+			AFE_PARAM_ID_CDC_REG_PAGE_CFG,
+			q6afe_spx_cdc_reg_page_cfg,
+			sizeof(q6afe_spx_cdc_reg_page_cfg),
+		},
+		{
+			"SLIMBUS_SLAVE_PORT_CFG",
+			AFE_MODULE_HW_MAD,
+			AFE_PARAM_ID_SLIMBUS_SLAVE_PORT_CFG,
+			q6afe_spx_slimbus_slave_port_cfg,
+			sizeof(q6afe_spx_slimbus_slave_port_cfg),
+		},
+		{
+			"SLIMBUS_CONFIG",
+			0x00015200,
+			AFE_PARAM_ID_SLIMBUS_CONFIG,
+			q6afe_spx_slimbus_config,
+			sizeof(q6afe_spx_slimbus_config),
+		},
+		{
+			"CDC_REG_CFG",
+			0x00015200,
+			AFE_PARAM_ID_CDC_REG_CFG,
+			q6afe_spx_codec_cal_15200,
+			sizeof(q6afe_spx_codec_cal_15200),
+		},
+		{
+			"CDC_REG_CFG_INIT",
+			0x00015200,
+			AFE_PARAM_ID_CDC_REG_CFG_INIT,
+			q6afe_spx_codec_cal_commit,
+			sizeof(q6afe_spx_codec_cal_commit),
+		},
+	};
+	struct q6afe *afe = port->afe;
+	u8 slim_cfg_buf[sizeof(q6afe_spx_cdc_slimbus_slave_cfg)];
+	u8 port_cfg_buf[sizeof(q6afe_spx_slimbus_slave_port_cfg)];
+	char overrides[96];
+	size_t n = 0;
+	int ret;
+	int i;
+
+	if (!spx_auto_speaker_cal)
+		return 0;
+
+	if (!of_machine_is_compatible("microsoft,surface-pro-x"))
+		return 0;
+
+	if (port->token != SLIMBUS_2_RX ||
+	    port->id != AFE_PORT_ID_SLIMBUS_MULTI_CHAN_2_RX)
+		return 0;
+
+	/* SPX: reject impossible override values instead of silently truncating
+	 * them into the payload. The eaddr words are u32 on the wire and int
+	 * cannot exceed 0xffffffff, so any value below the -1 sentinel is out
+	 * of range; the logical-address fields cap at 0xffff. */
+	if ((spx_slim_slave_eaddr_lsw != -1 && spx_slim_slave_eaddr_lsw < 0) ||
+	    (spx_slim_slave_eaddr_msw != -1 && spx_slim_slave_eaddr_msw < 0) ||
+	    (spx_slim_port_pgd_la != -1 &&
+	     (spx_slim_port_pgd_la < 0 || spx_slim_port_pgd_la > 0xffff)) ||
+	    (spx_slim_port_intfdev_la != -1 &&
+	     (spx_slim_port_intfdev_la < 0 ||
+	      spx_slim_port_intfdev_la > 0xffff))) {
+		dev_err(afe->dev,
+			"SPX: invalid SLIM cfg override (lsw=%d msw=%d pgd_la=%d intfdev_la=%d)\n",
+			spx_slim_slave_eaddr_lsw, spx_slim_slave_eaddr_msw,
+			spx_slim_port_pgd_la, spx_slim_port_intfdev_la);
+		return -EINVAL;
+	}
+
+	if (spx_slim_slave_eaddr_lsw != -1)
+		n += scnprintf(overrides + n, sizeof(overrides) - n,
+			       " eaddr_lsw=0x%08x", (u32)spx_slim_slave_eaddr_lsw);
+	if (spx_slim_slave_eaddr_msw != -1)
+		n += scnprintf(overrides + n, sizeof(overrides) - n,
+			       " eaddr_msw=0x%08x", (u32)spx_slim_slave_eaddr_msw);
+	if (spx_slim_port_pgd_la != -1)
+		n += scnprintf(overrides + n, sizeof(overrides) - n,
+			       " pgd_la=0x%04x", (u16)spx_slim_port_pgd_la);
+	if (spx_slim_port_intfdev_la != -1)
+		n += scnprintf(overrides + n, sizeof(overrides) - n,
+			       " intfdev_la=0x%04x", (u16)spx_slim_port_intfdev_la);
+	if (n)
+		dev_info(afe->dev, "SPX: SLIM cfg param overrides:%s\n",
+			 overrides);
+
+	for (i = 0; i < ARRAY_SIZE(steps); i++) {
+		const void *data = steps[i].data;
+
+		/* Patchable bodies are const arrays; work on a stack copy so a
+		 * knob only changes the payload of its own step send. */
+		if (steps[i].param_id == AFE_PARAM_ID_CDC_SLIMBUS_SLAVE_CFG &&
+		    (spx_slim_slave_eaddr_lsw != -1 ||
+		     spx_slim_slave_eaddr_msw != -1)) {
+			memcpy(slim_cfg_buf, steps[i].data, sizeof(slim_cfg_buf));
+			/* body: {u32 minor_version; u32 device_enum_addr_lsw;
+			 * u32 device_enum_addr_msw; u16 tx_slave_port_offset;
+			 * u16 rx_slave_port_offset} */
+			if (spx_slim_slave_eaddr_lsw != -1)
+				put_unaligned_le32((u32)spx_slim_slave_eaddr_lsw,
+						   &slim_cfg_buf[4]);
+			if (spx_slim_slave_eaddr_msw != -1)
+				put_unaligned_le32((u32)spx_slim_slave_eaddr_msw,
+						   &slim_cfg_buf[8]);
+			data = slim_cfg_buf;
+		}
+
+		if (steps[i].param_id == AFE_PARAM_ID_SLIMBUS_SLAVE_PORT_CFG &&
+		    (spx_slim_port_pgd_la != -1 ||
+		     spx_slim_port_intfdev_la != -1)) {
+			memcpy(port_cfg_buf, steps[i].data, sizeof(port_cfg_buf));
+			/* body: {u32 minor_version; u16 slimbus_dev_id;
+			 * u16 slave_dev_pgd_la; u16 slave_dev_intfdev_la;
+			 * ...} */
+			if (spx_slim_port_pgd_la != -1)
+				put_unaligned_le16((u16)spx_slim_port_pgd_la,
+						   &port_cfg_buf[6]);
+			if (spx_slim_port_intfdev_la != -1)
+				put_unaligned_le16((u16)spx_slim_port_intfdev_la,
+						   &port_cfg_buf[8]);
+			data = port_cfg_buf;
+		}
+
+		ret = q6afe_spx_set_param_v3(afe, port, data,
+					     steps[i].param_id,
+					     steps[i].module_id,
+					     steps[i].size, false);
+		if (ret) {
+			dev_warn(afe->dev,
+				 "SPX: speaker cal %s failed (%d)\n",
+				 steps[i].name, ret);
+			return ret;
+		}
+	}
+
+	dev_info(afe->dev, "SPX: speaker V3 AFE calibration applied\n");
+	return 0;
+}
+
+/*
+ * SPX: in-band AFE GET_PARAM. Reads a module/param back from the DSP into
+ * port->get_param[] so the speaker probe can tell a real apply from a silent
+ * ack. Returns 0 on a completed round-trip (check port->get_param_status).
+ */
+static int q6afe_port_get_param_v2(struct q6afe_port *port, int module_id,
+				   int param_id, int max_size)
+{
+	struct afe_port_cmd_get_param_v2 *get;
+	struct q6afe *afe = port->afe;
+	struct apr_pkt *pkt;
+	int ret, pkt_size;
+	void *p;
+
+	if (max_size > AFE_GET_PARAM_MAX)
+		max_size = AFE_GET_PARAM_MAX;
+
+	pkt_size = APR_HDR_SIZE + sizeof(*get);
+	p = kzalloc(pkt_size, GFP_KERNEL);
+	if (!p)
+		return -ENOMEM;
+
+	pkt = p;
+	get = p + APR_HDR_SIZE;
+
+	pkt->hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
+					   APR_HDR_LEN(APR_HDR_SIZE),
+					   APR_PKT_VER);
+	pkt->hdr.pkt_size = pkt_size;
+	pkt->hdr.src_port = 0;
+	pkt->hdr.dest_port = 0;
+	pkt->hdr.token = port->token;
+	pkt->hdr.opcode = AFE_PORT_CMD_GET_PARAM_V2;
+
+	get->port_id = port->id;
+	get->payload_size = sizeof(struct afe_port_param_data_v2) + max_size;
+	get->module_id = module_id;
+	get->param_id = param_id;
+	get->param_max_size = max_size;
+
+	ret = afe_apr_send_pkt(afe, pkt, port, AFE_PORT_CMDRSP_GET_PARAM_V2);
+	if (ret)
+		dev_err(afe->dev, "AFE get param 0x%x failed %d\n",
+			param_id, ret);
+
+	kfree(pkt);
 	return ret;
 }
 
@@ -1735,6 +2184,14 @@ int q6afe_port_start(struct q6afe_port *port)
 		}
 	}
 
+	/* SPX: apply codec/SLIMbus calibration BEFORE starting the AFE port,
+	 * matching the Windows driver order (CDC cfg -> ADM/routing -> start).
+	 * Applying it after device start was silently accepted but too late.
+	 */
+	ret = q6afe_spx_apply_speaker_cal(port);
+	if (ret)
+		dev_warn(afe->dev, "SPX: speaker cal apply failed (%d)\n", ret);
+
 	pkt_size = APR_HDR_SIZE + sizeof(*start);
 	void *p __free(kfree) = kzalloc(pkt_size, GFP_KERNEL);
 	if (!p)
@@ -1960,6 +2417,195 @@ int q6afe_vote_lpass_core_hw(struct device *dev, uint32_t hw_block_id,
 }
 EXPORT_SYMBOL(q6afe_vote_lpass_core_hw);
 
+#ifdef CONFIG_DEBUG_FS
+/*
+ * SPX speaker bring-up probe.
+ *
+ * On the Surface Pro X the WSA881x speaker amps are owned by the ADSP, not the
+ * application CPU: the bring-up "recipe" lives in the Windows ACDB cal files and
+ * is replayed to the DSP as AFE SET_PARAM messages over apr_audio_svc (the same
+ * GLINK channel q6afe already uses for the working headphone path). The exact
+ * sequence/protocol (legacy ELITE AFE vs newer GSL graph) is undetermined, so
+ * this debugfs interface fires arbitrary {module_id, param_id, payload} AFE
+ * SET_PARAM commands at a live port and logs what the DSP accepts, without
+ * rebuilding the kernel between experiments.
+ *
+ * Files under /sys/kernel/debug/q6afe/spx_probe/:
+ *   module_id, param_id  - AFE module/param ids (hex)
+ *   port_index           - AFE port enum index (== port token); the port must be
+ *                          live (a stream open on it) so the response gate passes.
+ *                          SLIMBUS_2_RX (SPX speaker playback) = 6 (default).
+ *   use_svc              - 0: port SET_PARAM; 1: service SET_PARAM
+ *   hdr_v3               - 0: legacy V2 header/opcodes; 1: SPX V3
+ *                          header/opcodes (0x100fc port, 0x100fa service).
+ *   payload              - write the raw param payload bytes (e.g. an ACDB blob)
+ *   fire                 - write any byte to send the SET_PARAM and log the rc
+ *
+ * Safety: SET_PARAM only; never emits an AFE port STOP (which wedges the SPX
+ * ADSP). The headphone path shares SLIMBUS_0_RX and is otherwise untouched.
+ */
+#define Q6AFE_SPX_MAX_PAYLOAD	1024
+
+static ssize_t q6afe_spx_payload_write(struct file *file,
+				       const char __user *ubuf,
+				       size_t count, loff_t *ppos)
+{
+	struct q6afe *afe = file->private_data;
+	void *buf;
+
+	if (count == 0 || count > Q6AFE_SPX_MAX_PAYLOAD)
+		return -EINVAL;
+
+	buf = memdup_user(ubuf, count);
+	if (IS_ERR(buf))
+		return PTR_ERR(buf);
+
+	mutex_lock(&afe->dbg_lock);
+	kfree(afe->dbg_payload);
+	afe->dbg_payload = buf;
+	afe->dbg_payload_len = count;
+	mutex_unlock(&afe->dbg_lock);
+
+	return count;
+}
+
+static const struct file_operations q6afe_spx_payload_fops = {
+	.open = simple_open,
+	.write = q6afe_spx_payload_write,
+	.llseek = default_llseek,
+};
+
+static ssize_t q6afe_spx_fire_write(struct file *file, const char __user *ubuf,
+				    size_t count, loff_t *ppos)
+{
+	struct q6afe *afe = file->private_data;
+	struct q6afe_port *port;
+	int ret;
+
+	mutex_lock(&afe->dbg_lock);
+	if (!afe->dbg_payload || !afe->dbg_payload_len) {
+		mutex_unlock(&afe->dbg_lock);
+		dev_err(afe->dev, "spx_probe: no payload set\n");
+		return -EINVAL;
+	}
+
+	/* port->token == AFE enum index; the port must be live (stream open) */
+	port = q6afe_find_port(afe, afe->dbg_port_index);
+	if (!port) {
+		mutex_unlock(&afe->dbg_lock);
+		dev_err(afe->dev,
+			"spx_probe: no live AFE port at index %u (open a stream on it first)\n",
+			afe->dbg_port_index);
+		return -ENODEV;
+	}
+
+	if (afe->dbg_hdr_v3)
+		ret = q6afe_spx_set_param_v3(afe, port, afe->dbg_payload,
+					     afe->dbg_param_id, afe->dbg_module_id,
+					     afe->dbg_payload_len,
+					     afe->dbg_use_svc);
+	else if (afe->dbg_use_svc)
+		ret = q6afe_set_param(afe, port, afe->dbg_payload,
+				      afe->dbg_param_id, afe->dbg_module_id,
+				      afe->dbg_payload_len, port->token);
+	else
+		ret = q6afe_port_set_param_v2(port, afe->dbg_payload,
+					      afe->dbg_param_id,
+					      afe->dbg_module_id,
+					      afe->dbg_payload_len);
+
+	kref_put(&port->refcount, q6afe_port_free);
+	mutex_unlock(&afe->dbg_lock);
+
+	dev_info(afe->dev,
+		 "spx_probe: %s mod=0x%x param=0x%x port_idx=%u len=%zu -> rc=%d\n",
+		 afe->dbg_use_svc ? "SVC" : "PORT", afe->dbg_module_id,
+		 afe->dbg_param_id, afe->dbg_port_index, afe->dbg_payload_len, ret);
+
+	return ret ? ret : count;
+}
+
+static const struct file_operations q6afe_spx_fire_fops = {
+	.open = simple_open,
+	.write = q6afe_spx_fire_write,
+	.llseek = default_llseek,
+};
+
+/* Read module_id/param_id back from the DSP and dump it - turns the
+ * non-discriminating SET probe into a confirm-it-stuck probe. */
+static ssize_t q6afe_spx_get_write(struct file *file, const char __user *ubuf,
+				   size_t count, loff_t *ppos)
+{
+	struct q6afe *afe = file->private_data;
+	struct q6afe_port *port;
+	int ret;
+
+	mutex_lock(&afe->dbg_lock);
+	port = q6afe_find_port(afe, afe->dbg_port_index);
+	if (!port) {
+		mutex_unlock(&afe->dbg_lock);
+		dev_err(afe->dev,
+			"spx_probe: no live AFE port at index %u (open a stream first)\n",
+			afe->dbg_port_index);
+		return -ENODEV;
+	}
+
+	ret = q6afe_port_get_param_v2(port, afe->dbg_module_id,
+				      afe->dbg_param_id, AFE_GET_PARAM_MAX);
+	dev_info(afe->dev,
+		 "spx_probe GET mod=0x%x param=0x%x -> rc=%d status=0x%x len=%d\n",
+		 afe->dbg_module_id, afe->dbg_param_id, ret,
+		 port->get_param_status, port->get_param_len);
+	if (!ret && port->get_param_len > 0)
+		print_hex_dump(KERN_INFO, "spx_probe get: ", DUMP_PREFIX_OFFSET,
+			       16, 1, port->get_param, port->get_param_len, false);
+
+	kref_put(&port->refcount, q6afe_port_free);
+	mutex_unlock(&afe->dbg_lock);
+	return ret ? ret : count;
+}
+
+static const struct file_operations q6afe_spx_get_fops = {
+	.open = simple_open,
+	.write = q6afe_spx_get_write,
+	.llseek = default_llseek,
+};
+
+static void q6afe_spx_debugfs_remove(void *data)
+{
+	struct q6afe *afe = data;
+
+	debugfs_remove_recursive(afe->dbg_dir);
+	kfree(afe->dbg_payload);
+}
+
+static void q6afe_spx_debugfs_init(struct q6afe *afe)
+{
+	struct dentry *d;
+
+	mutex_init(&afe->dbg_lock);
+	afe->dbg_port_index = SLIMBUS_2_RX;	/* SPX speaker playback port */
+
+	afe->dbg_dir = debugfs_create_dir("q6afe", NULL);
+	if (IS_ERR(afe->dbg_dir))
+		return;
+	d = debugfs_create_dir("spx_probe", afe->dbg_dir);
+
+	debugfs_create_x32("module_id", 0644, d, &afe->dbg_module_id);
+	debugfs_create_x32("param_id", 0644, d, &afe->dbg_param_id);
+	debugfs_create_u32("port_index", 0644, d, &afe->dbg_port_index);
+	debugfs_create_bool("use_svc", 0644, d, &afe->dbg_use_svc);
+	debugfs_create_bool("hdr_v3", 0644, d, &afe->dbg_hdr_v3);
+	debugfs_create_file("payload", 0200, d, afe, &q6afe_spx_payload_fops);
+	debugfs_create_file("fire", 0200, d, afe, &q6afe_spx_fire_fops);
+	debugfs_create_file("get", 0200, d, afe, &q6afe_spx_get_fops);
+
+	devm_add_action_or_reset(afe->dev, q6afe_spx_debugfs_remove, afe);
+}
+#else
+static inline void q6afe_spx_debugfs_init(struct q6afe *afe) { }
+#endif
+
 static int q6afe_probe(struct apr_device *adev)
 {
 	struct q6afe *afe;
@@ -1978,6 +2624,8 @@ static int q6afe_probe(struct apr_device *adev)
 	spin_lock_init(&afe->port_list_lock);
 
 	dev_set_drvdata(dev, afe);
+
+	q6afe_spx_debugfs_init(afe);
 
 	return devm_of_platform_populate(dev);
 }

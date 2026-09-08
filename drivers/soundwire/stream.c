@@ -179,7 +179,10 @@ static int sdw_program_slave_port_params(struct sdw_bus *bus,
 	wbuf = FIELD_PREP(SDW_DPN_PORTCTRL_DATAMODE, p_params->data_mode);
 	wbuf |= FIELD_PREP(SDW_DPN_PORTCTRL_FLOWMODE, p_params->flow_mode);
 
-	ret = sdw_update_no_pm(s_rt->slave, addr1, 0xF, wbuf);
+	if (slave_prop->quirks & SDW_SLAVE_QUIRKS_WRITE_ONLY_PORTCTRL)
+		ret = sdw_write_no_pm(s_rt->slave, addr1, wbuf);
+	else
+		ret = sdw_update_no_pm(s_rt->slave, addr1, 0xF, wbuf);
 	if (ret < 0) {
 		dev_err(&s_rt->slave->dev,
 			"DPN_PortCtrl register write failed for port %d\n",

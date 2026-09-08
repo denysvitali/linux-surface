@@ -496,7 +496,25 @@ struct wcd_slim_codec_dai_data {
 	struct list_head slim_ch_list;
 	struct slim_stream_config sconfig;
 	struct slim_stream_runtime *sruntime;
+	bool spx_stream_started;
 };
+
+/*
+ * Surface Pro X: deactivating the WCD9340 SLIMbus stream after playback has
+ * repeatedly wedged the platform. Keep the first fixed-format stream prepared
+ * for this diagnostic boot and reuse it on later opens. This remains opt-in so
+ * normal SLIMbus users retain standard teardown semantics.
+ */
+static bool spx_persist_stream;
+module_param(spx_persist_stream, bool, 0444);
+MODULE_PARM_DESC(spx_persist_stream,
+		 "Surface Pro X: keep the WCD SLIMbus stream prepared after STOP");
+
+static bool wcd934x_spx_persist(const struct snd_soc_dai *dai)
+{
+	return spx_persist_stream && dai->id == AIF1_PB &&
+	       of_machine_is_compatible("microsoft,surface-pro-x");
+}
 
 static const struct regmap_range_cfg wcd934x_ifc_ranges[] = {
 	{
@@ -1460,14 +1478,61 @@ static void wcd934x_enable_efuse_sensing(struct wcd934x_codec *wcd)
 	__wcd934x_cdc_mclk_enable(wcd, false);
 }
 
+/*
+ * SPX: downstream tavil_swrm_clock() CLEARS the NPL delay element in the SWR
+ * clock path (WCD934X_TEST_DEBUG_NPL_DLY_TEST_1 bit 0x10, set at reset) BEFORE
+ * enabling the SWR clock; mainline never touches it. Leaving the NPL delay in
+ * skews master-vs-slave bit timing on the codec-internal SoundWire PHY, so the
+ * 2 WSA881x latch device-0 DevID reads as contention garbage (MASTER_CLASH_DET
+ * / AUTO_ENUM_FAILED -> both UNATTACHED). Gated + default-off so other WCD9340
+ * boards (db845c) are unaffected; set on SPX via snd_soc_wcd934x.spx_clear_npl=1.
+ */
+static int spx_clear_npl;
+module_param(spx_clear_npl, int, 0644);
+MODULE_PARM_DESC(spx_clear_npl,
+	"SPX: clear the SWR-clock NPL delay (reg 0x803e bit 0x10) before SWR clock enable");
+
+/*
+ * SPX: the apps side never programs the codec SLIM PGD RX-port watermark in
+ * Windows (the ADSP owns that channel stack), so the legacy
+ * WCD934X_SLIM_WATER_MARK_VAL (0x05) is not a Windows-verified value.  This is
+ * an A/B input for the RX0-overflow counter grep (PROGRESS §48 #1), paired
+ * conceptually with the ADSP-managed config (spx_auto_speaker_cal), NOT a
+ * claimed fix: the bus is fire-and-forget, so the write itself is unobservable.
+ */
+static int spx_pgd_rx_port_cfg = -1;
+module_param(spx_pgd_rx_port_cfg, int, 0644);
+MODULE_PARM_DESC(spx_pgd_rx_port_cfg,
+	"SPX: playback SLIM_PGD_RX_PORT_CFG(port) watermark override "
+	"(-1=legacy WCD934X_SLIM_WATER_MARK_VAL 0x05, 0x00..0xFF=that byte, "
+	"else EINVAL). Playback/RX branch only; TX ports and the computed "
+	"MULTI_CHNL payload are untouched. A/B input for the RX0-overflow "
+	"counter grep, pairs with spx_auto_speaker_cal; not a claimed fix");
+static bool spx_pgd_rx_announced;
+
 static int wcd934x_swrm_clock(struct wcd934x_codec *wcd, bool enable)
 {
 	if (enable) {
+		if (spx_clear_npl)
+			regmap_update_bits(wcd->regmap,
+					   WCD934X_TEST_DEBUG_NPL_DLY_TEST_1,
+					   0x10, 0x00);
 		__wcd934x_cdc_mclk_enable(wcd, true);
-		regmap_update_bits(wcd->regmap,
-				   WCD934X_CDC_CLK_RST_CTRL_SWR_CONTROL,
-				   WCD934X_CDC_SWR_CLK_EN_MASK,
-				   WCD934X_CDC_SWR_CLK_ENABLE);
+		if (of_machine_is_compatible("microsoft,surface-pro-x"))
+			/*
+			 * qcauddev8180.sys writes the complete byte 0x01,
+			 * rather than preserving bits 7:1.  This immediately
+			 * precedes its ACCESS_CFG=0x0f write and first bridge
+			 * transaction, so reproduce that exact pair on SPX.
+			 */
+			regmap_write(wcd->regmap,
+				     WCD934X_CDC_CLK_RST_CTRL_SWR_CONTROL,
+				     WCD934X_CDC_SWR_CLK_ENABLE);
+		else
+			regmap_update_bits(wcd->regmap,
+					   WCD934X_CDC_CLK_RST_CTRL_SWR_CONTROL,
+					   WCD934X_CDC_SWR_CLK_EN_MASK,
+					   WCD934X_CDC_SWR_CLK_ENABLE);
 	} else {
 		regmap_update_bits(wcd->regmap,
 				   WCD934X_CDC_CLK_RST_CTRL_SWR_CONTROL,
@@ -1695,6 +1760,10 @@ static int wcd934x_slim_set_hw_params(struct wcd934x_codec *wcd,
 	u16 payload = 0;
 	int ret, i;
 
+	/* SPX: reject an out-of-range PGD override before touching hardware. */
+	if (spx_pgd_rx_port_cfg < -1 || spx_pgd_rx_port_cfg > 0xff)
+		return -EINVAL;
+
 	cfg->ch_count = 0;
 	cfg->direction = direction;
 	cfg->port_mask = 0;
@@ -1723,8 +1792,17 @@ static int wcd934x_slim_set_hw_params(struct wcd934x_codec *wcd,
 				goto err;
 
 			/* configure the slave port for water mark and enable*/
+			if (spx_pgd_rx_port_cfg >= 0 && !spx_pgd_rx_announced) {
+				spx_pgd_rx_announced = true;
+				dev_info(wcd->dev,
+					 "SPX: PGD RX watermark override 0x%02x (legacy 0x%02x)\n",
+					 spx_pgd_rx_port_cfg,
+					 WCD934X_SLIM_WATER_MARK_VAL);
+			}
 			ret = regmap_write(wcd->if_regmap,
 					WCD934X_SLIM_PGD_RX_PORT_CFG(ch->port),
+					spx_pgd_rx_port_cfg >= 0 ?
+					spx_pgd_rx_port_cfg :
 					WCD934X_SLIM_WATER_MARK_VAL);
 			if (ret < 0)
 				goto err;
@@ -1845,6 +1923,13 @@ static int wcd934x_hw_params(struct snd_pcm_substream *substream,
 	}
 
 	wcd->dai[dai->id].sconfig.rate = params_rate(params);
+	if (wcd934x_spx_persist(dai) &&
+	    wcd->dai[dai->id].spx_stream_started) {
+		dev_info(wcd->dev,
+			 "SPX: reusing persistent SLIMbus stream for DAI %d\n",
+			 dai->id);
+		return 0;
+	}
 
 	return wcd934x_slim_set_hw_params(wcd, &wcd->dai[dai->id], substream->stream);
 }
@@ -1858,8 +1943,11 @@ static int wcd934x_hw_free(struct snd_pcm_substream *substream,
 	wcd = snd_soc_component_get_drvdata(dai->component);
 
 	dai_data = &wcd->dai[dai->id];
+	if (wcd934x_spx_persist(dai) && dai_data->spx_stream_started)
+		return 0;
 
 	kfree(dai_data->sconfig.chs);
+	dai_data->sconfig.chs = NULL;
 
 	return 0;
 }
@@ -1870,6 +1958,7 @@ static int wcd934x_trigger(struct snd_pcm_substream *substream, int cmd,
 	struct wcd_slim_codec_dai_data *dai_data;
 	struct wcd934x_codec *wcd;
 	struct slim_stream_config *cfg;
+	int ret;
 
 	wcd = snd_soc_component_get_drvdata(dai->component);
 
@@ -1879,15 +1968,42 @@ static int wcd934x_trigger(struct snd_pcm_substream *substream, int cmd,
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_RESUME:
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+		if (wcd934x_spx_persist(dai) && dai_data->spx_stream_started) {
+			dev_info(wcd->dev,
+				 "SPX: persistent SLIMbus stream already active for DAI %d\n",
+				 dai->id);
+			break;
+		}
 		cfg = &dai_data->sconfig;
-		slim_stream_prepare(dai_data->sruntime, cfg);
-		slim_stream_enable(dai_data->sruntime);
+		ret = slim_stream_prepare(dai_data->sruntime, cfg);
+		if (ret)
+			return ret;
+		ret = slim_stream_enable(dai_data->sruntime);
+		if (ret) {
+			/* Preserve the enable failure, but return the runtime to an
+			 * unprepared state so a controlled retry is possible.
+			 */
+			slim_stream_unprepare(dai_data->sruntime);
+			return ret;
+		}
+		dai_data->spx_stream_started = true;
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_SUSPEND:
 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
-		slim_stream_disable(dai_data->sruntime);
-		slim_stream_unprepare(dai_data->sruntime);
+		if (wcd934x_spx_persist(dai) && dai_data->spx_stream_started) {
+			dev_info(wcd->dev,
+				 "SPX: leaving SLIMbus stream active for DAI %d\n",
+				 dai->id);
+			break;
+		}
+		ret = slim_stream_disable(dai_data->sruntime);
+		if (ret)
+			return ret;
+		ret = slim_stream_unprepare(dai_data->sruntime);
+		if (ret)
+			return ret;
+		dai_data->spx_stream_started = false;
 		break;
 	default:
 		break;
@@ -2939,6 +3055,12 @@ static int wcd934x_mbhc_init(struct snd_soc_component *component)
 	struct wcd934x_ddata *data = dev_get_drvdata(component->dev->parent);
 	struct wcd934x_codec *wcd = snd_soc_component_get_drvdata(component);
 	struct wcd_mbhc_intr *intr_ids = &wcd->intr_ids;
+
+	if (!data->irq_data) {
+		dev_warn(component->dev,
+			 "No codec IRQ; MBHC disabled (no jack detection, no HPH OCP)\n");
+		return 0;
+	}
 
 	intr_ids->mbhc_sw_intr = regmap_irq_get_virq(data->irq_data,
 						     WCD934X_IRQ_MBHC_SW_DET);
@@ -4198,14 +4320,25 @@ static int wcd934x_config_compander(struct snd_soc_component *comp,
 		return 0;
 
 	compander = interp_n - 1;
-	if (!wcd->comp_enabled[compander])
-		return 0;
-
 	comp_ctl0_reg = WCD934X_CDC_COMPANDER1_CTL0 + (compander * 8);
 	rx_path_cfg0_reg = WCD934X_CDC_RX1_RX_PATH_CFG0 + (compander * 20);
 
+	if (!wcd->comp_enabled[compander]) {
+		/* Firmware may leave one speaker compander running and the other
+		 * halted. Explicitly bypass both when the controls are disabled.
+		 */
+		if ((interp_n == 7 || interp_n == 8) &&
+		    of_machine_is_compatible("microsoft,surface-pro-x"))
+			return snd_soc_component_update_bits(comp, rx_path_cfg0_reg,
+						     WCD934X_HPH_CMP_EN_MASK, 0);
+		return 0;
+	}
+
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
+		/* Resume the compander after a previous power-down halt. */
+		snd_soc_component_update_bits(comp, comp_ctl0_reg,
+					      WCD934X_COMP_HALT_MASK, 0);
 		/* Enable Compander Clock */
 		snd_soc_component_update_bits(comp, comp_ctl0_reg,
 					      WCD934X_COMP_CLK_EN_MASK,
@@ -5856,6 +5989,21 @@ static int wcd934x_codec_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
+	/*
+	 * SPX: like wcd937x/938x/939x, fill micb_vout[] from the DT
+	 * qcom,micbiasN-microvolt properties. Without this every MIC BIAS is
+	 * programmed to the 1.0 V floor (vout 0) in wcd934x_init_dmic(), and the
+	 * Surface Pro X DMIC array (needs 1.8 V) reads digital zero.
+	 */
+	ret = wcd_dt_parse_micbias_info(&wcd->common);
+	if (ret)
+		return ret;
+	dev_info(dev, "SPX: micbias vout ctl %u/%u/%u/%u (%u/%u/%u/%u mV)\n",
+		 wcd->common.micb_vout[0], wcd->common.micb_vout[1],
+		 wcd->common.micb_vout[2], wcd->common.micb_vout[3],
+		 wcd->common.micb_mv[0], wcd->common.micb_mv[1],
+		 wcd->common.micb_mv[2], wcd->common.micb_mv[3]);
+
 	ret = devm_add_action_or_reset(dev, wcd934x_put_device_action, &wcd->sidev->dev);
 	if (ret)
 		return ret;
@@ -5867,16 +6015,21 @@ static int wcd934x_codec_probe(struct platform_device *pdev)
 	memcpy(wcd->rx_chs, wcd934x_rx_chs, sizeof(wcd934x_rx_chs));
 	memcpy(wcd->tx_chs, wcd934x_tx_chs, sizeof(wcd934x_tx_chs));
 
-	irq = regmap_irq_get_virq(data->irq_data, WCD934X_IRQ_SLIMBUS);
-	if (irq < 0)
-		return dev_err_probe(wcd->dev, irq, "Failed to get SLIM IRQ\n");
+	if (data->irq_data) {
+		irq = regmap_irq_get_virq(data->irq_data, WCD934X_IRQ_SLIMBUS);
+		if (irq < 0)
+			return dev_err_probe(wcd->dev, irq, "Failed to get SLIM IRQ\n");
 
-	ret = devm_request_threaded_irq(dev, irq, NULL,
-					wcd934x_slim_irq_handler,
-					IRQF_TRIGGER_RISING | IRQF_ONESHOT,
-					"slim", wcd);
-	if (ret)
-		return dev_err_probe(dev, ret, "Failed to request slimbus irq\n");
+		ret = devm_request_threaded_irq(dev, irq, NULL,
+						wcd934x_slim_irq_handler,
+						IRQF_TRIGGER_RISING | IRQF_ONESHOT,
+						"slim", wcd);
+		if (ret)
+			return dev_err_probe(dev, ret, "Failed to request slimbus irq\n");
+	} else {
+		dev_warn(dev,
+			 "No codec IRQ; SLIMbus port errors will be polled (BAM/PIO path is independent)\n");
+	}
 
 	wcd934x_register_mclk_output(wcd);
 	platform_set_drvdata(pdev, wcd);
