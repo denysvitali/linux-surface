@@ -3,9 +3,13 @@
 
 #include <linux/acpi.h>
 #include <linux/clk.h>
+#include <linux/delay.h>
+#include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
+#include <linux/of.h>
 #include <linux/pm_runtime.h>
+#include <linux/regulator/consumer.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-event.h>
@@ -1031,6 +1035,10 @@ static const struct ov13858_mode supported_modes[] = {
 struct ov13858 {
 	struct device *dev;
 	struct clk *clk;
+	struct gpio_desc *reset_gpio;
+	struct regulator_bulk_data supplies[3];
+	bool manages_power;
+	bool powered;
 
 	struct v4l2_subdev sd;
 	struct media_pad pad;
@@ -1051,6 +1059,68 @@ struct ov13858 {
 };
 
 #define to_ov13858(_sd)	container_of(_sd, struct ov13858, sd)
+
+static int ov13858_power_on(struct ov13858 *ov13858)
+{
+	int ret;
+
+	if (!ov13858->manages_power || ov13858->powered)
+		return 0;
+
+	ret = regulator_bulk_enable(ARRAY_SIZE(ov13858->supplies),
+				    ov13858->supplies);
+	if (ret)
+		return ret;
+
+	ret = clk_prepare_enable(ov13858->clk);
+	if (ret) {
+		regulator_bulk_disable(ARRAY_SIZE(ov13858->supplies),
+				       ov13858->supplies);
+		return ret;
+	}
+
+	/* PEP: supplies, MCLK0, then release the active-low reset. */
+	usleep_range(1000, 2000);
+	gpiod_set_value_cansleep(ov13858->reset_gpio, 0);
+	usleep_range(2000, 3000);
+	ov13858->powered = true;
+
+	return 0;
+}
+
+static void ov13858_power_off(struct ov13858 *ov13858)
+{
+	if (!ov13858->manages_power || !ov13858->powered)
+		return;
+
+	/* PEP D3 order: assert reset, stop MCLK, then remove supplies. */
+	gpiod_set_value_cansleep(ov13858->reset_gpio, 1);
+	clk_disable_unprepare(ov13858->clk);
+	regulator_bulk_disable(ARRAY_SIZE(ov13858->supplies),
+			       ov13858->supplies);
+	ov13858->powered = false;
+}
+
+static int ov13858_runtime_resume(struct device *dev)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+	struct v4l2_subdev *sd = i2c_get_clientdata(client);
+
+	return ov13858_power_on(to_ov13858(sd));
+}
+
+static int ov13858_runtime_suspend(struct device *dev)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+	struct v4l2_subdev *sd = i2c_get_clientdata(client);
+
+	ov13858_power_off(to_ov13858(sd));
+	return 0;
+}
+
+static DEFINE_RUNTIME_DEV_PM_OPS(ov13858_pm_ops,
+				 ov13858_runtime_suspend,
+				 ov13858_runtime_resume, NULL);
 
 /* Read registers up to 4 at a time */
 static int ov13858_read_reg(struct ov13858 *ov13858, u16 reg, u32 len,
@@ -1666,6 +1736,7 @@ static int ov13858_probe(struct i2c_client *client)
 		return -ENOMEM;
 
 	ov13858->dev = &client->dev;
+	ov13858->manages_power = dev_of_node(ov13858->dev);
 
 	ov13858->clk = devm_v4l2_sensor_clk_get(ov13858->dev, NULL);
 	if (IS_ERR(ov13858->clk))
@@ -1678,14 +1749,40 @@ static int ov13858_probe(struct i2c_client *client)
 				     "external clock %lu is not supported\n",
 				     freq);
 
+	if (ov13858->manages_power) {
+		ov13858->supplies[0].supply = "dovdd";
+		ov13858->supplies[1].supply = "avdd";
+		ov13858->supplies[2].supply = "dvdd";
+		ret = devm_regulator_bulk_get(ov13858->dev,
+					      ARRAY_SIZE(ov13858->supplies),
+					      ov13858->supplies);
+		if (ret)
+			return dev_err_probe(ov13858->dev, ret,
+					     "failed to get supplies\n");
+
+		/* GPIO_ACTIVE_LOW makes logical 1 the asserted reset level. */
+		ov13858->reset_gpio = devm_gpiod_get_optional(ov13858->dev,
+							      "reset",
+							      GPIOD_OUT_HIGH);
+		if (IS_ERR(ov13858->reset_gpio))
+			return dev_err_probe(ov13858->dev,
+					     PTR_ERR(ov13858->reset_gpio),
+					     "failed to get reset GPIO\n");
+	}
+
 	/* Initialize subdev */
 	v4l2_i2c_subdev_init(&ov13858->sd, client, &ov13858_subdev_ops);
+
+	ret = ov13858_power_on(ov13858);
+	if (ret)
+		return dev_err_probe(ov13858->dev, ret,
+				     "failed to power sensor\n");
 
 	/* Check module identity */
 	ret = ov13858_identify_module(ov13858);
 	if (ret) {
 		dev_err(ov13858->dev, "failed to find sensor: %d\n", ret);
-		return ret;
+		goto error_power_off;
 	}
 
 	/* Set default mode to max resolution */
@@ -1693,7 +1790,7 @@ static int ov13858_probe(struct i2c_client *client)
 
 	ret = ov13858_init_controls(ov13858);
 	if (ret)
-		return ret;
+		goto error_power_off;
 
 	/* Initialize subdev */
 	ov13858->sd.internal_ops = &ov13858_internal_ops;
@@ -1731,6 +1828,9 @@ error_handler_free:
 	ov13858_free_controls(ov13858);
 	dev_err(ov13858->dev, "%s failed:%d\n", __func__, ret);
 
+error_power_off:
+	ov13858_power_off(ov13858);
+
 	return ret;
 }
 
@@ -1744,6 +1844,8 @@ static void ov13858_remove(struct i2c_client *client)
 	ov13858_free_controls(ov13858);
 
 	pm_runtime_disable(ov13858->dev);
+	if (!pm_runtime_status_suspended(ov13858->dev))
+		ov13858_power_off(ov13858);
 }
 
 static const struct i2c_device_id ov13858_id_table[] = {
@@ -1752,6 +1854,12 @@ static const struct i2c_device_id ov13858_id_table[] = {
 };
 
 MODULE_DEVICE_TABLE(i2c, ov13858_id_table);
+
+static const struct of_device_id ov13858_of_match[] = {
+	{ .compatible = "ovti,ov13858" },
+	{ /* sentinel */ }
+};
+MODULE_DEVICE_TABLE(of, ov13858_of_match);
 
 #ifdef CONFIG_ACPI
 static const struct acpi_device_id ov13858_acpi_ids[] = {
@@ -1766,6 +1874,8 @@ static struct i2c_driver ov13858_i2c_driver = {
 	.driver = {
 		.name = "ov13858",
 		.acpi_match_table = ACPI_PTR(ov13858_acpi_ids),
+		.of_match_table = ov13858_of_match,
+		.pm = pm_ptr(&ov13858_pm_ops),
 	},
 	.probe = ov13858_probe,
 	.remove = ov13858_remove,

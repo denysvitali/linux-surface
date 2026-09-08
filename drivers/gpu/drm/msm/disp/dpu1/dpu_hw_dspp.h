@@ -109,4 +109,3 @@ struct dpu_hw_dspp *dpu_hw_dspp_init(struct drm_device *dev,
 				     void __iomem *addr);
 
 #endif /*_DPU_HW_DSPP_H */
-

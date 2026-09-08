@@ -14,6 +14,7 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/of.h>
 
 #define CSIPHY_3PH_LNn_CFG1(n)			(0x000 + 0x100 * (n))
 #define CSIPHY_3PH_LNn_CFG1_SWI_REC_DLY_PRG	(BIT(7) | BIT(6))
@@ -1236,8 +1237,22 @@ static int csiphy_init(struct csiphy_device *csiphy)
 		regs->lane_array_size = ARRAY_SIZE(lane_regs_sm8250);
 		break;
 	case CAMSS_8280XP:
-		regs->lane_regs = &lane_regs_sc8280xp[0];
-		regs->lane_array_size = ARRAY_SIZE(lane_regs_sc8280xp);
+		/*
+		 * Qualcomm's SC8180X Windows driver reports PHY v1.0.0.0 and its
+		 * register program is the SDM845 GEN2 1.0 sequence (not the
+		 * SC8280XP GEN2 1.1 sequence).  In particular, data-lane CFG1 is
+		 * 0x91 rather than 0x90.  The two SoCs share the rest of the CAMSS
+		 * resource model, so select the PHY profile from the compatible.
+		 */
+		if (of_device_is_compatible(dev->of_node,
+					    "qcom,sc8180x-camss")) {
+			regs->lane_regs = &lane_regs_sdm845[0];
+			regs->lane_array_size = ARRAY_SIZE(lane_regs_sdm845);
+			dev_info(dev, "SC8180X CSIPHY: using Spectra 390 GEN2 1.0 profile\n");
+		} else {
+			regs->lane_regs = &lane_regs_sc8280xp[0];
+			regs->lane_array_size = ARRAY_SIZE(lane_regs_sc8280xp);
+		}
 		break;
 	case CAMSS_X1E80100:
 		regs->lane_regs = &lane_regs_x1e80100[0];

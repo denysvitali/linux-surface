@@ -2640,6 +2640,64 @@ static const struct camss_subdev_resources csiphy_res_sc8280xp[] = {
 	},
 };
 
+/*
+ * SC8180X/Spectra 390 exposes the same four logical CSIPHY blocks as
+ * SC8280XP, but ACPI and qccammipicsi8180.sys both program the PHY core and
+ * timer clocks at 300 MHz.  Keep a separate resource table so fixing the
+ * Surface Pro X does not change native SC8280XP systems.
+ */
+static const struct camss_subdev_resources csiphy_res_sc8180x[] = {
+	/* CSIPHY0 */
+	{
+		/* ACPI MPCS enables the CAMNOC and CPAS fabric clocks first. */
+		.clock = { "camnoc_axi", "cpas_ahb", "csiphy0", "csiphy0_timer" },
+		.clock_rate = { { 0 }, { 0 }, { 300000000 }, { 300000000 } },
+		.reg = { "csiphy0" },
+		.interrupt = { "csiphy0" },
+		.csiphy = {
+			.id = 0,
+			.hw_ops = &csiphy_ops_3ph_1_0,
+			.formats = &csiphy_formats_sdm845
+		}
+	},
+	/* CSIPHY1 */
+	{
+		.clock = { "camnoc_axi", "cpas_ahb", "csiphy1", "csiphy1_timer" },
+		.clock_rate = { { 0 }, { 0 }, { 300000000 }, { 300000000 } },
+		.reg = { "csiphy1" },
+		.interrupt = { "csiphy1" },
+		.csiphy = {
+			.id = 1,
+			.hw_ops = &csiphy_ops_3ph_1_0,
+			.formats = &csiphy_formats_sdm845
+		}
+	},
+	/* CSIPHY2 */
+	{
+		.clock = { "camnoc_axi", "cpas_ahb", "csiphy2", "csiphy2_timer" },
+		.clock_rate = { { 0 }, { 0 }, { 300000000 }, { 300000000 } },
+		.reg = { "csiphy2" },
+		.interrupt = { "csiphy2" },
+		.csiphy = {
+			.id = 2,
+			.hw_ops = &csiphy_ops_3ph_1_0,
+			.formats = &csiphy_formats_sdm845
+		}
+	},
+	/* CSIPHY3 */
+	{
+		.clock = { "camnoc_axi", "cpas_ahb", "csiphy3", "csiphy3_timer" },
+		.clock_rate = { { 0 }, { 0 }, { 300000000 }, { 300000000 } },
+		.reg = { "csiphy3" },
+		.interrupt = { "csiphy3" },
+		.csiphy = {
+			.id = 3,
+			.hw_ops = &csiphy_ops_3ph_1_0,
+			.formats = &csiphy_formats_sdm845
+		}
+	},
+};
+
 static const struct camss_subdev_resources csid_res_sc8280xp[] = {
 	/* CSID0 */
 	{
@@ -5682,6 +5740,20 @@ static const struct camss_resources sc8280xp_resources = {
 	.vfe_num = ARRAY_SIZE(vfe_res_sc8280xp),
 };
 
+static const struct camss_resources sc8180x_resources = {
+	.version = CAMSS_8280XP,
+	.pd_name = "top",
+	.csiphy_res = csiphy_res_sc8180x,
+	.csid_res = csid_res_sc8280xp,
+	.ispif_res = NULL,
+	.vfe_res = vfe_res_sc8280xp,
+	.icc_res = icc_res_sc8280xp,
+	.icc_path_num = ARRAY_SIZE(icc_res_sc8280xp),
+	.csiphy_num = ARRAY_SIZE(csiphy_res_sc8180x),
+	.csid_num = ARRAY_SIZE(csid_res_sc8280xp),
+	.vfe_num = ARRAY_SIZE(vfe_res_sc8280xp),
+};
+
 static const struct camss_resources sc7280_resources = {
 	.version = CAMSS_7280,
 	.pd_name = "top",
@@ -5748,6 +5820,13 @@ static const struct of_device_id camss_dt_match[] = {
 	{ .compatible = "qcom,qcs8300-camss", .data = &qcs8300_resources },
 	{ .compatible = "qcom,sa8775p-camss", .data = &sa8775p_resources },
 	{ .compatible = "qcom,sc7280-camss", .data = &sc7280_resources },
+	/*
+	 * sc8180x carries the same Titan 480 CAMSS as sc8280xp: the ACPI
+	 * resource map in the Surface Pro X DSDT (CAMP/MPCS/VFE0) lists the
+	 * identical 4 CSIPHY blocks plus 8 CSID/VFE pairs at 0xac5a000,
+	 * 0xac65000 and 0xacaf000..0xace0000. Reuse the sc8280xp tables.
+	 */
+	{ .compatible = "qcom,sc8180x-camss", .data = &sc8180x_resources },
 	{ .compatible = "qcom,sc8280xp-camss", .data = &sc8280xp_resources },
 	{ .compatible = "qcom,sdm660-camss", .data = &sdm660_resources },
 	{ .compatible = "qcom,sdm670-camss", .data = &sdm670_resources },

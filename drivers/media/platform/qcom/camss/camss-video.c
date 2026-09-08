@@ -7,12 +7,14 @@
  * Copyright (c) 2013-2015, The Linux Foundation. All rights reserved.
  * Copyright (C) 2015-2018 Linaro Ltd.
  */
+#include <linux/iommu.h>
 #include <linux/slab.h>
 #include <media/media-entity.h>
 #include <media/v4l2-dev.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-mc.h>
+#include <media/videobuf2-dma-contig.h>
 #include <media/videobuf2-dma-sg.h>
 
 #include "camss-video.h"
@@ -158,6 +160,35 @@ static int video_buf_init(struct vb2_buffer *vb)
 	unsigned int i;
 
 	for (i = 0; i < format->num_planes; i++) {
+		/*
+		 * With an IOMMU the scatter-gather list is mapped into ONE
+		 * contiguous IOVA range, so taking the first segment's address
+		 * and letting the VFE write linearly across the frame is safe.
+		 *
+		 * With no IOMMU attached (sc8180x - the apps_smmu stream IDs for
+		 * CAMSS are unknown) sg_dma_address() returns a bare physical
+		 * address and the pages are NOT contiguous, so the VFE would
+		 * write 6.3MB straight over whatever physical memory follows the
+		 * first page. Measured 2026-08-07: that hard-hangs the entire
+		 * SoC at VFE stream-on, surviving every register, clock, power
+		 * domain and interconnect fix. Use physically contiguous buffers
+		 * there instead - see msm_video_register().
+		 */
+		if (vb->vb2_queue->mem_ops == &vb2_dma_contig_memops) {
+			buffer->addr[i] = vb2_dma_contig_plane_dma_addr(vb, i);
+			if (!buffer->addr[i])
+				return -EFAULT;
+			dev_info(video->camss->dev,
+				 "SPX DMA: vb=%u plane=%u contig addr=%pad size=%lu dma_mask=%#llx coherent_mask=%#llx gfp=%#x\n",
+				 vb->index, i, &buffer->addr[i],
+				 vb2_plane_size(vb, i),
+				 vb->vb2_queue->dev->dma_mask ?
+					 (unsigned long long)*vb->vb2_queue->dev->dma_mask : 0,
+				 (unsigned long long)vb->vb2_queue->dev->coherent_dma_mask,
+				 vb->vb2_queue->gfp_flags);
+			continue;
+		}
+
 		sgt = vb2_dma_sg_plane_desc(vb, i);
 		if (!sgt)
 			return -EFAULT;
@@ -249,6 +280,16 @@ static int video_prepare_streaming(struct vb2_queue *q)
 	return ret;
 }
 
+/*
+ * Bisect knob for the sc8180x STREAMON SoC hang. See video_start_streaming().
+ * -1 = stock (enable the whole chain). 1 = vfe only, 2 = +csid, 3 = +csiphy,
+ * 4 = +sensor. Survival of the boot is the measurement.
+ */
+static int spx_stop_after = -1;
+module_param(spx_stop_after, int, 0644);
+MODULE_PARM_DESC(spx_stop_after,
+	"Stop camss STREAMON after N upstream subdevs (-1 = all; 1=vfe 2=+csid 3=+csiphy 4=+sensor)");
+
 static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 {
 	struct camss_video *video = vb2_get_drv_priv(q);
@@ -256,6 +297,7 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 	struct media_entity *entity;
 	struct media_pad *pad;
 	struct v4l2_subdev *subdev;
+	int spx_enabled = 0;
 	int ret;
 
 	ret = video_device_pipeline_alloc_start(vdev);
@@ -280,6 +322,30 @@ static int video_start_streaming(struct vb2_queue *q, unsigned int count)
 
 		entity = pad->entity;
 		subdev = media_entity_to_v4l2_subdev(entity);
+
+		/*
+		 * STREAMON hard-hangs the whole SoC on sc8180x - systemd dies
+		 * with it, so no log written after this point ever reaches the
+		 * disk, and a watchdog bite resets via the PMIC, which loses
+		 * the ramoops DRAM record too. There is therefore no way to
+		 * observe WHERE it dies from inside the failing boot.
+		 *
+		 * So bisect using survival as the signal instead: this walks
+		 * upstream (vfe -> csid -> csiphy -> sensor), and spx_stop_after
+		 * bounds how many of those get s_stream(1). A boot that survives
+		 * and writes its logs normally proves every enabled stage is
+		 * safe; the first value that hangs names the culprit.
+		 * -1 (default) keeps the stock behaviour: enable everything.
+		 */
+		if (spx_stop_after >= 0 && spx_enabled >= spx_stop_after) {
+			dev_info(video->camss->dev,
+				 "SPX: stopping before s_stream(1) on '%s' (spx_stop_after=%d)\n",
+				 entity->name, spx_stop_after);
+			break;
+		}
+		spx_enabled++;
+		dev_info(video->camss->dev, "SPX: s_stream(1) -> '%s'\n",
+			 entity->name);
 
 		ret = v4l2_subdev_call(subdev, video, s_stream, 1);
 		if (ret < 0 && ret != -ENOIOCTLCMD)
@@ -318,6 +384,19 @@ static void video_stop_streaming(struct vb2_queue *q)
 
 		entity = pad->entity;
 		subdev = media_entity_to_v4l2_subdev(entity);
+
+		/*
+		 * Only stop what was actually started. video_start_streaming()
+		 * can stop part-way (spx_stop_after, or an error mid-chain),
+		 * leaving upstream subdevs never enabled - and v4l2 WARNs on a
+		 * disable without a matching enable:
+		 *   WARN_ON(sd->s_stream_enabled == !!enable)  [v4l2-subdev.c]
+		 * Observed 2026-08-07 as a backtrace through video_stop_streaming
+		 * on every bisect run. The subdev already tracks this, so consult
+		 * it rather than assuming the whole chain is live.
+		 */
+		if (!subdev->s_stream_enabled)
+			continue;
 
 		ret = v4l2_subdev_call(subdev, video, s_stream, 0);
 
@@ -699,13 +778,34 @@ int msm_video_register(struct camss_video *video, struct v4l2_device *v4l2_dev,
 
 	q = &video->vb2_q;
 	q->drv_priv = video;
-	q->mem_ops = &vb2_dma_sg_memops;
+	/*
+	 * No IOMMU (sc8180x): the VFE reaches buffers by bare physical address
+	 * and writes each frame as one linear run, so the memory must be
+	 * PHYSICALLY contiguous - a scatter-gather buffer makes it trample
+	 * whatever follows the first page and hangs the SoC. dma-contig pulls
+	 * from CMA (64MiB here, ample for a couple of 6.3MB frames).
+	 * With an IOMMU the sg mapping is contiguous in IOVA space, so keep
+	 * upstream's cheaper scatter-gather path.
+	 */
+	if (device_iommu_mapped(video->camss->dev)) {
+		q->mem_ops = &vb2_dma_sg_memops;
+	} else {
+		q->mem_ops = &vb2_dma_contig_memops;
+	}
 	q->ops = &msm_video_vb2_q_ops;
 	q->type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
 	q->io_modes = VB2_DMABUF | VB2_MMAP | VB2_READ;
 	q->timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
 	q->buf_struct_size = sizeof(struct camss_buffer);
 	q->dev = video->camss->dev;
+	/*
+	 * Do not force GFP_DMA32 here. dma_alloc_coherent() already honours the
+	 * device's 32-bit DMA mask. More importantly, the 2026-08-09 diagnostic
+	 * run changed only this flag and regressed the CSID test generator from
+	 * two completed (albeit zero) frames to a hard STREAMON wedge. Keep the
+	 * physically contiguous allocator, but let the DMA API choose its normal
+	 * CMA path while the logged DMA addresses tell us what it selected.
+	 */
 	q->lock = &video->q_lock;
 	ret = vb2_queue_init(q);
 	if (ret < 0) {
