@@ -27,6 +27,7 @@
  */
 int sdw_bwrite_no_pm_unlocked(struct sdw_bus *bus, u16 dev_num, u32 addr,
 			      u8 value);
+int sdw_bread_no_pm_unlocked(struct sdw_bus *bus, u16 dev_num, u32 addr);
 
 static char *seq = "";
 module_param(seq, charp, 0400);
@@ -44,13 +45,17 @@ MODULE_PARM_DESC(devices, "comma list of SoundWire device names to replay to");
  * the only write class with observable effect (the mid-stream bank-switch
  * recovery). Use only while the stream is parked and only pin2 is powered.
  */
+static int address = -1;
+module_param(address, int, 0400);
+MODULE_PARM_DESC(address, "Override physical write address (-1 uses codec, 0..14 explicit)");
+
 static int bcast;
 module_param(bcast, int, 0400);
 MODULE_PARM_DESC(bcast, "1 = broadcast every write to dev_num 15");
 
 /*
  * allow_scp=1 permits SoundWire SCP registers (< 0x1000, e.g. DevNumber
- * 0x0002) alongside the WSA881x file. Only for deliberate addressing
+ * 0x0046) alongside the WSA881x file. Only for deliberate addressing
  * experiments: writing random low registers disturbs the slave's protocol
  * state.
  */
@@ -107,11 +112,19 @@ static int spx_wsa_seq_read_one(const char *name)
 			continue;
 		}
 		for (pass = 0; pass < 2; pass++) {
-			ret = sdw_read_no_pm(slave, reg);
+			if (address >= 0) {
+				mutex_lock(&slave->bus->bus_lock);
+				ret = sdw_bread_no_pm_unlocked(slave->bus,
+							      address, reg);
+				mutex_unlock(&slave->bus->bus_lock);
+			} else {
+				ret = sdw_read_no_pm(slave, reg);
+			}
 			val[pass] = ret < 0 ? 0 : (u8)ret;
 			dev_info(dev,
-				 "SPX seq-read %s pass%d: 0x%04x => rc=%d val=0x%02x\n",
-				 name, pass, reg, ret, val[pass]);
+				 "SPX seq-read %s address=%u pass%d: 0x%04x => rc=%d val=0x%02x\n",
+				 name, address >= 0 ? address : slave->dev_num,
+				 pass, reg, ret, val[pass]);
 			if (ret < 0)
 				break;
 		}
@@ -159,8 +172,8 @@ static int spx_wsa_seq_play(const char *name)
 		if (!tok || kstrtouint(tok, 0, &val))
 			continue;
 		tok = strsep(&entry, ":");
-		if (tok)
-			kstrtouint(tok, 0, &ms);
+		if (tok && kstrtouint(tok, 0, &ms))
+			continue;
 
 		if ((reg < 0x3000 && !allow_scp) || reg > 0x36ff ||
 		    val > 0xff) {
@@ -168,14 +181,14 @@ static int spx_wsa_seq_play(const char *name)
 				 reg, val);
 			continue;
 		}
-		if (bcast) {
+		if (bcast || address >= 0) {
 			/* sdw_bwrite_no_pm() is static in this tree; the
 			 * exported _unlocked variant plus the bus lock is the
 			 * same operation.
 			 */
 			mutex_lock(&slave->bus->bus_lock);
 			ret = sdw_bwrite_no_pm_unlocked(slave->bus,
-							SDW_BROADCAST_DEV_NUM,
+							bcast ? SDW_BROADCAST_DEV_NUM : address,
 							reg, val);
 			mutex_unlock(&slave->bus->bus_lock);
 			/* The qcom master pushes the broadcast into the FIFO
@@ -184,7 +197,7 @@ static int spx_wsa_seq_play(const char *name)
 			 * same fire-and-forget property as every other write
 			 * on this master. Do not abort the sequence on it.
 			 */
-			if (ret == -ENODATA)
+			if (bcast && ret == -ENODATA)
 				ret = 0;
 		} else {
 			ret = sdw_write_no_pm(slave, reg, val);
@@ -207,6 +220,10 @@ static int __init spx_wsa_seq_init(void)
 {
 	char *list, *cursor, *name;
 	int ret = 0;
+
+	if (address < -1 || address > 14 ||
+	    (address >= 0 && bcast))
+		return -EINVAL;
 
 	if (reads && *reads) {
 		list = kstrdup(devices, GFP_KERNEL);
@@ -236,7 +253,7 @@ static int __init spx_wsa_seq_init(void)
 		/* In bcast mode the first bus pointer is all we need; a second
 		 * pass would replay the sequence to the same broadcast address.
 		 */
-		if (ret || bcast)
+		if (ret || bcast || address >= 0)
 			break;
 	}
 	kfree(list);

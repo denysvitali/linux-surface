@@ -48,7 +48,9 @@ static int __init spx_swrm_live_health_init(void)
 		u32 reg;
 		const char *name;
 	} regs[] = {
+		{ 0x0004, "COMP_CFG" },
 		{ 0x0014, "COMP_STATUS" },
+		{ 0x0018, "LINK_EE" },
 		{ 0x0200, "IRQ_STATUS" },
 		{ 0x0204, "IRQ_MASK" },
 		{ 0x0210, "IRQ_CPU_EN" },
@@ -62,7 +64,25 @@ static int __init spx_swrm_live_health_init(void)
 		{ 0x101c, "FRAME_B0" },
 		{ 0x105c, "FRAME_B1" },
 		{ 0x1048, "MCP_CFG" },
+		{ 0x1044, "BUS_CTRL" },
+		{ 0x104c, "MCP_STATUS" },
 		{ 0x1090, "SLV_STATUS" },
+		{ 0x1124, "DP1_PORT_B0" },
+		{ 0x1164, "DP1_PORT_B1" },
+		{ 0x1128, "DP1_CTRL2_B0" },
+		{ 0x1168, "DP1_CTRL2_B1" },
+		{ 0x112c, "DP1_BLOCK1" },
+		{ 0x1130, "DP1_BLOCK2" },
+		{ 0x1134, "DP1_HCTRL" },
+		{ 0x1138, "DP1_BLOCK3" },
+		{ 0x1424, "DP4_PORT_B0" },
+		{ 0x1464, "DP4_PORT_B1" },
+		{ 0x1428, "DP4_CTRL2_B0" },
+		{ 0x1468, "DP4_CTRL2_B1" },
+		{ 0x142c, "DP4_BLOCK1" },
+		{ 0x1430, "DP4_BLOCK2" },
+		{ 0x1434, "DP4_HCTRL" },
+		{ 0x1438, "DP4_BLOCK3" },
 	};
 	struct spx_qcom_swrm_prefix *ctrl;
 	struct device *dev;

@@ -25,7 +25,10 @@
 /* The SWR master platform device; its parent is the SLIMbus codec device that
  * carries the WCD934x regmap. Using the platform bus avoids a link-time
  * dependency on the slimbus module's exported bus symbol. */
-#define SPX_SWR_DEVICE		"wcd934x-soundwire.5.auto"
+static const char * const spx_swr_devices[] = {
+	"wcd934x-soundwire.6.auto",
+	"wcd934x-soundwire.5.auto",
+};
 #define WCD_REG_DIR_CTL		0x42
 #define WCD_REG_VAL_CTL		0x43
 
@@ -44,7 +47,10 @@ static int __init spx_wcd_gpio_init(void)
 	unsigned int d0, v0, d1, v1;
 	int ret;
 
-	dev = bus_find_device_by_name(&platform_bus_type, NULL, SPX_SWR_DEVICE);
+	dev = NULL;
+	for (ret = 0; ret < ARRAY_SIZE(spx_swr_devices) && !dev; ret++)
+		dev = bus_find_device_by_name(&platform_bus_type, NULL,
+					      spx_swr_devices[ret]);
 	if (!dev)
 		return -ENODEV;
 

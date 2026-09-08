@@ -162,9 +162,9 @@
 				#address-cells = <2>;
 				#size-cells = <0>;
 
-				left_spkr: speaker@0,1 {
-					compatible = "sdw10217201000";
-					reg = <0 1>;
+				left_spkr: speaker@0,3 {
+					compatible = "sdw10217211000";
+					reg = <0 3>;
 					qcom,port-mapping = <1 2 3 7>;
 					/* SPX: measured physical HIGH = amp on, LOW = off.
 					 * The active-low powerdown descriptor represents that.
@@ -175,9 +175,9 @@
 					#sound-dai-cells = <0>;
 				};
 
-				right_spkr: speaker@0,2 {
-					compatible = "sdw10217201000";
-					reg = <0 2>;
+				right_spkr: speaker@0,4 {
+					compatible = "sdw10217211000";
+					reg = <0 4>;
 					qcom,port-mapping = <4 5 6 8>;
 					/* SPX: measured physical HIGH = amp on, LOW = off.
 					 * The active-low powerdown descriptor represents that.

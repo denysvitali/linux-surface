@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: GPL-2.0
+
+/*
+ * Surface Pro X physical stereo wiring:
+ *
+ * - real ID3 / GPIO1 (physical left) is audible through endpoint B / DP4;
+ * - real ID4 / GPIO2 (physical right) therefore uses endpoint A / DP1.
+ *
+ * Keep the public codec labels physical (SpkrLeft/SpkrRight), but cross both
+ * the SoundWire master-port map and the WCD SPK1/SPK2 sources together.
+ */
+#include "sc8180x-surface-pro-x.dts"
+
+&left_spkr {
+	qcom,port-mapping = <4 5 6 8>;
+};
+
+&right_spkr {
+	qcom,port-mapping = <1 2 3 7>;
+};
+
+&{/sound} {
+	audio-routing =
+		"RX_BIAS", "MCLK",
+		"Int Mic", "DMIC0",
+		"AMIC1", "MIC BIAS1",
+		"AMIC2", "MIC BIAS2",
+		"AMIC3", "MIC BIAS3",
+		"AMIC4", "MIC BIAS4",
+		"DMIC0", "MIC BIAS1",
+		"DMIC1", "MIC BIAS1",
+		"DMIC2", "MIC BIAS3",
+		"DMIC3", "MIC BIAS3",
+		"Headphone Jack", "HPHL",
+		"Headphone Jack", "HPHR",
+		"Headset Mic", "AMIC2",
+		"Left Spk", "SpkrLeft SPKR",
+		"SpkrLeft IN", "SPK2 OUT",
+		"Right Spk", "SpkrRight SPKR",
+		"SpkrRight IN", "SPK1 OUT";
+};

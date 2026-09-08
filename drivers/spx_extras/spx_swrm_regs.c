@@ -22,6 +22,7 @@ static int __init spx_init(void)
 	int i;
 	static const struct r regs[] = {
 		{0x100, "COMP_PARAMS"}, {0x014, "COMP_STATUS(frmgen b0)"},
+		{0x018, "LINK_MANAGER_EE"},
 		{0x200, "INT_STATUS"},  {0x204, "INT_MASK"},
 		{0x500, "ENUM_CFG"},    {0x101c,"MCP_FRAME_CTRL_B0"},
 		{0x105c,"MCP_FRAME_CTRL_B1"},

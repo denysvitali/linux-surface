@@ -221,6 +221,10 @@ static void *resolve_symbol(const char *name)
  * port configuration kept going to device 1 while the analog bring-up was
  * mirrored to device 0. Setting this to 0 puts *everything* on device 0.
  */
+static bool handoff_codecs = true;
+module_param(handoff_codecs, bool, 0444);
+MODULE_PARM_DESC(handoff_codecs, "Hand enumerated addresses to codecs (disable for retained-PCM diagnostics)");
+
 static int map_devnum = 1;
 module_param(map_devnum, int, 0444);
 MODULE_PARM_DESC(map_devnum,
@@ -757,7 +761,7 @@ out_unlock:
 	regmap_write(wcd_regmap, WCD_AHB_ACCESS_CFG, saved_access);
 	if (ret)
 		goto err_put;
-	if (held.active)
+	if (held.active && handoff_codecs)
 		map_surface_codecs_live(bus);
 	return 0;
 

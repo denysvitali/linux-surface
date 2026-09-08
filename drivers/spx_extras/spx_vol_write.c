@@ -52,10 +52,11 @@ static int __init spx_vol_write_init(void)
 		goto out_put;
 	}
 
-	/* Also try a raw read bypassing cache */
-	regcache_cache_bypass(ddata->regmap, true);
+	/* Retain paged-selector bookkeeping while obtaining a fresh value. */
+	ret = regcache_drop_region(ddata->regmap, vol_reg, vol_reg);
+	if (ret)
+		goto out_put;
 	ret = regmap_read(ddata->regmap, vol_reg, &readback);
-	regcache_cache_bypass(ddata->regmap, false);
 	if (ret) {
 		dev_err(dev, "SPX: raw read failed: %d\n", ret);
 		goto out_put;

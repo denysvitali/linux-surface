@@ -1,0 +1,27 @@
+// SPDX-License-Identifier: GPL-2.0
+
+/* Real WSA8815 ID3 on GPIO1, crossed to endpoint-B / master DP4. */
+#include "sc8180x-surface-pro-x-speaker-left.dts"
+
+&left_spkr {
+	qcom,port-mapping = <4 5 6 8>;
+};
+
+&{/sound} {
+	audio-routing =
+		"RX_BIAS", "MCLK",
+		"Int Mic", "DMIC0",
+		"AMIC1", "MIC BIAS1",
+		"AMIC2", "MIC BIAS2",
+		"AMIC3", "MIC BIAS3",
+		"AMIC4", "MIC BIAS4",
+		"DMIC0", "MIC BIAS1",
+		"DMIC1", "MIC BIAS1",
+		"DMIC2", "MIC BIAS3",
+		"DMIC3", "MIC BIAS3",
+		"Headphone Jack", "HPHL",
+		"Headphone Jack", "HPHR",
+		"Headset Mic", "AMIC2",
+		"Left Spk", "SpkrLeft SPKR",
+		"SpkrLeft IN", "SPK2 OUT";
+};

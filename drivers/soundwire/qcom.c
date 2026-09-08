@@ -44,6 +44,17 @@ static bool spx_exact_windows_init;
 module_param(spx_exact_windows_init, bool, 0444);
 MODULE_PARM_DESC(spx_exact_windows_init,
 		 "SPX: use the experimental two-amp Windows controller init instead of stable single-amp force attach");
+
+/* Diagnostic only: one DAC schedule and analog profile shared by both amps. */
+static bool spx_keep_enum_frame;
+module_param(spx_keep_enum_frame, bool, 0444);
+MODULE_PARM_DESC(spx_keep_enum_frame,
+		 "SPX: retain 48x2 divider-3 enumeration frame during playback diagnostic");
+
+static bool spx_broadcast_audio;
+module_param(spx_broadcast_audio, bool, 0644);
+MODULE_PARM_DESC(spx_broadcast_audio,
+		 "SPX: broadcast WSA and data-port writes for a shared mono diagnostic (default off)");
 /*
  * SPX: the WCD9340 AHB bridge is slow -- reading RD_DATA before the bridge has
  * fetched the SWR-master register returns stale/partial bytes (observed:
@@ -429,6 +440,8 @@ struct qcom_swrm_ctrl {
 	u32 rd_fifo_depth;
 	bool clock_stop_not_supported;
 	bool spx_windows_init;
+	bool spx_runtime_handoff_pending;
+	bool spx_runtime_mirror_pending;
 	struct delayed_work spx_enum_work;	/* SPX: poll-enumerate, IRQ-less */
 	int spx_enum_tries;
 	bool spx_diag_done;			/* SPX: one-shot DevID probe ran */
@@ -528,10 +541,8 @@ static int __qcom_swrm_ahb_reg_read(struct qcom_swrm_ctrl *ctrl, int reg,
 				    u32 *val)
 {
 	struct regmap *wcd_regmap = ctrl->regmap;
-	u8 *data = (u8 *)val;
+	u32 discard;
 	int ret;
-	u8 access_status = 0;
-	int i;
 
 	/* pg register + offset */
 	ret = regmap_bulk_write(wcd_regmap, SWRM_AHB_BRIDGE_RD_ADDR_0,
@@ -540,24 +551,21 @@ static int __qcom_swrm_ahb_reg_read(struct qcom_swrm_ctrl *ctrl, int reg,
 		return SDW_CMD_FAIL;
 
 	/*
-	 * qcauddev8180!0x14009a488 polls ACCESS_STATUS after submitting
-	 * RD_ADDR and before sampling RD_DATA. It performs at most six
-	 * immediate one-byte reads and waits specifically for RD_DONE (bit 1).
-	 * WR_DONE (bit 0) may still be set from the preceding transaction and
-	 * must not be mistaken for completion of this read.
+	 * The WCD9340 paged bridge completes more slowly under Linux than under
+	 * qcauddev's synchronous byte primitive.  Immediate status polling gave
+	 * torn enumerator words.  A settle interval plus one discarded RD_DATA
+	 * sample produced stable, complete IDs for both Surface amplifiers.
 	 */
 	if (ctrl->spx_windows_init) {
-		for (i = 0; i < 6; i++) {
-			ret = spx_regmap_read_byte(wcd_regmap,
-						  SWRM_AHB_BRIDGE_ACCESS_STATUS,
-						  &access_status);
-			if (ret < 0)
-				return SDW_CMD_FAIL;
-			if (access_status & BIT(1))
-				break;
-		}
-		if (!(access_status & BIT(1)))
+		usleep_range(500, 550);
+		ret = regmap_bulk_read(wcd_regmap, SWRM_AHB_BRIDGE_RD_DATA_0,
+				       &discard, sizeof(discard));
+		if (ret < 0)
 			return SDW_CMD_FAIL;
+		usleep_range(500, 550);
+		ret = regmap_bulk_read(wcd_regmap, SWRM_AHB_BRIDGE_RD_DATA_0,
+				       val, sizeof(*val));
+		return ret < 0 ? SDW_CMD_FAIL : SDW_CMD_OK;
 	}
 
 	/*
@@ -583,26 +591,10 @@ static int __qcom_swrm_ahb_reg_read(struct qcom_swrm_ctrl *ctrl, int reg,
 				 reg, st, i, iters);
 	}
 
-	if (ctrl->spx_windows_init) {
-		/*
-		 * qcauddev8180!0x14009a488 fetches RD_DATA_0..3 as four
-		 * independent one-byte SLIMbus transactions.  Do not combine
-		 * these on the Surface bridge: multi-byte RD_DATA reads have
-		 * returned stale/partial words on this hardware.
-		 */
-		for (i = 0; i < sizeof(*val); i++) {
-			ret = spx_regmap_read_byte(wcd_regmap,
-						  SWRM_AHB_BRIDGE_RD_DATA_0 + i,
-						  &data[i]);
-			if (ret < 0)
-				return SDW_CMD_FAIL;
-		}
-	} else {
-		ret = regmap_bulk_read(wcd_regmap, SWRM_AHB_BRIDGE_RD_DATA_0,
-				       val, sizeof(*val));
-		if (ret < 0)
-			return SDW_CMD_FAIL;
-	}
+	ret = regmap_bulk_read(wcd_regmap, SWRM_AHB_BRIDGE_RD_DATA_0,
+			       val, sizeof(*val));
+	if (ret < 0)
+		return SDW_CMD_FAIL;
 
 	return SDW_CMD_OK;
 }
@@ -640,6 +632,9 @@ static int __qcom_swrm_ahb_reg_write(struct qcom_swrm_ctrl *ctrl,
 		if (ret < 0)
 			return SDW_CMD_FAIL;
 
+		/* Let the bridge consume the complete WR_DATA+WR_ADDR tuple. */
+		usleep_range(500, 550);
+
 		/*
 		 * Windows performs at most six immediate one-byte status reads
 		 * and waits specifically for WR_DONE (bit 0). RD_DONE (bit 1)
@@ -654,6 +649,13 @@ static int __qcom_swrm_ahb_reg_write(struct qcom_swrm_ctrl *ctrl,
 			if (status & BIT(0))
 				return SDW_CMD_OK;
 		}
+
+		/* Slave writes are intentionally fire-and-forget in the clean path.
+		 * Their wire-level FIFO status is stale on this bridge, so successful
+		 * submission of CMD_FIFO_WR_CMD is sufficient here as well.
+		 */
+		if (reg == ctrl->reg_layout[SWRM_REG_CMD_FIFO_WR_CMD])
+			return SDW_CMD_OK;
 
 		return SDW_CMD_FAIL;
 	}
@@ -802,6 +804,17 @@ static int qcom_swrm_cmd_fifo_wr_cmd(struct qcom_swrm_ctrl *ctrl, u8 cmd_data,
 	u32 val;
 	int ret = 0;
 	u8 cmd_id = 0x0;
+	u8 target = dev_addr;
+
+	/* Leave SCP addressing and synchronized frame switches untouched. Ordinary
+	 * codec/DP broadcasts retain their ordinary FIFO tag; only the existing
+	 * explicit broadcast path requests synchronized-command completion.
+	 */
+	if ((ctrl->spx_windows_init || spx_forced_attached) &&
+	    spx_broadcast_audio && dev_addr <= 2 &&
+	    ((reg_addr >= 0x100 && reg_addr < 0xf00) ||
+	     (reg_addr >= 0x3000 && reg_addr <= 0x36ff)))
+		target = SDW_BROADCAST_DEV_NUM;
 
 	if (dev_addr == SDW_BROADCAST_DEV_NUM) {
 		cmd_id = SWR_BROADCAST_CMD_ID;
@@ -809,7 +822,7 @@ static int qcom_swrm_cmd_fifo_wr_cmd(struct qcom_swrm_ctrl *ctrl, u8 cmd_data,
 					      dev_addr, reg_addr);
 	} else {
 		val = swrm_get_packed_reg_val(&ctrl->wcmd_id, cmd_data,
-					      dev_addr, reg_addr);
+					      target, reg_addr);
 	}
 
 	/* SPX accesses this master through the WCD9340 SLIMbus bridge.  Its
@@ -818,7 +831,7 @@ static int qcom_swrm_cmd_fifo_wr_cmd(struct qcom_swrm_ctrl *ctrl, u8 cmd_data,
 	 * with a flush and enough bridge settle time instead of rejecting DAPM
 	 * power writes based on that count.
 	 */
-	if (spx_core_enum) {
+	if (ctrl->spx_windows_init || spx_core_enum) {
 		ctrl->reg_write(ctrl, SWRM_CMD_FIFO_CMD, SWRM_CMD_FIFO_FLUSH);
 		usleep_range(500, 550);
 	} else if (swrm_wait_for_wr_fifo_avail(ctrl)) {
@@ -830,8 +843,9 @@ static int qcom_swrm_cmd_fifo_wr_cmd(struct qcom_swrm_ctrl *ctrl, u8 cmd_data,
 
 	/* Its assumed that write is okay as we do not get any status back */
 	ctrl->reg_write(ctrl, ctrl->reg_layout[SWRM_REG_CMD_FIFO_WR_CMD], val);
-	if (spx_core_enum)
+	if (ctrl->spx_windows_init || spx_core_enum) {
 		usleep_range(1200, 1300);
+	}
 
 	if (ctrl->version <= SWRM_VERSION_1_3_0)
 		usleep_range(150, 155);
@@ -876,7 +890,7 @@ static int qcom_swrm_cmd_fifo_rd_cmd(struct qcom_swrm_ctrl *ctrl,
 	 * and give the slow AHB-over-SLIMbus path extra settle so the response
 	 * is latched before we poll the FIFO count.
 	 */
-	if (spx_core_enum) {
+	if (ctrl->spx_windows_init || spx_core_enum) {
 		ctrl->reg_write(ctrl, SWRM_CMD_FIFO_CMD, SWRM_CMD_FIFO_FLUSH);
 		usleep_range(500, 550);
 	}
@@ -886,7 +900,7 @@ static int qcom_swrm_cmd_fifo_rd_cmd(struct qcom_swrm_ctrl *ctrl,
 	ctrl->reg_write(ctrl, ctrl->reg_layout[SWRM_REG_CMD_FIFO_RD_CMD], val);
 	/* wait for FIFO RD CMD complete to avoid overflow */
 	usleep_range(250, 255);
-	if (spx_core_enum)
+	if (ctrl->spx_windows_init || spx_core_enum)
 		usleep_range(700, 750);
 
 	if (swrm_wait_for_rd_fifo_avail(ctrl))
@@ -2156,10 +2170,109 @@ static bool swrm_wait_for_frame_gen_enabled(struct qcom_swrm_ctrl *ctrl)
 	return false;
 }
 
+static int spx_swrm_windows_enumerate_wsas(struct qcom_swrm_ctrl *ctrl)
+{
+	u32 slv = 0, dev1_id1 = 0, dev1_id2 = 0;
+	u32 dev2_id1 = 0, dev2_id2 = 0, frame = 0;
+	bool divider_changed = false;
+	int poll, stable = 0;
+
+	/* Hold ID4 off, then let the hardware enumerator assign ID3 as dev1. */
+	regmap_update_bits(ctrl->regmap, WCD934X_GPIO_DIR_CTL, 0x06, 0x06);
+	regmap_update_bits(ctrl->regmap, WCD934X_GPIO_VAL_CTL, 0x06, BIT(1));
+	for (poll = 0; poll < 400; poll++) {
+		ctrl->reg_read(ctrl, SWRM_MCP_SLV_STATUS, &slv);
+		ctrl->reg_read(ctrl, SWRM_ENUMERATOR_SLAVE_DEV_ID_1(1),
+			       &dev1_id1);
+		ctrl->reg_read(ctrl, SWRM_ENUMERATOR_SLAVE_DEV_ID_2(1),
+			       &dev1_id2);
+
+		if (!divider_changed && dev1_id1 == 0x21170213 &&
+		    dev1_id2 == 0x10) {
+			ctrl->reg_read(ctrl, SWRM_MCP_FRAME_CTRL_BANK_ADDR(0),
+				       &frame);
+			u32p_replace_bits(&frame, 2, GENMASK(10, 8));
+			ctrl->reg_write(ctrl, SWRM_MCP_FRAME_CTRL_BANK_ADDR(0),
+					frame);
+			divider_changed = true;
+		}
+
+		if ((slv & GENMASK(3, 2)) == BIT(2) &&
+		    dev1_id1 == 0x21170213 && dev1_id2 == 0x10)
+			stable++;
+		else
+			stable = 0;
+		if (stable >= 4)
+			break;
+		usleep_range(500, 550);
+	}
+	if (stable < 4) {
+		dev_err(ctrl->dev,
+			"SPX: dual enumeration failed at left WSA slv=%#x id=%#x/%#x\n",
+			slv, dev1_id1, dev1_id2);
+		goto fail_closed;
+	}
+
+	/* Release ID4 and let the same enumerator assign it as dev2. */
+	regmap_update_bits(ctrl->regmap, WCD934X_GPIO_VAL_CTL, 0x06, 0x06);
+	divider_changed = false;
+	stable = 0;
+	for (poll = 0; poll < 400; poll++) {
+		ctrl->reg_read(ctrl, SWRM_MCP_SLV_STATUS, &slv);
+		ctrl->reg_read(ctrl, SWRM_ENUMERATOR_SLAVE_DEV_ID_1(2),
+			       &dev2_id1);
+		ctrl->reg_read(ctrl, SWRM_ENUMERATOR_SLAVE_DEV_ID_2(2),
+			       &dev2_id2);
+
+		if (!divider_changed && dev2_id1 == 0x21170214 &&
+		    dev2_id2 == 0x10) {
+			ctrl->reg_read(ctrl, SWRM_MCP_FRAME_CTRL_BANK_ADDR(0),
+				       &frame);
+			u32p_replace_bits(&frame, 3, GENMASK(10, 8));
+			ctrl->reg_write(ctrl, SWRM_MCP_FRAME_CTRL_BANK_ADDR(0),
+					frame);
+			divider_changed = true;
+		}
+
+		if ((slv & GENMASK(5, 2)) == (BIT(4) | BIT(2)) &&
+		    dev1_id1 == 0x21170213 && dev1_id2 == 0x10 &&
+		    dev2_id1 == 0x21170214 && dev2_id2 == 0x10)
+			stable++;
+		else
+			stable = 0;
+		if (stable >= 4)
+			break;
+		usleep_range(500, 550);
+	}
+	if (stable < 4) {
+		dev_err(ctrl->dev,
+			"SPX: dual enumeration failed at right WSA slv=%#x id=%#x/%#x\n",
+			slv, dev2_id1, dev2_id2);
+		goto fail_closed;
+	}
+
+	/* The active bank reached divider 3 incrementally; match the idle bank. */
+	ctrl->reg_write(ctrl, SWRM_MCP_FRAME_CTRL_BANK_ADDR(1),
+			BIT(16) | (3 << 8));
+	ctrl->slave_status = slv;
+	memset(ctrl->status, 0, sizeof(ctrl->status));
+	ctrl->status[1] = SDW_SLAVE_ATTACHED;
+	ctrl->status[2] = SDW_SLAVE_ATTACHED;
+	dev_info(ctrl->dev,
+		 "SPX: minimal dual WSA enumeration retained slv=%#x dev1=%#x/%#x dev2=%#x/%#x\n",
+		 slv, dev1_id1, dev1_id2, dev2_id1, dev2_id2);
+	return 0;
+
+fail_closed:
+	ctrl->reg_write(ctrl, SWRM_ENUMERATOR_CFG_ADDR, 0);
+	regmap_update_bits(ctrl->regmap, WCD934X_GPIO_VAL_CTL, 0x06, 0);
+	return -ENODEV;
+}
+
 static int qcom_swrm_init(struct qcom_swrm_ctrl *ctrl)
 {
 	u32 val;
-	int retry;
+	int retry, ret;
 
 	spx_bus_up = false;
 	if (ctrl->spx_windows_init)
@@ -2181,8 +2294,15 @@ static int qcom_swrm_init(struct qcom_swrm_ctrl *ctrl)
 		usleep_range(2000, 2100);
 		usleep_range(1000, 1100);
 
+		regmap_update_bits(ctrl->regmap, WCD934X_GPIO_DIR_CTL,
+				   0x06, 0x06);
+		regmap_update_bits(ctrl->regmap, WCD934X_GPIO_VAL_CTL,
+				   0x06, 0);
+		msleep(20);
+
+		/* This reset bit is self-clearing on the WCD9340 manager. */
 		ctrl->reg_write(ctrl, SWRM_COMP_SW_RESET, 1);
-		ctrl->reg_write(ctrl, SWRM_COMP_SW_RESET, 0);
+		ctrl->reg_write(ctrl, SWRM_COMP_SW_RESET, 1);
 
 		/*
 		 * qcauddev8180!0x14009c6fc writes 0x03: three command
@@ -2191,29 +2311,38 @@ static int qcom_swrm_init(struct qcom_swrm_ctrl *ctrl)
 		ctrl->reg_write(ctrl, SWRM_CMD_FIFO_CFG_ADDR, 0x03);
 
 		ctrl->reg_read(ctrl, SWRM_MCP_CFG_ADDR, &val);
-		u32p_replace_bits(&val, 0,
+		u32p_replace_bits(&val, SWRM_DEF_CMD_NO_PINGS,
 				  SWRM_MCP_CFG_MAX_NUM_OF_CMD_NO_PINGS_BMSK);
 		ctrl->reg_write(ctrl, SWRM_MCP_CFG_ADDR, val);
 
 		ctrl->reg_write(ctrl,
 				ctrl->reg_layout[SWRM_REG_INTERRUPT_MASK_ADDR], 0);
-		ctrl->intr_mask = 0x1c3fd;
+		ctrl->reg_write(ctrl,
+				ctrl->reg_layout[SWRM_REG_INTERRUPT_CPU_EN], 0);
+		ctrl->intr_mask = 0x1fffd;
 		ctrl->reg_write(ctrl,
 				ctrl->reg_layout[SWRM_REG_INTERRUPT_MASK_ADDR],
 				ctrl->intr_mask);
 
-		ctrl->reg_write(ctrl, SWRM_ENUMERATOR_CFG_ADDR, 1);
+		/* Start on 48x2/divider-1; the staged enumerator reaches divider 3. */
 		ctrl->reg_write(ctrl, SWRM_MCP_FRAME_CTRL_BANK_ADDR(0),
-				BIT(16));
+				BIT(16) | (1 << 8));
+		ctrl->reg_write(ctrl, SWRM_ENUMERATOR_CFG_ADDR, 1);
 		ctrl->reg_write(ctrl, SWRM_MCP_BUS_CTRL,
 				SWRM_MCP_BUS_CLK_START);
 		ctrl->reg_write(ctrl, SWRM_COMP_CFG_ADDR,
+				SWRM_COMP_CFG_IRQ_LEVEL_OR_PULSE_MSK);
+		ctrl->reg_write(ctrl, SWRM_COMP_CFG_ADDR,
+				SWRM_COMP_CFG_IRQ_LEVEL_OR_PULSE_MSK |
 				SWRM_COMP_CFG_ENABLE_MSK);
+		ctrl->reg_write(ctrl,
+				ctrl->reg_layout[SWRM_REG_INTERRUPT_CLEAR], ~0U);
 
-		for (retry = 0; retry < 11; retry++) {
+		for (retry = 0; retry < 100; retry++) {
 			ctrl->reg_read(ctrl, SWRM_COMP_STATUS, &val);
 			if (val & SWRM_FRM_GEN_ENABLED)
 				break;
+			usleep_range(500, 550);
 		}
 		if (!(val & SWRM_FRM_GEN_ENABLED))
 			dev_err(ctrl->dev,
@@ -2223,7 +2352,13 @@ static int qcom_swrm_init(struct qcom_swrm_ctrl *ctrl)
 			dev_info(ctrl->dev,
 				 "SPX: exact Windows SoundWire controller init complete\n");
 
-		ctrl->slave_status = 0;
+		ret = spx_swrm_windows_enumerate_wsas(ctrl);
+		if (ret) {
+			mutex_unlock(&ctrl->controller_lock);
+			return ret;
+		}
+		spx_clk_div = 3;
+		ctrl->spx_runtime_handoff_pending = false;
 		ctrl->reg_read(ctrl, SWRM_COMP_PARAMS, &val);
 		ctrl->rd_fifo_depth =
 			FIELD_GET(SWRM_COMP_PARAMS_RD_FIFO_DEPTH, val);
@@ -2549,14 +2684,21 @@ route_write:
 			int rep, reps = 1;
 			u16 mirror = 0;
 
-			if (spx_forced_attached &&
+			if ((spx_forced_attached || ctrl->spx_windows_init) &&
 			    msg->dev_num == SDW_BROADCAST_DEV_NUM &&
 			    (addr == SDW_SCP_FRAMECTRL_B0 ||
-			     addr == SDW_SCP_FRAMECTRL_B1))
+			     addr == SDW_SCP_FRAMECTRL_B1)) {
 				reps = clamp(spx_bank_switch_repeats, 1, 5);
+				if (reps > 1)
+					dev_info(ctrl->dev,
+						 "SPX: FRAMECTRL bank-switch broadcast addr=%#x value=%#x repeats=%d\n",
+						 addr, msg->buf[i], reps);
+			}
 
-			if (spx_forced_attached &&
-			    (msg->dev_num == 1 || dev_num == SDW_ENUM_DEV_NUM)) {
+			if ((spx_forced_attached &&
+			     (msg->dev_num == 1 || dev_num == SDW_ENUM_DEV_NUM)) ||
+			    (ctrl->spx_windows_init &&
+			     (dev_num == 1 || dev_num == 2))) {
 				/*
 				 * Mirror banked slave DPn registers (offset
 				 * 0x20-0x2f = bank 0, 0x30-0x3f = bank 1 within
@@ -2619,12 +2761,81 @@ route_write:
 	return SDW_CMD_OK;
 }
 
+static int qcom_swrm_spx_frame_write(struct qcom_swrm_ctrl *ctrl,
+				     unsigned int bank, u32 val)
+{
+	u32 readback;
+	int attempt, rd_ret, wr_ret;
+
+	for (attempt = 1; attempt <= 4; attempt++) {
+		wr_ret = ctrl->reg_write(ctrl,
+			SWRM_MCP_FRAME_CTRL_BANK_ADDR(bank), val);
+		readback = 0;
+		rd_ret = ctrl->reg_read(ctrl,
+			SWRM_MCP_FRAME_CTRL_BANK_ADDR(bank), &readback);
+		if (rd_ret == SDW_CMD_OK &&
+		    (readback & GENMASK(23, 0)) == (val & GENMASK(23, 0))) {
+			dev_info(ctrl->dev,
+				 "SPX: manager FRAME_CTRL bank %u verified=%#010x write_response=%d attempt=%d/4\n",
+				 bank, (u32)(readback & GENMASK(23, 0)),
+				 wr_ret, attempt);
+			return 0;
+		}
+		usleep_range(500, 550);
+	}
+
+	dev_err(ctrl->dev,
+		"SPX: manager FRAME_CTRL bank %u failed readback=%#010x\n",
+		bank, readback);
+	return -EIO;
+}
+
 static int qcom_swrm_pre_bank_switch(struct sdw_bus *bus)
 {
 	u32 reg = SWRM_MCP_FRAME_CTRL_BANK_ADDR(bus->params.next_bank);
 	struct qcom_swrm_ctrl *ctrl = to_qcom_sdw(bus);
 	u32 val = 0;
 	int ret;
+
+	/*
+	 * Enumerate on the only stable geometry (48x2/divider-3), then coordinate
+	 * the first stream's transition to the proven clean-speaker geometry
+	 * (48x16/divider-0). Program only the inactive manager bank here. The
+	 * core's following FRAMECTRL broadcast changes the slaves and manager at
+	 * the same frame boundary; post_bank_switch mirrors the now-inactive bank.
+	 * Writing both manager banks before that broadcast changes the live clock
+	 * under the assigned slaves and was proven to yield silence/static.
+	 */
+	if (ctrl->spx_windows_init) {
+		if (spx_keep_enum_frame) {
+			bus->params.row = 48;
+			bus->params.col = 2;
+			ctrl->spx_runtime_handoff_pending = false;
+		} else if (ctrl->spx_runtime_handoff_pending) {
+			spx_clk_div = 0;
+			bus->params.row = 48;
+			bus->params.col = 16;
+			ctrl->rows_index = sdw_find_row_index(48);
+			ctrl->cols_index = sdw_find_col_index(16);
+			ctrl->spx_runtime_handoff_pending = false;
+			ctrl->spx_runtime_mirror_pending = true;
+		}
+		val = (spx_runtime_ssp_period << 16) |
+		      ((spx_actual_phase & 0x1f) << 11) |
+		      (spx_clk_div << 8) |
+		      FIELD_PREP(SWRM_MCP_FRAME_CTRL_BANK_ROW_CTRL_BMSK,
+				 ctrl->rows_index) |
+		      FIELD_PREP(SWRM_MCP_FRAME_CTRL_BANK_COL_CTRL_BMSK,
+				 ctrl->cols_index);
+		ret = qcom_swrm_spx_frame_write(ctrl, bus->params.next_bank, val);
+		if (ret)
+			return ret;
+		if (ctrl->spx_runtime_mirror_pending)
+			dev_info(ctrl->dev,
+				 "SPX: clean runtime frame handoff armed on inactive bank %u frame=%#010x\n",
+				 bus->params.next_bank, val);
+		return 0;
+	}
 
 	ret = ctrl->reg_read(ctrl, reg, &val);
 	if (ret && !spx_core_enum)
@@ -2700,6 +2911,24 @@ static int qcom_swrm_post_bank_switch(struct sdw_bus *bus)
 	int outer, inner;
 	u32 val = 0;
 	u8 data;
+	int ret;
+
+	if (ctrl->spx_windows_init && ctrl->spx_runtime_mirror_pending) {
+		val = (spx_runtime_ssp_period << 16) |
+		      ((spx_actual_phase & 0x1f) << 11) |
+		      (spx_clk_div << 8) |
+		      FIELD_PREP(SWRM_MCP_FRAME_CTRL_BANK_ROW_CTRL_BMSK,
+				 ctrl->rows_index) |
+		      FIELD_PREP(SWRM_MCP_FRAME_CTRL_BANK_COL_CTRL_BMSK,
+				 ctrl->cols_index);
+		ret = qcom_swrm_spx_frame_write(ctrl, bus->params.next_bank, val);
+		if (ret)
+			return ret;
+		ctrl->spx_runtime_mirror_pending = false;
+		dev_info(ctrl->dev,
+			 "SPX: clean runtime frame handoff complete; both banks=%#010x\n",
+			 val);
+	}
 
 	/*
 	 * The SPX slave can fall from its fragile assigned address back to
@@ -3389,9 +3618,8 @@ static int qcom_swrm_probe(struct platform_device *pdev)
 	struct sdw_bus_params *params;
 	struct qcom_swrm_ctrl *ctrl;
 	const struct qcom_swrm_data *data;
-	bool attached, both_attached;
-	int i, retry, ret;
-	u32 val;
+	int ret;
+	u32 default_cols, default_rows, val;
 
 	ctrl = devm_kzalloc(dev, sizeof(*ctrl), GFP_KERNEL);
 	if (!ctrl)
@@ -3422,11 +3650,12 @@ static int qcom_swrm_probe(struct platform_device *pdev)
 		spx_force_attach = 0;
 		spx_blind_attach = 0;
 		spx_watchdog = 0;
-		spx_win_transport = 0;
+		spx_win_transport = 1;
+		spx_clk_div = 3;
 		spx_dr_freq = 0;
-		spx_mirror_banks = 0;
+		spx_mirror_banks = 1;
 		spx_write_twice = 0;
-		spx_bank_switch_repeats = 1;
+		spx_bank_switch_repeats = 3;
 		spx_write_dev0 = -1;
 		spx_no_assign = 0;
 		spx_forced_attached = false;
@@ -3440,8 +3669,16 @@ static int qcom_swrm_probe(struct platform_device *pdev)
 	data = of_device_get_match_data(dev);
 	ctrl->max_reg = data->max_reg;
 	ctrl->reg_layout = data->reg_layout;
-	ctrl->rows_index = sdw_find_row_index(data->default_rows);
-	ctrl->cols_index = sdw_find_col_index(data->default_cols);
+	default_rows = data->default_rows;
+	default_cols = data->default_cols;
+	if (ctrl->spx_windows_init) {
+		default_rows = 48;
+		default_cols = 2;
+		dev_info(dev,
+			 "SPX: fixed dual SoundWire frame geometry 48x2/divider-3\n");
+	}
+	ctrl->rows_index = sdw_find_row_index(default_rows);
+	ctrl->cols_index = sdw_find_col_index(default_cols);
 #if IS_REACHABLE(CONFIG_SLIMBUS)
 	if (dev->parent->bus == &slimbus_bus) {
 #else
@@ -3527,8 +3764,8 @@ static int qcom_swrm_probe(struct platform_device *pdev)
 	 */
 	params->max_dr_freq = spx_dr_freq ? spx_dr_freq : DEFAULT_CLK_FREQ;
 	params->curr_dr_freq = params->max_dr_freq;
-	params->col = data->default_cols;
-	params->row = data->default_rows;
+	params->col = default_cols;
+	params->row = default_rows;
 	ctrl->reg_read(ctrl, SWRM_MCP_STATUS, &val);
 	params->curr_bank = val & SWRM_MCP_STATUS_BANK_NUM_MASK;
 	params->next_bank = !params->curr_bank;
@@ -3538,8 +3775,8 @@ static int qcom_swrm_probe(struct platform_device *pdev)
 	prop->num_clk_gears = 0;
 	prop->num_clk_freq = MAX_FREQ_NUM;
 	prop->clk_freq = &qcom_swrm_freq_tbl[0];
-	prop->default_col = data->default_cols;
-	prop->default_row = data->default_rows;
+	prop->default_col = default_cols;
+	prop->default_row = default_rows;
 
 	ctrl->reg_read(ctrl, SWRM_COMP_HW_VERSION, &ctrl->version);
 
@@ -3581,7 +3818,13 @@ static int qcom_swrm_probe(struct platform_device *pdev)
 		goto err_clk;
 	}
 
-	qcom_swrm_init(ctrl);
+	ret = qcom_swrm_init(ctrl);
+	if (ret) {
+		dev_err(dev, "SoundWire controller initialization failed (%d)\n",
+			ret);
+		sdw_bus_master_delete(&ctrl->bus);
+		goto err_clk;
+	}
 
 	/*
 	 * The Linux IRQ path clears status late and suppresses an unchanged
@@ -3591,39 +3834,43 @@ static int qcom_swrm_probe(struct platform_device *pdev)
 	 * single status snapshot for table mapping, as qcauddev8180 does.
 	 */
 	if (ctrl->spx_windows_init) {
-		attached = false;
-		both_attached = false;
-		for (retry = 0; retry < 40; retry++) {
-			mutex_lock(&ctrl->controller_lock);
-			qcom_swrm_get_device_status(ctrl);
-			both_attached =
-				(ctrl->slave_status & GENMASK(5, 2)) == 0x14;
-			for (i = 1; i <= SDW_MAX_DEVICES; i++) {
-				if (ctrl->status[i] == SDW_SLAVE_ATTACHED) {
-					attached = true;
-					break;
-				}
-			}
-			if (attached) {
-				dev_info(ctrl->dev,
-					 "SPX: synchronous slave status snapshot %#x\n",
-					 ctrl->slave_status);
-				qcom_swrm_enumerate(&ctrl->bus);
-				sdw_handle_slave_status(&ctrl->bus,
-							ctrl->status);
-			}
-			mutex_unlock(&ctrl->controller_lock);
-
-			if (both_attached)
-				break;
-			usleep_range(500, 550);
+		mutex_lock(&ctrl->controller_lock);
+		dev_info(ctrl->dev,
+			 "SPX: handing stable dual status snapshot %#x to core\n",
+			 ctrl->slave_status);
+		ret = qcom_swrm_enumerate(&ctrl->bus);
+		if (!ret && test_bit(1, ctrl->bus.assigned) &&
+		    test_bit(2, ctrl->bus.assigned))
+			ret = sdw_handle_slave_status(&ctrl->bus, ctrl->status);
+		else if (!ret)
+			ret = -ENODEV;
+		if (!ret) {
+			spx_clk_div = 3;
+			ctrl->spx_runtime_handoff_pending = true;
+			ctrl->spx_runtime_mirror_pending = false;
+			ctrl->reg_write(ctrl, SWRM_ENUMERATOR_CFG_ADDR, 0);
+			ctrl->intr_mask =
+				SWRM_INTERRUPT_STATUS_SPECIAL_CMD_ID_FINISHED;
+			ctrl->reg_write(ctrl,
+				ctrl->reg_layout[SWRM_REG_INTERRUPT_MASK_ADDR],
+				ctrl->intr_mask);
+			ctrl->reg_write(ctrl,
+				ctrl->reg_layout[SWRM_REG_INTERRUPT_CLEAR], ~0U);
+			if (ctrl->irq > 0)
+				ctrl->reg_write(ctrl,
+					ctrl->reg_layout[SWRM_REG_INTERRUPT_CPU_EN],
+					ctrl->intr_mask);
+			dev_info(ctrl->dev,
+				 "SPX: dual enumeration frozen on 48x2/divider-3; coordinated 48x16/divider-0 handoff pending\n");
 		}
-		if (!attached)
+		mutex_unlock(&ctrl->controller_lock);
+		if (ret) {
 			dev_err(ctrl->dev,
-				"SPX: no attached slave in post-init status window\n");
-		else if (!both_attached)
-			dev_warn(ctrl->dev,
-				 "SPX: post-init window did not capture both slaves together\n");
+				"SPX: stable dual-slave core handoff failed (%d)\n",
+				ret);
+			sdw_bus_master_delete(&ctrl->bus);
+			goto err_clk;
+		}
 	}
 
 	wait_for_completion_timeout(&ctrl->enumeration,
@@ -3674,6 +3921,11 @@ static int qcom_swrm_probe(struct platform_device *pdev)
 	pm_runtime_mark_last_busy(dev);
 	pm_runtime_set_active(dev);
 	pm_runtime_enable(dev);
+	if (ctrl->spx_windows_init) {
+		pm_runtime_forbid(dev);
+		dev_info(dev,
+			 "SPX: runtime PM forbidden to preserve dual enumeration\n");
+	}
 
 	/*
 	 * SPX: retime the idle park (Windows CLK_STP_NOW-on-idle parity). The
@@ -3738,6 +3990,8 @@ static void qcom_swrm_remove(struct platform_device *pdev)
 		spx_pm_held = false;
 		pm_runtime_put_noidle(ctrl->dev);
 	}
+	if (ctrl->spx_windows_init)
+		pm_runtime_allow(&pdev->dev);
 
 	/* Runtime PM remains enabled across a manual unbind unless the driver
 	 * disables it. Resume while the bus is intact, then tear it down from a

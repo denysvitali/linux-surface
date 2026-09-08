@@ -1,7 +1,43 @@
 // SPDX-License-Identifier: GPL-2.0
 /* SPX: dump SLIMbus device e_addr + logical address for the WCD9340 ifaces. */
 #include <linux/module.h>
+#include <linux/delay.h>
+#include <linux/regmap.h>
 #include <linux/slimbus.h>
+
+static bool rearm_rx;
+module_param(rearm_rx, bool, 0400);
+MODULE_PARM_DESC(rearm_rx, "Pulse RX0/1 port enable, restoring their current configuration; use with amplifiers muted");
+
+static int rearm_ports(struct regmap *map)
+{
+	unsigned int saved[2];
+	int i, ret, error = 0;
+
+	for (i = 0; i < 2; i++) {
+		ret = regmap_read(map, 0x40 + i, &saved[i]);
+		if (ret)
+			return ret;
+	}
+	for (i = 0; i < 2; i++) {
+		ret = regmap_write(map, 0x40 + i, saved[i] & ~1U);
+		if (ret && !error)
+			error = ret;
+	}
+	usleep_range(1000, 1500);
+	for (i = 0; i < 2; i++) {
+		ret = regmap_write(map, 0x40 + i, saved[i]);
+		if (ret && !error)
+			error = ret;
+		pr_info("spx_slim_info: RX%d port restore=%#x rc=%d\n",
+			i, saved[i], ret);
+	}
+	ret = regmap_write(map, 0x38, 3);
+	if (ret && !error)
+		error = ret;
+	msleep(20);
+	return error;
+}
 
 static int dump_one(const char *name)
 {
@@ -29,8 +65,37 @@ static int dump_one(const char *name)
 
 static int __init spx_init(void)
 {
+	struct device *dev;
+	struct regmap *map;
+	unsigned int value;
+	static const unsigned int regs[] = {0x34, 0x35, 0x40, 0x41,
+		0x60, 0x61, 0x180, 0x184};
+	int i, ret;
+
 	dump_one("217:250:1:0");
 	dump_one("217:250:0:0");
+	dev = bus_find_device_by_name(&slimbus_bus, NULL, "217:250:0:0");
+	if (dev) {
+		map = dev_get_regmap(dev, NULL);
+		if (!map) {
+			put_device(dev);
+			return -ENODEV;
+		}
+		if (rearm_rx) {
+			ret = rearm_ports(map);
+			if (ret) {
+				put_device(dev);
+				return ret;
+			}
+		}
+		for (i = 0; i < ARRAY_SIZE(regs); i++) {
+			value = 0;
+			ret = regmap_read(map, regs[i], &value);
+			pr_info("spx_slim_info: paged IFD reg=%#x read=%#x rc=%d\n",
+				regs[i], value, ret);
+		}
+		put_device(dev);
+	}
 	return 0;
 }
 static void __exit spx_exit(void) {}

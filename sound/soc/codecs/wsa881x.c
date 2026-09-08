@@ -204,7 +204,7 @@
 
 #define WSA881X_PA_GAIN_TLV(xname, reg, shift, max, invert, tlv_array) \
 	SOC_SINGLE_EXT_TLV(xname, reg, shift, max, invert, \
-			   snd_soc_get_volsw, wsa881x_put_pa_gain, tlv_array)
+			   wsa881x_get_pa_gain, wsa881x_put_pa_gain, tlv_array)
 
 static const struct reg_default wsa881x_defaults[] = {
 	{ WSA881X_CHIP_ID0, 0x00 },
@@ -713,6 +713,24 @@ module_param(spx_stream_port_mask, int, 0644);
 MODULE_PARM_DESC(spx_stream_port_mask,
 		 "SPX: SoundWire sink-port mask; write-only SPX devices transport every selected port independently of analog controls");
 
+/* Dual, assigned-device mode keeps normal addressed register writes, while
+ * opting into the readless transport and proven Surface PA sequencing.
+ */
+static bool spx_enumerated_mode;
+module_param(spx_enumerated_mode, bool, 0444);
+MODULE_PARM_DESC(spx_enumerated_mode,
+		 "SPX: dual assigned-device mode (write-only PortCtrl, no slave alerts, DAC-only transport, Windows PA sequence)");
+
+static int spx_stream_device_mask = BIT(0) | BIT(1);
+module_param(spx_stream_device_mask, int, 0644);
+MODULE_PARM_DESC(spx_stream_device_mask,
+		 "SPX: assigned devices allowed to join a stream (bit0=device1, bit1=device2)");
+
+static bool spx_swap_dac_master_ports;
+module_param(spx_swap_dac_master_ports, bool, 0644);
+MODULE_PARM_DESC(spx_swap_dac_master_ports,
+		 "SPX: map device1 DAC to master DP4 and device2 DAC to master DP1");
+
 /*
  * SPX: override the DT qcom,port-mapping (slave port -> master port) at runtime.
  * The stock <1 2 3 7> is inherited from db845c and puts the speaker audio on the
@@ -751,7 +769,7 @@ static int spx_wsa_powerdown_set(struct wsa881x_priv *wsa881x, int logical)
 {
 	unsigned int mask;
 	u8 val;
-	int ret;
+	int ret = 0;
 
 	if (!wsa881x || !wsa881x->spx_wcd_regmap)
 		return -ENODEV;
@@ -827,7 +845,23 @@ MODULE_PARM_DESC(spx_blind_rmw,
 static bool wsa881x_use_shadow(struct wsa881x_priv *wsa881x)
 {
 	return wsa881x->spx_reg_shadow &&
-	       (wsa881x->spx_write_only || spx_blind_rmw);
+	       (wsa881x->spx_write_only || spx_blind_rmw ||
+		spx_enumerated_mode);
+}
+
+static bool wsa881x_spx_windows_pa(struct wsa881x_priv *wsa881x)
+{
+	return wsa881x->spx_write_only || spx_enumerated_mode;
+}
+
+static bool wsa881x_spx_transport_enabled(struct wsa881x_priv *wsa881x)
+{
+	unsigned int dev_num = wsa881x->slave->dev_num;
+
+	if (!spx_enumerated_mode)
+		return true;
+	return dev_num >= 1 && dev_num <= 2 &&
+	       (spx_stream_device_mask & BIT(dev_num - 1));
 }
 
 static int wsa881x_update_bits(struct wsa881x_priv *wsa881x,
@@ -996,12 +1030,12 @@ static int wsa881x_init(struct wsa881x_priv *wsa881x)
 	     (spx_win_boost_loop_stab < 0 || spx_win_boost_loop_stab > 0xff)))
 		return -EINVAL;
 
-	if (wsa881x->spx_write_only)
+	if (wsa881x_spx_windows_pa(wsa881x))
 		dev_info(wsa881x->dev,
 			 "SPX: initializing amplifier at SoundWire device %d\n",
 			 wsa881x->slave->dev_num);
 
-	if (wsa881x->spx_write_only) {
+	if (wsa881x_spx_windows_pa(wsa881x)) {
 		if (spx_win_bias_psrr != -1 && spx_win_bias_psrr != 0x45)
 			return -EINVAL;
 		if (spx_win_temp_op != -1 && spx_win_temp_op != 0x0c)
@@ -1043,7 +1077,7 @@ static int wsa881x_init(struct wsa881x_priv *wsa881x)
 	 * particular, CDC_RST_CTL must pass through 0x02 before reaching 0x03;
 	 * two update_bits() calls are not equivalent on the write-only SPX bus.
 	 */
-	if (wsa881x->spx_write_only) {
+	if (wsa881x_spx_windows_pa(wsa881x)) {
 		WSA881X_INIT_WRITE(WSA881X_CDC_RST_CTL, 0xff, 0x02);
 		WSA881X_INIT_WRITE(WSA881X_CDC_RST_CTL, 0xff, 0x03);
 		WSA881X_INIT_WRITE(WSA881X_CDC_DIG_CLK_CTL, 0xff, 0x01);
@@ -1116,7 +1150,7 @@ static int wsa881x_init(struct wsa881x_priv *wsa881x)
 	 * the protection TX stream plus module 0x1025f calibration, that mode
 	 * needs an explicit opt-in rather than another unconditional cold write.
 	 */
-	if (wsa881x->spx_write_only) {
+	if (wsa881x_spx_windows_pa(wsa881x)) {
 		WSA881X_INIT_WRITE(WSA881X_ADC_EN_MODU_V, 0xff, 0x00);
 		WSA881X_INIT_WRITE(WSA881X_ADC_EN_MODU_I, 0xff, 0x00);
 		WSA881X_INIT_WRITE(WSA881X_SPKR_PROT_FE_VSENSE_VCM, 0xff, 0x95);
@@ -1198,6 +1232,30 @@ static int wsa881x_component_probe(struct snd_soc_component *comp)
 			 "SPX: connected SPKR Playback directly to RDAC\n");
 	}
 
+	return 0;
+}
+
+static int wsa881x_get_pa_gain(struct snd_kcontrol *kc,
+				       struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *comp = snd_soc_kcontrol_component(kc);
+	struct wsa881x_priv *wsa881x = snd_soc_component_get_drvdata(comp);
+	struct soc_mixer_control *mc =
+		(struct soc_mixer_control *)kc->private_value;
+	unsigned int mask = (1 << fls(mc->max)) - 1;
+	unsigned int val;
+
+	if (!wsa881x_use_shadow(wsa881x))
+		return snd_soc_get_volsw(kc, ucontrol);
+	if (mc->reg > WSA881X_SPKR_STATUS3)
+		return -EINVAL;
+
+	mutex_lock(&wsa881x->spx_shadow_lock);
+	val = (wsa881x->spx_reg_shadow[mc->reg] >> mc->shift) & mask;
+	mutex_unlock(&wsa881x->spx_shadow_lock);
+	if (mc->invert)
+		val = mc->max - val;
+	ucontrol->value.integer.value[0] = val;
 	return 0;
 }
 
@@ -1388,16 +1446,27 @@ static int wsa881x_spkr_pa_event(struct snd_soc_dapm_widget *w,
 {
 	struct snd_soc_component *comp = snd_soc_dapm_to_component(w->dapm);
 	struct wsa881x_priv *wsa881x = snd_soc_component_get_drvdata(comp);
+	bool transport_enabled = wsa881x_spx_transport_enabled(wsa881x);
+	bool spx_pa = wsa881x_spx_windows_pa(wsa881x);
 	u8 pa_gain = 0;
-	int ret;
+	int ret = 0;
 
 #define WSA881X_PA_WRITE(_reg, _mask, _val) do { \
 	if (!ret) \
 		ret = wsa881x_update_bits(wsa881x, (_reg), (_mask), (_val)); \
 } while (0)
 
-	if (wsa881x->spx_write_only)
-		dev_info(comp->dev, "SPX: PA DAPM event 0x%x\n", event);
+	if (!transport_enabled) {
+		if (event == SND_SOC_DAPM_PRE_PMU ||
+		    event == SND_SOC_DAPM_POST_PMD)
+			return wsa881x_update_bits(wsa881x,
+				WSA881X_SPKR_DRV_EN, 0x80, 0x00);
+		return 0;
+	}
+
+	if (spx_pa)
+		dev_info(comp->dev, "SPX: PA DAPM event 0x%x device=%u\n",
+			 event, wsa881x->slave->dev_num);
 
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:
@@ -1406,7 +1475,7 @@ static int wsa881x_spkr_pa_event(struct snd_soc_dapm_widget *w,
 		 * the init table reseeds SPKR_DRV_GAIN to the 0 dB floor, and
 		 * the gain write below puts the captured value back.
 		 */
-		if (wsa881x->spx_write_only)
+		if (spx_pa)
 			pa_gain = wsa881x->spx_reg_shadow[WSA881X_SPKR_DRV_GAIN] &
 				  WSA881X_SPKR_PAG_GAIN_MASK;
 		/*
@@ -1512,7 +1581,7 @@ static int wsa881x_spkr_pa_event(struct snd_soc_dapm_widget *w,
 		 */
 		WSA881X_PA_WRITE(WSA881X_SPKR_DRV_GAIN,
 				  WSA881X_PA_GAIN_SEL_MASK |
-				  (wsa881x->spx_write_only ?
+				  (spx_pa ?
 				   WSA881X_SPKR_PAG_GAIN_MASK : 0),
 				  WSA881X_PA_GAIN_SEL_REG | pa_gain);
 
@@ -1537,7 +1606,7 @@ static int wsa881x_spkr_pa_event(struct snd_soc_dapm_widget *w,
 		 * Windows profile-3 configuration, so this opt-in changes only the PA
 		 * branch and deliberately leaves VISENSE/protection disabled.
 		 */
-		if (wsa881x->spx_write_only && spx_win_pa_seq) {
+		if (spx_pa && spx_win_pa_seq) {
 			int step;
 
 			dev_info(comp->dev, "SPX: Windows PA profile %d\n",
@@ -1672,8 +1741,13 @@ static int wsa881x_rdac_event(struct snd_soc_dapm_widget *w,
 	struct snd_soc_component *comp = snd_soc_dapm_to_component(w->dapm);
 	struct wsa881x_priv *wsa881x = snd_soc_component_get_drvdata(comp);
 
-	if (wsa881x->spx_write_only)
-		dev_info(comp->dev, "SPX: RDAC DAPM event 0x%x\n", event);
+	if (!wsa881x_spx_transport_enabled(wsa881x))
+		return wsa881x_update_bits(wsa881x, WSA881X_SPKR_DAC_CTL,
+					   BIT(7), 0);
+
+	if (wsa881x_spx_windows_pa(wsa881x))
+		dev_info(comp->dev, "SPX: RDAC DAPM event 0x%x device=%u\n",
+			 event, wsa881x->slave->dev_num);
 
 	return wsa881x_update_bits(wsa881x, WSA881X_SPKR_DAC_CTL, BIT(7),
 				     event == SND_SOC_DAPM_PRE_PMU ? BIT(7) : 0);
@@ -1735,9 +1809,50 @@ static int wsa881x_hw_params(struct snd_pcm_substream *substream,
 	int i, ret;
 
 	mutex_lock(&wsa881x->spx_state_lock);
+	if (spx_enumerated_mode && wsa881x->slave->dev_num >= 1 &&
+	    wsa881x->slave->dev_num <= 2) {
+		if (spx_swap_dac_master_ports)
+			wsa881x->slave->m_port_map[WSA881X_PORT_DAC + 1] =
+				wsa881x->slave->dev_num == 1 ? 4 : 1;
+		else
+			wsa881x->slave->m_port_map[WSA881X_PORT_DAC + 1] =
+				wsa881x->slave->dev_num == 1 ? 1 : 4;
+		dev_info(wsa881x->dev,
+			 "SPX: device=%u DAC slave port 1 -> master DP%u (swap=%u)\n",
+			 wsa881x->slave->dev_num,
+			 wsa881x->slave->m_port_map[WSA881X_PORT_DAC + 1],
+			 spx_swap_dac_master_ports);
+	}
+	/*
+	 * SPX: module parameters are writable, but the original override was
+	 * consumed only once at probe.  Refresh it for every new stream so an
+	 * isolated amplifier can sweep slave ports without a reboot per map.
+	 */
+	if (wsa881x->spx_write_only) {
+		for (i = 0; i < spx_port_map_count &&
+		     i < WSA881X_MAX_SWR_PORTS; i++) {
+			if (spx_port_map[i] > 0)
+				wsa881x->slave->m_port_map[i + 1] =
+					spx_port_map[i];
+		}
+		dev_info(wsa881x->dev,
+			 "SPX: live port map slave1..4 -> master %u %u %u %u\n",
+			 wsa881x->slave->m_port_map[1],
+			 wsa881x->slave->m_port_map[2],
+			 wsa881x->slave->m_port_map[3],
+			 wsa881x->slave->m_port_map[4]);
+	}
 	wsa881x->active_ports = 0;
+	WRITE_ONCE(wsa881x->spx_stream_configured, false);
+	if (!wsa881x_spx_transport_enabled(wsa881x)) {
+		dev_info(wsa881x->dev,
+			 "SPX: device=%u excluded from this stream\n",
+			 wsa881x->slave->dev_num);
+		mutex_unlock(&wsa881x->spx_state_lock);
+		return 0;
+	}
 	for (i = 0; i < WSA881X_MAX_SWR_PORTS; i++) {
-		if (wsa881x->spx_write_only) {
+		if (wsa881x->spx_write_only || spx_enumerated_mode) {
 			/*
 			 * Keep the experimental transport mask independent from
 			 * analog controls. The guarded baseline selects DAC only;
@@ -1753,14 +1868,15 @@ static int wsa881x_hw_params(struct snd_pcm_substream *substream,
 							wsa881x_pconfig[i];
 		wsa881x->active_ports++;
 	}
-	if (wsa881x->spx_write_only)
-		dev_info(wsa881x->dev, "SPX: hw_params active_ports=%d\n",
-			 wsa881x->active_ports);
+	if (wsa881x->spx_write_only || spx_enumerated_mode)
+		dev_info(wsa881x->dev,
+			 "SPX: device=%u hw_params active_ports=%d\n",
+			 wsa881x->slave->dev_num, wsa881x->active_ports);
 
 	ret = sdw_stream_add_slave(wsa881x->slave, &wsa881x->sconfig,
 				   wsa881x->port_config, wsa881x->active_ports,
 				   wsa881x->sruntime);
-	if (!ret && wsa881x->spx_write_only)
+	if (!ret)
 		WRITE_ONCE(wsa881x->spx_stream_configured, true);
 	mutex_unlock(&wsa881x->spx_state_lock);
 	return ret;
@@ -1772,9 +1888,10 @@ static int wsa881x_hw_free(struct snd_pcm_substream *substream,
 	struct wsa881x_priv *wsa881x = dev_get_drvdata(dai->dev);
 
 	mutex_lock(&wsa881x->spx_state_lock);
-	sdw_stream_remove_slave(wsa881x->slave, wsa881x->sruntime);
-	if (wsa881x->spx_write_only)
+	if (READ_ONCE(wsa881x->spx_stream_configured)) {
+		sdw_stream_remove_slave(wsa881x->slave, wsa881x->sruntime);
 		WRITE_ONCE(wsa881x->spx_stream_configured, false);
+	}
 	mutex_unlock(&wsa881x->spx_state_lock);
 
 	return 0;
@@ -1794,7 +1911,7 @@ static int wsa881x_digital_mute(struct snd_soc_dai *dai, int mute, int stream)
 {
 	struct wsa881x_priv *wsa881x = dev_get_drvdata(dai->dev);
 
-	if (mute)
+	if (mute || !wsa881x_spx_transport_enabled(wsa881x))
 		return wsa881x_update_bits(wsa881x, WSA881X_SPKR_DRV_EN,
 					    0x80, 0x00);
 
@@ -1866,8 +1983,12 @@ static int wsa881x_port_prep(struct sdw_slave *slave,
 }
 
 static int wsa881x_bus_config(struct sdw_slave *slave,
-			      struct sdw_bus_params *params)
+				      struct sdw_bus_params *params)
 {
+	struct wsa881x_priv *wsa881x = dev_get_drvdata(&slave->dev);
+
+	if (!wsa881x_spx_transport_enabled(wsa881x))
+		return 0;
 	sdw_write(slave, SWRS_SCP_HOST_CLK_DIV2_CTL_BANK(params->next_bank),
 		  0x01);
 
@@ -1994,7 +2115,7 @@ static int wsa881x_probe(struct sdw_slave *pdev,
 	wsa881x->sconfig.frame_rate = 48000;
 	wsa881x->sconfig.direction = SDW_DATA_DIR_RX;
 	wsa881x->sconfig.type = SDW_STREAM_PDM;
-	if (wsa881x->spx_write_only) {
+	if (wsa881x->spx_write_only || spx_enumerated_mode) {
 		pdev->prop.quirks |= SDW_SLAVE_QUIRKS_WRITE_ONLY_PORTCTRL;
 	}
 	/* Keep each slave data port on the matching Qualcomm master port.
@@ -2016,7 +2137,8 @@ static int wsa881x_probe(struct sdw_slave *pdev,
 		 pdev->m_port_map[3], pdev->m_port_map[4]);
 	pdev->prop.sink_ports = GENMASK(WSA881X_MAX_SWR_PORTS - 1, 0);
 	pdev->prop.sink_dpn_prop = wsa_sink_dpn_prop;
-	pdev->prop.scp_int1_mask = wsa881x->spx_write_only ? 0 :
+	pdev->prop.scp_int1_mask =
+		(wsa881x->spx_write_only || spx_enumerated_mode) ? 0 :
 		SDW_SCP_INT1_BUS_CLASH | SDW_SCP_INT1_PARITY;
 	pdev->prop.clk_stop_mode1 = true;
 	/* Keep the SPX value runtime-adjustable while the bus polarity is being
@@ -2075,7 +2197,7 @@ static int wsa881x_probe(struct sdw_slave *pdev,
 					      ARRAY_SIZE(wsa881x_dais));
 	if (pm)
 		return pm;
-	if (wsa881x->spx_write_only)
+	if (wsa881x->spx_write_only || spx_enumerated_mode)
 		pm_runtime_forbid(dev);
 
 	mutex_lock(&spx_debug_lock);
@@ -2099,7 +2221,7 @@ static int wsa881x_remove(struct sdw_slave *pdev)
 	}
 	mutex_unlock(&spx_debug_lock);
 
-	if (wsa881x->spx_write_only)
+	if (wsa881x->spx_write_only || spx_enumerated_mode)
 		pm_runtime_allow(&pdev->dev);
 
 	return 0;
