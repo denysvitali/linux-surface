@@ -1,0 +1,23 @@
+/dts-v1/;
+/plugin/;
+/ {
+ fragment@0 {
+  target-path = "/soc@0/rsc@18200000";
+  __overlay__ {
+   spx-ldo14e-rpmh-regulators {
+    compatible = "qcom,pmc8180-rpmh-regulators";
+    qcom,pmic-id = "e";
+    vdd-l7-l12-l14-l15-supply = <155>;
+    spx_ldo14e: ldo14 {
+     regulator-name = "spx-ldo14e-test";
+     regulator-min-microvolt = <1800000>;
+     regulator-max-microvolt = <1800000>;
+     regulator-initial-mode = <3>;
+    };
+   };
+   spx-ldo14e-consumer {
+    ldo-supply = <&spx_ldo14e>;
+   };
+  };
+ };
+};
