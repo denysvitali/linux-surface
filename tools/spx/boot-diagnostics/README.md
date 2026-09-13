@@ -116,4 +116,21 @@ the first parent of the PCI 7.2 merge. This keeps the three existing boot
 workarounds and uses release `-spx-bisect05`. The interval includes Qualcomm
 PCIe changes, but none is yet a demonstrated cause. Testing immediately before
 the PCI merge separates that merge and the subsequent four merges from the
-earlier interval. Build and runtime results for this candidate are pending.
+earlier interval. Runtime validation is pending.
+
+Extracting IKCONFIG directly from the archived successful bisect03 kernel
+confirms that bisect05 differs in configuration only by its release name,
+`QCOM_WDT=m -> y`, and a new disabled Wacom touchscreen option. The built-in
+watchdog remains a diagnostic variable relative to the historical good boot;
+a failure here must not be used to blame a source commit without checking that
+variable against the successful baseline. The extracted config is archived
+locally as `last-good-extracted.config`.
+
+Attempt `20260914-03` is staged as `7.1.0-spx-bisect05+`. The Image build,
+matching boot-module build, separate Image verification, clean module dependency
+check, initramfs generation/content checks and preflight passed. All 12 mocked
+reboot-guard tests passed. The previous attempt's installed files match its
+archived hashes, and the recovery kernel, initramfs and DTB match the original
+recovery archive. No diagnostic reboot was queued during preparation.
+The new manifest, complete build artifacts and logs are stored locally under
+`attempts/20260914-03`; only the diagnostic slot was replaced.
