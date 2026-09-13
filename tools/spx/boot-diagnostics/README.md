@@ -88,3 +88,14 @@ written only after fdt module, DTB, kernel and initramfs commands all succeed.
 A failure records its stage and returns to the recovery menu. These disk markers
 survive loss of RAM logs. They establish GRUB loader progress, not that the EFI
 stub or Linux successfully executed after handoff. The collector archives grubenv.
+
+Attempt `20260913-02` is staged as `7.1.0-spx-bisect04+` from
+`6cc37b86f80985774809aba82283fe0d564d870f`. Image verification, the required
+module set, clean `depmod -ae`, initramfs generation/content checks, GRUB syntax,
+artifact hashes and 12 mocked reboot-guard tests passed. Its entry uses the
+GRUB disk checkpoints. Runtime result is still pending.
+
+Build note: invoke `make Image` separately from the set of `.ko` targets. Mixing
+those goals makes this Kbuild version process targets individually, losing
+cross-module exports at modpost (seen with the CAAM dependency set). Building
+all required `.ko` targets together resolves that build invocation issue.
