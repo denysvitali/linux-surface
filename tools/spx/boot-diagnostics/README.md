@@ -93,9 +93,27 @@ Attempt `20260913-02` is staged as `7.1.0-spx-bisect04+` from
 `6cc37b86f80985774809aba82283fe0d564d870f`. Image verification, the required
 module set, clean `depmod -ae`, initramfs generation/content checks, GRUB syntax,
 artifact hashes and 12 mocked reboot-guard tests passed. Its entry uses the
-GRUB disk checkpoints. Runtime result is still pending.
+GRUB disk checkpoints. The result is recorded below.
 
 Build note: invoke `make Image` separately from the set of `.ko` targets. Mixing
 those goals makes this Kbuild version process targets individually, losing
 cross-module exports at modpost (seen with the CAAM dependency set). Building
 all required `.ko` targets together resolves that build invocation issue.
+
+## Attempt 20260913-02 result
+
+Recovery boot `427dcd47-72db-40f0-a8e1-9ef9ae98bfce` runs the known-good
+6.18 kernel. GRUB persisted `spx_diag_attempt=20260913-02` and
+`spx_diag_stage=handoff-ready`: loading the DTB, kernel and initramfs succeeded.
+No pstore, initramfs disk log or test userspace journal survived. This narrows
+the observed failure to after successful GRUB loading, but does not establish
+whether the EFI stub or Linux ran. The recovery method remains unknown.
+The complete result and recovery evidence are archived locally under
+`/var/lib/spx-boot-diagnostics`.
+
+The next source candidate is `d0bcd488c33d6673fe83b9533d6366ad84d2ec0d`,
+the first parent of the PCI 7.2 merge. This keeps the three existing boot
+workarounds and uses release `-spx-bisect05`. The interval includes Qualcomm
+PCIe changes, but none is yet a demonstrated cause. Testing immediately before
+the PCI merge separates that merge and the subsequent four merges from the
+earlier interval. Build and runtime results for this candidate are pending.
