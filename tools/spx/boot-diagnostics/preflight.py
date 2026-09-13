@@ -46,7 +46,12 @@ entry = re.search(r'menuentry "Surface Pro X known-good .*?\n}', grub, re.S)
 require(entry is not None, 'Recovery entry is missing')
 for field in ['ramoops.console_size=0x20000', 'ramoops.pmsg_size=0', 'ramoops.ftrace_size=0']:
     require(field in entry.group(), 'Recovery log layout mismatch: ' + field)
-require('--id ' + attempt['entry'] + ' {' in Path('/boot/grub/custom.cfg').read_text(), 'Test entry is missing')
+custom = Path('/boot/grub/custom.cfg').read_text()
+expected_entry = (run / 'entry.cfg').read_text().strip()
+require(expected_entry in custom, 'Test entry differs from archived attempt')
+require('--id ' + attempt['entry'] + ' {' in expected_entry, 'Attempt entry ID mismatch')
+for name in attempt['sha256']:
+    require(name.removeprefix('/boot') in expected_entry, 'Test entry does not reference artifact: ' + name)
 env = command('grub-editenv', '/boot/grub/grubenv', 'list')
 require(not re.search(r'^next_entry=.+$', env, re.M), 'Another boot is queued')
 require('BootNext:' not in command('efibootmgr'), 'EFI BootNext overrides recovery')

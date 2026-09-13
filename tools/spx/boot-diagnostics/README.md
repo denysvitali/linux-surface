@@ -58,3 +58,26 @@ recorded preceding boot was also 6.18 and shut down normally. No panic record
 survived the reported mainline failure. RPMh skip-readback is a carried,
 unverified workaround; the failed boot's root cause is not yet established.
 Mainline audio, GPU, USB Alt Mode and modem remain unvalidated.
+
+## Attempt 20260913-01 result
+
+Recovery `a3e915fa-8a35-40e3-87db-3564a6a9db0d` has the intended ramoops
+layout, but no pstore record, test journal, or `/boot/spx-diagnostics` log was
+found. The diagnostic boot therefore has not established userspace reachability.
+Its panic/restart location is unknown; the recovery method needs eyewitness
+confirmation. Do not repeat that image unchanged or call the port working.
+
+The latest archived bisect03 image decompresses exactly to the retained worktree
+Image built at 2026-09-11 02:47:38. The worktree reflog was at `90ae888a3729`
+from 02:18:40 until 02:51:42, when it moved to `6cc37b86f809` **after** the
+successful boot began at 02:49:16. The journal for boot
+`83670324-b53a-434f-9aeb-19497c9a362b` confirms `/init` and the guarded
+userspace return at 02:52:17. This supports `90ae888a3729` as the latest good
+source. The older bisect03 JSON manifests describe a previously replaced image;
+they must not be used as provenance for that final successful run.
+
+Next source candidate: `6cc37b86f809`, with the preserved three boot workarounds
+(clock lookup errors, PCIe GDSCs kept on, EFI ResetSystem disabled), unique
+`-spx-bisect04` release, matching diagnostic logger and built-in watchdog driver.
+This is boot regression isolation, not a claim that this intermediate tree has
+the full Surface port or passes component tests.
