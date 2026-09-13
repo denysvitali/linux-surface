@@ -44,8 +44,10 @@ grub = Path('/boot/grub/grub.cfg').read_text()
 require('set default="spx-known-good"' in grub, 'Recovery is not the persistent default')
 entry = re.search(r'menuentry "Surface Pro X known-good .*?\n}', grub, re.S)
 require(entry is not None, 'Recovery entry is missing')
-for field in ['ramoops.console_size=0x20000', 'ramoops.pmsg_size=0', 'ramoops.ftrace_size=0']:
-    require(field in entry.group(), 'Recovery log layout mismatch: ' + field)
+for field in ['ramoops.mem_address=0x9a480000', 'ramoops.mem_size=0x100000',
+              'ramoops.record_size=0x40000', 'ramoops.console_size=0x20000',
+              'ramoops.pmsg_size=0', 'ramoops.ftrace_size=0']:
+    require(field in entry.group().split(), 'Recovery log layout mismatch: ' + field)
 custom = Path('/boot/grub/custom.cfg').read_text()
 expected_entry = (run / 'entry.cfg').read_text().strip()
 require(expected_entry in custom, 'Test entry differs from archived attempt')
