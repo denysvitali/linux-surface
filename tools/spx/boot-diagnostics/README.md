@@ -81,3 +81,10 @@ Next source candidate: `6cc37b86f809`, with the preserved three boot workarounds
 `-spx-bisect04` release, matching diagnostic logger and built-in watchdog driver.
 This is boot regression isolation, not a claim that this intermediate tree has
 the full Surface port or passes component tests.
+
+`grub-entry.py` renders literal-only test entries that save `spx_diag_attempt`
+and `spx_diag_stage` to grubenv at each loader checkpoint. `handoff-ready` is
+written only after fdt module, DTB, kernel and initramfs commands all succeed.
+A failure records its stage and returns to the recovery menu. These disk markers
+survive loss of RAM logs. They establish GRUB loader progress, not that the EFI
+stub or Linux successfully executed after handoff. The collector archives grubenv.
