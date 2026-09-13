@@ -1,0 +1,10 @@
+[Unit]
+Description=Collect and return the bounded SPX diagnostic boot to recovery
+ConditionKernelCommandLine=spx_diag=20260913
+After=local-fs.target
+RequiresMountsFor=/var/lib/spx-boot-diagnostics /boot
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/spx-boot-diagnostics/return.sh
+TimeoutStartSec=90

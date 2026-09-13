@@ -1,0 +1,12 @@
+[Unit]
+Description=Persist SPX initramfs console to the EFI partition
+DefaultDependencies=no
+ConditionKernelCommandLine=spx_diag
+After=systemd-udevd.service
+Before=initrd-switch-root.target
+Conflicts=initrd-switch-root.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/lib/spx-boot-diagnostics/initrd-log.sh
+TimeoutStopSec=5

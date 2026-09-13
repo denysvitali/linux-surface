@@ -1,0 +1,12 @@
+[Unit]
+Description=Preserve Surface Pro X test and recovery boot evidence
+After=local-fs.target systemd-modules-load.service systemd-pstore.service
+RequiresMountsFor=/var/lib/spx-boot-diagnostics /boot
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/spx-boot-diagnostics/collect.sh
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target

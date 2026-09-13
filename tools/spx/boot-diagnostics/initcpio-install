@@ -1,0 +1,10 @@
+build() {
+    local source=/usr/local/lib/spx-boot-diagnostics
+    add_file "$source/initrd-log.sh" "$source/initrd-log.sh" 755
+    add_file "$source/initrd-log.service" /usr/lib/systemd/system/spx-initrd-log.service
+    add_symlink /usr/lib/systemd/system/initrd.target.wants/spx-initrd-log.service ../spx-initrd-log.service
+    for binary in mount umount dmesg seq sleep sync mkdir mv cat; do
+        add_binary /usr/bin/"$binary"
+    done
+}
+help() { echo 'Persist SPX diagnostic boot logs to the EFI partition.'; }
