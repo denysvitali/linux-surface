@@ -134,3 +134,23 @@ archived hashes, and the recovery kernel, initramfs and DTB match the original
 recovery archive. No diagnostic reboot was queued during preparation.
 The new manifest, complete build artifacts and logs are stored locally under
 `attempts/20260914-03`; only the diagnostic slot was replaced.
+
+## Attempt 20260914-03 result
+
+`7.1.0-spx-bisect05+` at `d0bcd488c33d6673fe83b9533d6366ad84d2ec0d`
+booted successfully as `b9c9d441-5e4b-422d-9978-b21ece5ee631`. The journal
+confirms NVMe enumeration, `/init`, encrypted-root mounting, successful evidence
+collection, and the automatic three-minute return service. Recovery is boot
+`55acccc9-657c-4721-bab5-b1e4b08a2831`. Initramfs logs survived on the EFI
+partition, and full journals plus the result are archived under this attempt.
+No oops or panic was found. The diagnostic boot still reports USB combo-PHY
+orientation/missing DRM bridge warnings, PCIe dummy supplies and IOMMU-cell
+compatibility warnings, and an NVMe SUBNQN warning. Component functionality
+is unvalidated.
+
+This establishes a successful baseline with the built-in watchdog and current
+diagnostic infrastructure. The source interval is now five first-parent merges:
+PCI, two Rust merges, IPMI and Kbuild. The next candidate is the PCI merge
+itself, `26ae421f7f49f8a6a32d15b1d21a782b46a1bad5`, with release
+`-spx-bisect06` and the same three boot workarounds. Its build/runtime results
+are pending.
