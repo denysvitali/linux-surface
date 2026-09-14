@@ -196,10 +196,17 @@ This isolates the early-boot difference to changes in `pcie-qcom.c`.
 The next candidate retains the PCI merge and reverts only
 `1a23bcb452d9` (mixed PERST#/PHY binding handling), with release `-spx-bisect08`.
 That change moved reset-GPIO acquisition earlier in probing. It is a candidate
-for isolation, not a demonstrated root cause. Build/runtime pending.
+for isolation, not a demonstrated root cause. Runtime pending.
 
 `periodic.timer`, installed as `spx-diag-evidence.timer`, refreshes the existing
 collector every 15 seconds during diagnostic boots, starting at 30 seconds.
 The collector records uptime with each snapshot. This reduces the evidence gap
 between the initial collection and the three-minute return if a test ends early.
 The timer's command-line condition prevents periodic collection in recovery.
+
+Attempt `20260914-06` (`7.1.0-spx-bisect08+`) is staged with only the
+PERST#/PHY commit reverted relative to the PCI merge, plus the existing three
+boot workarounds. Image/modules, separate Image verification, module dependency,
+initramfs and reboot-preflight checks passed. The periodic evidence timer is
+enabled; its recovery exclusion and updated collector were verified locally.
+Prior test artifacts and unchanged recovery artifacts were hash-verified.
