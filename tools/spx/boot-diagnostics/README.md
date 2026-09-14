@@ -1,5 +1,10 @@
 # Surface Pro X boot diagnostics
 
+**Experimental hardware boots are disabled.** `preflight.py --reboot` always
+refuses before changing boot selection. Read [RECOVERY.md](RECOVERY.md) before
+continuing: no automatic recovery across the firmware handoff is validated.
+The historical build/preflight passes below did not establish that protection.
+
 These helpers capture a bounded diagnostic boot and its subsequent recovery boot.
 They are device-specific: the initramfs logger uses this machine's EFI partition
 PARTUUID. They must not be installed unchanged on other systems.
@@ -232,3 +237,18 @@ The mainline 7.3 Qualcomm driver object also compiled with the same fix, and
 checkpatch reported no errors or warnings. Runtime validation of this fix is
 pending; mainline component validation remains outstanding. Previous test and
 recovery artifacts were hash-verified before replacing the diagnostic slot.
+
+## Attempt 20260914-07 and recovery audit
+
+The smaller PERST fix failed to reach recorded userspace. The user reports an
+EFI-stub hang and manual restart; recovery is
+`fe6a93b9-8155-4e70-a2fc-2b9a26ec3e1a`. The candidate is not a verified fix
+and was removed from the mainline worktree after preserving its patch.
+
+The watchdog audit found no watchdog node in either deployed DTB and no watchdog
+device. In the successful diagnostic boot, systemd explicitly reported failure
+to open any watchdog device. `QCOM_WDT=y` only compiled the driver; it did not
+establish hardware watchdog coverage. The userspace return timer cannot recover
+an EFI/early-kernel hang. Experimental entries were archived and removed from
+the active GRUB menu, with the known-good kernel/DTB/initramfs unchanged.
+The reboot helper is now inspection-only and refuses `--reboot` unconditionally.

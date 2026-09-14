@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0
-"""Validate this SPX attempt; reboot only with explicit --reboot."""
+"""Inspect SPX boot artifacts. Experimental reboots are disabled."""
 import argparse
 import hashlib
 import json
-import os
 from pathlib import Path
 import re
 import subprocess
@@ -12,6 +11,11 @@ import subprocess
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--reboot', action='store_true')
 args = parser.parse_args()
+if args.reboot:
+    raise SystemExit(
+        'BLOCKED: experimental reboots have no validated pre-kernel recovery. '
+        'The userspace timer and an unloaded/unbound watchdog are insufficient.'
+    )
 base = Path('/var/lib/spx-boot-diagnostics')
 attempt = json.loads((base / 'attempt.json').read_text())
 run = base / 'attempts' / attempt['attempt']
@@ -61,19 +65,6 @@ for unit in ['spx-boot-evidence.service', 'spx-diag-return.timer']:
     require(command('systemctl', 'is-enabled', unit) == 'enabled', 'Missing enabled unit: ' + unit)
 require(command('systemctl', 'show', 'spx-boot-evidence.service', '-p', 'ExecMainStatus', '--value') == '0', 'Collector failed')
 (run / 'preflight.json').write_text(json.dumps(state, indent=2) + '\n')
-print('PASS: artifact hashes, GRUB syntax/default, log layout, evidence service and reboot guards', flush=True)
-if args.reboot:
-    # Recheck immediately before altering boot selection. Persist the request
-    # before issuing it: interruptions never justify a duplicate reboot.
-    state = boot_check()
-    with (run / 'reboot-requested').open('x') as f:
-        json.dump(state, f)
-        f.flush()
-        os.fsync(f.fileno())
-    subprocess.run(['grub-editenv', '/boot/grub/grubenv', 'set', 'next_entry=' + attempt['entry']], check=True)
-    env = command('grub-editenv', '/boot/grub/grubenv', 'list')
-    require('next_entry=' + attempt['entry'] in env.splitlines(), 'Failed to queue test entry')
-    boot_check()
-    os.sync()
-    print('Requesting single diagnostic reboot from ' + state['boot_id'], flush=True)
-    subprocess.run(['systemctl', '--no-block', 'reboot'], check=True)
+# Detect a concurrent boot change even for an inspection-only pass.
+boot_check()
+print('READ-ONLY PASS: artifact/configuration checks; experimental reboots remain blocked', flush=True)

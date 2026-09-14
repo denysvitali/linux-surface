@@ -71,7 +71,7 @@ class GuardTests(unittest.TestCase):
         return exit_message, calls
 
     def assert_blocked(self, **kwargs):
-        message, calls = self.exercise(reboot=True, **kwargs)
+        message, calls = self.exercise(**kwargs)
         self.assertIsNotNone(message)
         self.assertFalse(any(c[0] == 'grub-editenv' for c in calls))
         self.assertNotIn(['systemctl', '--no-block', 'reboot'], calls)
@@ -81,10 +81,15 @@ class GuardTests(unittest.TestCase):
         self.assertIsNone(message)
         self.assertTrue(all(c[0] == 'grub-script-check' for c in calls))
 
-    def test_one_explicit_reboot_after_checks(self):
+    def test_reboot_is_blocked_even_with_valid_artifacts(self):
         message, calls = self.exercise(reboot=True)
-        self.assertIsNone(message)
-        self.assertEqual(calls.count(['systemctl', '--no-block', 'reboot']), 1)
+        self.assertIn('no validated pre-kernel recovery', message)
+        self.assertEqual(calls, [])
+
+    def test_reboot_is_blocked_before_reading_a_manifest(self):
+        message, calls = self.exercise(reboot=True, edits={BASE + '/attempt.json': 'invalid json'})
+        self.assertIn('no validated pre-kernel recovery', message)
+        self.assertEqual(calls, [])
 
     def test_changed_boot_is_not_retried(self):
         self.assert_blocked(edits={'/proc/sys/kernel/random/boot_id': 'boot-b'})
