@@ -162,3 +162,17 @@ initramfs content, artifact hash, GRUB and reboot-preflight checks passed. The
 successful bisect05 artifacts were verified against their archive before the
 diagnostic slot was replaced. The recovery artifacts remain unchanged.
 The watchdog, DTB, diagnostic logger and automatic-return setup match bisect05.
+
+## Attempt 20260914-04 result
+
+The PCI merge (`26ae421f7f49`, bisect06) did not reach recorded userspace.
+Recovery boot is `ef422b2f-d758-4d40-8670-0696935669dc`. GRUB recorded
+`handoff-ready`, but there is no test journal or new initramfs/pstore log.
+The recovery method remains unknown. Its immediate parent booted with the same
+DTB and diagnostic setup, narrowing the reproduced failure to the PCI merge.
+
+The next isolation test retains that PCI-merge source and restores only
+`drivers/pci/controller/dwc/pcie-qcom.c` from working parent `d0bcd488c33d`.
+It uses `-spx-bisect07`; the exact changes are archived with the attempt.
+This separates the Qualcomm host-driver changes from the other PCI changes.
+It is a diagnostic rollback, not yet a verified fix. Build/runtime pending.
