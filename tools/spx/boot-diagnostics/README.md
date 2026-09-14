@@ -183,3 +183,23 @@ preflight. The Qualcomm driver was verified byte-for-byte against the working
 parent while HEAD remains the PCI merge. Its delta is archived in `source.diff`.
 Previous test artifacts and the unchanged recovery artifacts were hash-verified
 before staging. No diagnostic boot was queued during preparation.
+
+## Attempt 20260914-05 result
+
+The single-file Qualcomm rollback booted encrypted root and userspace as
+`182ebcfc-9c23-4a12-ac61-96fc5c8e78cf`; evidence collection succeeded. The
+journal ends before the three-minute return service, so this is not a completed
+stability or automatic-recovery pass. Recovery is
+`5a02a590-e4ca-4fac-8fe7-397628b48888`; the restart method is unconfirmed.
+This isolates the early-boot difference to changes in `pcie-qcom.c`.
+
+The next candidate retains the PCI merge and reverts only
+`1a23bcb452d9` (mixed PERST#/PHY binding handling), with release `-spx-bisect08`.
+That change moved reset-GPIO acquisition earlier in probing. It is a candidate
+for isolation, not a demonstrated root cause. Build/runtime pending.
+
+`periodic.timer`, installed as `spx-diag-evidence.timer`, refreshes the existing
+collector every 15 seconds during diagnostic boots, starting at 30 seconds.
+The collector records uptime with each snapshot. This reduces the evidence gap
+between the initial collection and the three-minute return if a test ends early.
+The timer's command-line condition prevents periodic collection in recovery.

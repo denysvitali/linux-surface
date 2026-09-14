@@ -17,6 +17,7 @@ capture() {
 }
 capture uname uname -a
 capture boot-start uptime -s
+capture collected-uptime cat /proc/uptime
 capture cmdline cat /proc/cmdline
 capture kernel.log journalctl -b -k --no-pager -o short-monotonic
 capture journal.log journalctl -b --no-pager -o short-monotonic

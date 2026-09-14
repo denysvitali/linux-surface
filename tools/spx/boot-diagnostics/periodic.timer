@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh SPX diagnostic evidence during the test boot
+ConditionKernelCommandLine=spx_diag=20260913
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=15
+AccuracySec=1
+Unit=spx-boot-evidence.service
+
+[Install]
+WantedBy=timers.target
