@@ -175,4 +175,11 @@ The next isolation test retains that PCI-merge source and restores only
 `drivers/pci/controller/dwc/pcie-qcom.c` from working parent `d0bcd488c33d`.
 It uses `-spx-bisect07`; the exact changes are archived with the attempt.
 This separates the Qualcomm host-driver changes from the other PCI changes.
-It is a diagnostic rollback, not yet a verified fix. Build/runtime pending.
+It is a diagnostic rollback, not yet a verified fix. Runtime pending.
+
+Attempt `20260914-05` (`7.1.0-spx-bisect07+`) passed Image/module builds,
+separate Image verification, module dependencies, initramfs checks and reboot
+preflight. The Qualcomm driver was verified byte-for-byte against the working
+parent while HEAD remains the PCI merge. Its delta is archived in `source.diff`.
+Previous test artifacts and the unchanged recovery artifacts were hash-verified
+before staging. No diagnostic boot was queued during preparation.
