@@ -252,3 +252,9 @@ establish hardware watchdog coverage. The userspace return timer cannot recover
 an EFI/early-kernel hang. Experimental entries were archived and removed from
 the active GRUB menu, with the known-good kernel/DTB/initramfs unchanged.
 The reboot helper is now inspection-only and refuses `--reboot` unconditionally.
+
+## Offline mainline continuation
+
+The tested isolated PERST revert has been ported and built offline in mainline.
+See [the build record](OFFLINE-20260914.md) for the commit, build context and
+runtime limitations. This does not lift the experimental boot lock.
