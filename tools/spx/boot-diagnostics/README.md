@@ -210,3 +210,25 @@ boot workarounds. Image/modules, separate Image verification, module dependency,
 initramfs and reboot-preflight checks passed. The periodic evidence timer is
 enabled; its recovery exclusion and updated collector were verified locally.
 Prior test artifacts and unchanged recovery artifacts were hash-verified.
+
+## Attempt 20260914-06 result
+
+Reverting only `1a23bcb452d9` booted successfully as
+`3aee2555-ce66-405e-9ab1-ea87fe1f5faa`. Periodic collection succeeded through
+uptime 180 seconds, and the guarded return service rebooted into recovery
+`2855f5b1-1536-428a-9038-828f19c53221`. This isolates the reproduced early
+boot regression to the mixed PERST#/PHY change; full components remain untested.
+
+The next candidate replaces the diagnostic revert with a smaller fix: obtain
+the RC PERST GPIO after a successful PHY lookup in both binding paths. A PHY
+probe deferral can then return before asserting endpoint reset. Mixed-binding
+support remains present. This fix is applied to both the isolation and mainline
+trees; `-spx-bisect09` runtime validation is pending.
+
+Attempt `20260914-07` (`7.1.0-spx-bisect09+`) is staged with the smaller
+PERST acquisition-order fix and mixed-binding support retained. Image/modules,
+separate Image verification, dependencies, initramfs and reboot preflight passed.
+The mainline 7.3 Qualcomm driver object also compiled with the same fix, and
+checkpatch reported no errors or warnings. Runtime validation of this fix is
+pending; mainline component validation remains outstanding. Previous test and
+recovery artifacts were hash-verified before replacing the diagnostic slot.
