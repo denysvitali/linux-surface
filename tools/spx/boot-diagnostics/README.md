@@ -152,5 +152,13 @@ This establishes a successful baseline with the built-in watchdog and current
 diagnostic infrastructure. The source interval is now five first-parent merges:
 PCI, two Rust merges, IPMI and Kbuild. The next candidate is the PCI merge
 itself, `26ae421f7f49f8a6a32d15b1d21a782b46a1bad5`, with release
-`-spx-bisect06` and the same three boot workarounds. Its build/runtime results
-are pending.
+`-spx-bisect06` and the same three boot workarounds. Runtime validation
+is pending.
+
+Attempt `20260914-04` is staged as `7.1.0-spx-bisect06+` from
+`26ae421f7f49f8a6a32d15b1d21a782b46a1bad5`. Image and matching boot modules
+built successfully, separate Image verification passed, and module dependency,
+initramfs content, artifact hash, GRUB and reboot-preflight checks passed. The
+successful bisect05 artifacts were verified against their archive before the
+diagnostic slot was replaced. The recovery artifacts remain unchanged.
+The watchdog, DTB, diagnostic logger and automatic-return setup match bisect05.
