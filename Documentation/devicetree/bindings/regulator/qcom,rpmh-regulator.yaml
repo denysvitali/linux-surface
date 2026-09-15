@@ -124,6 +124,14 @@ properties:
         strictly lower power state.
     $ref: /schemas/types.yaml#/definitions/flag
 
+  qcom,skip-readback:
+    description: |
+      Boolean flag indicating that the RPMh firmware does not support reading
+      back regulator settings.  When present, the driver retains the legacy
+      behavior of relying on the regulator constraints and issuing writes
+      rather than sending RPMh address-read requests.
+    $ref: /schemas/types.yaml#/definitions/flag
+
   vdd-flash-supply:
     description: Input supply phandle of flash.
 
