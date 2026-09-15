@@ -1,0 +1,15 @@
+/dts-v1/;
+/plugin/;
+
+/* Early-boot isolation image: keep all QUP/GENI serial engines off. */
+&{/soc@0/geniqup@8c0000} {
+	status = "disabled";
+};
+
+&{/soc@0/geniqup@ac0000} {
+	status = "disabled";
+};
+
+&{/soc@0/geniqup@cc0000} {
+	status = "disabled";
+};

@@ -1,0 +1,15 @@
+/dts-v1/;
+/plugin/;
+
+/* Use the known-good Surface DTB with the mainline kernel for isolation. */
+&{/soc@0/rsc@18200000/pmc8180-a-rpmh-regulators} {
+	qcom,skip-readback;
+};
+
+&{/soc@0/rsc@18200000/pmc8180-e-rpmh-regulators} {
+	qcom,skip-readback;
+};
+
+&{/soc@0/rsc@18200000/pmc8180c-rpmh-regulators} {
+	qcom,skip-readback;
+};
