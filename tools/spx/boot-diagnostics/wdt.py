@@ -59,11 +59,16 @@ def disarm_lines():
 
 
 def probe_lines():
-    """Read-only. Print what the bootloader can see at the watchdog registers."""
+    """Read-only. Persist values only after both register reads complete."""
     return [
         'insmod memrw',
-        f'read_dword 0x{WDT_EN:08x}',
-        f'read_dword 0x{WDT_STS:08x}',
+        'set spx_wdt_probe=started',
+        'save_env spx_wdt_probe',
+        f'read_dword -v spx_wdt_en 0x{WDT_EN:08x}',
+        f'read_dword -v spx_wdt_sts 0x{WDT_STS:08x}',
+        'set spx_wdt_probe=read-ok',
+        'save_env spx_wdt_probe spx_wdt_en spx_wdt_sts',
+        'echo WDT_EN=$spx_wdt_en WDT_STS=$spx_wdt_sts',
     ]
 
 

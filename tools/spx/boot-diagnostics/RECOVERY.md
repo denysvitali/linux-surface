@@ -72,7 +72,7 @@ is what stage 0 below answers, and until it is answered the reboot lock stays.
 | Stage | Content | Risk |
 | --- | --- | --- |
 | 0a | `lsefimmap` from the GRUB menu; confirm a descriptor covers `0x17c10000`. | None; produces no writes. |
-| 0b | Run the generated probe snippet. It only prints `WDT_EN`/`WDT_STS`; record the screen manually because GRUB `read_dword` does not assign variables. | A fault hangs at the menu and needs a power cycle. Nothing is armed, so there is no reset loop. |
+| 0b | Run the generated probe snippet. It uses `read_dword -v` and persists `WDT_EN`/`WDT_STS` plus a completion marker only after both reads succeed. | A fault hangs at the menu and needs a power cycle. Nothing is armed, so there is no reset loop. |
 | 1 | Boot the known-good kernel with a DTB carrying the node; confirm `/dev/watchdog0`, PID 1 ownership and a 30s runtime watchdog. | Known-good boot only; no experimental kernel. |
 | 2 | Arm in the test entry and disarm in the recovery entry, then one experimental boot. | The test that the lock exists to gate. |
 
@@ -157,6 +157,32 @@ does not again require the user to restart this device. An external controller
 must be able to force reset or operate the power button; merely removing USB-C
 power is insufficient for a battery-powered Surface. No such route is currently
 established. Offline development can continue; experimental hardware boots cannot.
+
+### GRUB and firmware follow-up (2026-09-15)
+
+The [exact upstream GRUB 2.14 source](https://git.savannah.gnu.org/cgit/grub.git/tree/grub-core/commands/memrw.c?h=grub-2.14)
+at tag commit `d38d6a1a9b79` confirms that `memrw` casts the supplied number
+directly to a volatile pointer and dereferences it. There is no address
+mapping, descriptor validation or fault recovery in the command. GRUB's ARM64
+EFI entry code also installs no page tables; it inherits the firmware execution
+environment. Consequently, the failed stage-0a check cannot be repaired by a
+different `memrw` invocation.
+
+The same source shows an optional `-v VARNAME` argument that the short manual
+description omits. The dormant probe generator now uses that option and saves
+the two values only after both reads complete. This improves future evidence
+capture but does not make the access safe, and the probe remains prohibited.
+
+GRUB explicitly disables the standard UEFI boot-services watchdog during its
+initialization. Re-arming that service is not a recovery solution: the
+[UEFI 2.10 ExitBootServices contract](https://uefi.org/specs/UEFI/2.10_A/07_Services_Boot_Services.html#efi-boot-services-exitbootservices)
+disables the boot-services watchdog after successful `ExitBootServices()`.
+There is no standard runtime watchdog service or PSCI timed-reset function. No
+watchdog EFI variable, documented Qualcomm persistent-watchdog protocol, or
+alternate watchdog node was found. The firmware supplies an ACPI RSDP pointer,
+but strict `/dev/mem` policy denies reading the tables and ACPI is not
+enumerated in this device-tree boot; this is not evidence for a usable WDAT or
+Arm Generic Watchdog.
 
 ## Deployed protection and evidence
 

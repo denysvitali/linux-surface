@@ -63,10 +63,14 @@ class SnippetTests(unittest.TestCase):
         self.assertFalse([line for line in lines if line.startswith('write_')])
         reads = [line for line in lines if line.startswith('read_dword')]
         self.assertEqual(reads, [
-            'read_dword 0x17c10008',
-            'read_dword 0x17c1000c',
+            'read_dword -v spx_wdt_en 0x17c10008',
+            'read_dword -v spx_wdt_sts 0x17c1000c',
         ])
-        self.assertTrue(all(len(line.split()) == 2 for line in reads))
+        self.assertTrue(all(len(line.split()) == 4 for line in reads))
+        self.assertIn('set spx_wdt_probe=started', lines)
+        self.assertIn('set spx_wdt_probe=read-ok', lines)
+        self.assertLess(lines.index('set spx_wdt_probe=read-ok'),
+                        lines.index('save_env spx_wdt_probe spx_wdt_en spx_wdt_sts'))
 
     def test_disarm_only_clears_the_enable_bit(self):
         lines = [line.strip() for line in self.check('disarm')]
