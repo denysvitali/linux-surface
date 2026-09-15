@@ -9,6 +9,11 @@ candidate (the SoC's APSS watchdog, armed from GRUB) and its staged validation.
 The latest mainline build and static-check results are recorded in
 [OFFLINE-20260915.md](OFFLINE-20260915.md).
 
+The read-only [kexec guardian design](KEXEC-RECOVERY.md) is the proposed test
+loop that avoids repeating the failing EFI-stub path. It remains disabled until
+one supervised post-handoff watchdog-expiry proof succeeds. `kexec-guard.py`
+hash-checks the target and live guardian state but cannot load or execute it.
+
 These helpers capture a bounded diagnostic boot and its subsequent recovery boot.
 They are device-specific: the initramfs logger uses this machine's EFI partition
 PARTUUID. They must not be installed unchanged on other systems.
