@@ -407,6 +407,7 @@
 	pmc8180-a-rpmh-regulators {
 		compatible = "qcom,pmc8180-rpmh-regulators";
 		qcom,pmic-id = "a";
+		qcom,skip-readback;
 
 		vdd-s1-supply = <&vph_pwr>;
 		vdd-s2-supply = <&vph_pwr>;
@@ -453,6 +454,7 @@
 	pmc8180-e-rpmh-regulators {
 		compatible = "qcom,pmc8180-rpmh-regulators";
 		qcom,pmic-id = "e";
+		qcom,skip-readback;
 
 		vdd-s1-supply = <&vph_pwr>;
 		vdd-s2-supply = <&vph_pwr>;
@@ -520,6 +522,7 @@
 	pmc8180c-rpmh-regulators {
 		compatible = "qcom,pmc8180c-rpmh-regulators";
 		qcom,pmic-id = "c";
+		qcom,skip-readback;
 
 		vdd-s1-supply = <&vph_pwr>;
 		vdd-s2-supply = <&vph_pwr>;
