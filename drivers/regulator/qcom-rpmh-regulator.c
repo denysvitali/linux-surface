@@ -152,6 +152,8 @@ struct rpmh_vreg_hw_data {
  *				wait for an ACK from RPMh before continuing even
  *				if it corresponds to a strictly lower power
  *				state (e.g. enabled --> disabled).
+ * @skip_readback:	Boolean flag indicating that the RPMh firmware does not
+ *				support reading back regulator settings.
  * @enabled:			Flag indicating if the regulator is enabled or
  *				not
  * @bypassed:			Boolean indicating if the regulator is in
@@ -167,6 +169,7 @@ struct rpmh_vreg {
 	struct regulator_desc		rdesc;
 	const struct rpmh_vreg_hw_data	*hw_data;
 	bool				always_wait_for_ack;
+	bool				skip_readback;
 
 	int				enabled;
 	bool				bypassed;
@@ -276,7 +279,7 @@ static int rpmh_regulator_vrm_get_voltage_sel(struct regulator_dev *rdev)
 	struct rpmh_vreg *vreg = rdev_get_drvdata(rdev);
 	int ret, uV = 0;
 
-	if (vreg->voltage_selector < 0) {
+	if (!vreg->skip_readback && vreg->voltage_selector < 0) {
 		ret = _rpmh_regulator_vrm_get_voltage(rdev, &uV);
 		if (!ret && uV != 0)
 			vreg->voltage_selector = regulator_map_voltage_linear_range(rdev,
@@ -551,6 +554,7 @@ static int rpmh_regulator_init_vreg(struct rpmh_vreg *vreg, struct device *dev,
 
 	vreg->always_wait_for_ack = of_property_read_bool(node,
 						"qcom,always-wait-for-ack");
+	vreg->skip_readback = of_property_read_bool(dev->of_node, "qcom,skip-readback");
 
 	vreg->rdesc.owner	= THIS_MODULE;
 	vreg->rdesc.type	= REGULATOR_VOLTAGE;
@@ -1958,10 +1962,12 @@ static int rpmh_regulator_probe(struct platform_device *pdev)
 		if (ret < 0)
 			return ret;
 
-		ret = rpmh_regulator_determine_initial_mode(vreg);
-		if (ret < 0)
-			dev_err(dev, "failed to read initial mode for %s\n",
+		if (!vreg->skip_readback) {
+			ret = rpmh_regulator_determine_initial_mode(vreg);
+			if (ret < 0)
+				dev_err(dev, "failed to read initial mode for %s\n",
 					vreg->rdesc.name);
+		}
 
 	}
 
