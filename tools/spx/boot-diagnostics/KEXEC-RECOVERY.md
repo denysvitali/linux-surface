@@ -19,6 +19,13 @@ an already-running APSS watchdog, reprograms it and marks it hardware-running;
 `RuntimeWatchdogSec=30s` then keeps it fed. A lockup between kernels therefore
 has a 30-second hardware reset path to the unchanged `spx-known-good` default.
 
+The deployed 6.18 guardian DTB uses its tree's older
+`qcom,apss-wdt-sm8150` fallback compatible, while the mainline target uses the
+new binding's `qcom,apss-wdt-sc8180x`; both pair it with `qcom,kpss-wdt` and
+map the same audited `0x17c10000` hardware. The 6.18 config also lacks watchdog
+sysfs attributes, so the live guard identifies its bound driver through the
+platform-driver symlink when `identity` is absent.
+
 Official references:
 
 - [systemd `KExecWatchdogSec=` documentation](https://github.com/systemd/systemd/blob/main/man/systemd-system.conf.xml)
@@ -40,29 +47,46 @@ Official references:
 The repository's `90-spx-kexec-watchdog.conf` is the drop-in for the second
 setting. Installing it is harmless on the current watchdog-less recovery boot;
 it becomes effective when PID 1 starts on the guardian boot.
-4. First kexec the same known-good kernel and `.dtb.wdt`. Verify a new boot ID,
-   successful root mount, and watchdog adoption. This proves the normal handoff
-   without involving a mainline kernel.
-5. Record boot ID, monotonic/realtime timestamps, hashes, GRUB state and a
-   unique nonce, sync them to disk, then kexec `kexec-hang.Image`. This tiny
-   audited ARM64 payload masks exceptions and waits forever after Linux's kexec
-   shutdown. Do not touch the device for 60 seconds.
-6. A watchdog reset must return through firmware and GRUB into
-   `spx-known-good` without user input. Accept the proof only if the new boot
-   time falls inside the recorded watchdog window and the nonce is consumed
-   once. Any manual intervention, ambiguous timing or missing record is a
-   failure and keeps experimental kexec disabled.
+4. First kexec the same known-good kernel and `.dtb.wdt` through the file-based
+   syscall. Verify a new boot ID, successful root mount, and watchdog adoption.
+   This proves the normal handoff without involving a mainline kernel.
+
+The exact control payload is pinned by `guardian-kexec-20260915.json`; it is a
+raw decompression of the installed recovery kernel plus byte-identical copies
+of its initramfs and the already validated watchdog DTB.
+
+The first control on 2026-09-15 deliberately selected the legacy
+`kexec_load(2)` path (`kexec --kexec-syscall`). It did not reach the target
+kernel. The shutdown journal ended after PID 1 armed `qcom_wdt` for 30 seconds;
+the next boot had a new boot ID, initialized EFI again, and used the unchanged
+`spx-known-good` GRUB default. This proves automatic recovery after the failed
+post-Linux handoff, but also disqualifies the legacy loader on this device.
+
+The same pinned control payload was subsequently loaded and unloaded, without
+execution, through `kexec_file_load(2)` (`kexec --kexec-file-syscall`). Both
+operations succeeded on the safe boot. Execution was then attempted from a
+fresh watchdog guardian. It also failed to reach the known-good target; the
+watchdog again reset the machine through firmware to `spx-known-good`, without
+manual intervention. The exact boot IDs and observations are recorded in
+`kexec-runtime-20260915.json`.
+
+Consequently, automatic recovery after ExitBootServices is proven, but neither
+Linux kexec loader is a usable test transport on this device. The manifests
+retain `loader: kexec_file_load` to reject the already worse legacy route, but
+the guard's read-only pass is not authorization to execute either loader.
+Mainline execution remains prohibited until a different protected transport is
+independently validated.
 
 `build-kexec-hang.py` emits the fixed 4 KiB payload without a toolchain. Its
 five instruction words are documented in `kexec-hang.S`, checked byte-for-byte
 by the unit suite, and disassemble as `b 0x40`, `nop`, `msr daifset,#0xf`,
 `wfe`, and a branch back to `wfe`. Building it does not load or queue it.
 
-This test directly covers loss of progress after the original successful
-ExitBootServices and after the kexec handoff. It does not make experimental EFI
-boots safe; those remain prohibited. It authorizes only the kexec path.
+The observed resets directly cover loss of progress after the original
+successful ExitBootServices and after the kexec handoff. They do not make
+experimental EFI boots safe, and the failed controls do not authorize kexec.
 
-## Every mainline transition
+## If a future protected transition is validated
 
 Use a raw, verified ARM64 `Image` (not the EFI `vmlinuz`), a matching initramfs
 and a DTB containing `watchdog@17c10000`. Pin all three SHA-256 values and the
@@ -78,18 +102,15 @@ are staged under `/var/lib/spx-kexec/7.3.0-rc2-spx-next-test+`; their hashes are
 pinned by `mainline-kexec-20260915.json`. `/boot` is full, but kexec reads the
 payload while the current root is mounted and does not require it on `/boot`.
 
-After each successful mainline boot, collect the component matrix before the
-next kexec. If the kernel locks, the watchdog returns to the known-good GRUB
-default. If a normal test finishes, it can kexec directly to the next candidate
-or to the known-good guardian, so firmware reboots are no longer part of the
-ordinary edit/build/test cycle.
+Do not execute the current mainline payload through kexec. If another protected
+transition is independently validated, collect the component matrix after each
+successful boot while preserving the known-good GRUB default.
 
 ## Offline deployment status (2026-09-15)
 
 - The systemd drop-in is installed at
-  `/etc/systemd/system.conf.d/90-spx-kexec-watchdog.conf`. The current manager
-  still reports `KExecWatchdogUSec=0`; the 30-second value will be read by the
-  next guardian boot. No manager re-exec or reboot was requested during setup.
+  `/etc/systemd/system.conf.d/90-spx-kexec-watchdog.conf`. Both guardian boots
+  reported effective 30-second runtime and kexec watchdog values.
 - The mainline Image, newly generated matching initramfs and watchdog DTB pass
   `kexec-guard.py --offline` from the committed manifest.
 - The clean 185-module tree is installed at
@@ -100,6 +121,8 @@ ordinary edit/build/test cycle.
   `/var/lib/spx-kexec/recovery-validation`, but nothing is loaded in the kexec
   slot. Its SHA-256 is
   `f1480f9bcc94113f080a3576883159fad07f214a528cb5ff10ff4d24f407d9f7`.
+- The dedicated hang payload was not needed: two real known-good control
+  handoffs failed and independently demonstrated the watchdog reset path.
 - The pre-existing `/boot` filesystem is full. A failed distinct staging copy
   created one partial and three empty files; only that new `/boot/spx-kexec`
   directory was removed. Existing boot files were not changed.

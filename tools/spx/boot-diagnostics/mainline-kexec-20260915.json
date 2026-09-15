@@ -1,5 +1,7 @@
 {
   "schema": 1,
+  "kind": "mainline",
+  "loader": "kexec_file_load",
   "release": "7.3.0-rc2-spx-next-test+",
   "image": {
     "path": "/var/lib/spx-kexec/7.3.0-rc2-spx-next-test+/Image",

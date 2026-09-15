@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "kind": "guardian",
+  "loader": "kexec_file_load",
+  "release": "6.18.3-1-surface+",
+  "image": {
+    "path": "/var/lib/spx-kexec/6.18.3-1-surface+/Image",
+    "sha256": "338b6b2757778979bf991d43e25bbea2a607ad8d305d49d6ead9e2c2d570966e"
+  },
+  "initrd": {
+    "path": "/var/lib/spx-kexec/6.18.3-1-surface+/initramfs.img",
+    "sha256": "c3f4c3cd843f45ded2ae79ac12114a5c5988edb2cb6ac9c32a352f2afff4a5a8"
+  },
+  "dtb": {
+    "path": "/var/lib/spx-kexec/6.18.3-1-surface+/sc8180x-surface-pro-x.dtb",
+    "sha256": "5ada4b8d7f9dd3139e1466c1339b3377480a8fc9b24d639f6ab604cc2602bc37"
+  },
+  "cmdline": "rd.luks.name=47395af7-e9b5-435b-bc65-49f031461235=cryptlvm root=/dev/spx/root rw rootwait rd.modules_load=qcom_wdt clk_ignore_unused earlycon=efifb drm.edid_firmware=eDP-1:edid/lgd_lp129wt112684.bin ramoops.mem_address=0x9a480000 ramoops.mem_size=0x100000 ramoops.record_size=0x40000 ramoops.console_size=0x20000 ramoops.pmsg_size=0 ramoops.ftrace_size=0 printk.always_kmsg_dump=1 panic=10 softlockup_panic=1 hung_task_panic=1 oops=panic slim_qcom_ngd_ctrl.spx_probe_stage=8 slim_qcom_ngd_ctrl.spx_pio_mode=1 slim_qcom_ngd_ctrl.spx_allow_full=1 slim_qcom_ngd_ctrl.spx_pin_after_qmi=1 wcd934x.spx_wsa_en_pin=2 soundwire_qcom.spx_core_enum=1 soundwire_qcom.spx_force_attach=1 spx_boot=guardian-kexec"
+}

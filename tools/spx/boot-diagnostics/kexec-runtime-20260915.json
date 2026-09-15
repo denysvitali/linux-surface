@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "device": "Microsoft Surface Pro X (SQ2)",
+  "guardian_release": "6.18.3-1-surface+",
+  "watchdog_timeout_seconds": 30,
+  "persistent_grub_default": "spx-known-good",
+  "attempts": [
+    {
+      "loader": "kexec_load",
+      "source_boot_id": "4a1697e9-8118-4ce7-9a9e-c280d2b2b710",
+      "recovery_boot_id": "92fb77a2-1666-4448-a92d-1068b5c3ffb8",
+      "target_cmdline_marker": "spx_boot=guardian-kexec",
+      "observed_cmdline_marker": "spx_boot=known-good",
+      "result": "target-not-reached-watchdog-reset-through-firmware"
+    },
+    {
+      "loader": "kexec_file_load",
+      "source_boot_id": "bb68a991-b49a-4208-b239-af2c46d7d175",
+      "recovery_boot_id": "ae2608cf-a611-47a7-a954-bd1b43c2fa53",
+      "target_cmdline_marker": "spx_boot=guardian-kexec",
+      "observed_cmdline_marker": "spx_boot=known-good",
+      "result": "target-not-reached-watchdog-reset-through-firmware"
+    }
+  ],
+  "evidence": {
+    "shutdown_journal": "systemd-shutdown armed qcom_wdt for 30s immediately before each journal ended",
+    "recovery_kernel": "reported EFI v2.7 by Qualcomm and a GRUB BOOT_IMAGE command line",
+    "pstore": "empty",
+    "manual_power_cycle": false
+  },
+  "conclusion": "automatic post-ExitBootServices recovery is proven, but both arm64 kexec loaders fail before the known-good target kernel; mainline kexec execution remains prohibited"
+}

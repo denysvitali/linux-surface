@@ -31,6 +31,8 @@ class GuardTests(unittest.TestCase):
             paths["board.dtb"].write_bytes(b"dtb")
             manifest = {
                 "schema": 1,
+                "kind": "mainline",
+                "loader": "kexec_file_load",
                 "release": "test-release",
                 "image": {"path": str(paths["Image"]), "sha256": image_hash or hashlib.sha256(image).hexdigest()},
                 "initrd": {"path": str(paths["initrd"]), "sha256": hashlib.sha256(b"initrd").hexdigest()},
@@ -73,6 +75,28 @@ class GuardTests(unittest.TestCase):
 
     def test_missing_recovery_cmdline_is_blocked(self):
         self.assertIn("target command line lacks", self.exercise(cmdline="root=/dev/test rootwait"))
+
+    def test_legacy_loader_is_blocked(self):
+        image = arm64_image()
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            paths = {name: base / name for name in ("Image", "initrd", "board.dtb")}
+            paths["Image"].write_bytes(image)
+            paths["initrd"].write_bytes(b"initrd")
+            paths["board.dtb"].write_bytes(b"dtb")
+            manifest = {
+                "schema": 1, "kind": "mainline", "loader": "kexec_load",
+                "release": "test-release",
+                "image": {"path": str(paths["Image"]), "sha256": hashlib.sha256(image).hexdigest()},
+                "initrd": {"path": str(paths["initrd"]), "sha256": hashlib.sha256(b"initrd").hexdigest()},
+                "dtb": {"path": str(paths["board.dtb"]), "sha256": hashlib.sha256(b"dtb").hexdigest()},
+                "cmdline": "root=/dev/test rootwait panic=10 oops=panic spx_boot=mainline-kexec",
+            }
+            manifest_path = base / "manifest.json"
+            manifest_path.write_text(json.dumps(manifest))
+            with patch("sys.argv", ["kexec-guard.py", "--offline", str(manifest_path)]):
+                with self.assertRaisesRegex(SystemExit, "kexec_file_load"):
+                    exec(compile(SCRIPT, "kexec-guard.py", "exec"), {"__name__": "__main__"})
 
     def test_hang_payload_header_and_instructions(self):
         namespace = {"__name__": "not_main"}

@@ -15,9 +15,9 @@ from pathlib import Path
 import struct
 import subprocess
 
-WATCHDOG_COMPATIBLE = {"qcom,apss-wdt-sc8180x", "qcom,kpss-wdt"}
+TARGET_WATCHDOG_COMPATIBLE = {"qcom,apss-wdt-sc8180x", "qcom,kpss-wdt"}
+GUARDIAN_WATCHDOG_COMPATIBLE = {"qcom,apss-wdt-sm8150", "qcom,kpss-wdt"}
 REQUIRED_CMDLINE = {
-    "spx_boot=mainline-kexec",
     "panic=10",
     "oops=panic",
     "rootwait",
@@ -66,6 +66,10 @@ def validate_artifact(item, label):
 
 def validate_manifest(manifest):
     require(manifest.get("schema") == 1, "unsupported manifest schema")
+    kind = manifest.get("kind")
+    require(kind in {"guardian", "mainline"}, "manifest kind must be guardian or mainline")
+    require(manifest.get("loader") == "kexec_file_load",
+            "manifest must require the audited kexec_file_load path")
     release = manifest.get("release", "")
     require(release and not release.isspace(), "manifest lacks a kernel release")
     image = validate_artifact(manifest["image"], "kernel Image")
@@ -79,14 +83,17 @@ def validate_manifest(manifest):
     require(f"Kernel: {release}" in command("lsinitcpio", "-a", str(initrd)),
             "initramfs release does not match the manifest")
     cmdline = set(manifest.get("cmdline", "").split())
-    missing = sorted(REQUIRED_CMDLINE - cmdline)
+    required = REQUIRED_CMDLINE | {f"spx_boot={kind}-kexec"}
+    missing = sorted(required - cmdline)
     require(not missing, "target command line lacks: " + ", ".join(missing))
     require(any(x.startswith("root=") for x in cmdline), "target command line lacks root=")
     compatibles = set(command("fdtget", "-t", "s", str(dtb),
                               "/soc@0/watchdog@17c10000", "compatible").split())
-    require(WATCHDOG_COMPATIBLE <= compatibles,
-            "target DTB lacks the SC8180X Qualcomm watchdog compatibles")
-    return {"release": release, "image": str(image), "initrd": str(initrd), "dtb": str(dtb),
+    expected_compatibles = (TARGET_WATCHDOG_COMPATIBLE if kind == "mainline"
+                            else GUARDIAN_WATCHDOG_COMPATIBLE)
+    require(expected_compatibles <= compatibles,
+            f"{kind} DTB lacks its audited Qualcomm watchdog compatibles")
+    return {"kind": kind, "release": release, "image": str(image), "initrd": str(initrd), "dtb": str(dtb),
             "cmdline": manifest["cmdline"], "header": header}
 
 
@@ -99,12 +106,14 @@ def validate_live_guardian():
     boot_start = command("uptime", "-s")
     age = float(Path("/proc/uptime").read_text().split()[0])
     cmdline = Path("/proc/cmdline").read_text().split()
-    require("spx_boot=known-good" in cmdline, "known-good source boot is not running")
+    require(any(x in cmdline for x in ("spx_boot=known-good", "spx_boot=guardian-kexec")),
+            "known-good source boot is not running")
     require(age >= 120, "source boot is less than two minutes old")
     with gzip.open("/proc/config.gz", "rt") as stream:
         config = set(stream.read().splitlines())
-    require("CONFIG_KEXEC=y" in config and "CONFIG_KEXEC_CORE=y" in config,
-            "source kernel lacks ARM64 kexec support")
+    require("CONFIG_KEXEC=y" in config and "CONFIG_KEXEC_CORE=y" in config and
+            "CONFIG_KEXEC_FILE=y" in config,
+            "source kernel lacks ARM64 kexec_file support")
     require(Path("/sys/kernel/kexec_loaded").read_text().strip() == "0",
             "a kexec image is already loaded")
 
@@ -117,11 +126,16 @@ def validate_live_guardian():
 
     watchdog = Path("/sys/class/watchdog/watchdog0")
     require(watchdog.is_dir(), "watchdog0 is absent; use the known-good WDT guardian DTB")
-    identity = (watchdog / "identity").read_text().strip().lower()
+    identity_file = watchdog / "identity"
+    if identity_file.exists():
+        identity = identity_file.read_text().strip().lower()
+    else:
+        identity = (watchdog / "device/driver").resolve().name.lower()
     require("qcom" in identity, "watchdog0 is not the Qualcomm watchdog")
     compatibles = set(Path("/proc/device-tree/soc@0/watchdog@17c10000/compatible")
                       .read_bytes().rstrip(b"\0").decode().split("\0"))
-    require(WATCHDOG_COMPATIBLE <= compatibles, "live watchdog node is not the audited node")
+    require(GUARDIAN_WATCHDOG_COMPATIBLE <= compatibles,
+            "live watchdog node is not the audited known-good node")
     require(config_value("RuntimeWatchdogUSec") == "30s",
             "RuntimeWatchdogSec must be 30s")
     require(config_value("KExecWatchdogUSec") == "30s",
