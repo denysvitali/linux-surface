@@ -76,6 +76,27 @@ is what stage 0 below answers, and until it is answered the reboot lock stays.
 | 1 | Boot the known-good kernel with a DTB carrying the node; confirm `/dev/watchdog0`, PID 1 ownership and a 30s runtime watchdog. | Known-good boot only; no experimental kernel. |
 | 2 | Arm in the test entry and disarm in the recovery entry, then one experimental boot. | The test that the lock exists to gate. |
 
+### Stage 0a failed closed (2026-09-15)
+
+An authorized reboot from boot `40bc7e68-538d-4c15-a39d-84158efe9e6a`
+returned to the unchanged known-good kernel as boot
+`5c7a0beb-3fb6-4086-9e72-a34102c8119a`. At the GRUB console, the user ran
+`lsefimmap` and photographed the complete displayed map. No descriptor covers
+the watchdog address `0x17c10000`, so stage 0a did not satisfy its prerequisite.
+
+The photograph is preserved root-only at
+`/var/lib/spx-boot-diagnostics/efi-map-stage0a-20260915/lsefimmap.jpg`, sha256
+`dd83184adfe472ec9e5ad5c3971d2d5bdd46c593b84d58449679df3c3e0fbb6d`.
+Stage 0b (`read_dword`) was not attempted: accessing an address absent from the
+firmware map could fault GRUB and would contradict the staged ordering above.
+No mainline entry was queued, and GRUB still has `saved_entry=spx-known-good`
+with an empty `next_entry`.
+
+The new `.dtb.wsa` control boot has no live watchdog node or watchdog device.
+Together with the prior structural tree comparison, this strengthens the
+conclusion that the preceding boot really did run the `.dtb.wdt` payload; it
+does not add any pre-kernel reset coverage.
+
 Stage 1 needs a known-good DTB plus exactly one node. Rebuilding from the 6.18
 worktree does not give that — the tree has moved on since
 `sc8180x-surface-pro-x.dtb.wsa` was deployed and a fresh build differs by over a
