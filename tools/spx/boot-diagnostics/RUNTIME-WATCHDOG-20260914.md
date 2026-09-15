@@ -18,8 +18,12 @@ open, register access, or boot configuration change was performed by this audit.
 - GRUB retains `saved_entry=spx-known-good` and an empty `next_entry`.
   A previously prepared stage-1 watchdog DTB entry is present but not queued.
 - The original recovery kernel, initramfs and `.dtb.wsa` hashes still match
-  the preserved recovery artifacts. The live node alone does not establish
-  which DTB or earlier bootloader modifications produced this boot.
+  the preserved recovery artifacts. A 2026-09-15 sorted structural comparison
+  established that the live tree matches the staged `.dtb.wdt` at every node
+  and property except the six `/chosen` properties added by the EFI stub. The
+  `.dtb.wsa` comparison additionally differs by the watchdog node. This proves
+  that the stage-1 DT payload ran, but the identical command lines cannot show
+  which historical GRUB selection loaded it.
 - All 13 `test_preflight.py` tests pass, including refusal to reboot even
   with valid experimental artifacts.
 
@@ -28,11 +32,12 @@ Root-only evidence, including hashes and the watchdog journal, is stored in
 
 ## Limits and next requirement
 
-This supersedes the earlier empty-watchdog observation for this boot only.
-It establishes runtime activation and systemd ownership, not reset on expiry,
-bootloader access, or continued coverage across ExitBootServices. The kernel's
-separate "Hard watchdog permanently disabled" message concerns its CPU lockup
-detector; systemd explicitly reports the hardware watchdog above.
+This supersedes the earlier empty-watchdog observation and validates stage 1:
+the known-good kernel can bind, expose and feed the watchdog from the staged
+DT payload. It does not establish reset on expiry, bootloader access, or
+continued coverage across ExitBootServices. The kernel's separate "Hard
+watchdog permanently disabled" message concerns its CPU lockup detector;
+systemd explicitly reports the hardware watchdog above.
 
 Experimental boots remain prohibited. Independent reset capability and measured
 reset coverage before and after firmware handoff are still required. Do not

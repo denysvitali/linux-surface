@@ -87,32 +87,41 @@ Stages 0a/0b are read-only and can run against the default entry. Nothing may be
 armed until stage 0b has succeeded, and the lock is lifted only after a
 deliberate hang resets into the unchanged recovery default.
 
-### Stage 1 staged on disk, not yet booted (2026-09-14)
+### Stage 1 validated on the current known-good boot (2026-09-15)
 
-Prepared and verified, awaiting the user's go-ahead for the reboot:
+The current boot proves the stage-1 payload and runtime path, although the
+historical action that selected the payload was not recorded:
 
 - `/boot/dtb/qcom/sc8180x-surface-pro-x.dtb.wdt`, sha256
   `5ada4b8d7f9dd3139e1466c1339b3377480a8fc9b24d639f6ab604cc2602bc37`.
   Decompiling it next to the deployed `sc8180x-surface-pro-x.dtb.wsa`
   (`1ef46c32dde4…`) shows exactly one added node and no other difference.
+- Sorting and decompiling the live `/proc/device-tree` and `.dtb.wdt` produces
+  exactly one diff hunk: the EFI stub's six additions under `/chosen`
+  (`bootargs` plus five UEFI memory-map/system-table properties). All other
+  nodes and properties, including `watchdog@17c10000`, match. The `.dtb.wsa`
+  comparison has a second hunk for the missing watchdog node.
+- Boot `40bc7e68-538d-4c15-a39d-84158efe9e6a` is running the known-good
+  `6.18.3-1-surface+` kernel. Its journal shows `qcom_wdt` active in the
+  initramfs and host, systemd owns `/dev/watchdog0`, and the configured runtime
+  timeout is 30 seconds. This validates stage 1 without an additional reboot.
 - A second entry, `spx-known-good-wdt`, in `/boot/grub/grub.cfg`. Against
   `spx-known-good` it differs in the title/`--id` line and the `devicetree`
   path only; kernel, command line and initramfs are byte-identical.
   `grub-script-check` passes. `/boot/grub/grub.cfg.bak-stage1-wdt` is the
   pre-change copy.
-- `check-wdt-stage1.sh` prints the evidence, and its dry run on the current
-  boot gives the control: no node, empty watchdog class,
-  `RuntimeWatchdogUSec 30s` configured but unused.
+- `check-wdt-stage1.sh` prints the live node, `watchdog0`, PID 1 ownership and
+  the 30-second hardware-watchdog journal messages on the current boot.
 
 `qcom_wdt` is already in `/etc/mkinitcpio.conf` `MODULES`, so it loads from the
 initramfs, and `/etc/systemd/system.conf.d/90-spx-watchdog.conf` already asks
 for a 30s runtime watchdog. Only the device tree node was missing.
 
-`next_entry` is deliberately **not** set. It is armed as the last operation
-before the authorized reboot, so no unrelated restart can land in this entry.
-Once GRUB consumes `next_entry` it clears it, so a hang or reset during this
-boot returns on the next power-on to the unchanged `spx-known-good` default with
-the proven DTB. The persistent default and the deployed `.dtb.wsa` are untouched.
+`next_entry` is empty and the persistent default remains `spx-known-good`; the
+deployed `.dtb.wsa` is untouched. Because the two stage-1 menu entries use the
+same kernel command line, the live state cannot reconstruct which historical
+GRUB selection loaded the matching payload. That uncertainty does not require
+another stage-1 reboot, but it also supplies no evidence for stages 0a, 0b or 2.
 
 ## Work needed before lifting the block
 
