@@ -40,11 +40,12 @@ stop feeding the live watchdog to test it without that recovery route.
 
 ## RPMh candidate review
 
-The existing uncommitted `qcom,skip-readback` candidate gates voltage reads and
+The then-uncommitted `qcom,skip-readback` candidate gates voltage reads and
 initial-mode discovery at the PMIC parent node. The third `rpmh_read` call is
 inside the mode helper, called only by initial-mode discovery, so it is also
 excluded by that gate. Unspecified platforms retain readback. The three SPX
 PMIC parent nodes opt in; cached voltage/mode initialization remains unchanged.
 This source review does not establish that unsupported readback caused a hang,
-or validate voltage, mode, or bypass behavior on hardware. These edits remain
-uncommitted pending stronger evidence; they were not changed by this audit.
+or validate voltage, mode, or bypass behavior on hardware. The audit did not
+change or commit those edits; their later disposition belongs in a separate
+offline validation record.

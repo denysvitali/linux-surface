@@ -25,6 +25,95 @@ requirement. There is deliberately no command-line bypass in preflight.py.
   DT recovery boot; a read-only firmware-table read was denied. No table or
   hardware address should be guessed. See [EFI Boot Guard](https://github.com/siemens/efibootguard).
 
+## Pre-kernel watchdog candidate (2026-09-14) — prepared, NOT validated
+
+The platform watchdog the section above asks for is now identified, and it is
+not a guess: this device has driven it before.
+
+- `Documentation/devicetree/bindings/watchdog/qcom-wdt.yaml` lists
+  `qcom,apss-wdt-sc8180x`. Commit `26d14b9fc341` added it together with
+  `qcom,apss-wdt-sc8280xp`, but only `sc8280xp.dtsi` ever received a node.
+  `sc8180x.dtsi` has no watchdog, so the mainline port never probed one.
+- `sc7180.dtsi` and `sc8280xp.dtsi` place it at `0x17c10000` with
+  `qcom,kpss-wdt`, `clocks = <&sleep_clk>` and `GIC_SPI 0`. `sc8180x.dtsi` has
+  a hole at exactly that address, between `apss_shared@17c00000` and
+  `timer@17c20000`. `sleep_clk` is 32764 Hz.
+- The Surface 6.18 tree's speaker DTBs carried this exact node, and
+  `scripts/spx-speakers-up.sh` refuses to continue unless `/dev/watchdog0`
+  exists, PID 1 owns it and `RuntimeWatchdogUSec` is 30s. Those guarded runs
+  reached playback, so the hardware has already produced a working watchdog on
+  this device.
+
+Added to the mainline port: `watchdog@17c10000` in `sc8180x.dtsi`
+(`qcom,apss-wdt-sc8180x`, `qcom,kpss-wdt`). The DTB builds and `CHECK_DTBS`
+reports no schema warning for the node; 40 warnings elsewhere in this
+downstream DT are pre-existing.
+
+The kernel driver only arms the watchdog once Linux runs, which is too late for
+the failures that created this lock: attempts 20260914-04 and 20260914-07 both
+recorded GRUB `handoff-ready` and then produced no kernel log at all, so the
+hang is in the EFI stub or before the console exists. Arming has to happen
+before the OS.
+
+Candidate mechanism: GRUB writes the registers itself. The installed GRUB 2.14
+provides `memrw` with `read_dword`/`write_dword`.
+`tools/spx/boot-diagnostics/wdt.py` renders probe, arm and disarm snippets from
+the driver's own arithmetic (bark `(timeout-1)*rate`, bite `timeout*rate`, enable
+bit last); `test_wdt.py` checks the arithmetic, the 20-bit bite limit and GRUB
+syntax, and passes.
+
+**Not established:** that a GRUB write reaches `0x17c10000` on this device. On
+arm64 GRUB runs on the firmware's page tables; an unmapped access faults and
+GRUB has no handler, so it would hang until the user interrupts. That question
+is what stage 0 below answers, and until it is answered the reboot lock stays.
+
+### Staged validation
+
+| Stage | Content | Risk |
+| --- | --- | --- |
+| 0a | `lsefimmap` from the GRUB menu; confirm a descriptor covers `0x17c10000`. | None; produces no writes. |
+| 0b | Run the generated probe snippet. It only prints `WDT_EN`/`WDT_STS`; record the screen manually because GRUB `read_dword` does not assign variables. | A fault hangs at the menu and needs a power cycle. Nothing is armed, so there is no reset loop. |
+| 1 | Boot the known-good kernel with a DTB carrying the node; confirm `/dev/watchdog0`, PID 1 ownership and a 30s runtime watchdog. | Known-good boot only; no experimental kernel. |
+| 2 | Arm in the test entry and disarm in the recovery entry, then one experimental boot. | The test that the lock exists to gate. |
+
+Stage 1 needs a known-good DTB plus exactly one node. Rebuilding from the 6.18
+worktree does not give that — the tree has moved on since
+`sc8180x-surface-pro-x.dtb.wsa` was deployed and a fresh build differs by over a
+thousand lines. `mk-wdt-dtb.py` patches the deployed binary instead and then
+proves the result by decompiling both and diffing the text; it refuses to write
+output unless the only change is the added node.
+
+Stages 0a/0b are read-only and can run against the default entry. Nothing may be
+armed until stage 0b has succeeded, and the lock is lifted only after a
+deliberate hang resets into the unchanged recovery default.
+
+### Stage 1 staged on disk, not yet booted (2026-09-14)
+
+Prepared and verified, awaiting the user's go-ahead for the reboot:
+
+- `/boot/dtb/qcom/sc8180x-surface-pro-x.dtb.wdt`, sha256
+  `5ada4b8d7f9dd3139e1466c1339b3377480a8fc9b24d639f6ab604cc2602bc37`.
+  Decompiling it next to the deployed `sc8180x-surface-pro-x.dtb.wsa`
+  (`1ef46c32dde4…`) shows exactly one added node and no other difference.
+- A second entry, `spx-known-good-wdt`, in `/boot/grub/grub.cfg`. Against
+  `spx-known-good` it differs in the title/`--id` line and the `devicetree`
+  path only; kernel, command line and initramfs are byte-identical.
+  `grub-script-check` passes. `/boot/grub/grub.cfg.bak-stage1-wdt` is the
+  pre-change copy.
+- `check-wdt-stage1.sh` prints the evidence, and its dry run on the current
+  boot gives the control: no node, empty watchdog class,
+  `RuntimeWatchdogUSec 30s` configured but unused.
+
+`qcom_wdt` is already in `/etc/mkinitcpio.conf` `MODULES`, so it loads from the
+initramfs, and `/etc/systemd/system.conf.d/90-spx-watchdog.conf` already asks
+for a 30s runtime watchdog. Only the device tree node was missing.
+
+`next_entry` is deliberately **not** set. It is armed as the last operation
+before the authorized reboot, so no unrelated restart can land in this entry.
+Once GRUB consumes `next_entry` it clears it, so a hang or reset during this
+boot returns on the next power-on to the unchanged `spx-known-good` default with
+the proven DTB. The persistent default and the deployed `.dtb.wsa` are untouched.
+
 ## Work needed before lifting the block
 
 Identify a documented, accessible platform watchdog and a bootloader path that

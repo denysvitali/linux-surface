@@ -4,6 +4,10 @@
 refuses before changing boot selection. Read [RECOVERY.md](RECOVERY.md) before
 continuing: no automatic recovery across the firmware handoff is validated.
 The historical build/preflight passes below did not establish that protection.
+The same document now carries a prepared, unvalidated pre-kernel watchdog
+candidate (the SoC's APSS watchdog, armed from GRUB) and its staged validation.
+The latest mainline build and static-check results are recorded in
+[OFFLINE-20260915.md](OFFLINE-20260915.md).
 
 These helpers capture a bounded diagnostic boot and its subsequent recovery boot.
 They are device-specific: the initramfs logger uses this machine's EFI partition
