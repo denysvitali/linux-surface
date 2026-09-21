@@ -1,4 +1,6 @@
 ssam.symvers
+spx-dp0.dtbo
+spx_dp0_dtbo.inc
 *.o
 *.ko
 *.mod

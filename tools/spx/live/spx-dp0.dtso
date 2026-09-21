@@ -1,0 +1,16 @@
+/dts-v1/;
+/plugin/;
+
+/*
+ * Enable the primary USB-C combo-PHY DisplayPort controller.
+ * The node is already present and wired to DPU port 0; the known-good
+ * DTB leaves it disabled. target-path needs no __symbols__.
+ */
+/ {
+	fragment@0 {
+		target-path = "/soc@0/display-subsystem@ae00000/displayport-controller@ae90000";
+		__overlay__ {
+			status = "okay";
+		};
+	};
+};
