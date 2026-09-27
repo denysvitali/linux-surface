@@ -47,10 +47,29 @@ successfully -- it is the *physical* SD_N pad that was never driven, which no
 software register event can fix. That reconciles "the driver ran cleanly" with
 "the pad is off".
 
-Note also the `SPX: SD_N on wcd-gpio pin N` dev_info line is **absent** from
-dmesg, so the probed pin number is not directly confirmed; pin 1 is inferred
-from `SPX_WSA_SD_N_PIN_DFL` and from the older working state. That is the one
-unverified assumption in this record.
+The `SPX: SD_N on wcd-gpio pin N` dev_info line is **absent** from dmesg, but
+the pin is confirmed independently from the device tree
+(`sc8180x-wcd9340.dtsi`), so nothing here rests on inference:
+
+    left_spkr  reg = <0 3>  powerdown-gpios = <&wcdgpio 1 GPIO_ACTIVE_LOW>
+    right_spkr reg = <0 4>  powerdown-gpios = <&wcdgpio 2 GPIO_ACTIVE_LOW>
+
+**0x43 = 0x18 = BIT(3) | BIT(4)** -- and those are the only bits set. So neither
+amp's SD_N is high: pin 1 (left, the one that enumerated and is playing) and
+pin 2 (right, the one that never enumerates) are both physically LOW = both
+amps off. That single fact explains both halves of the long-standing problem:
+
+* the left amp gets no acoustic output even though its full PA/RDAC SoundWire
+  write sequence completes without error, because the pad feeding the amp is
+  never driven high;
+* the right amp never enumerates, which its own DT comment independently
+  attributes to SD_N state ("holding one amp in shutdown makes the other one
+  appear").
+
+It also means the two symptoms share one cause, so candidate 1 is a candidate
+for both. The earlier `spx_pin2` "hardware failure" conclusion is not
+consistent with a pin the DT and the driver both treat as ordinary, and the
+`0x43` read shows the pin is not being held in a broken state.
 
 ## Consequence for the trial plan
 
