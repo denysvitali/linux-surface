@@ -1,5 +1,17 @@
 # Required recovery before further SPX hardware boot tests
 
+## User authorization update — 2026-09-22
+
+The user requested repeated reboot/verify iterations and explicitly accepted
+the possibility of manual power cycling: "Yes. Proceed. Don't ask." This lifts
+the mandatory recovery gate for the current SPX port work, as recorded in
+`AGENTS.md` and the attempt's `authorization.json`. Keep `spx-known-good` as
+the persistent default and preserve all evidence. No new hardware reset
+mechanism has been validated; the history and technical limits below remain
+applicable. This authorization is not evidence of pre-kernel protection.
+
+## Historical gate and evidence
+
 Experimental reboots are blocked until recovery covers EFI stub execution,
 ExitBootServices, early kernel initialization and userspace without requiring a
 manual restart. Build success and isolated successful boots do not meet this

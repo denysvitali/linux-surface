@@ -1,13 +1,73 @@
 # Surface Pro X boot diagnostics
 
-**Experimental hardware boots are disabled.** `preflight.py --reboot` always
-refuses before changing boot selection. Read [RECOVERY.md](RECOVERY.md) before
-continuing: no automatic recovery across the firmware handoff is validated.
+**The user authorized experimental boot/verify iterations on 2026-09-22,
+including the possibility of manual power cycling.** This supersedes the old
+mandatory recovery gate for the current port work; see `AGENTS.md`. Keep
+`spx-known-good` as the default and archive each attempt before selecting it once.
+The legacy `preflight.py --reboot` remains disabled; use its read-only checks
+before a separately recorded, explicitly authorized one-shot selection.
+Read [RECOVERY.md](RECOVERY.md): automatic recovery across the firmware handoff
+remains unvalidated despite this authorization.
 The historical build/preflight passes below did not establish that protection.
 The same document now carries a prepared, unvalidated pre-kernel watchdog
 candidate (the SoC's APSS watchdog, armed from GRUB) and its staged validation.
-The latest mainline build and static-check results are recorded in
+The latest [Q result](RESULT-20260927q.md) completed the staged reactive PIO
+capability waiter and an automatic 620-second archive. Its initial result had
+a `ramoops` fault-filter false positive; an independent review corrected that
+classification and the fallback was stopped after archive verification.
+The [next audio boundary](AUDIO-AFTER-Q-20260927.md) requires source review
+before a new boot. No soundcard or playback is established.
+The preceding trial [P](RESULT-20260922p.md) ran beyond 600 seconds at audio PIO
+stage 7 step 6. It observed a reactive capability worker and first FIFO write,
+then returned on its replacement fallback at 1315 seconds because the live
+finalizer did not run. Its recovered result is hash-checked; frame delivery
+and soundcard operation remain unproven. The
+[next bounded audio question](AUDIO-PIO-NEXT-20260924.md) is documented for
+review before another one-shot boot.
+The previous retained result is [O](RESULT-20260922o.md): the exact L mainline
+`7.3.0-rc2-spx-mainline-20260922l+` artifacts completed 611.87 seconds at audio
+stage 5, step 2. The interrupt-status-clear sequence completed with zero
+observed statuses and a guarded stop. Its actual write operand is a separate
+unlogged sample; pending-interrupt acknowledgment remains unproved. Touch,
+desktop/EGL FD680, Wi-Fi and remote processors remained healthy. All 296
+result files were hash-verified before retaining mainline; no recovery return
+occurred. [N](RESULT-20260922n.md) had passed the preceding register reads.
+[M](RESULT-20260922m.md) repeated clean touch startup with logging disabled;
+intermittent reliability and physical input remain unverified.
+The PIO-path review found and corrected a capability-retry length bug in P's
+distinct build. That retry branch was not exercised by P. No soundcard or
+playback result is established yet.
+[K](RESULT-20260922k.md) had completed three bounded startup polls but all
+returned zero headers and no touch HID appeared; its worker was bounded,
+while the underlying failure remained unresolved.
+Earlier [J](RESULT-20260922j.md) observed the same pre-publication failure
+with the previous single-poll implementation.
+Earlier [H](RESULT-20260922h.md) passed the power request and
+[I](RESULT-20260922i.md) passed the version read. I's touch startup failed but
+recovered after one daemon restart; the subsequently installed retry policy
+is separately documented in [TOUCH-STARTUP-20260922.md](TOUCH-STARTUP-20260922.md).
+Earlier [D](RESULT-20260922d.md) completed a three-minute graphical trial and
+orderly return after restoring A680 GBIF initialization; [E](RESULT-20260922e.md),
+[F](RESULT-20260922f.md) and [G](RESULT-20260922g.md) added CMAC, normal UINPUT
+and the diagnostic QRTR rollback. Component and sustained-use validation remain
+incomplete; see [COMPONENTS.md](COMPONENTS.md).
+[OFFLINE-20260922.md](OFFLINE-20260922.md) reconciles the preceding 7.3 journals
+and validates an MSM framebuffer flag fix offline. The earlier build record is in
 [OFFLINE-20260915.md](OFFLINE-20260915.md).
+The text-target test payload is described in
+[PREPARED-20260922a.md](PREPARED-20260922a.md); its deployment status is recorded
+at the top of that document and in the permanent attempt manifest.
+The target-only graphical comparison was prepared in
+[PREPARED-20260922b.md](PREPARED-20260922b.md); its failed result is linked above.
+The GPU-policy comparison was prepared in
+[PREPARED-20260922c.md](PREPARED-20260922c.md).
+The A680 correction and distinct payload were prepared in
+[PREPARED-20260922d.md](PREPARED-20260922d.md).
+
+The earlier 7.3 attempts reached encrypted root and early userspace, but did not
+establish a stable session or pre-kernel recovery. The successful bounded text
+trial also does not validate pre-kernel recovery. Do not repeat the live DPU
+unbind: it previously froze the device. The recovery limitations above still apply.
 
 The read-only [kexec guardian design](KEXEC-RECOVERY.md) is the proposed test
 loop that avoids repeating the failing EFI-stub path. It remains disabled until
@@ -17,6 +77,10 @@ hash-checks the target and live guardian state but cannot load or execute it.
 These helpers capture a bounded diagnostic boot and its subsequent recovery boot.
 They are device-specific: the initramfs logger uses this machine's EFI partition
 PARTUUID. They must not be installed unchanged on other systems.
+
+Camera reconstruction is currently an [offline review](camera-offline/README.md)
+of the later, working 6.18 v23 topology. Proper regulator integration remains
+unresolved; these artifacts are not deployed.
 
 ## Evidence requirements
 
@@ -46,10 +110,87 @@ It snapshots dmesg to the EFI partition once storage is available. The root
 collector runs on recovery too, copies pstore and initramfs logs without erasing
 them, and records the current journal and hardware enumeration.
 
+`early-log.service` is installed as `spx-diag-early-log.service` for diagnostic
+trials. It starts before `sysinit.target`, after the root is writable, and
+requires `spx_diag=20260913`. It saves up to 90 kernel snapshots at two-second
+intervals in a fresh `boots/<boot-id>/early.*` directory. A restart or failed
+capture preserves earlier snapshots. This covers the logging gap before the
+periodic collector; it supplies no reset protection. The installed periodic
+timer currently collects every 15 seconds.
+
 `return.timer` only matches `spx_diag=20260913`. After three minutes of a test
 that reaches real userspace, it collects evidence and requests one reboot into
 the persistent recovery default. It checks boot ID, uptime and pending GRUB
 selection first. Never enable a loop that re-arms a failed test.
+With the additional `spx_diag_window=600` marker, the ordinary timer is skipped
+and `long-return.timer` requests the same guarded return after ten minutes.
+The user `graphics-check.service` records a Wayland EGL renderer query after
+90 seconds on matching diagnostic boots, including H. Periodic root evidence
+includes crypto, iwd and network state.
+
+Happy's native continuation was verified on G and repeated on H: metadata sets
+`resumeOnDaemonStart=true` and `resumeOnDaemonStartMessage="continue"`; the
+daemon restored the existing Codex thread and injected that prompt. The
+corresponding Happy history contains no new user messages. See
+`CONTINUATION-20260922g.md` for the evidence and read-only revalidation method.
+The task-specific continuation unit and network-gate drop-in were archived and
+removed without restarting Happy. Keep them uninstalled and leave their marker
+absent when using native continuation.
+
+The dormant `resume.py` and `resume.service` retain the experimental fallback
+for a known-good recovery boot or an explicitly armed, matching trial boot.
+The local `~/.local/state/spx-port/resume-armed.json`
+records `session_id`, `preboot_id`, `attempt` and an optional `prompt_path`.
+Known-good-only behavior is the default. To also permit the intended trial,
+the marker must contain both `expected_trial_release` and
+`expected_trial_attempt`. The latter must equal the marker's `attempt` and
+the sole `spx_attempt=` value; the kernel release from
+`/proc/sys/kernel/osrelease` must exactly match the expected release, and the
+sole `spx_boot=` value must be `mainline-trial`. A matching trial still needs
+a boot ID different from `preboot_id`. Unknown, unarmed or mismatched trials
+do not query the daemon or send a request. The helper enforces these checks;
+the unit itself only checks for an armed marker.
+
+For example, F's optional trial authorization fields are
+`"expected_trial_attempt": "20260922f"` and
+`"expected_trial_release": "7.3.0-rc2-spx-mainline-20260922f+"`.
+This example does not arm a marker or queue a kernel. An armed trial marker
+also permits a subsequent known-good recovery if the trial fails before the
+continuation acknowledges and consumes its marker.
+
+The helper asks Happy's local daemon to restore the same session, supplying
+the prompt via `HAPPY_INITIAL_PROMPT`. The daemon supplies its own RPC and
+session credentials; a direct remote-mode executable launch lacks that context.
+Saved Happy loops are not scheduled by the installed Codex implementation.
+An optional `server_url` in the marker checks DNS/TCP readiness before claiming
+a request. Each boot/attempt/session gets a durable request record, preventing
+duplicate POSTs after ambiguous failures. A matching live session without
+acknowledgement causes a retry, never replacement or a duplicate launch.
+The resumed turn acknowledges its `attempt` and current `boot_id` in
+`resume-ack.json`, disables the unit without `--now`, and archives/removes
+the armed marker. Process existence alone does not prove continuation.
+The prompt must describe both permitted outcomes and verify whether it is on
+the exact trial or recovery before acknowledging or deciding its next action.
+
+F exposed a helper startup race: Happy's stale-session restoration restored the
+session before Tailscale made the server reachable, so the helper correctly
+refused to replace it and could not supply the continuation prompt. See
+`CONTINUATION-20260922f.md`. The optional `resume-daemon-gate.conf` template
+adds `resume.py --daemon-preflight` as a Happy daemon `ExecStartPre` command.
+It reuses the armed marker, new-boot and exact trial checks and requires an
+explicit plain `server_url`. Unarmed, same-boot or mismatched boots return
+immediately. On an authorized boot it waits at most 180 seconds for DNS/TCP,
+then permits normal daemon startup even on failure. Separate child probes
+bound DNS lookup time; the unit's 210-second start timeout covers the gate.
+Removal or replacement of the marker releases the wait. Each gate result is
+preserved under `resume-startup-gates/`, separately from spawn request claims.
+
+G showed that restoration can occur immediately after daemon connection, so
+this gate does not establish a window for the fallback's spawn request. Native
+restoration already supplies its own continuation prompt; the observed root
+turn was initially mistaken for a manual user continuation. The gate was
+retired after preserving the G evidence. Its source remains for history, along
+with the fallback's live-session guard and ambiguous-request records.
 
 ## Limits
 

@@ -1,6 +1,7 @@
 [Unit]
 Description=Bound the SPX diagnostic userspace test to three minutes
 ConditionKernelCommandLine=spx_diag=20260913
+ConditionKernelCommandLine=!spx_diag_window=600
 
 [Timer]
 OnBootSec=180
