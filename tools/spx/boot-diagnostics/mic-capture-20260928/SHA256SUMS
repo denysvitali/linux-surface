@@ -1,0 +1,9 @@
+Mic capture evidence, Y boot b5f0a540-3e81-4415-b08c-f869e01349a2,
+kernel 7.3.0-rc2-spx-mainline-20260927y+, captured 2026-09-28 ~00:25 local.
+48 kHz mono S16_LE, DEC0 gain 84, MM2 (plughw:0,1).
+See AUDIO-ORACLE-RESTORED-20260928.md.
+
+625d7c1cf41a9df490e2ce9989f41ed29e403370cbca9816b10baf746ccdacbf  cap-live1.wav  (DMIC0, 4s, rms 3.6 / -79.2 dBFS / peak 27)
+b4d2bea22fb00543aa0eee48204fbeddfd39627e25935eacdad162a562ba0dc8  cap-DMIC0.wav  (sweep run, 2s, rms 3.84 / -78.6 dBFS / peak 27)
+81b99dc3830ea3990a2a6715b352b5dfece4d23f055f845bf19d60799255a671  cap-DMIC1.wav  (sweep run, 2s, rms 5.48 / -75.5 dBFS / peak 134)
+f3cdcb542d6f29d14e09711b5814283de9ffe4028d906d51eb29b6e990d11b0b  cap-ADC2.wav   (sweep run, 2s, rms 22.53 / -63.3 dBFS / peak 448; AMIC2 = Headset Mic)
