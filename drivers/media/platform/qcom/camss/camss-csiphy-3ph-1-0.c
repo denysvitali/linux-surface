@@ -1239,10 +1239,10 @@ static int csiphy_init(struct csiphy_device *csiphy)
 	case CAMSS_8280XP:
 		/*
 		 * Qualcomm's SC8180X Windows driver reports PHY v1.0.0.0 and its
-		 * register program is the SDM845 GEN2 1.0 sequence (not the
-		 * SC8280XP GEN2 1.1 sequence).  In particular, data-lane CFG1 is
-		 * 0x91 rather than 0x90.  The two SoCs share the rest of the CAMSS
-		 * resource model, so select the PHY profile from the compatible.
+		 * fixed lane values agree with SDM845 GEN2 1.0. In particular,
+		 * data-lane CFG1 is 0x91 rather than the SC8280XP GEN2 1.1 0x90.
+		 * This does not establish identical conditional programming or
+		 * analog supplies. Select the PHY profile from the compatible.
 		 */
 		if (of_device_is_compatible(dev->of_node,
 					    "qcom,sc8180x-camss")) {

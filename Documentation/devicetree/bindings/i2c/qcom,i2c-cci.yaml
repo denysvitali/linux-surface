@@ -33,6 +33,7 @@ properties:
               - qcom,qcs8300-cci
               - qcom,sa8775p-cci
               - qcom,sc7280-cci
+              - qcom,sc8180x-cci
               - qcom,sc8280xp-cci
               - qcom,sdm670-cci
               - qcom,sdm845-cci
@@ -218,6 +219,7 @@ allOf:
           contains:
             enum:
               - qcom,sc7280-cci
+              - qcom,sc8180x-cci
               - qcom,sm8250-cci
               - qcom,sm8450-cci
     then:

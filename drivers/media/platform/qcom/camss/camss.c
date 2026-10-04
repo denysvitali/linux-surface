@@ -2642,8 +2642,8 @@ static const struct camss_subdev_resources csiphy_res_sc8280xp[] = {
 
 /*
  * SC8180X/Spectra 390 exposes the same four logical CSIPHY blocks as
- * SC8280XP, but ACPI and qccammipicsi8180.sys both program the PHY core and
- * timer clocks at 300 MHz.  Keep a separate resource table so fixing the
+ * SC8280XP. PEP selects 400 MHz for the PHY core and 300 MHz for the timer
+ * from ACPI's closest-rate requests. Keep a separate resource table so fixing the
  * Surface Pro X does not change native SC8280XP systems.
  */
 static const struct camss_subdev_resources csiphy_res_sc8180x[] = {
@@ -2651,7 +2651,8 @@ static const struct camss_subdev_resources csiphy_res_sc8180x[] = {
 	{
 		/* ACPI MPCS enables the CAMNOC and CPAS fabric clocks first. */
 		.clock = { "camnoc_axi", "cpas_ahb", "csiphy0", "csiphy0_timer" },
-		.clock_rate = { { 0 }, { 0 }, { 300000000 }, { 300000000 } },
+		/* PEP rounds the MPCS closest-rate request to 400 MHz for CSIPHY. */
+		.clock_rate = { { 0 }, { 0 }, { 400000000 }, { 300000000 } },
 		.reg = { "csiphy0" },
 		.interrupt = { "csiphy0" },
 		.csiphy = {
@@ -2663,7 +2664,7 @@ static const struct camss_subdev_resources csiphy_res_sc8180x[] = {
 	/* CSIPHY1 */
 	{
 		.clock = { "camnoc_axi", "cpas_ahb", "csiphy1", "csiphy1_timer" },
-		.clock_rate = { { 0 }, { 0 }, { 300000000 }, { 300000000 } },
+		.clock_rate = { { 0 }, { 0 }, { 400000000 }, { 300000000 } },
 		.reg = { "csiphy1" },
 		.interrupt = { "csiphy1" },
 		.csiphy = {
@@ -2675,7 +2676,7 @@ static const struct camss_subdev_resources csiphy_res_sc8180x[] = {
 	/* CSIPHY2 */
 	{
 		.clock = { "camnoc_axi", "cpas_ahb", "csiphy2", "csiphy2_timer" },
-		.clock_rate = { { 0 }, { 0 }, { 300000000 }, { 300000000 } },
+		.clock_rate = { { 0 }, { 0 }, { 400000000 }, { 300000000 } },
 		.reg = { "csiphy2" },
 		.interrupt = { "csiphy2" },
 		.csiphy = {
@@ -2687,7 +2688,7 @@ static const struct camss_subdev_resources csiphy_res_sc8180x[] = {
 	/* CSIPHY3 */
 	{
 		.clock = { "camnoc_axi", "cpas_ahb", "csiphy3", "csiphy3_timer" },
-		.clock_rate = { { 0 }, { 0 }, { 300000000 }, { 300000000 } },
+		.clock_rate = { { 0 }, { 0 }, { 400000000 }, { 300000000 } },
 		.reg = { "csiphy3" },
 		.interrupt = { "csiphy3" },
 		.csiphy = {
@@ -5821,10 +5822,10 @@ static const struct of_device_id camss_dt_match[] = {
 	{ .compatible = "qcom,sa8775p-camss", .data = &sa8775p_resources },
 	{ .compatible = "qcom,sc7280-camss", .data = &sc7280_resources },
 	/*
-	 * sc8180x carries the same Titan 480 CAMSS as sc8280xp: the ACPI
-	 * resource map in the Surface Pro X DSDT (CAMP/MPCS/VFE0) lists the
-	 * identical 4 CSIPHY blocks plus 8 CSID/VFE pairs at 0xac5a000,
-	 * 0xac65000 and 0xacaf000..0xace0000. Reuse the sc8280xp tables.
+	 * The Surface Pro X ACPI resource map supports four CSIPHY blocks
+	 * and eight CSID/VFE pairs. Register ranges alone do not establish
+	 * identical hardware revisions or supply wiring. The SC8180X PHY
+	 * uses its GEN2 1.0 profile; CSID/VFE resource tables are shared here.
 	 */
 	{ .compatible = "qcom,sc8180x-camss", .data = &sc8180x_resources },
 	{ .compatible = "qcom,sc8280xp-camss", .data = &sc8280xp_resources },

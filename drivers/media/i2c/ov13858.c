@@ -1039,6 +1039,9 @@ struct ov13858 {
 	struct regulator_bulk_data supplies[3];
 	bool manages_power;
 	bool powered;
+	bool shutting_down;
+	int power_error;
+	int stream_error;
 
 	struct v4l2_subdev sd;
 	struct media_pad pad;
@@ -1062,22 +1065,29 @@ struct ov13858 {
 
 static int ov13858_power_on(struct ov13858 *ov13858)
 {
-	int ret;
+	int i, ret, cleanup_ret;
 
-	if (!ov13858->manages_power || ov13858->powered)
+	if (!ov13858->manages_power)
+		return 0;
+	if (ov13858->shutting_down)
+		return -ESHUTDOWN;
+	if (ov13858->power_error)
+		return ov13858->power_error;
+	if (ov13858->stream_error)
+		return ov13858->stream_error;
+	if (ov13858->powered)
 		return 0;
 
-	ret = regulator_bulk_enable(ARRAY_SIZE(ov13858->supplies),
-				    ov13858->supplies);
-	if (ret)
-		return ret;
+	/* PEP order: DOVDD, AVDD, then DVDD. Bulk enable is asynchronous. */
+	for (i = 0; i < ARRAY_SIZE(ov13858->supplies); i++) {
+		ret = regulator_enable(ov13858->supplies[i].consumer);
+		if (ret)
+			goto disable_supplies;
+	}
 
 	ret = clk_prepare_enable(ov13858->clk);
-	if (ret) {
-		regulator_bulk_disable(ARRAY_SIZE(ov13858->supplies),
-				       ov13858->supplies);
-		return ret;
-	}
+	if (ret)
+		goto disable_supplies;
 
 	/* PEP: supplies, MCLK0, then release the active-low reset. */
 	usleep_range(1000, 2000);
@@ -1086,19 +1096,44 @@ static int ov13858_power_on(struct ov13858 *ov13858)
 	ov13858->powered = true;
 
 	return 0;
+
+disable_supplies:
+	/* Undo only successful enables, in reverse power-on order. */
+	cleanup_ret = regulator_bulk_disable(i, ov13858->supplies);
+	if (cleanup_ret) {
+		ov13858->power_error = cleanup_ret;
+		dev_err(ov13858->dev, "failed to unwind supplies: %d\n",
+			cleanup_ret);
+	}
+
+	return ret;
 }
 
-static void ov13858_power_off(struct ov13858 *ov13858)
+static int ov13858_power_off(struct ov13858 *ov13858)
 {
-	if (!ov13858->manages_power || !ov13858->powered)
-		return;
+	int ret;
+
+	if (!ov13858->manages_power)
+		return 0;
+	if (ov13858->power_error)
+		return ov13858->power_error;
+	if (!ov13858->powered)
+		return 0;
 
 	/* PEP D3 order: assert reset, stop MCLK, then remove supplies. */
 	gpiod_set_value_cansleep(ov13858->reset_gpio, 1);
 	clk_disable_unprepare(ov13858->clk);
-	regulator_bulk_disable(ARRAY_SIZE(ov13858->supplies),
-			       ov13858->supplies);
 	ov13858->powered = false;
+	ov13858->stream_error = 0;
+	ret = regulator_bulk_disable(ARRAY_SIZE(ov13858->supplies),
+				     ov13858->supplies);
+	if (ret) {
+		/* A failed disable may already have released its consumer vote. */
+		ov13858->power_error = ret;
+		dev_err(ov13858->dev, "failed to disable supplies: %d\n", ret);
+	}
+
+	return ret;
 }
 
 static int ov13858_runtime_resume(struct device *dev)
@@ -1114,8 +1149,7 @@ static int ov13858_runtime_suspend(struct device *dev)
 	struct i2c_client *client = to_i2c_client(dev);
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 
-	ov13858_power_off(to_ov13858(sd));
-	return 0;
+	return ov13858_power_off(to_ov13858(sd));
 }
 
 static DEFINE_RUNTIME_DEV_PM_OPS(ov13858_pm_ops,
@@ -1284,6 +1318,14 @@ static int ov13858_set_ctrl(struct v4l2_ctrl *ctrl)
 					       struct ov13858, ctrl_handler);
 	s64 max;
 	int ret;
+
+	if (ov13858->shutting_down)
+		return -ESHUTDOWN;
+
+	if (ov13858->power_error)
+		return ov13858->power_error;
+	if (ov13858->stream_error)
+		return ov13858->stream_error;
 
 	/* Propagate change of current control to all related controls */
 	switch (ctrl->id) {
@@ -1526,12 +1568,47 @@ static int ov13858_stop_streaming(struct ov13858 *ov13858)
 				 OV13858_REG_VALUE_08BIT, OV13858_MODE_STANDBY);
 }
 
+static void ov13858_stream_failure(struct ov13858 *ov13858, int error)
+{
+	int ret;
+
+	if (!ov13858->manages_power) {
+		pm_runtime_put(ov13858->dev);
+		return;
+	}
+
+	/* A failed write may have left the sensor transmitting. */
+	gpiod_set_value_cansleep(ov13858->reset_gpio, 1);
+	ov13858->stream_error = error;
+
+	/*
+	 * Finish power-down before the stream call releases the privacy LED.
+	 * If PM cannot suspend, block I/O until power-off runs.
+	 */
+	ret = pm_runtime_put_sync_suspend(ov13858->dev);
+	if (ret < 0)
+		dev_err(ov13858->dev, "stream failure power cleanup: %d\n", ret);
+}
+
 static int ov13858_set_stream(struct v4l2_subdev *sd, int enable)
 {
 	struct ov13858 *ov13858 = to_ov13858(sd);
 	int ret = 0;
 
 	mutex_lock(&ov13858->mutex);
+
+	if (ov13858->shutting_down) {
+		ret = -ESHUTDOWN;
+		goto err_unlock;
+	}
+	if (ov13858->power_error) {
+		ret = ov13858->power_error;
+		goto err_unlock;
+	}
+	if (ov13858->stream_error) {
+		ret = ov13858->stream_error;
+		goto err_unlock;
+	}
 
 	if (enable) {
 		ret = pm_runtime_resume_and_get(ov13858->dev);
@@ -1546,8 +1623,13 @@ static int ov13858_set_stream(struct v4l2_subdev *sd, int enable)
 		if (ret)
 			goto err_rpm_put;
 	} else {
-		ov13858_stop_streaming(ov13858);
-		pm_runtime_put(ov13858->dev);
+		ret = ov13858_stop_streaming(ov13858);
+		if (ret) {
+			dev_err(ov13858->dev, "failed to stop streaming: %d\n", ret);
+			ov13858_stream_failure(ov13858, ret);
+		} else {
+			pm_runtime_put(ov13858->dev);
+		}
 	}
 
 	mutex_unlock(&ov13858->mutex);
@@ -1555,7 +1637,7 @@ static int ov13858_set_stream(struct v4l2_subdev *sd, int enable)
 	return ret;
 
 err_rpm_put:
-	pm_runtime_put(ov13858->dev);
+	ov13858_stream_failure(ov13858, ret);
 err_unlock:
 	mutex_unlock(&ov13858->mutex);
 
@@ -1834,18 +1916,41 @@ error_power_off:
 	return ret;
 }
 
+static void ov13858_quiesce(struct ov13858 *ov13858)
+{
+	int ret;
+
+	if (READ_ONCE(ov13858->shutting_down))
+		return;
+
+	/* Drain runtime callbacks before excluding controls and stream changes. */
+	pm_runtime_disable(ov13858->dev);
+	mutex_lock(&ov13858->mutex);
+	ov13858->shutting_down = true;
+	ret = ov13858_power_off(ov13858);
+	if (ret)
+		dev_err(ov13858->dev, "power cleanup incomplete: %d\n", ret);
+	mutex_unlock(&ov13858->mutex);
+}
+
+static void ov13858_shutdown(struct i2c_client *client)
+{
+	struct v4l2_subdev *sd = i2c_get_clientdata(client);
+	struct ov13858 *ov13858 = to_ov13858(sd);
+
+	if (ov13858->manages_power)
+		ov13858_quiesce(ov13858);
+}
+
 static void ov13858_remove(struct i2c_client *client)
 {
 	struct v4l2_subdev *sd = i2c_get_clientdata(client);
 	struct ov13858 *ov13858 = to_ov13858(sd);
 
 	v4l2_async_unregister_subdev(sd);
+	ov13858_quiesce(ov13858);
 	media_entity_cleanup(&sd->entity);
 	ov13858_free_controls(ov13858);
-
-	pm_runtime_disable(ov13858->dev);
-	if (!pm_runtime_status_suspended(ov13858->dev))
-		ov13858_power_off(ov13858);
 }
 
 static const struct i2c_device_id ov13858_id_table[] = {
@@ -1879,6 +1984,7 @@ static struct i2c_driver ov13858_i2c_driver = {
 	},
 	.probe = ov13858_probe,
 	.remove = ov13858_remove,
+	.shutdown = ov13858_shutdown,
 	.id_table = ov13858_id_table,
 };
 

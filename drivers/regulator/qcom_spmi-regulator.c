@@ -937,12 +937,18 @@ static int spmi_regulator_ftsmps426_get_voltage(struct regulator_dev *rdev)
 	struct spmi_regulator *vreg = rdev_get_drvdata(rdev);
 	const struct spmi_voltage_range *range;
 	u8 buf[2];
-	int uV;
+	int ret, uV;
 
-	spmi_vreg_read(vreg, SPMI_FTSMPS426_REG_VOLTAGE_LSB, buf, 2);
+	ret = spmi_vreg_read(vreg, SPMI_FTSMPS426_REG_VOLTAGE_LSB, buf, 2);
+	if (ret)
+		return ret;
 
 	uV = (((unsigned int)buf[1] << 8) | (unsigned int)buf[0]) * 1000;
 	range = vreg->set_points->range;
+
+	if (uV < range->set_point_min_uV || uV > range->set_point_max_uV ||
+	    (uV - range->set_point_min_uV) % range->step_uV)
+		return -EINVAL;
 
 	return (uV - range->set_point_min_uV) / range->step_uV;
 }
@@ -1839,13 +1845,14 @@ static int spmi_regulator_init_registers(struct spmi_regulator *vreg,
 {
 	int ret;
 	enum spmi_regulator_logical_type type;
-	u8 ctrl_reg[8], reg, mask;
+	u8 ctrl_reg[8], original[8], reg, mask;
 
 	type = vreg->logical_type;
 
 	ret = spmi_vreg_read(vreg, SPMI_COMMON_REG_VOLTAGE_RANGE, ctrl_reg, 8);
 	if (ret)
 		return ret;
+	memcpy(original, ctrl_reg, sizeof(original));
 
 	/* Set up enable pin control. */
 	if (!(data->pin_ctrl_enable & SPMI_REGULATOR_PIN_CTRL_ENABLE_HW_DEFAULT)) {
@@ -1888,9 +1895,11 @@ static int spmi_regulator_init_registers(struct spmi_regulator *vreg,
 	}
 
 	/* Write back any control register values that were modified. */
-	ret = spmi_vreg_write(vreg, SPMI_COMMON_REG_VOLTAGE_RANGE, ctrl_reg, 8);
-	if (ret)
-		return ret;
+	if (memcmp(original, ctrl_reg, sizeof(original))) {
+		ret = spmi_vreg_write(vreg, SPMI_COMMON_REG_VOLTAGE_RANGE, ctrl_reg, 8);
+		if (ret)
+			return ret;
+	}
 
 	/* Set soft start strength and over current protection for VS. */
 	if (type == SPMI_REGULATOR_LOGICAL_TYPE_VS) {
@@ -2470,6 +2479,14 @@ static const struct spmi_regulator_data pms405_regulators[] = {
 	{ }
 };
 
+/* Camera LDOs verified on PMC8180; other rails remain under RPMh control. */
+static const struct spmi_regulator_data pmc8180_regulators[] = {
+	{ "l1", 0x4000, "vdd_l1_l8_l11" },
+	{ "l14", 0x4d00, "vdd_l7_l12_l14_l15" },
+	{ "l17", 0x5000, "vdd_l13_l16_l17" },
+	{ }
+};
+
 static const struct of_device_id qcom_spmi_regulator_match[] = {
 	{ .compatible = "qcom,pm6125-regulators", .data = &pm6125_regulators },
 	{ .compatible = "qcom,pm660-regulators", .data = &pm660_regulators },
@@ -2485,6 +2502,7 @@ static const struct of_device_id qcom_spmi_regulator_match[] = {
 	{ .compatible = "qcom,pm8941-regulators", .data = &pm8941_regulators },
 	{ .compatible = "qcom,pm8950-regulators", .data = &pm8950_regulators },
 	{ .compatible = "qcom,pm8994-regulators", .data = &pm8994_regulators },
+	{ .compatible = "qcom,pmc8180-regulators", .data = &pmc8180_regulators },
 	{ .compatible = "qcom,pma8084-regulators", .data = &pma8084_regulators },
 	{ .compatible = "qcom,pmi8994-regulators", .data = &pmi8994_regulators },
 	{ .compatible = "qcom,pmp8074-regulators", .data = &pmp8074_regulators },

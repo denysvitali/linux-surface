@@ -170,13 +170,30 @@ static int subdev_close(struct file *file)
 }
 #endif /* CONFIG_VIDEO_V4L2_SUBDEV_API */
 
-static void v4l2_subdev_enable_privacy_led(struct v4l2_subdev *sd)
+static int v4l2_subdev_enable_privacy_led(struct v4l2_subdev *sd)
 {
 #if IS_REACHABLE(CONFIG_LEDS_CLASS)
-	if (!IS_ERR_OR_NULL(sd->privacy_led))
-		led_set_brightness(sd->privacy_led,
-				   sd->privacy_led->max_brightness);
+	struct led_classdev *led = sd->privacy_led;
+	int ret;
+
+	if (IS_ERR_OR_NULL(led))
+		return 0;
+
+	/* Finish any previous off request before turning the LED on. */
+	flush_work(&led->set_brightness_work);
+	if (led->flags & (LED_SUSPENDED | LED_UNREGISTERING))
+		return -EAGAIN;
+
+	ret = led_set_brightness_sync(led, led->max_brightness);
+	if (ret != -ENOTSUPP || led->brightness_set_blocking ||
+	    !led->brightness_set)
+		return ret;
+
+	/* The synchronous API does not handle non-sleeping-only providers. */
+	led_set_brightness(led, led->max_brightness);
+	flush_work(&led->set_brightness_work);
 #endif
+	return 0;
 }
 
 static void v4l2_subdev_disable_privacy_led(struct v4l2_subdev *sd)
@@ -484,6 +501,14 @@ static int call_s_stream(struct v4l2_subdev *sd, int enable)
 	if (WARN_ON(sd->s_stream_enabled == !!enable))
 		return 0;
 
+	if (enable) {
+		ret = v4l2_subdev_enable_privacy_led(sd);
+		if (ret) {
+			v4l2_subdev_disable_privacy_led(sd);
+			return ret;
+		}
+	}
+
 	ret = sd->ops->video->s_stream(sd, enable);
 
 	if (!enable && ret < 0) {
@@ -494,10 +519,10 @@ static int call_s_stream(struct v4l2_subdev *sd, int enable)
 	if (!ret) {
 		sd->s_stream_enabled = enable;
 
-		if (enable)
-			v4l2_subdev_enable_privacy_led(sd);
-		else
+		if (!enable)
 			v4l2_subdev_disable_privacy_led(sd);
+	} else if (enable) {
+		v4l2_subdev_disable_privacy_led(sd);
 	}
 
 	return ret;
@@ -2368,6 +2393,15 @@ int v4l2_subdev_enable_streams(struct v4l2_subdev *sd, u32 pad,
 	already_streaming = v4l2_subdev_is_streaming(sd);
 
 	if (!use_s_stream) {
+		/* Enable the privacy LED before the first stream can start. */
+		if (!already_streaming) {
+			ret = v4l2_subdev_enable_privacy_led(sd);
+			if (ret) {
+				v4l2_subdev_disable_privacy_led(sd);
+				goto done;
+			}
+		}
+
 		/* Call the .enable_streams() operation. */
 		ret = v4l2_subdev_call(sd, pad, enable_streams, state, pad,
 				       streams_mask);
@@ -2382,21 +2416,13 @@ int v4l2_subdev_enable_streams(struct v4l2_subdev *sd, u32 pad,
 	if (ret) {
 		dev_dbg(dev, "enable streams %u:%#llx failed: %d\n", pad,
 			streams_mask, ret);
+		if (!use_s_stream && !already_streaming)
+			v4l2_subdev_disable_privacy_led(sd);
 		goto done;
 	}
 
 	/* Mark the streams as enabled. */
 	v4l2_subdev_set_streams_enabled(sd, state, pad, streams_mask, true);
-
-	/*
-	 * TODO: When all the drivers have been changed to use
-	 * v4l2_subdev_enable_streams() and v4l2_subdev_disable_streams(),
-	 * instead of calling .s_stream() operation directly, we can remove
-	 * the privacy LED handling from call_s_stream() and do it here
-	 * for all cases.
-	 */
-	if (!use_s_stream && !already_streaming)
-		v4l2_subdev_enable_privacy_led(sd);
 
 done:
 	if (!use_s_stream)
