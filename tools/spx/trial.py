@@ -442,10 +442,11 @@ def audio_check(args):
     subprocess.run([lock, 'acquire', 'device', owner], check=True)
     active = []
     try:
-        if action == 'initialize':
+        if action in ('initialize', 'listen'):
             from audio import UNITS as audio_units
 
             assert args.allow_amp_power, 'this run needs explicit speaker-power authorization'
+            assert action != 'listen' or args.allow_playback, 'this run needs explicit playback authorization'
             account = pwd.getpwnam(args.desktop_user)
             userctl = ['runuser', '-u', account.pw_name, '--', 'env',
                        'XDG_RUNTIME_DIR=/run/user/' + str(account.pw_uid),
@@ -458,13 +459,15 @@ def audio_check(args):
             (OUT / 'audio').mkdir(exist_ok=True)
             (OUT / 'audio/desktop-units.json').write_text(json.dumps(active, indent=2) + '\n')
             # A previous run cannot establish that this one parked successfully.
-            (OUT / 'audio/initialize-result.json').unlink(missing_ok=True)
+            (OUT / 'audio' / (action + '-result.json')).unlink(missing_ok=True)
             if active:
                 subprocess.run(userctl + ['stop'] + active, check=True, timeout=30)
             command += ['--owner', owner, '--desktop-user', account.pw_name, '--allow-amp-power']
+            if action == 'listen':
+                command.append('--allow-playback')
         process = subprocess.Popen(command)
         try:
-            status = process.wait(timeout=40)
+            status = process.wait(timeout=90 if action == 'listen' else 40)
         except subprocess.TimeoutExpired:
             # Allow the initializer's signal handler/finally block to park.
             process.terminate()
@@ -479,7 +482,7 @@ def audio_check(args):
     finally:
         try:
             if active:
-                result = OUT / 'audio/initialize-result.json'
+                result = OUT / 'audio' / (action + '-result.json')
                 if result.exists() and json.loads(result.read_text()).get('parked') is True:
                     subprocess.run(userctl + ['start'] + active, check=True, timeout=30)
                 else:
@@ -502,8 +505,9 @@ def main():
     parser.add_argument('--replace-module', action='append', default=[],
                         help='changed unloaded/blacklisted module to install while this release runs')
     parser.add_argument('--return-seconds', type=int, default=3600)
-    parser.add_argument('--audio-action', choices=('plan', 'inspect', 'initialize'), default='plan')
+    parser.add_argument('--audio-action', choices=('plan', 'inspect', 'initialize', 'listen'), default='plan')
     parser.add_argument('--allow-amp-power', action='store_true')
+    parser.add_argument('--allow-playback', action='store_true')
     parser.add_argument('--desktop-user', default='dvitali')
     args = parser.parse_args()
     assert re.fullmatch(r'[0-9]{8}[a-z0-9]+', args.attempt)

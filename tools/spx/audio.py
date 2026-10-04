@@ -1,26 +1,32 @@
 #!/usr/bin/env python3
-"""Prepare and inspect SPX audio; explicitly test native amp enumeration.
+"""Prepare, inspect and explicitly test native SPX speaker audio.
 
 Default: print an offline plan. ``initialize`` powers the amps sequentially,
 allows five seconds of polling per stage, checks hardware identities against
 the native SoundWire devices, and attempts to park both amps on every exit
-after power-up. It never opens a PCM,
-loads a module, captures a microphone, or changes amplifier protection/gain.
-The September 8 retained-stream late initialization is not yet a fresh-start
-recipe. Successful enumeration alone therefore does not enable playback.
+after power-up. ``listen`` additionally requires explicit playback permission;
+it owns one fresh PCM, checks stereo routing and late initialization on digital
+silence, then plays a bounded left/right/both sequence at minimum PA gain.
+Neither action captures a microphone or loads modules.
 """
 
 import argparse
 from datetime import datetime, timezone
 import fcntl
 import json
+import math
 import os
 from pathlib import Path
 import pwd
 import re
+import queue
+import select
 import signal
+import struct
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 
 
@@ -33,11 +39,10 @@ UNITS = ('pipewire.service', 'pipewire.socket', 'pipewire-pulse.service',
          'spx-stereo-native.service', 'spx-stereo-desktop.service')
 ID_TO_UNIT = {(0x21170213, 0x10): 3, (0x21170214, 0x10): 4}
 UNMET = (
-    'Fresh native dual-amp enumeration is not yet verified on mainline.',
-    'Late initialization after the runtime clock switch must be ported from '
-    'the retained-stream repair; do not replay its dead PIDs or force-attach paths.',
-    'Fresh PCM routing, both companders bypassed, minimum PA gain and '
-    'digital-silence settling must be verified before playback is enabled.',
+    'Verify fresh native dual-amp enumeration in this run.',
+    'Verify both codecs late-initialize after the fresh PCM runtime clock switch.',
+    'Verify stereo ports, companders bypassed, minimum PA gain and silence settling.',
+    'A person must confirm left/right sound, clarity and the absence of static.',
 )
 
 
@@ -161,15 +166,233 @@ def inventory(master=None):
     return result
 
 
-def save_initialize_result(directory, report):
-    temporary = directory / f'.initialize-result.{os.getpid()}.json'
+def save_run_result(directory, report):
+    name = report['action'] + '-result.json'
+    temporary = directory / f'.{name}.{os.getpid()}'
     temporary.write_text(json.dumps(report, indent=2) + '\n')
-    temporary.replace(directory / 'initialize-result.json')
+    temporary.replace(directory / name)
+
+
+def configure_stereo(card, report):
+    """Use discovered control IDs, including ALSA's DAPM name variants."""
+    base = ['amixer', '-c', str(card)]
+    result = subprocess.run(base + ['controls'], text=True, capture_output=True,
+                            check=True, timeout=5)
+    controls = {}
+    for line in result.stdout.splitlines():
+        match = re.fullmatch(r"numid=(\d+),iface=MIXER,name='(.+)'", line)
+        if match:
+            controls.setdefault(match[2], []).append(match[1])
+    settings = []
+    for side in ('Left', 'Right'):
+        for name, value in (('PA Volume', '0'), ('COMP Switch', '0'),
+                            ('VISENSE Switch', '0'), ('BOOST Switch', '1'),
+                            ('DAC Switch', '1'), ('Smart Boost Level', '0')):
+            settings.append((f'Spkr{side} {name}', value))
+    settings += [('COMP7 Switch', '0'), ('COMP8 Switch', '0'),
+                 ('RX7 Digital Volume', '84'), ('RX8 Digital Volume', '84'),
+                 ('SLIM RX0 MUX', 'AIF1_PB'), ('SLIM RX1 MUX', 'AIF1_PB')]
+    for chain, channel in ((7, 0), (8, 1)):
+        for input_number in range(3):
+            settings.append((f'RX INT{chain}_1 MIX1 INP{input_number}',
+                             f'RX{channel}' if input_number == 0 else 'ZERO'))
+    settings.append(('SLIMBUS_2_RX Audio Mixer MultiMedia1', '1'))
+    report['mixer'] = []
+    for name, value in settings:
+        variants = [name]
+        if name.endswith(' Switch'):
+            variants.append(name.removesuffix(' Switch'))
+        elif 'MIX1 INP' in name:
+            variants.append(name + ' Mux')
+        matches = [(n, ident) for n in variants for ident in controls.get(n, [])]
+        need(len(matches) == 1, f'Expected one ALSA control for {name}, got {matches}')
+        actual, ident = matches[0]
+        result = subprocess.run(base + ['cset', 'numid=' + ident, value],
+                                text=True, capture_output=True, timeout=5, check=True)
+        report['mixer'].append({'name': actual, 'requested': value,
+                                'readback': result.stdout.strip()})
+
+
+def tone(channels, seconds=2, amplitude=1433):
+    """48 kHz S16_LE stereo, <= -27 dBFS peak, 20 ms fades."""
+    samples = bytearray()
+    frames = int(seconds * 48000)
+    for frame in range(frames):
+        envelope = min(1, frame / 960, (frames - 1 - frame) / 960)
+        values = [round(amplitude * envelope * math.sin(2 * math.pi * hz * frame / 48000))
+                  if channel in channels else 0 for channel, hz in ((0, 440), (1, 660))]
+        samples.extend(struct.pack('<hh', *values))
+    return bytes(samples)
+
+
+class OwnedPCM:
+    """One fresh aplay, continuously fed silence unless a finite tone is queued."""
+
+    def __init__(self, card):
+        self.log = tempfile.TemporaryFile()
+        self.process = subprocess.Popen(
+            ['aplay', '-D', f'hw:{card},0', '-t', 'raw', '-f', 'S16_LE',
+             '-r', '48000', '-c', '2', '--period-size=2400', '--buffer-size=12000'],
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=self.log, bufsize=0)
+        os.set_blocking(self.process.stdin.fileno(), False)
+        self.status = Path(f'/proc/asound/card{card}/pcm0p/sub0/status')
+        self.stop = threading.Event()
+        self.pending = queue.Queue()
+        self.error = None
+        self.thread = threading.Thread(target=self.feed, daemon=True)
+        self.thread.start()
+
+    def feed(self):
+        try:
+            fd = self.process.stdin.fileno()
+            while not self.stop.is_set():
+                try:
+                    data, done = self.pending.get_nowait()
+                except queue.Empty:
+                    data, done = bytes(2400 * 4), None
+                remaining = memoryview(data)
+                while remaining and not self.stop.is_set():
+                    if not select.select([], [fd], [], 0.1)[1]:
+                        continue
+                    try:
+                        count = os.write(fd, remaining[:9600])
+                        remaining = remaining[count:]
+                    except BlockingIOError:
+                        continue
+                if done is not None and not remaining:
+                    done.set()
+        except OSError as error:
+            self.error = str(error)
+
+    def healthy(self):
+        need(self.error is None, f'PCM feeder failed: {self.error}')
+        need(self.process.poll() is None, 'Owned PCM exited unexpectedly')
+        status = read_text(self.status)
+        need(re.search(r'^state:\s+RUNNING$', status, re.M) is not None,
+             f'Owned PCM is not running: {status}')
+        need(re.search(r'^owner_pid\s*:\s*' + str(self.process.pid) + r'$', status, re.M),
+             'PCM ownership changed')
+        return status
+
+    def settle(self, seconds):
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            self.healthy()
+            time.sleep(0.05)
+
+    def play(self, data):
+        done = threading.Event()
+        self.pending.put((data, done))
+        deadline = time.monotonic() + len(data) / (48000 * 4) + 3
+        while not done.wait(0.05):
+            self.healthy()
+            need(time.monotonic() < deadline, 'Timed out feeding finite playback')
+        self.settle(0.6)  # Drain the 250 ms ALSA buffer and pipe into silence.
+
+    def close(self):
+        self.stop.set()
+        self.thread.join(timeout=1)
+        self.process.stdin.close()
+        if self.process.poll() is None:
+            self.process.terminate()
+        try:
+            self.process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait(timeout=2)
+        self.log.seek(0)
+        log = self.log.read().decode(errors='replace')
+        self.log.close()
+        return log
+
+
+def playback_state(path):
+    return {key: int(value, 0) for key, value in
+            (line.split('=', 1) for line in read_text(path / 'spx_playback_state').splitlines())}
+
+
+def check_stereo(mapping, paths, initialized=False):
+    snapshot = state()
+    need(identity_map(snapshot, devices(), {3, 4}) == mapping, 'Amplifier identity changed')
+    need(snapshot['GPIO_VAL'] & 0x1e == 0x1e, 'Amplifier power state changed')
+    need(snapshot['MCP_STATUS'] & 1 == 0 and snapshot['FRAME_B0'] == 7,
+         'Unexpected runtime frame or active bank')
+    for key, expected in (('DP1_B0', 0x01000107), ('DP4_B0', 0x01000607),
+                          ('RX7_PATH_CFG0', 0), ('RX8_PATH_CFG0', 0),
+                          ('RX7_VOLUME', 0), ('RX8_VOLUME', 0)):
+        need(snapshot[key] == expected, f'{key}={snapshot[key]:#x}, expected {expected:#x}')
+    codecs = {}
+    for unit, path in paths.items():
+        codec = playback_state(path)
+        for key, expected in (('UNIT', unit), ('DEV_NUM', mapping[unit]), ('ATTACHED', 1),
+                              ('STREAM_CONFIGURED', 1), ('STREAM_ENABLED', 1),
+                              ('DAC_PREPARED', 1), ('DAC_MASTER_PORT', 1 if unit == 3 else 4),
+                              ('SHADOW_PA_GAIN', 0xc9), ('SHADOW_COMP_ENABLE', 0),
+                              ('SHADOW_VISENSE_ENABLE', 0)):
+            need(codec[key] == expected, f'Unit {unit}: {key}={codec[key]}, expected {expected}')
+        if initialized:
+            need(codec['LATE_INIT_RESULT'] == 0 and codec['LATE_INIT_COUNT'] > 0,
+                 f'Unit {unit}: late initialization did not complete')
+            need(codec['SHADOW_PA_ENABLE'] & 0x80, f'Unit {unit}: PA enable absent from shadow')
+            need(codec['SHADOW_OCP'] == 0xb4 and codec['SHADOW_BOOST'] == 0x98,
+                 f'Unit {unit}: unexpected protection/boost shadow')
+        codecs[unit] = codec
+    return {'master': snapshot, 'codec_shadows': codecs}
+
+
+def listen(args, report, pcm_holder):
+    need(args.allow_playback, 'listen requires --allow-playback for this requested run')
+    mapping = report['stages'][-1]['physical_units_to_addresses']
+    paths = {s['unit']: Path('/sys/bus/soundwire/devices') / s['name'] for s in devices()}
+    need(set(paths) == {3, 4}, 'Need exactly the two native speakers')
+    for path in paths.values():
+        need((path / 'spx_late_init').exists() and (path / 'spx_playback_state').exists(),
+             'Per-codec late initialization interface is missing')
+    card = report['before']['internal_cards'][0]
+    configure_stereo(card, report)
+    assert_pcm_idle()
+    pcm = OwnedPCM(card)
+    pcm_holder.append(pcm)  # Outer cleanup parks amplifiers before closing PCM.
+    report['pcm'] = {'pid': pcm.process.pid, 'card': card, 'format': 'S16_LE/48000/stereo'}
+    deadline = time.monotonic() + 8
+    while True:
+        try:
+            report['pcm']['running_status'] = pcm.healthy()
+            break
+        except RuntimeError:
+            need(pcm.process.poll() is None and time.monotonic() < deadline,
+                 'Fresh PCM did not start on silence')
+            time.sleep(0.1)
+    hw_params = read_text(pcm.status.with_name('hw_params'))
+    for expression in (r'^format: S16_LE$', r'^channels: 2$', r'^rate: 48000(?: |$)'):
+        need(re.search(expression, hw_params, re.M), 'Unexpected PCM hardware parameters')
+    report['pcm']['hw_params'] = hw_params
+    report['before_late_init'] = check_stereo(mapping, paths)
+    for unit, path in paths.items():
+        before = playback_state(path)['LATE_INIT_COUNT']
+        (path / 'spx_late_init').write_text('1\n')
+        need(playback_state(path)['LATE_INIT_COUNT'] == before + 1,
+             f'Unit {unit}: late initialization did not advance')
+    report['after_late_init'] = check_stereo(mapping, paths, initialized=True)
+    pcm.settle(1.0)  # Conservative settling margin; minimum has not been measured.
+    report['remaining_prerequisites'] = [UNMET[-1]]
+    report['playback_ready'] = True
+    report['tones'] = []
+    for name, channels in (('left', {0}), ('right', {1}), ('both', {0, 1})):
+        pcm.healthy()
+        check_stereo(mapping, paths, initialized=True)
+        print(f'Listening test: {name}, two seconds', flush=True)
+        pcm.play(tone(channels))
+        report['tones'].append({'channels': name, 'seconds': 2, 'peak_limit': 1433})
+    report['after_playback'] = check_stereo(mapping, paths, initialized=True)
+    report['human_result'] = 'pending; successful software checks do not establish audible output'
 
 
 def initialize(args, report):
     need(os.geteuid() == 0, 'initialize requires root')
     need(args.allow_amp_power, 'initialize requires --allow-amp-power for this authorized run')
+    need(args.action != 'listen' or args.allow_playback,
+         'listen requires separate explicit --allow-playback authorization')
     need(args.owner and args.desktop_user, 'initialize requires --owner and --desktop-user')
     need(read_text('/tmp/spx-locks/spx-device.lock/owner') == args.owner,
          'Coordinator must own the device lock')
@@ -199,6 +422,7 @@ def initialize(args, report):
                             'restored': False}
     report['stages'] = []
     parked = None
+    pcm_holder = []
     signals = {}
 
     def interrupted(signum, frame):
@@ -255,6 +479,8 @@ def initialize(args, report):
                 raise RuntimeError(f'Native enumeration did not settle: {last_error}')
         report['enumeration_passed'] = True
         report['remaining_prerequisites'].remove(UNMET[0])
+        if args.action == 'listen':
+            listen(args, report, pcm_holder)
     finally:
         for signum in signals:
             signal.signal(signum, signal.SIG_IGN)
@@ -266,22 +492,32 @@ def initialize(args, report):
                 need(report['parked_state']['GPIO_VAL'] & 0x1e == 0x18,
                      'Amplifier powerdown could not be confirmed')
                 report['parked'] = True
+            while pcm_holder:
+                report['pcm']['log'] = pcm_holder.pop().close()
+            if report['parked']:
                 control.write_text(saved_control + '\n')
                 need(read_text(control) == saved_control, 'Master runtime PM policy was not restored')
                 report['runtime_pm']['restored'] = True
         finally:
+            while pcm_holder:
+                report['pcm']['log'] = pcm_holder.pop().close()
             for signum, handler in signals.items():
                 signal.signal(signum, handler)
+    if 'pcm' in report:
+        need(not re.search(r'underrun|overrun|error', report['pcm']['log'], re.I),
+             'ALSA reported an underrun or playback error; inspect the PCM log')
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', nargs='?', choices=('plan', 'inspect', 'initialize'), default='plan')
+    parser.add_argument('action', nargs='?', choices=('plan', 'inspect', 'initialize', 'listen'), default='plan')
     parser.add_argument('--output', type=Path, help='directory for result JSON')
     parser.add_argument('--owner', help='coordinator device-lock owner (initialize)')
     parser.add_argument('--desktop-user', help='user whose audio units the caller has paused')
     parser.add_argument('--allow-amp-power', action='store_true',
                         help='explicitly authorize this bounded initialization run')
+    parser.add_argument('--allow-playback', action='store_true',
+                        help='explicitly authorize this one bounded listening run')
     args = parser.parse_args()
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
     report = {'action': args.action, 'utc': stamp, 'playback_ready': False,
@@ -291,9 +527,9 @@ def main():
     try:
         if args.output:
             args.output.mkdir(parents=True, exist_ok=True)
-            if args.action == 'initialize':
+            if args.action in ('initialize', 'listen'):
                 # A killed run must never leave an earlier "parked" verdict.
-                save_initialize_result(args.output, report)
+                save_run_result(args.output, report)
         if args.action == 'plan':
             report['initialization'] = (
                 'Pause desktop audio services/sockets. Hold the discovered native '
@@ -304,6 +540,14 @@ def main():
                 'Attempt to park both amps, verify physical GPIO readback and only '
                 'then restore the saved runtime PM policy. '
                 'No PCM, tone, microphone capture, or amplifier gain/protection changes.')
+            report['listening'] = (
+                'Separate authorization required. After native enumeration, route RX0/1 '
+                'to physical left/right speakers at minimum PA gain and 0 dB WCD gain, '
+                'with companders off. Open one fresh 48 kHz stereo PCM on silence. '
+                'Require frame7/bank0, DP1/4 offsets1/6, then late-initialize each codec. '
+                'Verify shadows and settle on silence for one second. Play two seconds '
+                'left, right, then both (peak <=1433/32768); return to silence and park '
+                'both amplifiers before closing PCM. No microphone capture.')
         elif args.action == 'inspect':
             report['inventory'] = inventory()
         else:
@@ -317,8 +561,8 @@ def main():
     text = json.dumps(report, indent=2) + '\n'
     if args.output:
         (args.output / f'audio-{args.action}-{stamp}.json').write_text(text)
-        if args.action == 'initialize':
-            save_initialize_result(args.output, report)
+        if args.action in ('initialize', 'listen'):
+            save_run_result(args.output, report)
     print(text, end='')
     return result
 
