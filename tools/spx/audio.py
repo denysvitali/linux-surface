@@ -202,6 +202,10 @@ def configure_stereo(card, report):
             settings.append((f'Spkr{side} {name}', value))
     settings += [('COMP7 Switch', '0'), ('COMP8 Switch', '0'),
                  ('RX7 Digital Volume', '84'), ('RX8 Digital Volume', '84'),
+                 # WCD survives a machine-card reload with cached mux values,
+                 # but the new DAPM routes start disconnected. Its mux put
+                 # returns early for an unchanged value. Reselect while idle.
+                 ('SLIM RX0 MUX', 'ZERO'), ('SLIM RX1 MUX', 'ZERO'),
                  ('SLIM RX0 MUX', 'AIF1_PB'), ('SLIM RX1 MUX', 'AIF1_PB')]
     for chain, channel in ((7, 0), (8, 1)):
         for input_number in range(3):
