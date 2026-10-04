@@ -352,6 +352,14 @@ class OwnedCapture:
         self.limit = max(300, rms * 12)
         status = read_text(self.status)
         need(re.search(r'^state:\s+RUNNING$', status, re.M), 'Capture PCM is not RUNNING')
+        need(re.search(r'^owner_pid\s*:\s*' + str(self.process.pid) + r'$', status, re.M),
+             'Capture ownership changed')
+        hw_params = read_text(self.status.with_name('hw_params'))
+        for expression in (r'^format: S16_LE$', r'^channels: 1$',
+                           r'^rate: 48000(?: |$)', r'^period_size: 1920$',
+                           r'^buffer_size: 7680$'):
+            need(re.search(expression, hw_params, re.M), 'Capture geometry changed')
+        self.report['capture']['hw_params'] = hw_params
         self.report['capture']['baseline'] = {'start_frame': 48000, 'end_frame': 144000,
             'rms': rms, 'peak': max(abs(v) for v in samples),
             'abort_rms': self.limit, 'status': status}
@@ -589,6 +597,9 @@ def initialize(args, report):
             ('snd_soc_wsa881x', 'spx_enumerated_mode', 'Y'),
             ('snd_soc_wsa881x', 'spx_write_only', 'N')):
         need(parameter(module, name) == expected, f'{module}.{name} must be {expected}')
+    if args.action in ('listen', 'feedback'):
+        need(parameter('snd_soc_wcd934x', 'spx_persist_stream') == 'Y',
+             'Playback requires WCD SLIM stream persistence before its first open')
     assert_desktop_paused(args.desktop_user)
     assert_pcm_idle()
     writer, master = codec_paths()
@@ -776,6 +787,10 @@ def main():
     report = {'action': args.action, 'utc': stamp, 'playback_ready': False,
               'microphone_capture': False, 'success': False, 'parked': False,
               'remaining_prerequisites': list(UNMET)}
+    if args.action == 'feedback':
+        report['remaining_prerequisites'][-1] = (
+            'Detect requested tones in the microphone above quiet/noise, '
+            'and confirm they disappear with amplifier power off.')
     result = 0
     try:
         if args.output:

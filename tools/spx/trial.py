@@ -102,16 +102,17 @@ def prepare(args):
         cmdline.append(word.replace('spx_attempt=20261004bf', 'spx_attempt={ATTEMPT}'.format(ATTEMPT=ATTEMPT)).replace('spx_boot=mainline-trial', 'spx_boot=mainline-functional'))
     assert not any(('spx_uc_shared_alloc' in word for word in cmdline))
     if args.audio:
-        # Both amplifier SD_N pins stay low. Power-up is a separate human-
-        # authorized test, never an automatic consequence of this mode.
+        # Both amplifier SD_N pins stay low. Power-up needs a separately
+        # requested action, including a consumed-once acoustic feedback request.
         cmdline = [word for word in cmdline if not word.startswith((
             'wcd934x.spx_wsa_en_pin=', 'wcd934x.spx_wsa_gpio_',
             'soundwire_qcom.spx_force_attach=', 'snd_soc_wsa881x.spx_enumerated_mode=',
-            'snd_soc_wsa881x.spx_write_only='))]
+            'snd_soc_wsa881x.spx_write_only=', 'snd_soc_wcd934x.spx_persist_stream='))]
         cmdline += ['spx_audio=parked', 'wcd934x.spx_wsa_en_pin=-1',
                     'wcd934x.spx_wsa_gpio_mask=0x1e', 'wcd934x.spx_wsa_gpio_dir=0x1e',
                     'wcd934x.spx_wsa_gpio_val=0x18', 'soundwire_qcom.spx_force_attach=0',
-                    'snd_soc_wsa881x.spx_enumerated_mode=1', 'snd_soc_wsa881x.spx_write_only=0']
+                    'snd_soc_wsa881x.spx_enumerated_mode=1', 'snd_soc_wsa881x.spx_write_only=0',
+                    'snd_soc_wcd934x.spx_persist_stream=1']
     else:
         cmdline.append('module_blacklist=wcd934x,soundwire_qcom,snd_soc_wsa881x,snd_soc_wcd934x')
     cmdline = ' '.join(cmdline)
@@ -124,6 +125,7 @@ def prepare(args):
     prepared = dict(utc=datetime.now(timezone.utc).isoformat(), preboot_id=BOOT_ID, release=RELEASE, attempt=ATTEMPT, entry='spx-trial-' + ATTEMPT, cmdline=cmdline, source_commit=subprocess.check_output(['git', '-c', 'safe.directory=' + str(REPO), 'rev-parse', 'HEAD'], cwd=REPO, text=True).strip(), build_directory=str(BUILD), private_config=str(OUT / 'kernel.config'), bluetooth_address=args.address, address_is_per_installation=True, venus_trial=False, speaker_drivers_blocked=True, hardware_acceptance_closed=False, installed=False, boot_selected=False, boot_payloads=dict(vmlinuz=sha(OUT / 'vmlinuz'), initramfs=sha(OUT / 'initramfs.img'), dtb=sha(OUT / 'spx.dtb')))
     prepared.update(audio_mode='parked' if args.audio else 'blocked',
                     speaker_drivers_blocked=not args.audio,
+                    reuse_installed_modules=args.reuse_installed_modules,
                     replace_modules=args.replace_module)
     recovery()
     assert Path('/proc/sys/kernel/random/boot_id').read_text().strip() == BOOT_ID
@@ -183,7 +185,18 @@ def install(args):
             guard.chmod(0o644)
             os.chown(guard, account.pw_uid, account.pw_gid)
     subprocess.run(['systemd-analyze', 'verify', str(unit_dir / ('spx-trial-return@' + ATTEMPT + '.service')), str(unit_dir / ('spx-trial-return@' + ATTEMPT + '.timer'))], check=True, timeout=30)
-    if modules.exists() and os.uname().release == RELEASE:
+    if prepared.get('reuse_installed_modules'):
+        # A command-line-only trial keeps the coordinator's current module tree.
+        # No loaded module is overwritten, removed or reloaded by installation.
+        assert modules.exists() and os.uname().release == RELEASE
+        assert not prepared.get('replace_modules')
+        words = Path('/proc/cmdline').read_text().split()
+        current = [w.split('=', 1)[1] for w in words if w.startswith('spx_attempt=')]
+        assert len(current) == 1
+        previous = json.loads((OUT.parent / current[0] / 'installed.json').read_text())
+        assert previous['boot_payloads']['vmlinuz'] == prepared['boot_payloads']['vmlinuz']
+        print('Keeping installed modules for the unchanged running kernel', flush=True)
+    elif modules.exists() and os.uname().release == RELEASE:
         # Only explicitly named, currently blacklisted and unloaded modules may
         # be replaced while this release is running. Keep all other files.
         replacements = prepared.get('replace_modules', [])
@@ -381,10 +394,14 @@ def extend_window(args):
 
 
 def arm_audio(args):
-    """Queue one explicitly requested initialization across the reboot."""
+    """Queue one authorized initialization or microphone feedback test."""
     require_source_boot()
     recovery()
     assert args.allow_amp_power, 'explicit amplifier-power authorization required'
+    action = 'initialize' if args.audio_action == 'plan' else args.audio_action
+    assert action in ('initialize', 'feedback')
+    if action == 'feedback':
+        assert args.allow_playback and args.allow_capture, 'feedback needs playback and capture authorization'
     prepared = json.loads((OUT / 'prepared.json').read_text())
     assert prepared.get('audio_mode') == 'parked'
     assert (OUT / 'installed.json').exists() and not (OUT / 'selected.json').exists()
@@ -394,11 +411,12 @@ def arm_audio(args):
     os.umask(0o077)
     with (OUT / 'audio-request.json').open('x') as stream:
         json.dump(dict(attempt=ATTEMPT, release=RELEASE, preboot_id=BOOT_ID,
-                       desktop_user=account.pw_name, action='initialize',
-                       allow_amp_power=True, playback=False, capture=False,
+                       desktop_user=account.pw_name, action=action,
+                       allow_amp_power=True, playback=action == 'feedback',
+                       capture=action == 'feedback',
                        utc=datetime.now(timezone.utc).isoformat()), stream, indent=2)
         stream.write('\n')
-    print('One amplifier initialization queued for the selected trial boot', flush=True)
+    print('One audio ' + action + ' test queued for the selected trial boot', flush=True)
 
 
 def requested_audio(args):
@@ -411,14 +429,17 @@ def requested_audio(args):
     assert record['attempt'] == ATTEMPT and record['release'] == os.uname().release
     assert record['preboot_id'] == BOOT_ID and boot_id != BOOT_ID
     assert 'spx_attempt=' + ATTEMPT in words and 'spx_audio=parked' in words
-    assert record['action'] == 'initialize' and record['allow_amp_power'] is True
-    assert record['playback'] is False and record['capture'] is False
+    assert record['action'] in ('initialize', 'feedback') and record['allow_amp_power'] is True
+    feedback = record['action'] == 'feedback'
+    assert record['playback'] is feedback and record['capture'] is feedback
     started = OUT / 'audio-started.json'
     assert not started.exists()
     # Consume before hardware access; restarting the checker cannot repeat it.
     request.rename(started)
-    args.audio_action = 'initialize'
+    args.audio_action = record['action']
     args.allow_amp_power = True
+    args.allow_playback = feedback
+    args.allow_capture = feedback
     args.desktop_user = record['desktop_user']
     try:
         audio_check(args)
@@ -516,6 +537,8 @@ def main():
     parser.add_argument('--allow-amp-power', action='store_true')
     parser.add_argument('--allow-playback', action='store_true')
     parser.add_argument('--allow-capture', action='store_true')
+    parser.add_argument('--reuse-installed-modules', action='store_true',
+                        help='retain current module tree for a command-line-only trial')
     parser.add_argument('--desktop-user', default='dvitali')
     args = parser.parse_args()
     assert re.fullmatch(r'[0-9]{8}[a-z0-9]+', args.attempt)
