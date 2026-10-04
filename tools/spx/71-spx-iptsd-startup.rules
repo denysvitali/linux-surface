@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: GPL-2.0-only
+# This known SPI digitizer can fail the packaged iptsd-check-device open during
+# startup. Still request its service so the installed, bounded Restart=on-failure
+# policy can retry. Match the HID identity, never a changing hidraw number.
+# Install after the packaged 50-iptsd.rules; do not retrigger a healthy device.
+SUBSYSTEM=="hidraw", ACTION=="add", KERNELS=="001C:045E:0C21.*", \
+  PROGRAM="/bin/systemd-escape --path $env{DEVNAME}", \
+  TAG+="systemd", ENV{SYSTEMD_WANTS}+="iptsd@$result.service"
