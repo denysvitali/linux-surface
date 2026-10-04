@@ -38,6 +38,7 @@ open; charger transitions need a person.
 
 Evidence under `/var/lib/spx-boot-diagnostics/functional/20261005bu/`:
 `power-readout/`, `cpu-scaling/`, `wifi-upload/`, `sensor-identity.json`.
-Known-good remains default; runtime return is uptime3600 while hardware work
-continues. No complete hardware acceptance category closes from these partial
+Known-good remains default; outgoing BU return is uptime3600. BV is prepared
+with the same kernel, new TCS module and corrected compatible, plus the existing
+quiet peak1433 startup audio check. Its one-shot return is900 seconds. No complete hardware acceptance category closes from these partial
 checks. Next: correct ALS driver, then one quiet charger/sensor physical batch.
