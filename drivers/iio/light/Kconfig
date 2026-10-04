@@ -609,6 +609,16 @@ config TCS3414
 	  This driver can also be built as a module.  If so, the module
 	  will be called tcs3414.
 
+config TCS3430
+	tristate "AMS TCS3430 color and infrared sensor"
+	depends on I2C
+	help
+	  Say yes here to build support for the AMS TCS3430 CIE XYZ and
+	  infrared sensor. The driver provides raw optical measurements.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called tcs3430.
+
 config TCS3472
 	tristate "TAOS TCS3472 color light-to-digital converter"
 	depends on I2C
