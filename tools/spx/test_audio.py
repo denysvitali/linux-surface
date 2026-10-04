@@ -99,6 +99,18 @@ class AudioTests(unittest.TestCase):
         self.assertEqual(report['mixer'][0]['returncode'], 1)
         self.assertEqual(report['mixer'][0]['stderr'], 'Input/output error')
 
+    def test_native_binding_without_codec_initialization_is_rejected(self):
+        snapshot = {'SLV_STATUS': 0x14, 'DEV1_ID1': 0x21170213, 'DEV1_ID2': 0x10,
+                    'DEV2_ID1': 0x21170214, 'DEV2_ID2': 0x10}
+        slaves = [{'unit': unit, 'address': address, 'status': 'Attached',
+                   'driver': 'wsa881x-codec', 'initialized': False}
+                  for unit, address in ((3, 1), (4, 2))]
+        with self.assertRaisesRegex(RuntimeError, 'initialized native codec'):
+            audio.identity_map(snapshot, slaves, {3, 4})
+        for slave in slaves:
+            slave['initialized'] = True
+        self.assertEqual(audio.identity_map(snapshot, slaves, {3, 4}), {3: 1, 4: 2})
+
 
 if __name__ == '__main__':
     unittest.main()

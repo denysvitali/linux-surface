@@ -78,9 +78,11 @@ def devices():
         if not match:
             continue
         number = read_text(path / 'device_number')
+        codec_state = playback_state(path) if (path / 'spx_playback_state').exists() else {}
         result.append({'name': path.name, 'unit': int(match[1]),
                        'status': read_text(path / 'status'),
                        'address': int(number) if number.isdigit() else None,
+                       'initialized': bool(codec_state['HW_INIT']) if 'HW_INIT' in codec_state else None,
                        'driver': (path / 'driver').resolve().name
                        if (path / 'driver').exists() else None})
     return result
@@ -100,8 +102,8 @@ def identity_map(snapshot, slaves, expected):
         need(unit not in mapping, 'Duplicate physical amplifier identity')
         matches = [s for s in slaves if s['unit'] == unit and
                    s['address'] == address and s['status'] == 'Attached' and
-                   s['driver'] == 'wsa881x-codec']
-        need(len(matches) == 1, f'Physical unit {unit} lacks matching native codec binding')
+                   s['driver'] == 'wsa881x-codec' and s.get('initialized') is True]
+        need(len(matches) == 1, f'Physical unit {unit} lacks matching initialized native codec')
         mapping[unit] = address
     need((snapshot['SLV_STATUS'] & ~0x3c) == 0,
          'Unexpected or unassigned physical device on SoundWire bus')
@@ -451,10 +453,15 @@ def initialize(args, report):
         need(initial['state'] is not None, 'SoundWire master is not held active')
         parked = initial['state']['GPIO_VAL'] & ~0x06
         need(len(initial['internal_cards']) == 1, 'Cannot identify one internal ALSA card')
+        need(len(initial['devices']) == 2 and
+             all(s['initialized'] is not None for s in initial['devices']),
+             'Both native codecs must expose initialization status before amplifier power')
         need(initial['state']['GPIO_DIR'] & 0x1e == 0x1e and
              initial['state']['GPIO_VAL'] & 0x06 == 0,
              'Physical GPIO direction is wrong or an amplifier is already enabled')
         need(initial['state']['SLV_STATUS'] == 0, 'Amps must be detached before the test')
+        need((initial['state']['FIFO_STATUS'] >> 8) & 0x1f == 0,
+             'SoundWire write FIFO is not empty; perform parked recovery before powering amps')
         if parked & 0x18 != 0x18:
             # Cold startup and master reload can clear auxiliary outputs 3/4.
             # Restore them with both amplifier enables (1/2) held low. Preserve
