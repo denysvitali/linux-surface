@@ -277,15 +277,37 @@ def return_to_default(args):
     os.sync()
     subprocess.run(['systemctl', 'reboot'], check=True)
 
+def extend_window(args):
+    """Keep the existing automatic return, allowing time for physical tests."""
+    assert os.geteuid() == 0 and os.uname().release == RELEASE
+    assert 'spx_attempt=' + ATTEMPT in Path('/proc/cmdline').read_text().split()
+    assert not (OUT / 'return.json').exists()
+    seconds = args.return_seconds
+    assert float(Path('/proc/uptime').read_text().split()[0]) + 60 < seconds <= 86400
+    unit = 'spx-trial-return@' + ATTEMPT + '.timer'
+    assert subprocess.check_output(['systemctl', 'is-active', unit], text=True).strip() == 'active'
+    override = Path('/run/systemd/system') / (unit + '.d/window.conf')
+    override.parent.mkdir(parents=True, exist_ok=True)
+    override.write_text('[Timer]\nOnBootSec=\nOnBootSec=' + str(seconds) + 's\n')
+    subprocess.run(['systemctl', 'daemon-reload'], check=True)
+    subprocess.run(['systemctl', 'restart', unit], check=True)
+    subprocess.run(['systemctl', 'is-active', unit], check=True)
+    (OUT / 'window.json').write_text(json.dumps(dict(
+        boot_id=Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+        return_seconds_after_boot=seconds, runtime_only=True), indent=2) + '\n')
+    subprocess.run(['systemctl', 'list-timers', unit, '--no-pager'], check=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return'))
+    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend'))
     parser.add_argument('attempt')
     parser.add_argument('--build', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bg/work-build'))
     parser.add_argument('--parent', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bf'))
     parser.add_argument('--recovery', type=Path, default=Path('/var/lib/spx-boot-diagnostics/attempts/20261004bf/working-recovery.json'))
     parser.add_argument('--dtb', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bg/spx.dtb'))
     parser.add_argument('--address')
+    parser.add_argument('--return-seconds', type=int, default=3600)
     args = parser.parse_args()
     assert re.fullmatch(r'[0-9]{8}[a-z0-9]+', args.attempt)
     global ATTEMPT, OUT, STAGE, BUILD, PARENT, OLD, RECOVERY, BOOT_ID, RELEASE
@@ -313,7 +335,8 @@ def main():
             finally:
                 subprocess.run([lock, 'release', 'device', owner], check=True)
         else:
-            {'install': install, 'boot': boot, 'return': return_to_default}[args.command](args)
+            {'install': install, 'boot': boot, 'return': return_to_default,
+             'extend': extend_window}[args.command](args)
 
 
 if __name__ == '__main__':
