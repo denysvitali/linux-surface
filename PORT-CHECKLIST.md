@@ -6,13 +6,14 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-04, BJ live on mainline)
+## Status (2026-10-04, BJ collected; preparing fresh stereo playback)
 
 Latest result: [BJ](tools/spx/boot-diagnostics/RESULT-20261004bj.md). Kernel
 changes are committed on `spx/next` as one commit per feature.
 New [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
 awaits tested-kernel confirmation; recovery diagnostics are identified separately.
-BJ runs `7.3.0-rc2-spx-mainline-20261004bg+`; input/BT user confirmations belong to BI.
+BJ ran `7.3.0-rc2-spx-mainline-20261004bg+` and returned to recovery at 18:59 CEST;
+input/BT user confirmations belong to BI.
 
 | Area | State | What is missing |
 |---|---|---|
