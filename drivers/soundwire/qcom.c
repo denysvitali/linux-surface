@@ -2015,6 +2015,84 @@ MODULE_PARM_DESC(spx_snapshot,
 		 "SPX: write to log a controller-serialized transport snapshot");
 
 /*
+ * Bounded stereo-startup observation through the owning driver. Avoid the
+ * historical helper's copied private struct and fixed platform-device name.
+ * Reading this parameter never assigns an address or powers an amplifier.
+ */
+static int spx_audio_state_get(char *buffer, const struct kernel_param *kp)
+{
+	static const struct {
+		const char *name;
+		u32 reg;
+	} registers[] = {
+		{ "COMP_PARAMS", SWRM_COMP_PARAMS },
+		{ "MCP_STATUS", SWRM_MCP_STATUS },
+		{ "SLV_STATUS", SWRM_MCP_SLV_STATUS },
+		{ "DEV1_ID1", SWRM_ENUMERATOR_SLAVE_DEV_ID_1(1) },
+		{ "DEV1_ID2", SWRM_ENUMERATOR_SLAVE_DEV_ID_2(1) },
+		{ "DEV2_ID1", SWRM_ENUMERATOR_SLAVE_DEV_ID_1(2) },
+		{ "DEV2_ID2", SWRM_ENUMERATOR_SLAVE_DEV_ID_2(2) },
+		{ "FRAME_B0", SWRM_MCP_FRAME_CTRL_BANK_ADDR(0) },
+		{ "FRAME_B1", SWRM_MCP_FRAME_CTRL_BANK_ADDR(1) },
+	};
+	struct qcom_swrm_ctrl *ctrl;
+	u32 values[ARRAY_SIZE(registers)], canary, gpio_dir, gpio_val;
+	int i, len = 0, ret;
+
+	mutex_lock(&spx_dbg_lock);
+	ctrl = spx_dbg_ctrl;
+	if (!ctrl || ctrl->spx_stopping || !ctrl->regmap ||
+	    !of_machine_is_compatible("microsoft,surface-pro-x")) {
+		ret = -ENODEV;
+		goto out;
+	}
+
+	mutex_lock(&ctrl->controller_lock);
+	for (i = 0; i < ARRAY_SIZE(registers); i++) {
+		ret = ctrl->reg_read(ctrl, registers[i].reg, &values[i]);
+		if (ret || (!i && values[i] != 0x016840c6)) {
+			ret = -EIO;
+			goto unlock_controller;
+		}
+	}
+	ret = regmap_read_bypassed(ctrl->regmap, WCD934X_GPIO_DIR_CTL,
+				   &gpio_dir);
+	if (ret)
+		goto unlock_controller;
+	ret = regmap_read_bypassed(ctrl->regmap, WCD934X_GPIO_VAL_CTL,
+				   &gpio_val);
+	if (ret)
+		goto unlock_controller;
+	ret = ctrl->reg_read(ctrl, SWRM_COMP_PARAMS, &canary);
+	if (ret || canary != values[0]) {
+		ret = -EIO;
+		goto unlock_controller;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(registers); i++)
+		len += scnprintf(buffer + len, PAGE_SIZE - len, "%s=0x%08x\n",
+				 registers[i].name, values[i]);
+	len += scnprintf(buffer + len, PAGE_SIZE - len,
+			 "GPIO_DIR=0x%02x\nGPIO_VAL=0x%02x\n", gpio_dir, gpio_val);
+	len += scnprintf(buffer + len, PAGE_SIZE - len, "FORCED_ATTACH=%u\n",
+			 spx_forced_attached);
+	ret = len;
+
+unlock_controller:
+	mutex_unlock(&ctrl->controller_lock);
+out:
+	mutex_unlock(&spx_dbg_lock);
+	return ret;
+}
+
+static const struct kernel_param_ops spx_audio_state_ops = {
+	.get = spx_audio_state_get,
+};
+module_param_cb(spx_audio_state, &spx_audio_state_ops, NULL, 0400);
+MODULE_PARM_DESC(spx_audio_state,
+		 "SPX: read native speaker identities, frame and GPIO state without powering amps");
+
+/*
  * Diagnostic-only physical-device readback. Force-attach represents the WSA
  * as logical device 1, but spx_write_dev0 deliberately sends its unicast
  * traffic to the still-unassigned physical address 0. Read that same address
