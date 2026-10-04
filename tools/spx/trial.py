@@ -406,6 +406,7 @@ def arm_audio(args):
         assert args.allow_playback and args.allow_capture, 'feedback needs playback and capture authorization'
     if action == 'serve':
         assert 0 <= args.serve_seconds <= 82800
+        assert 1433 <= args.desktop_peak <= 12000
     if args.return_after_audio_seconds is not None:
         assert 61 <= args.return_after_audio_seconds <= 900
     prepared = json.loads((OUT / 'prepared.json').read_text())
@@ -421,6 +422,7 @@ def arm_audio(args):
                        allow_amp_power=True, playback=action in ('feedback', 'desktop', 'serve'),
                        capture=action in ('feedback', 'desktop', 'serve'),
                        serve_seconds=args.serve_seconds if action == 'serve' else None,
+                       desktop_peak=args.desktop_peak if action == 'serve' else None,
                        return_after_audio_seconds=args.return_after_audio_seconds,
                        utc=datetime.now(timezone.utc).isoformat()), stream, indent=2)
         stream.write('\n')
@@ -442,6 +444,8 @@ def requested_audio(args):
     assert record['playback'] is feedback and record['capture'] is feedback
     if record['action'] == 'serve':
         assert type(record.get('serve_seconds')) is int and 0 <= record['serve_seconds'] <= 82800
+        peak = record.get('desktop_peak', 1433)
+        assert type(peak) is int and 1433 <= peak <= 12000
     started = OUT / 'audio-started.json'
     assert not started.exists()
     # Consume before hardware access; restarting the checker cannot repeat it.
@@ -454,6 +458,7 @@ def requested_audio(args):
     try:
         if args.audio_action == 'serve':
             args.serve_seconds = record['serve_seconds']
+            args.desktop_peak = record.get('desktop_peak', 1433)
             # Keep the automatic return beyond verification and the requested
             # application session. A failed start still uses the short return
             # in finally; no per-attempt service is needed.
@@ -522,7 +527,9 @@ def audio_check(args):
                 command.append('--allow-capture')
             if action == 'serve':
                 assert 0 <= args.serve_seconds <= 82800
-                command += ['--serve-seconds', str(args.serve_seconds)]
+                assert 1433 <= args.desktop_peak <= 12000
+                command += ['--serve-seconds', str(args.serve_seconds),
+                            '--desktop-peak', str(args.desktop_peak)]
         process = subprocess.Popen(command)
         try:
             status = process.wait(timeout=(args.serve_seconds + 120 if args.serve_seconds else None) if action == 'serve' else
@@ -567,6 +574,8 @@ def main():
     parser.add_argument('--audio-action', choices=('plan', 'inspect', 'initialize', 'listen', 'recover', 'capture', 'feedback', 'desktop', 'serve'), default='plan')
     parser.add_argument('--serve-seconds', type=int, default=3600,
                         help='ordinary desktop playback after acoustic verification (0 until stopped, or 1..82800 seconds)')
+    parser.add_argument('--desktop-peak', type=int, default=1433,
+                        help='ordinary desktop digital peak cap (1433..12000); minimum PA gain remains fixed')
     parser.add_argument('--allow-amp-power', action='store_true')
     parser.add_argument('--allow-playback', action='store_true')
     parser.add_argument('--allow-capture', action='store_true')

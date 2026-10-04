@@ -101,6 +101,23 @@ class AudioRequestTests(unittest.TestCase):
             trial.requested_audio(self.args)
         self.assertEqual(self.windows, [162])
 
+    def test_requested_desktop_peak_reaches_audio_check(self):
+        self.request['desktop_peak'] = 4000
+        self.write_request()
+        with patch.object(trial, 'audio_check') as check:
+            trial.requested_audio(self.args)
+            self.assertEqual(check.call_args.args[0].desktop_peak, 4000)
+
+    def test_invalid_desktop_peak_is_rejected_before_consumption(self):
+        for peak in (1432, 12001, True, '4000'):
+            with self.subTest(peak=peak):
+                self.request['desktop_peak'] = peak
+                self.write_request()
+                with self.assertRaises(AssertionError):
+                    trial.requested_audio(self.args)
+                self.assertTrue((self.out / 'audio-request.json').exists())
+                self.assertEqual(self.windows, [])
+
     def test_existing_desktop_request_retains_short_test_behavior(self):
         self.request.update(action='desktop', serve_seconds=None, return_after_audio_seconds=61)
         self.write_request()
