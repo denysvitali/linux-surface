@@ -749,6 +749,11 @@ def initialize(args, report):
                 report['parked'] = True
             while pcm_holder:
                 report['pcm']['log'] = pcm_holder.pop().close()
+            if 'pcm' in report and report['parked']:
+                # The physical powerdown snapshot precedes PCM teardown. Retain
+                # its later FIFO/port state too: teardown can leave commands
+                # queued even though amplifier parking succeeded.
+                report['after_pcm_close_state'] = state()
             if report['parked']:
                 control.write_text(saved_control + '\n')
                 need(read_text(control) == saved_control, 'Master runtime PM policy was not restored')
