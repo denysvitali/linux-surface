@@ -6,9 +6,9 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-04, after boot BF)
+## Status (2026-10-04, after boot BG)
 
-Latest result: [BF](tools/spx/boot-diagnostics/RESULT-20261004bf.md). Kernel
+Latest result: [BG](tools/spx/boot-diagnostics/RESULT-20261004bg.md). Kernel
 changes are committed on `spx/next` as one commit per feature.
 
 | Area | State | What is missing |
@@ -26,9 +26,9 @@ changes are committed on `spx/next` as one commit per feature.
 | Cameras (C01–C05) | Rear sensor identifies | No frame captured |
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
 | Keyboard, touchpad, buttons (I04–I06) | Never tested | Human session |
-| Bluetooth (N02) | Recovery address setup/discovery works; mainline test next | Pairing, peripheral use, resume |
+| Bluetooth (N02) | Mainline firmware setup completes; RFCOMM/HID config missing | Pairing, peripheral use, resume |
 | USB, USB-C PD, DisplayPort, dock (U01–U04) | Never tested | Human session, fixtures |
-| Battery and charging (P01) | Recovery readout plausible | Mainline readout, plug/unplug |
+| Battery and charging (P01) | Mainline AC/capacity readout plausible | Charging/discharging, plug/unplug |
 | Suspend/resume (P03) | Never tested | Wake source |
 | Thermal, idle power (P02, P05) | Never tested | Agent can do alone |
 | Sensors (S01, S02) | Never tested | Readout, then human |
@@ -538,8 +538,9 @@ host datapath; that is not current cellular service verification.
   audio as available), radio toggle and resume; Wi-Fi coexistence under load.
   Preserve the active remote connection while planning radio tests.
   Recovery reference: missing public address corrected using the existing
-  installation address; BlueZ controller/discovery now work. Mainline and
-  pairing/peripheral tests are pending. [Address setup](tools/spx/boot-diagnostics/BLUETOOTH-ADDRESS.md).
+  installation address; BlueZ controller/discovery work. BG mainline completes
+  firmware setup, but RFCOMM/HIDP/UHID are disabled; pairing and peripheral
+  tests remain pending. [BG result](tools/spx/boot-diagnostics/RESULT-20261004bg.md). [Address setup](tools/spx/boot-diagnostics/BLUETOOTH-ADDRESS.md).
 - [ ] **N03 — Cellular control/data.** Stable modem startup and discovery, correct
   SIM/eSIM applicability, network registration and actual bidirectional data with
   service; disconnect/reconnect, radio control and resume. Resolve mode and
