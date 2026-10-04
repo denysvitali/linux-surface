@@ -32,6 +32,26 @@ make -C /var/tmp/spx-mainline-trial-20261004bg/work-build \
   M="$SPX_DRIVER_DIR" MO=/var/tmp/spx-module-output ARCH=arm64 -j6 modules
 ```
 
+The Bluetooth profile fragment enables RFCOMM, classic HIDP and BlueZ's
+userspace HID transport as modules. It requires the existing Bluetooth,
+BR/EDR and HID support. The coordinator applies it under the build lock,
+retaining the current configuration, release and build directory:
+
+```
+SPX_BUILD=/var/tmp/spx-mainline-trial-20261004bg/work-build
+scripts/kconfig/merge_config.sh -m -O "$SPX_BUILD" \
+  "$SPX_BUILD/.config" tools/spx/functional.config
+make -C "$SPX_BUILD" ARCH=arm64 olddefconfig
+make -C "$SPX_BUILD" ARCH=arm64 -j6 modules
+```
+
+Check that all three fragment values remain `m` after `olddefconfig`. On the
+same-release mainline kernel, install the new modules, run depmod, then load
+`rfcomm`, `hidp` and `uhid`. An RFCOMM socket should open and `/dev/uhid`
+should exist; restart Bluetooth while idle to retry profile registration.
+N02 still needs an owned keyboard or mouse paired and used, reconnect and
+suspend/resume with Wi-Fi active. Profile registration alone closes no box.
+
 Install only the changed module and run depmod before reloading. Preserve the
 active network and test state. Never unload MSM display modules. Reboot for
 DTB, initramfs or built-in changes; ordinary driver tests should reuse the
