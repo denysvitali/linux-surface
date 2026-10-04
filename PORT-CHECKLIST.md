@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-04, BL collected; diagnostic port-address fix ready for mainline retry)
+## Status (2026-10-04, BL collected; corrected mainline acoustic trial BM prepared)
 
 Latest result: [BL](tools/spx/boot-diagnostics/RESULT-20261004bl.md). Kernel
 changes are committed on `spx/next` as one commit per feature.
@@ -15,7 +15,8 @@ awaits tested-kernel confirmation; recovery diagnostics are identified separatel
 BL ran `7.3.0-rc2-spx-mainline-20261004bg+`; input/BT confirmations belong to BI.
 Automatic mic capture and simultaneous playback started. A diagnostic address bug
 falsely reported missing DP4 and stopped tones; fixed in source. An unexplained
-restart returned to recovery6.18. The next mainline test will run automatically.
+restart returned to recovery6.18. BM is installed with the correction and one
+automatic microphone-scored test queued.
 
 | Area | State | What is missing |
 |---|---|---|
