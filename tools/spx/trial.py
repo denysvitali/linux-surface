@@ -680,7 +680,11 @@ def requested_audio(args):
                 subprocess.run(['journalctl', '-b', '--no-pager', '-o', 'short-monotonic'] + extra,
                                stdout=stream, check=True, timeout=30)
         delay = record.get('return_after_audio_seconds')
-        if delay is None and record['action'] == 'serve':
+        # An untimed desktop restore is part of the wider hardware trial.
+        # Failure must preserve its existing recovery window so the coordinator
+        # can collect results and continue non-audio checks. Timed audio-only
+        # sessions retain their short return after completion or failure.
+        if delay is None and record['action'] == 'serve' and record['serve_seconds']:
             delay = 61
         if delay is not None:
             assert isinstance(delay, int) and 61 <= delay <= 900

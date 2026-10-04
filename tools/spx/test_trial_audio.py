@@ -101,7 +101,18 @@ class AudioRequestTests(TrialAudioFixture):
 
         with patch.object(trial, 'audio_check', side_effect=finish):
             trial.requested_audio(self.args)
-        self.assertEqual(self.windows, [162])
+        self.assertEqual(self.windows, [])
+
+    def test_untimed_failure_preserves_hardware_trial_window(self):
+        self.request['serve_seconds'] = 0
+        self.write_request()
+        with patch.object(trial, 'audio_check', side_effect=RuntimeError('failed')) as audio_check:
+            with self.assertRaisesRegex(RuntimeError, 'failed'):
+                trial.requested_audio(self.args)
+            trial.requested_audio(self.args)
+            audio_check.assert_called_once()
+        self.assertEqual(self.windows, [])
+        self.assertTrue((self.out / 'journal.log').exists())
 
     def test_requested_desktop_peak_reaches_audio_check(self):
         self.request['desktop_peak'] = 4000
@@ -289,7 +300,7 @@ class DesktopOptInTests(TrialAudioFixture):
         trial.dispatch_audio(self.args)
         self.audio.assert_called_once()
         self.assertTrue((self.out / 'audio-started.json').exists())
-        self.assertEqual(self.windows, [162])  # Existing one-shot policy only.
+        self.assertEqual(self.windows, [])  # Untimed restore keeps the trial window.
 
     def test_mismatched_or_untrusted_policy_cannot_start_audio(self):
         trial.enable_desktop_audio(self.args)
