@@ -3437,6 +3437,36 @@ static int qcom_swrm_post_bank_switch(struct sdw_bus *bus)
 	return 0;
 }
 
+static bool qcom_swrm_spx_native_ports(struct qcom_swrm_ctrl *ctrl)
+{
+	return ctrl->spx_paged_bridge && !ctrl->spx_windows_init &&
+		!spx_core_enum && !spx_force_attach && !spx_forced_attached;
+}
+
+/* The bridge returns SDW_CMD_*; the port callbacks must return errno. */
+static int qcom_swrm_spx_port_write(struct qcom_swrm_ctrl *ctrl,
+				   unsigned int port, unsigned int bank,
+				   u32 reg, u32 value, const char *stage)
+{
+	u32 readback = 0;
+	int ret;
+
+	ret = ctrl->reg_write(ctrl, reg, value);
+	if (!qcom_swrm_spx_native_ports(ctrl))
+		return ret;
+
+	/* reg_read/write own ahb_lock; do not nest controller or bus locks. */
+	if (!ret)
+		ret = ctrl->reg_read(ctrl, reg, &readback);
+	if (ret > 0 || (!ret && readback != value))
+		ret = -EIO;
+
+	dev_info(ctrl->dev,
+		 "SPX: master DP%u bank=%u %s reg=%#x write=%#010x read=%#010x ret=%d\n",
+		 port, bank, stage, reg, value, readback, ret);
+	return ret;
+}
+
 static int qcom_swrm_port_params(struct sdw_bus *bus,
 				 struct sdw_port_params *p_params,
 				 unsigned int bank)
@@ -3472,7 +3502,8 @@ static int qcom_swrm_transport_params_bank(struct sdw_bus *bus,
 	value |= ((params->port_num == 1 && spx_port_si >= 0) ?
 		  spx_port_si : pcfg->si) & 0xff;
 
-	ret = ctrl->reg_write(ctrl, reg, value);
+	ret = qcom_swrm_spx_port_write(ctrl, params->port_num, bank,
+				     reg, value, "transport");
 	if (ret)
 		goto err;
 
@@ -3580,7 +3611,9 @@ static int qcom_swrm_port_enable_bank(struct sdw_bus *bus,
 			val |= enable_ch->ch_mask <<
 			       SWRM_DP_PORT_CTRL_EN_CHAN_SHFT;
 
-		return ctrl->reg_write(ctrl, reg, val);
+		return qcom_swrm_spx_port_write(ctrl, enable_ch->port_num, bank,
+					      reg, val,
+					      enable_ch->enable ? "enable" : "disable");
 	}
 
 	ctrl->reg_read(ctrl, reg, &val);
@@ -3590,7 +3623,9 @@ static int qcom_swrm_port_enable_bank(struct sdw_bus *bus,
 	else
 		val &= ~(0xff << SWRM_DP_PORT_CTRL_EN_CHAN_SHFT);
 
-	return ctrl->reg_write(ctrl, reg, val);
+	return qcom_swrm_spx_port_write(ctrl, enable_ch->port_num, bank,
+				      reg, val,
+				      enable_ch->enable ? "enable" : "disable");
 }
 
 static int qcom_swrm_port_enable(struct sdw_bus *bus,
@@ -3732,6 +3767,38 @@ static void qcom_swrm_stream_free_ports(struct qcom_swrm_ctrl *ctrl,
 	mutex_unlock(&ctrl->port_lock);
 }
 
+static int qcom_swrm_spx_check_master_ports(struct qcom_swrm_ctrl *ctrl,
+					   struct sdw_stream_runtime *stream,
+					   const struct sdw_port_config *ports,
+					   unsigned int num_ports)
+{
+	struct sdw_master_runtime *m_rt;
+	struct sdw_port_runtime *p_rt;
+	unsigned int count = 0;
+	int ret = 0;
+
+	guard(mutex)(&ctrl->bus.bus_lock);
+
+	list_for_each_entry(m_rt, &stream->master_list, stream_node) {
+		if (m_rt->bus != &ctrl->bus)
+			continue;
+		list_for_each_entry(p_rt, &m_rt->port_list, port_node) {
+			dev_info(ctrl->dev, "SPX: master runtime port[%u]=DP%u mask=%#x\n",
+				 count, p_rt->num, p_rt->ch_mask);
+			if (count >= num_ports || p_rt->num != ports[count].num ||
+			    p_rt->ch_mask != ports[count].ch_mask)
+				ret = -EINVAL;
+			count++;
+		}
+	}
+	if (count != num_ports)
+		ret = -EINVAL;
+	if (ret)
+		dev_err(ctrl->dev, "SPX: master runtime has %u ports, requested %u\n",
+			count, num_ports);
+	return ret;
+}
+
 static int qcom_swrm_stream_alloc_ports(struct qcom_swrm_ctrl *ctrl,
 					struct sdw_stream_runtime *stream,
 				       struct snd_pcm_hw_params *params,
@@ -3743,7 +3810,7 @@ static int qcom_swrm_stream_alloc_ports(struct qcom_swrm_ctrl *ctrl,
 	struct sdw_port_runtime *p_rt;
 	struct sdw_slave *slave;
 	unsigned long *port_mask;
-	int maxport, pn, nports = 0;
+	int maxport, pn, ret, nports = 0;
 	unsigned int m_port;
 	struct sdw_port_config *pconfig __free(kfree) = kzalloc_objs(*pconfig,
 								     ctrl->nports);
@@ -3803,8 +3870,17 @@ static int qcom_swrm_stream_alloc_ports(struct qcom_swrm_ctrl *ctrl,
 		}
 	}
 
-	return sdw_stream_add_master(&ctrl->bus, &sconfig, pconfig,
-				     nports, stream);
+	ret = sdw_stream_add_master(&ctrl->bus, &sconfig, pconfig, nports, stream);
+	if (ret || !qcom_swrm_spx_native_ports(ctrl))
+		return ret;
+
+	ret = qcom_swrm_spx_check_master_ports(ctrl, stream, pconfig, nports);
+	if (ret) {
+		sdw_stream_remove_master(&ctrl->bus, stream);
+		for (pn = 0; pn < nports; pn++)
+			clear_bit(pconfig[pn].num, &ctrl->port_mask);
+	}
+	return ret;
 }
 
 static int qcom_swrm_hw_params(struct snd_pcm_substream *substream,
