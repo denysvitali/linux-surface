@@ -402,6 +402,8 @@ def arm_audio(args):
     assert action in ('initialize', 'feedback')
     if action == 'feedback':
         assert args.allow_playback and args.allow_capture, 'feedback needs playback and capture authorization'
+    if args.return_after_audio_seconds is not None:
+        assert 61 <= args.return_after_audio_seconds <= 900
     prepared = json.loads((OUT / 'prepared.json').read_text())
     assert prepared.get('audio_mode') == 'parked'
     assert (OUT / 'installed.json').exists() and not (OUT / 'selected.json').exists()
@@ -414,6 +416,7 @@ def arm_audio(args):
                        desktop_user=account.pw_name, action=action,
                        allow_amp_power=True, playback=action == 'feedback',
                        capture=action == 'feedback',
+                       return_after_audio_seconds=args.return_after_audio_seconds,
                        utc=datetime.now(timezone.utc).isoformat()), stream, indent=2)
         stream.write('\n')
     print('One audio ' + action + ' test queued for the selected trial boot', flush=True)
@@ -448,6 +451,11 @@ def requested_audio(args):
             with (OUT / name).open('wb') as stream:
                 subprocess.run(['journalctl', '-b', '--no-pager', '-o', 'short-monotonic'] + extra,
                                stdout=stream, check=True, timeout=30)
+        if record.get('return_after_audio_seconds') is not None:
+            delay = record['return_after_audio_seconds']
+            assert isinstance(delay, int) and 61 <= delay <= 900
+            args.return_seconds = int(float(Path('/proc/uptime').read_text().split()[0])) + delay + 1
+            extend_window(args)
 
 
 def audio_check(args):
@@ -539,6 +547,8 @@ def main():
     parser.add_argument('--allow-capture', action='store_true')
     parser.add_argument('--reuse-installed-modules', action='store_true',
                         help='retain current module tree for a command-line-only trial')
+    parser.add_argument('--return-after-audio-seconds', type=int,
+                        help='after a queued audio test, use the existing return timer after this delay (61..900)')
     parser.add_argument('--desktop-user', default='dvitali')
     args = parser.parse_args()
     assert re.fullmatch(r'[0-9]{8}[a-z0-9]+', args.attempt)
