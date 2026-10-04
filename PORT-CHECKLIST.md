@@ -6,18 +6,17 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-05, BT: waveform-timing fix awaits live verification)
+## Status (2026-10-05, BU: default desktop speakers working)
 
-Latest result: [BT](tools/spx/boot-diagnostics/RESULT-20261005bt.md). Kernel
-changes are committed on `spx/next` as one commit per feature.
-New [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
-awaits tested-kernel confirmation; recovery diagnostics are identified separately.
-BP ran `7.3.0-rc2-spx-mainline-20261004bg+`; input/BT confirmations belong to BI.
-The microphone verified all desktop test phases, including another application
-after idle. SoundWire shutdown left an empty FIFO; BP returned on schedule.
-BS verified louder public output. BT exposed timing corruption from inserted
-silence during active forwarding; its replacement preserves the exact waveform
-in independent-clock testing. A01a, A03a, handoff and hardware reopen remain open.
+Latest result: [BU](tools/spx/boot-diagnostics/RESULT-20261005bu.md), running
+`7.3.0-rc2-spx-mainline-20261004bg+`. Both speakers pass the microphone checks;
+ordinary applications use the default `spx_speakers` output at a digital level
+8.9 dB above the previous setting. The microphone is closed. Two minutes of
+continuous desktop forwarding passed, with the same hardware stream retained.
+A01a is restored; hardware reopen, reboot persistence and resume remain open.
+Input/BT confirmations belong to BI; the
+[physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
+awaits attribution for later observations.
 
 | Area | State | What is missing |
 |---|---|---|
@@ -30,7 +29,7 @@ in independent-clock testing. A01a, A03a, handoff and hardware reopen remain ope
 | RTC (B05) | Readback and warm reboot pass | Cold power-off retention |
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
-| Speakers (A01) | BS public output passed; **BT timing regressed, fix under test** | Handoff continuity, persistence, mapping, balance and WCD/ADM lifecycle |
+| Speakers (A01) | **BU: default desktop playback and louder output verified** | Persistence, useful volume/mapping/balance, reopen and WCD/ADM lifecycle |
 | Microphones (A02) | **BN: DMIC1 records known speaker tones** | Other fitted mics, quality and full lifecycle |
 | Cameras (C01–C05) | Rear sensor identifies | No frame captured |
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
@@ -60,8 +59,8 @@ in independent-clock testing. A01a, A03a, handoff and hardware reopen remain ope
 3. **Touch startup reliability (I01):** recovery's failed udev identification
    left no IPTSD instance to retry. One targeted add event restored the service;
    BI now starts automatically and physical touch/pen work. Verify reliability.
-4. **Audio (A01–A03):** make BP's desktop path persistent, resolve WCD/ADM
-   close faults and test hardware reopen. The user authorized bounded automated
+4. **Audio (A01–A03):** preserve BU's working default desktop path, resolve
+   WCD/ADM close faults and test hardware reopen and persistence. The user authorized bounded automated
    speaker/microphone testing; announce capture and park the amps afterwards.
 5. **Camera frames (C02–C04).**
 6. External display and dock (U03, U04), cellular (N03), then video (D03).
@@ -567,18 +566,14 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
   `7.3.0-rc2-spx-mainline-20261004bg+`, followed by verified amps-off readback.
   No PCM or acoustic test ran. [BJ result](tools/spx/boot-diagnostics/RESULT-20261004bj.md).
 
-  - [ ] **A01a — Microphone-verified channel test signals.** Reopened on BT:
-    active silence insertion corrupts timing. [BT result](tools/spx/boot-diagnostics/RESULT-20261005bt.md).
-    Previously restored on BS
-    boot `e022be67-c6e5-46d5-9ea3-79ef0503a755`, kernel
-    `7.3.0-rc2-spx-mainline-20261004bg+`: completion pacing passes left/right/both
-    and repeat after idle with unchanged thresholds.
-    [BS result](tools/spx/boot-diagnostics/RESULT-20261005bs.md). BN passed left,
-    right and simultaneous tones plus an amps-off negative control on boot
-    `b6ebb51f-0d63-4946-a631-e2ab3f424569`, kernel
-    `7.3.0-rc2-spx-mainline-20261004bg+`.
-    [BN result](tools/spx/boot-diagnostics/RESULT-20261004bn.md). This establishes
-    output from both digital channels, not their physical location or balance.
+  - [x] **A01a — Microphone-verified channel test signals.** Restored on BU,
+    boot `48d25b6b-14bf-488f-97bd-916f0ded7ee4`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: left/right/both, another application
+    after idle, and actual public output at peak4000 pass unchanged acoustic
+    thresholds. The timing fix removes active silence insertion; no gaps were
+    inserted. [BU result](tools/spx/boot-diagnostics/RESULT-20261005bu.md).
+    This establishes output from both digital channels, not physical mapping,
+    balance or the full useful listening-volume range.
 
 - [ ] **A02 — Internal microphones.** Real known stimulus/voice recorded on each
   fitted microphone, correct routing/channel assignment and usable gain/noise;
@@ -596,16 +591,16 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
   after reboot/resume without manual mixer setup or ad-hoc repair. Resolve or
   explicitly validate the parked-session workaround and its resource lifetime.
 
-  - [ ] **A03a — Bounded desktop applications and SoundWire shutdown.** Reopened:
-    BQ underruns and BR fails the first acoustic phase before desktop handoff.
-    [BR result](tools/spx/boot-diagnostics/RESULT-20261005br.md). BP
-    passed microphone-verified left/right/both playback and another application
-    after five seconds idle through a public Pulse sink and the same ALSA owner.
-    Stream close while amps remained attached left both speaker paths disabled
-    and an empty command FIFO. Boot `a208387a-004a-4e7b-98f4-8c8a7945cde6`, kernel
-    `7.3.0-rc2-spx-mainline-20261004bg+`.
-    [BP result](tools/spx/boot-diagnostics/RESULT-20261004bp.md). Temporary graph
-    only; WCD/ADM close faults and persistent/default integration remain open.
+  - [ ] **A03a — Bounded desktop applications and SoundWire shutdown.** BU
+    passes left/right/both and another application after idle; the actual
+    default desktop sink passes acoustically. A two-minute ordinary desktop
+    stream completes with the same PCM owner and capture closed.
+    [BU result](tools/spx/boot-diagnostics/RESULT-20261005bu.md). Clean shutdown
+    on this implementation remains untested: keep its working stream open.
+    BP previously verified empty SoundWire FIFO after stream close on boot
+    `a208387a-004a-4e7b-98f4-8c8a7945cde6`, same kernel release.
+    [BP result](tools/spx/boot-diagnostics/RESULT-20261004bp.md). Hardware reopen,
+    WCD/ADM lifecycle and reboot/resume persistence remain unresolved.
 
 - [ ] **A04 — External audio.** Test applicable USB-C audio/dock and Bluetooth
   output/input devices, routing, hotplug and reconnect. The logical codec

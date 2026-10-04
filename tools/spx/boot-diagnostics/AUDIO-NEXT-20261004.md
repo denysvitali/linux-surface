@@ -1,30 +1,25 @@
-# Audio: exact-waveform fix queued for BU
+# Audio: BU default desktop playback works
 
-BU (`20261005bu`) changes only active forwarding from BT. Commit
-`804b067ef187` waits for actual source frames instead of inserting five-ms
-silence blocks. Idle and scoring retain local silence. The independent-clock
-regression preserves the full contiguous stereo waveform and has zero
-underruns with 95/145 ms producer bursts and a 250 ms hardware ring. The old
-implementation fails the same test by adding 1,920 frames; 28 tests pass.
+BU (`20261005bu`) has microphone-verified playback through the ordinary default
+`spx_speakers` sink. Both channels, simultaneous output, a second application
+after idle and the louder public path pass. The microphone closes before
+handoff. Two minutes of normal desktop forwarding complete without interrupting
+the retained PCM. See [BU result](RESULT-20261005bu.md).
 
-BT's shifted 436.9 Hz tone was reproduced by those silence insertions despite
-zero DSP timer fallback. Its live retry remained silent after hardware reopen;
-see [BT](RESULT-20261005bt.md). No gain or scoring thresholds changed. The
-previously verified completion pacing and public-scoring quiet fix remain.
+The working combination is completion pacing (`spx_force_timer_pacing=0`),
+local silence during scoring, and waiting for actual frames while forwarding.
+The digital cap is4000 rather than1433 (+8.9dB), with PA gain still minimum.
+Do not reintroduce active gap insertion: it stretches the waveform and shifts
+tone timing even when PCM reports no underrun. All28 audio tests pass,
+including exact waveform preservation with independently clocked consumers.
 
-BU uses the same mainline kernel/DTB/module tree and fixed release. Its single
-queued request is `serve --serve-seconds 0 --desktop-peak 4000`. Known-good
-remains persistent default; automatic return is independently armed at uptime
-900. Audio duration zero does not cancel it.
+Keep the running PCM owner open; hardware reopen repeatedly produced silence.
+Do not reload WCD/ADSP providers. No continuous microphone capture is needed.
+The next bounded software change is opt-in startup for this verified candidate,
+using the existing check service without changing boot policy. Reboot/resume
+persistence, clean current shutdown, WCD RX overflow/ADM close faults and full
+listening-volume/mapping/balance acceptance remain open.
 
-After boot inspect `/var/lib/spx-boot-diagnostics/functional/20261005bu/audio/`.
-Readiness requires all temporary and actual-public acoustic checks, a closed
-microphone and matching live PCM/boot ID. Verify continuing playback before
-calling ordinary desktop audio ready. No continuous recording is intended.
-Never re-arm a consumed request; collect failures before selecting another
-experiment. Retire BT payload/staging/instance links once BU becomes current.
-
-A01a/A03a are open after regressions; BS had verified the louder public path
-but did not reach a stable handoff. Hardware reopen, WCD RX overflow, ADM
-capture-close timeout, persistence and listening-volume acceptance remain open.
-Do not reload WCD/ADSP providers around parked ownership.
+Known-good remains the persistent boot default. The current automatic return
+is uptime1800 while integration completes. The user's decision about canceling
+this working boot's return is pending; untimed audio does not cancel it.
