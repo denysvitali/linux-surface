@@ -7,6 +7,7 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
+#include <linux/mfd/wcd934x/registers.h>
 #include <linux/module.h>
 #include <linux/debugfs.h>
 #include <linux/of.h>
@@ -2037,9 +2038,19 @@ static int spx_audio_state_get(char *buffer, const struct kernel_param *kp)
 		{ "FRAME_B0", SWRM_MCP_FRAME_CTRL_BANK_ADDR(0) },
 		{ "FRAME_B1", SWRM_MCP_FRAME_CTRL_BANK_ADDR(1) },
 	};
+	static const struct {
+		const char *name;
+		u32 reg;
+	} codec_registers[] = {
+		{ "RX7_PATH_CFG0", WCD934X_CDC_RX7_RX_PATH_CFG0 },
+		{ "RX8_PATH_CFG0", WCD934X_CDC_RX8_RX_PATH_CFG0 },
+		{ "RX7_VOLUME", WCD934X_CDC_RX7_RX_VOL_CTL },
+		{ "RX8_VOLUME", WCD934X_CDC_RX8_RX_VOL_CTL },
+	};
 	struct qcom_swrm_ctrl *ctrl;
 	u32 values[ARRAY_SIZE(registers)], canary, gpio_dir, gpio_val;
-	int i, len = 0, ret;
+	u32 codec_values[ARRAY_SIZE(codec_registers)], ports[2][2], offset;
+	int i, bank, len = 0, ret;
 
 	mutex_lock(&spx_dbg_lock);
 	ctrl = spx_dbg_ctrl;
@@ -2055,6 +2066,18 @@ static int spx_audio_state_get(char *buffer, const struct kernel_param *kp)
 		if (ret || (!i && values[i] != 0x016840c6)) {
 			ret = -EIO;
 			goto unlock_controller;
+		}
+	}
+	offset = ctrl->reg_layout[SWRM_OFFSET_DP_PORT_CTRL_BANK];
+	for (i = 0; i < ARRAY_SIZE(ports); i++) {
+		for (bank = 0; bank < ARRAY_SIZE(ports[i]); bank++) {
+			ret = ctrl->reg_read(ctrl,
+				SWRM_DPn_PORT_CTRL_BANK(offset, i ? 4 : 1, bank),
+				&ports[i][bank]);
+			if (ret) {
+				ret = -EIO;
+				goto unlock_controller;
+			}
 		}
 	}
 	/*
@@ -2073,6 +2096,16 @@ static int spx_audio_state_get(char *buffer, const struct kernel_param *kp)
 	ret = regmap_read(ctrl->regmap, WCD934X_GPIO_VAL_CTL, &gpio_val);
 	if (ret)
 		goto unlock_controller;
+	for (i = 0; i < ARRAY_SIZE(codec_registers); i++) {
+		ret = regcache_drop_region(ctrl->regmap, codec_registers[i].reg,
+					   codec_registers[i].reg);
+		if (ret)
+			goto unlock_controller;
+		ret = regmap_read(ctrl->regmap, codec_registers[i].reg,
+				  &codec_values[i]);
+		if (ret)
+			goto unlock_controller;
+	}
 	ret = ctrl->reg_read(ctrl, SWRM_COMP_PARAMS, &canary);
 	if (ret || canary != values[0]) {
 		ret = -EIO;
@@ -2082,6 +2115,14 @@ static int spx_audio_state_get(char *buffer, const struct kernel_param *kp)
 	for (i = 0; i < ARRAY_SIZE(registers); i++)
 		len += scnprintf(buffer + len, PAGE_SIZE - len, "%s=0x%08x\n",
 				 registers[i].name, values[i]);
+	for (i = 0; i < ARRAY_SIZE(ports); i++)
+		for (bank = 0; bank < ARRAY_SIZE(ports[i]); bank++)
+			len += scnprintf(buffer + len, PAGE_SIZE - len,
+					 "DP%d_B%d=0x%08x\n", i ? 4 : 1, bank,
+					 ports[i][bank]);
+	for (i = 0; i < ARRAY_SIZE(codec_registers); i++)
+		len += scnprintf(buffer + len, PAGE_SIZE - len, "%s=0x%02x\n",
+				 codec_registers[i].name, codec_values[i]);
 	len += scnprintf(buffer + len, PAGE_SIZE - len,
 			 "GPIO_DIR=0x%02x\nGPIO_VAL=0x%02x\n", gpio_dir, gpio_val);
 	len += scnprintf(buffer + len, PAGE_SIZE - len, "FORCED_ATTACH=%u\n",
