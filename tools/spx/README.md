@@ -105,7 +105,19 @@ original trial deadline still applies if startup never reaches the test.
 BN passed this complete loop; see
 [the recorded result](boot-diagnostics/RESULT-20261004bn.md).
 
-This holds one internal DMIC1 capture on MM2 across quiet, amplifier startup,
+The `desktop` audio action is the next bounded test, using the same three
+authorization flags. It initializes one native PCM, then forwards a temporary,
+explicitly selected PulseAudio sink at unity gain into that PCM. Finite desktop
+application tones and a repeat after idle are measured through the internal
+microphone. Legacy speaker bridges remain stopped. The temporary graph is
+removed afterwards; this test does not install a persistent desktop bridge.
+Unlike `feedback`'s amps-off control, normal desktop-test completion closes the
+PCM while amps are still attached, verifies teardown, then powers them down.
+Failures retain immediate amplifier powerdown. Read `audio/desktop-result.json`
+for separate acoustic and teardown outcomes; the implementation needs a live
+trial before it establishes either result.
+
+The `feedback` action holds one internal DMIC1 capture on MM2 across quiet, amplifier startup,
 and the left/right/both sequence. It aborts on clipping, a large level increase,
 capture stalls or ALSA failures; each requested tone must sustain for 0.4 seconds
 above the same recording's quiet floor and neighboring frequencies. Residual
