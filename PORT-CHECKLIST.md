@@ -6,13 +6,13 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-04, BI live on mainline)
+## Status (2026-10-04, BJ live on mainline)
 
-Latest result: [BI](tools/spx/boot-diagnostics/RESULT-20261004bi.md). Kernel
+Latest result: [BJ](tools/spx/boot-diagnostics/RESULT-20261004bj.md). Kernel
 changes are committed on `spx/next` as one commit per feature.
 New [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
 awaits tested-kernel confirmation; recovery diagnostics are identified separately.
-BI runs `7.3.0-rc2-spx-mainline-20261004bg+`; user confirms touch, pen, keyboard and BT.
+BJ runs `7.3.0-rc2-spx-mainline-20261004bg+`; input/BT user confirmations belong to BI.
 
 | Area | State | What is missing |
 |---|---|---|
@@ -25,7 +25,7 @@ BI runs `7.3.0-rc2-spx-mainline-20261004bg+`; user confirms touch, pen, keyboard
 | RTC (B05) | Readback and warm reboot pass | Cold power-off retention |
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
-| Speakers (A01) | Silent on BI: drivers blocked; BJ parked audio trial prepared | Authorized dual-amp startup, then playback bring-up/listening |
+| Speakers (A01) | **BJ: both amplifiers identify and initialize natively; now off** | Fresh PCM/late initialization, then authorized listening |
 | Microphones (A02) | Untested on this tree | Capture test |
 | Cameras (C01–C05) | Rear sensor identifies | No frame captured |
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
@@ -95,8 +95,11 @@ not tests already performed or promises of reliability.
   bounded AP check. Sustained graphics/network performance remains open.
 - [x] **M03** AP SPI-HID/IPTSD reached ready with clean startup and no retry.
   AO's prior timeout remains unresolved; this does not close I01 or I02.
-- [x] **M04** AP's right WSA identity matched the DT and initialized natively,
-  with no SoundWire FIFO/init/status errors. This does not prove audible output.
+- [x] **M04** AP's right WSA and now **both BJ WSA amplifiers** identify and
+  initialize natively. BJ verified separate addresses and powerdown on boot
+  `1f02d693-c8b9-4372-afcd-32f599ecb35a`, kernel
+  `7.3.0-rc2-spx-mainline-20261004bg+`; [BJ result](tools/spx/boot-diagnostics/RESULT-20261004bj.md).
+  This does not prove audible output.
 - [x] **M05** AP result/build artifacts were hash-verified; known-good recovery
   payloads, module tree and persistent default were preserved.
 
@@ -529,11 +532,12 @@ this does not explain AO's failure. Physical input has not been signed off.
 
 ## Audio
 
-Current: **partial; stereo playback unproven**. AO has one native attached right
-amp; both speakers have not passed acoustic verification. Older Y tests submitted
+Current: **partial; stereo playback unproven**. BJ verified native initialization
+of both physical amps at separate addresses and powerdown. Both speakers have
+not passed acoustic verification. Older Y tests submitted
 PCM successfully, which is not proof of sound. Correctly routed microphone capture
 on MM2 worked historically; the earlier MM1 EINVAL was a test-routing defect.
-Read [AO](tools/spx/boot-diagnostics/RESULT-20261002ao.md),
+Read [BJ](tools/spx/boot-diagnostics/RESULT-20261004bj.md),
 [Y correction](tools/spx/boot-diagnostics/RESULT-20260927y.md) and
 [microphone evidence](tools/spx/boot-diagnostics/AUDIO-ORACLE-RESTORED-20260928.md).
 
@@ -545,6 +549,10 @@ Read [AO](tools/spx/boot-diagnostics/RESULT-20261002ao.md),
   the internal codecs/SoundWire controller; only the dock USB audio card is
   present. This does not test an enabled internal playback path. The known 6.18
   stereo sequence still needs adaptation; see [audio next step](tools/spx/boot-diagnostics/AUDIO-NEXT-20261004.md).
+  **BJ:** both physical IDs and native codec initialization passed on boot
+  `1f02d693-c8b9-4372-afcd-32f599ecb35a`, kernel
+  `7.3.0-rc2-spx-mainline-20261004bg+`, followed by verified amps-off readback.
+  No PCM or acoustic test ran. [BJ result](tools/spx/boot-diagnostics/RESULT-20261004bj.md).
 - [ ] **A02 — Internal microphones.** Real known stimulus/voice recorded on each
   fitted microphone, correct routing/channel assignment and usable gain/noise;
   repeated capture/open/close without leaks or hangs. Noise-floor samples alone

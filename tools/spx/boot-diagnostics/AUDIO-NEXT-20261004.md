@@ -1,10 +1,13 @@
-# Internal speakers after BI
+# Internal speakers after BJ
 
-BI's silent speakers are expected: its kernel command line blacklists `wcd934x`,
-`soundwire_qcom`, `snd_soc_wsa881x` and `snd_soc_wcd934x`. Only the ThinkPad
-Thunderbolt 4 Dock USB audio card is exposed. This kernel blacklist cannot be
-overridden by live modprobe. A separately prepared audio-enabled boot is needed;
-no amplifier power or playback has been authorized for it yet.
+**BJ passed native initialization of both amplifiers** at separate addresses,
+followed by verified powerdown. See [the result](RESULT-20261004bj.md). Playback
+remains untested. The authorized identity run is finished; the amplifiers are off.
+
+BI deliberately blocked the internal audio drivers and exposed only dock USB
+audio. BJ removed that blacklist and registered the internal Surface Pro X card.
+The user's authorization covered BJ's completed identity test; audible playback
+needs its own requested run after preparation.
 
 The known baseline is the sibling tree's
 `docs/audio/2026-09-08-clean-stereo.md`, a successful live repair, not a repeatable
@@ -28,10 +31,11 @@ legacy bridges are disabled for that boot. A separate, explicitly authorized
 SoundWire master awake, powers pin 1 then pin 2, and compares native devices with
 physical identities at distinct addresses. It uses a five-second polling budget
 per stage and attempts amplifier powerdown on every exit. This opens no PCM.
-Native cold-start enumeration remains unverified; a build is not an A01 pass.
+BJ passed this sequence after live module reloads and restoring parked output.
+An unattended cold boot remains unverified; this does not close A01.
 
-After native enumeration works, adapt the retained sequence to current device
-names and a fresh silent PCM stream: frame 7, stereo DP1/DP4 offsets 1/6, late
+Next, adapt the retained sequence to current device names and a fresh silent
+PCM stream: frame 7, stereo DP1/DP4 offsets 1/6, late
 init after the runtime clock switch, both companders bypassed, minimum PA gain
 `0xc9`, then settling on digital silence. The old scripts hardcode dead 6.18 PIDs
 and automatically capture a microphone: do not execute them unchanged. Their
@@ -42,4 +46,4 @@ Once playback preparation is ready, ask for one bounded listening run: left tone
 right tone, then both, followed by parking both PAs. No microphone capture is
 needed. Amplifier bring-up has previously emitted loud static independently of
 volume settings; the user must explicitly authorize that run before power-up.
-Cold-start dual enumeration and the required settling delay remain unproven.
+Unattended cold-start setup and the required settling delay remain unproven.

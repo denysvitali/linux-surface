@@ -254,6 +254,7 @@ def initialize(args, report):
             else:
                 raise RuntimeError(f'Native enumeration did not settle: {last_error}')
         report['enumeration_passed'] = True
+        report['remaining_prerequisites'].remove(UNMET[0])
     finally:
         for signum in signals:
             signal.signal(signum, signal.SIG_IGN)
