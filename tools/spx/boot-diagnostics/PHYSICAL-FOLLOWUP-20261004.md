@@ -25,9 +25,22 @@ The coordinator inspected recovery boot
   prompt is consistent with unavailable sleep, but the precise UI fallback was
   not traced. No suspend or wake test ran; the masks remain in place.
 - Recovery touch startup logs contain invalid headers, `-22` and ready timeout;
-  no IPTSD instance is active. BH, separately, had clean startup and virtual
-  input publication, without a physical sample test. Those observations cannot
-  explain a runtime touch failure on BH.
+  initially no IPTSD instance was active. The installed add-only udev rule runs
+  `iptsd-check-device` before requesting the service. That helper opens hidraw,
+  so a failed startup can leave neither the systemd device dependency nor an
+  IPTSD instance for the existing service retry policy to restart. A single
+  targeted `udevadm trigger --action=add /sys/class/hidraw/hidraw5` on the same
+  recovery boot restored `ready`, a running IPTSD instance (`NRestarts=0`),
+  and virtual touchscreen/stylus devices. Bus errors rose from five to seven
+  (`-22`); startup reliability is not fixed. Physical touch/pen confirmation was
+  requested. BH separately had clean startup and virtual input publication,
+  without a physical sample test. Recovery success does not establish a
+  mainline input pass.
+  The new `71-spx-iptsd-startup.rules` matches only SPI HID `045E:0C21` and
+  requests IPTSD independently of the packaged helper's result, letting the
+  existing three-start/120-second service policy handle failed opens. It passed
+  `udevadm verify` and is installed/reloaded without another device trigger.
+  Automatic startup with this rule remains untested.
 
 Offline comparison finds the mainline primary DP controller already enabled,
 but no Surface USC-to-HPD forwarding module. The 6.18 `spx_hpd_inject` source
@@ -44,9 +57,16 @@ output. Connector enumeration in older logs never proved visible pixels.
    the pen. Locate whether delivery stops before or after virtual input creation.
 3. Port DP hotplug forwarding, then replug the identified dock and confirm a
    visible extended/mirrored desktop. Never reload or rebind MSM display.
-4. Prepare the SSAM power-button wake path before unmasking a controlled sleep
-   test. Kernel sleep-state exposure alone does not establish successful wake.
+4. Identify the physical power button through PMIC input events/IRQ before
+   unmasking a controlled sleep test. The SPX SSAM registry omits its HID system
+   controls device; do not assume the power button uses SSAM. The PMIC driver
+   already enables wake by default. SSAM wake remains disabled initially
+   because unfiltered EC events can cause unwanted wakes. No RTC wake fallback
+   exists. Kernel sleep-state exposure alone does not establish successful wake.
 
 Evidence: `functional/20261004bh/followup-20261004/` under
 `/var/lib/spx-boot-diagnostics/`, retained BH journals, and the user's report.
+The single retrigger result is `touch-single-add-retrigger-20261004.log`.
+A subsequent 60-second virtual-event count observed no input, with no confirmed
+physical stimulus; it cannot establish an input failure or pass.
 No reboot, sound, camera/microphone capture or full acceptance pass this round.

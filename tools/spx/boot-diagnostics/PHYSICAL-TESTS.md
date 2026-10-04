@@ -30,6 +30,26 @@ available during a network or sleep check.
    power once to wake. Confirm the panel, input and network return. Do not
    repeat if it hangs; the agent records the result first. (P03)
 
+For the next session, first isolate the current blockers:
+
+- **Touch/pen:** after the agent announces a recording window, drag a finger
+  for five seconds, then hover and draw with the pen for five seconds. The
+  agent counts the SPI-HID IRQ/report metadata tracepoints and virtual IPTSD
+  input events, without storing report payloads or coordinates. Record the
+  kernel and boot ID with the observation; recovery and mainline differ.
+- **Dock:** name the dock and tablet port, unplug/replug it, and report whether
+  a desktop appears on its monitor. The first forwarding candidate supports
+  only EC port 0; the physical connector mapping and reverse orientation need
+  verification. Connector status alone is not visible-output evidence.
+- **Power/wake:** first press power briefly while the agent inhibits its desktop
+  action and observes the PMIC power-key input/IRQ. Do not assume it is an SSAM
+  button. If identified, test one 15-second s2idle with a second short press to
+  wake, before the longer step above. The agent must temporarily unmask the
+  sleep targets and check wake policy. SSAM wake remains disabled initially;
+  it can wake on unrelated EC events. Unload the experimental USC forwarding
+  module before this first sleep test; never unload MSM. There is no working
+  RTC alarm fallback.
+
 These initial actions establish usable functions. Longer charging, both Wi-Fi
 bands, repeated sleep/USB cycles, accessories and final-candidate regression
 remain separate acceptance checks.

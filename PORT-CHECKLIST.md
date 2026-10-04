@@ -6,12 +6,13 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-04, after BH)
+## Status (2026-10-04, after BH; BI prepared)
 
 Latest result: [BH](tools/spx/boot-diagnostics/RESULT-20261004bh.md). Kernel
 changes are committed on `spx/next` as one commit per feature.
 New [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
 awaits tested-kernel confirmation; recovery diagnostics are identified separately.
+[BI](tools/spx/boot-diagnostics/PREPARED-20261004bi.md) is installed, not booted.
 
 | Area | State | What is missing |
 |---|---|---|
@@ -22,7 +23,7 @@ awaits tested-kernel confirmation; recovery diagnostics are identified separatel
 | Internal panel (D01) | User: display and brightness work; boot attribution pending | Blank/unblank and resume |
 | Wi-Fi (N01) | BH: 25 MB download at ~242 Mbit/s on 5 GHz | Upload, reconnect, both bands, resume |
 | RTC (B05) | Readback and warm reboot pass | Cold power-off retention |
-| Touch startup (I01) | Intermittent; known-good kernel now also fails with `-22` | Root cause |
+| Touch startup (I01) | Intermittent; one udev retrigger restored recovery IPTSD after `-22` | Startup reliability; udev retry gap |
 | Touch, pen (I02, I03) | User: neither works; boot attribution pending | Locate runtime input-delivery failure |
 | Speakers (A01) | Card registers, one amp initialises | No sound verified on this tree |
 | Microphones (A02) | Untested on this tree | Capture test |
@@ -32,7 +33,7 @@ awaits tested-kernel confirmation; recovery diagnostics are identified separatel
 | Buttons (I06) | User: short power press opens shutdown prompt, boot pending | Volume/posture and intended wake |
 | Bluetooth (N02) | BH discovery works; user confirms Bluetooth works on repaired recovery boot | Mainline GNOME toggle, pairing, peripheral use, resume |
 | USB data (U01) | Untested | Both ports/orientations, fixtures |
-| USB-C PD, DisplayPort, dock (U02–U04) | User: charging works, dock monitor blank; boot pending | Roles/PD, DP hotplug integration, visible output |
+| USB-C PD, DisplayPort, dock (U02–U04) | Charging reported; BI includes WIP DP0 hotplug forwarding | Roles/PD, visible output, ports/orientations |
 | Battery and charging (P01) | User: USB-C charging works; boot attribution pending | Discharge, transitions and charger coverage |
 | Suspend/resume (P03) | Kernel exposes s2idle; systemd sleep/suspend targets masked | Intended wake, then controlled sleep |
 | Thermal (P05) | BH: 3 min CPU/GPU load stable, peak 60.1°C | Cooling response |
@@ -51,8 +52,9 @@ awaits tested-kernel confirmation; recovery diagnostics are identified separatel
    cover (I06); plug a USB stick into each port (U01); plug and unplug the
    charger (P01, U02); look at the panel (D01, D02); pair one Bluetooth device
    (N02); rotate the device (S02); press power to wake from suspend (P03).
-3. **Touch startup reliability (I01),** including why the known-good kernel
-   now fails.
+3. **Touch startup reliability (I01):** recovery's failed udev identification
+   left no IPTSD instance to retry. One targeted add event restored the service;
+   verify physical input and address the automatic startup gap.
 4. **Audio (A01–A03):** port the working 6.18 findings; the listening test
    needs the user's go-ahead for that run.
 5. **Camera frames (C02–C04).**
