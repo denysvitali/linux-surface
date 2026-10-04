@@ -8,6 +8,7 @@ import gzip
 import json
 import os
 from pathlib import Path
+import pwd
 import re
 import shutil
 import socket
@@ -38,10 +39,23 @@ def recovery(pending=''):
     return r
 
 
+def require_source_boot():
+    """Permit preparing the next trial without a detour through recovery."""
+    assert os.geteuid() == 0
+    assert Path('/proc/sys/kernel/random/boot_id').read_text().strip() == BOOT_ID
+    if os.uname().release == '6.18.3-1-surface+':
+        return
+    words = Path('/proc/cmdline').read_text().split()
+    assert os.uname().release == RELEASE and 'spx_boot=mainline-functional' in words
+    attempts = [word.split('=', 1)[1] for word in words if word.startswith('spx_attempt=')]
+    assert len(attempts) == 1 and re.fullmatch(r'[0-9]{8}[a-z0-9]+', attempts[0])
+    current = json.loads((OUT.parent / attempts[0] / 'functional.json').read_text())
+    assert current.get('complete') and current['boot_id'] == BOOT_ID
+
+
 def prepare(args):
     os.umask(63)
-    assert os.geteuid() == 0 and os.uname().release == '6.18.3-1-surface+'
-    assert Path('/proc/sys/kernel/random/boot_id').read_text().strip() == BOOT_ID
+    require_source_boot()
     recovery()
     assert (BUILD / 'arch/arm64/boot/Image').is_file() and (BUILD / 'Module.symvers').is_file()
     OUT.mkdir(parents=True, mode=448)
@@ -87,14 +101,30 @@ def prepare(args):
             continue
         cmdline.append(word.replace('spx_attempt=20261004bf', 'spx_attempt={ATTEMPT}'.format(ATTEMPT=ATTEMPT)).replace('spx_boot=mainline-trial', 'spx_boot=mainline-functional'))
     assert not any(('spx_uc_shared_alloc' in word for word in cmdline))
-    cmdline.append('module_blacklist=wcd934x,soundwire_qcom,snd_soc_wsa881x,snd_soc_wcd934x')
+    if args.audio:
+        # Both amplifier SD_N pins stay low. Power-up is a separate human-
+        # authorized test, never an automatic consequence of this mode.
+        cmdline = [word for word in cmdline if not word.startswith((
+            'wcd934x.spx_wsa_en_pin=', 'wcd934x.spx_wsa_gpio_',
+            'soundwire_qcom.spx_force_attach=', 'snd_soc_wsa881x.spx_enumerated_mode=',
+            'snd_soc_wsa881x.spx_write_only='))]
+        cmdline += ['spx_audio=parked', 'wcd934x.spx_wsa_en_pin=-1',
+                    'wcd934x.spx_wsa_gpio_mask=0x1e', 'wcd934x.spx_wsa_gpio_dir=0x1e',
+                    'wcd934x.spx_wsa_gpio_val=0x18', 'soundwire_qcom.spx_force_attach=0',
+                    'snd_soc_wsa881x.spx_enumerated_mode=1', 'snd_soc_wsa881x.spx_write_only=0']
+    else:
+        cmdline.append('module_blacklist=wcd934x,soundwire_qcom,snd_soc_wsa881x,snd_soc_wcd934x')
     cmdline = ' '.join(cmdline)
     entry = (OLD / 'entry.cfg').read_text().replace('20261004bf', '{ATTEMPT}'.format(ATTEMPT=ATTEMPT))
     entry = entry.replace(previous['cmdline'].replace('20261004bf', '{ATTEMPT}'.format(ATTEMPT=ATTEMPT)), cmdline)
-    entry = entry.replace('bounded Venus core startup and Iris1 startup trial', 'Bluetooth address and functional hardware tests')
+    title = 'Audio startup with amplifiers parked' if args.audio else 'Bluetooth address and functional hardware tests'
+    entry = entry.replace('bounded Venus core startup and Iris1 startup trial', title)
     (OUT / 'entry.cfg').write_text(entry)
     run('grub-syntax', ['grub-script-check', str(OUT / 'entry.cfg')])
     prepared = dict(utc=datetime.now(timezone.utc).isoformat(), preboot_id=BOOT_ID, release=RELEASE, attempt=ATTEMPT, entry='spx-trial-' + ATTEMPT, cmdline=cmdline, source_commit=subprocess.check_output(['git', '-c', 'safe.directory=' + str(REPO), 'rev-parse', 'HEAD'], cwd=REPO, text=True).strip(), build_directory=str(BUILD), private_config=str(OUT / 'kernel.config'), bluetooth_address=args.address, address_is_per_installation=True, venus_trial=False, speaker_drivers_blocked=True, hardware_acceptance_closed=False, installed=False, boot_selected=False, boot_payloads=dict(vmlinuz=sha(OUT / 'vmlinuz'), initramfs=sha(OUT / 'initramfs.img'), dtb=sha(OUT / 'spx.dtb')))
+    prepared.update(audio_mode='parked' if args.audio else 'blocked',
+                    speaker_drivers_blocked=not args.audio,
+                    replace_modules=args.replace_module)
     recovery()
     assert Path('/proc/sys/kernel/random/boot_id').read_text().strip() == BOOT_ID
     (OUT / 'prepared.json').write_text(json.dumps(prepared, indent=2) + '\n')
@@ -136,11 +166,51 @@ def install(args):
     helper = Path('/usr/local/lib/spx-boot-diagnostics/trial.py')
     shutil.copy2(__file__, helper)
     helper.chmod(493)
+    if prepared.get('audio_mode') == 'parked':
+        from audio import UNITS as audio_units
+
+        shutil.copy2(HERE / 'audio.py', helper.parent / 'audio.py')
+        account = pwd.getpwuid(REPO.stat().st_uid)
+        for name in audio_units:
+            guard = Path(account.pw_dir) / '.config/systemd/user' / (name + '.d/40-mainline-audio-trial.conf')
+            guard.parent.mkdir(parents=True, exist_ok=True)
+            os.chown(guard.parent, account.pw_uid, account.pw_gid)
+            text = (HERE / 'audio-manual.conf').read_text()
+            assert not guard.exists() or guard.read_text() == text
+            guard.write_text(text)
+            guard.chmod(0o644)
+            os.chown(guard, account.pw_uid, account.pw_gid)
     subprocess.run(['systemd-analyze', 'verify', str(unit_dir / ('spx-trial-return@' + ATTEMPT + '.service')), str(unit_dir / ('spx-trial-return@' + ATTEMPT + '.timer'))], check=True, timeout=30)
-    if modules.exists():
+    if modules.exists() and os.uname().release == RELEASE:
+        # Only explicitly named, currently blacklisted and unloaded modules may
+        # be replaced while this release is running. Keep all other files.
+        replacements = prepared.get('replace_modules', [])
+        assert replacements, 'name the changed modules with --replace-module'
+        blocked = set()
+        for word in Path('/proc/cmdline').read_text().split():
+            if word.startswith('module_blacklist='):
+                blocked.update(name.replace('-', '_') for name in word.split('=', 1)[1].split(','))
+        staged = OUT / 'module-root'
+        copies = []
+        for name in replacements:
+            assert re.fullmatch(r'[a-zA-Z0-9_-]+', name)
+            assert name.replace('-', '_') in blocked and not (Path('/sys/module') / name.replace('-', '_')).exists()
+            source = Path(subprocess.check_output(['modinfo', '-b', str(staged), '-k', RELEASE, '-n', name], text=True).strip())
+            target = Path(subprocess.check_output(['modinfo', '-k', RELEASE, '-n', name], text=True).strip())
+            source.resolve().relative_to((staged / 'lib/modules' / RELEASE).resolve())
+            target.resolve().relative_to(modules.resolve())
+            copies.append((source, target))
+        for source, target in copies:
+            temporary = target.with_name(target.name + '.trial-new')
+            shutil.copy2(source, temporary)
+            os.replace(temporary, target)
+        subprocess.run(['depmod', '-ae', '-F', str(BUILD / 'System.map'), RELEASE], check=True)
+    elif modules.exists():
         assert os.uname().release != RELEASE
         shutil.rmtree(modules)
-    shutil.copytree(OUT / 'module-root/lib/modules' / RELEASE, modules, symlinks=True)
+        shutil.copytree(OUT / 'module-root/lib/modules' / RELEASE, modules, symlinks=True)
+    else:
+        shutil.copytree(OUT / 'module-root/lib/modules' / RELEASE, modules, symlinks=True)
     boot.mkdir()
     for name, source in payloads.items():
         shutil.copy2(source, boot / name)
@@ -164,8 +234,7 @@ def install(args):
 
 
 def boot(args):
-    assert os.geteuid() == 0 and os.uname().release == '6.18.3-1-surface+'
-    assert Path('/proc/sys/kernel/random/boot_id').read_text().strip() == BOOT_ID
+    require_source_boot()
     assert float(Path('/proc/uptime').read_text().split()[0]) > 120
     recovery()
     installed = json.loads((OUT / 'installed.json').read_text())
@@ -177,6 +246,17 @@ def boot(args):
     assert Path('/boot/grub/custom.cfg').read_bytes() == (OUT / 'entry.cfg').read_bytes()
     assert subprocess.check_output(['systemctl', 'is-enabled', 'spx-trial-return@' + ATTEMPT + '.timer'], text=True).strip() == 'enabled'
     assert subprocess.check_output(['git', '-c', 'safe.directory=' + str(REPO), 'status', '--porcelain', '--untracked-files=no'], cwd=REPO, text=True).strip() == ''
+    # Retain the current mainline result before choosing the next trial.
+    for word in Path('/proc/cmdline').read_text().split():
+        if word.startswith('spx_attempt='):
+            previous = OUT.parent / word.split('=', 1)[1]
+            for name, extra in [('kernel.log', ['-k']), ('journal.log', [])]:
+                with (previous / name).open('wb') as stream:
+                    subprocess.run(['journalctl', '-b', '--no-pager', '-o', 'short-monotonic'] + extra,
+                                   stdout=stream, check=True, timeout=30)
+            (previous / 'handoff.json').write_text(json.dumps(dict(
+                boot_id=BOOT_ID, next_attempt=ATTEMPT,
+                utc=datetime.now(timezone.utc).isoformat()), indent=2) + '\n')
     selected.write_text(json.dumps(dict(utc=datetime.now(timezone.utc).isoformat(), preboot_id=BOOT_ID, entry=prepared['entry'], source_commit=installed['source_commit'], select_once=True), indent=2) + '\n')
     subprocess.run(['grub-reboot', prepared['entry']], check=True)
     recovery(pending=prepared['entry'])
@@ -298,16 +378,84 @@ def extend_window(args):
     subprocess.run(['systemctl', 'list-timers', unit, '--no-pager'], check=True)
 
 
+def audio_check(args):
+    action = args.audio_action
+    command = ['python3', '-B', str(HERE / 'audio.py'), action,
+               '--output', str(OUT / 'audio')]
+    if action == 'plan':
+        subprocess.run(command, check=True)
+        return
+    assert os.geteuid() == 0 and os.uname().release == RELEASE
+    words = Path('/proc/cmdline').read_text().split()
+    assert 'spx_attempt=' + ATTEMPT in words and 'spx_audio=parked' in words
+    owner = 'audio-' + ATTEMPT
+    lock = str(REPO / 'tools/spx/spx-lock')
+    subprocess.run([lock, 'acquire', 'device', owner], check=True)
+    active = []
+    try:
+        if action == 'initialize':
+            from audio import UNITS as audio_units
+
+            assert args.allow_amp_power, 'this run needs explicit speaker-power authorization'
+            account = pwd.getpwnam(args.desktop_user)
+            userctl = ['runuser', '-u', account.pw_name, '--', 'env',
+                       'XDG_RUNTIME_DIR=/run/user/' + str(account.pw_uid),
+                       'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/' + str(account.pw_uid) + '/bus',
+                       'systemctl', '--user']
+            for unit in audio_units:
+                result = subprocess.run(userctl + ['is-active', unit], capture_output=True, text=True)
+                if result.stdout.strip() in ('active', 'activating', 'reloading'):
+                    active.append(unit)
+            (OUT / 'audio').mkdir(exist_ok=True)
+            (OUT / 'audio/desktop-units.json').write_text(json.dumps(active, indent=2) + '\n')
+            # A previous run cannot establish that this one parked successfully.
+            (OUT / 'audio/initialize-result.json').unlink(missing_ok=True)
+            if active:
+                subprocess.run(userctl + ['stop'] + active, check=True, timeout=30)
+            command += ['--owner', owner, '--desktop-user', account.pw_name, '--allow-amp-power']
+        process = subprocess.Popen(command)
+        try:
+            status = process.wait(timeout=40)
+        except subprocess.TimeoutExpired:
+            # Allow the initializer's signal handler/finally block to park.
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            raise
+        if status:
+            raise subprocess.CalledProcessError(status, command)
+    finally:
+        try:
+            if active:
+                result = OUT / 'audio/initialize-result.json'
+                if result.exists() and json.loads(result.read_text()).get('parked') is True:
+                    subprocess.run(userctl + ['start'] + active, check=True, timeout=30)
+                else:
+                    print('Amplifier parking was not confirmed; desktop audio remains stopped. '
+                          'Previous units are recorded in audio/desktop-units.json.', flush=True)
+        finally:
+            subprocess.run([lock, 'release', 'device', owner], check=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend'))
+    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend', 'audio'))
     parser.add_argument('attempt')
     parser.add_argument('--build', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bg/work-build'))
     parser.add_argument('--parent', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bf'))
     parser.add_argument('--recovery', type=Path, default=Path('/var/lib/spx-boot-diagnostics/attempts/20261004bf/working-recovery.json'))
     parser.add_argument('--dtb', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bg/spx.dtb'))
     parser.add_argument('--address')
+    parser.add_argument('--audio', action='store_true', help='enable codecs with both amplifiers parked; no playback')
+    parser.add_argument('--replace-module', action='append', default=[],
+                        help='changed unloaded/blacklisted module to install while this release runs')
     parser.add_argument('--return-seconds', type=int, default=3600)
+    parser.add_argument('--audio-action', choices=('plan', 'inspect', 'initialize'), default='plan')
+    parser.add_argument('--allow-amp-power', action='store_true')
+    parser.add_argument('--desktop-user', default='dvitali')
     args = parser.parse_args()
     assert re.fullmatch(r'[0-9]{8}[a-z0-9]+', args.attempt)
     global ATTEMPT, OUT, STAGE, BUILD, PARENT, OLD, RECOVERY, BOOT_ID, RELEASE
@@ -336,7 +484,7 @@ def main():
                 subprocess.run([lock, 'release', 'device', owner], check=True)
         else:
             {'install': install, 'boot': boot, 'return': return_to_default,
-             'extend': extend_window}[args.command](args)
+             'extend': extend_window, 'audio': audio_check}[args.command](args)
 
 
 if __name__ == '__main__':

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Prepare and inspect SPX audio; explicitly test native amp enumeration.
 
-Default: print an offline plan. ``initialize`` powers the amps sequentially
-for at most five seconds each, checks hardware identities against the native
-SoundWire devices, and parks both amps on every exit. It never opens a PCM,
+Default: print an offline plan. ``initialize`` powers the amps sequentially,
+allows five seconds of polling per stage, checks hardware identities against
+the native SoundWire devices, and attempts to park both amps on every exit
+after power-up. It never opens a PCM,
 loads a module, captures a microphone, or changes amplifier protection/gain.
 The September 8 retained-stream late initialization is not yet a fresh-start
 recipe. Successful enumeration alone therefore does not enable playback.
