@@ -120,6 +120,32 @@ for separate acoustic and teardown outcomes.
 [BP passed both checks](boot-diagnostics/RESULT-20261004bp.md); WCD RX overflow
 and ADM capture-close faults remain separate lifecycle issues.
 
+For ordinary desktop playback, the `serve` action keeps the same initialized
+PCM after verification and connects the existing `spx_speakers` output:
+
+```
+sudo python3 -B tools/spx/trial.py arm-audio ATTEMPT --audio-action serve \
+  --serve-seconds 28800 --return-after-audio-seconds 61 \
+  --allow-amp-power --allow-playback --allow-capture
+```
+
+This is an eight-hour application session on the selected mainline trial.
+Startup first verifies the bounded test applications and then the actual public
+output through the microphone. Capture stops and its mixer routes are restored
+before handoff. Read `audio/serve-ready.json` for that boot's readiness; also
+check that its owning process and PCM remain alive. `serve-result.json` records
+the initial/handoff state and, after exit, the final cleanup outcome.
+
+Normal application audio preserves both channels with fixed digital attenuation
+of 1433/32768 and minimum PA gain. This deliberately starts at a low volume;
+the desktop slider starts at 100% within that output limit. It does not use
+the obsolete bridge's 44-times amplification. The microphone
+does not run during the application session. The existing automatic return
+remains scheduled beyond the session; failure or completion brings that return
+forward to the requested delay. A normal stop closes the attached PCM before
+parking, while errors park immediately. This does not change the default boot
+entry or establish daily-use lifecycle reliability.
+
 The `feedback` action holds one internal DMIC1 capture on MM2 across quiet, amplifier startup,
 and the left/right/both sequence. It aborts on clipping, a large level increase,
 capture stalls or ALSA failures; each requested tone must sustain for 0.4 seconds
