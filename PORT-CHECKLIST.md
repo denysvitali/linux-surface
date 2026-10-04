@@ -10,6 +10,8 @@ history that used to live here is in
 
 Latest result: [BH](tools/spx/boot-diagnostics/RESULT-20261004bh.md). Kernel
 changes are committed on `spx/next` as one commit per feature.
+New [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
+awaits tested-kernel confirmation; recovery diagnostics are identified separately.
 
 | Area | State | What is missing |
 |---|---|---|
@@ -17,20 +19,22 @@ changes are committed on `spx/next` as one commit per feature.
 | CPU and memory (B03) | **Passed on AP** | Recheck on final candidate |
 | Storage (B02) | Passed on AP | Post-resume I/O |
 | GPU FD680 (D02) | **Passed on AW**, 30 min rendering | A person looking at the screen |
+| Internal panel (D01) | User: display and brightness work; boot attribution pending | Blank/unblank and resume |
 | Wi-Fi (N01) | BH: 25 MB download at ~242 Mbit/s on 5 GHz | Upload, reconnect, both bands, resume |
 | RTC (B05) | Readback and warm reboot pass | Cold power-off retention |
 | Touch startup (I01) | Intermittent; known-good kernel now also fails with `-22` | Root cause |
-| Touch, pen (I02, I03) | Enumerates | Never physically tested |
+| Touch, pen (I02, I03) | User: neither works; boot attribution pending | Locate runtime input-delivery failure |
 | Speakers (A01) | Card registers, one amp initialises | No sound verified on this tree |
 | Microphones (A02) | Untested on this tree | Capture test |
 | Cameras (C01–C05) | Rear sensor identifies | No frame captured |
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
-| Keyboard, touchpad (I04, I05) | User confirms typing/clicking/pointer on BH | Full gestures, detach/reattach, resume |
-| Buttons (I06) | Never tested | Human session |
-| Bluetooth (N02) | BH: RFCOMM/UHID opens and discovery pass | Pairing, peripheral use, resume |
-| USB, USB-C PD, DisplayPort, dock (U01–U04) | Never tested | Human session, fixtures |
-| Battery and charging (P01) | Mainline AC/capacity readout plausible | Charging/discharging, plug/unplug |
-| Suspend/resume (P03) | Never tested | Wake source |
+| Keyboard, touchpad (I04, I05) | BH basic use; user: detach/reattach works slowly, boot pending | Full keys/gestures and resume |
+| Buttons (I06) | User: short power press opens shutdown prompt, boot pending | Volume/posture and intended wake |
+| Bluetooth (N02) | BH discovery works; user GNOME toggle fails; recovery controller repaired | GNOME toggle, pairing, peripheral use, resume |
+| USB data (U01) | Untested | Both ports/orientations, fixtures |
+| USB-C PD, DisplayPort, dock (U02–U04) | User: charging works, dock monitor blank; boot pending | Roles/PD, DP hotplug integration, visible output |
+| Battery and charging (P01) | User: USB-C charging works; boot attribution pending | Discharge, transitions and charger coverage |
+| Suspend/resume (P03) | Kernel exposes s2idle; systemd sleep/suspend targets masked | Intended wake, then controlled sleep |
 | Thermal (P05) | BH: 3 min CPU/GPU load stable, peak 60.1°C | Cooling response |
 | Idle power (P02) | Never tested | Battery discharge measurement |
 | Sensors (S01, S02) | Never tested | Readout, then human |
@@ -183,6 +187,9 @@ functional blank/unblank result. [Earlier evidence](tools/spx/boot-diagnostics/C
 - [ ] **D01 — Internal panel.** Native resolution/refresh, correct image and
   orientation, no flicker/corruption; visually verify brightness over its usable
   range, blank/unblank and display return after idle/suspend.
+  **User report, October 4:** display and brightness work; tested-kernel
+  confirmation and blank/unblank/resume remain pending.
+  [Follow-up](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md).
 - [x] *Passed on AW (2026-10-03); visual check by a person still wanted.* **D02 — GPU acceleration.** Confirm hardware rendering in desktop and real
   3D workloads; at least30minutes of rendering/compositing plus idle transitions,
   without GPU resets, hangs, faults or silent software fallback. Record APIs tested.
@@ -481,22 +488,31 @@ this does not explain AO's failure. Physical input has not been signed off.
 - [ ] **I02 — Touchscreen.** Real taps, drags, edge coverage and multi-touch gestures
   produce correct desktop actions, without stuck/missing contacts; repeat after
   display blanking and suspend. Do not mistake synthetic events for physical input.
+  **User report, October 4:** touch does not work; boot attribution pending.
+  BH startup/publication alone is insufficient.
+  [Follow-up](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md).
 - [ ] **I03 — Pen.** Verify position, pressure, tilt where supported, hover,
   buttons/eraser and palm rejection with the actual compatible pen, including
   post-resume behavior. Map advertised capabilities to those actually fitted.
+  **User report, October 4:** pen does not work; boot attribution pending.
 - [ ] **I04 — Keyboard.** Typing, modifiers, Fn/media keys, indicators and backlight
   where fitted; detach/reattach and resume recover without stuck keys.
   **Partial, BH:** user confirms typing works on boot `c89ea4ed-9363-4727-a786-4a2231817165`,
-  kernel `7.3.0-rc2-spx-mainline-20261004bg+`. Remaining keys/lifecycle untested.
+  kernel `7.3.0-rc2-spx-mainline-20261004bg+`. The later user report confirms
+  detach/reattach, with a delay, but its tested kernel is pending. Remaining
+  keys and resume are untested.
   [Result](tools/spx/boot-diagnostics/RESULT-20261004bh.md).
 - [ ] **I05 — Touchpad.** Pointer, click, scrolling, multi-finger gestures and palm
   rejection work across detach/reattach and resume.
   **Partial, BH:** user confirms clicking and trackpad use on the same boot;
-  gestures, palm rejection and lifecycle remain unconfirmed.
+  the later user report confirms slow detach/reattach, with boot attribution
+  pending. Gestures, palm rejection and resume remain unconfirmed.
   [Result](tools/spx/boot-diagnostics/RESULT-20261004bh.md).
 - [ ] **I06 — Buttons and posture switches.** Power/volume buttons, cover/lid/tablet
   state and appropriate desktop policy respond to real changes without duplicate
   events or lost wakeups. Establish which switches actually exist.
+  **User report, October 4:** a short power press opens the shutdown prompt;
+  boot attribution pending. Sleep is masked in the shared userspace installation.
 - [ ] **I07 — Pen accessory features.** If this keyboard/pen supports charging,
   accessory battery reporting or wireless buttons, verify those with the accessory;
   otherwise record the identified accessory model and applicability.
@@ -547,8 +563,12 @@ host datapath; that is not current cellular service verification.
   Preserve the active remote connection while planning radio tests.
   Recovery reference: missing public address corrected using the existing
   installation address; BlueZ controller/discovery work. BG mainline completes
-  firmware setup, but RFCOMM/HIDP/UHID are disabled; pairing and peripheral
-  tests remain pending. [BG result](tools/spx/boot-diagnostics/RESULT-20261004bg.md). [Address setup](tools/spx/boot-diagnostics/BLUETOOTH-ADDRESS.md).
+  firmware setup, but RFCOMM/HIDP/UHID are disabled. BH adds those modules and
+  discovers 19 devices after unblock/setup. User later reports GNOME cannot
+  enable Bluetooth, with boot attribution pending. Current recovery controller
+  restored by runtime address configuration; GNOME toggle/pairing still need
+  physical confirmation. [BH result](tools/spx/boot-diagnostics/RESULT-20261004bh.md).
+  [Follow-up](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md).
 - [ ] **N03 — Cellular control/data.** Stable modem startup and discovery, correct
   SIM/eSIM applicability, network registration and actual bidirectional data with
   service; disconnect/reconnect, radio control and resume. Resolve mode and
@@ -563,9 +583,14 @@ host datapath; that is not current cellular service verification.
 - [ ] **U02 — USB-C roles and power delivery.** Correct orientation/role detection,
   charger negotiation and attach/detach on applicable ports with known adapters;
   no brownouts or stuck roles. Controller enumeration is insufficient.
+  **User report, October 4:** USB-C charging works; tested kernel, port,
+  orientation and negotiation coverage remain pending.
 - [ ] **U03 — External DisplayPort.** Actual monitor output through each supported
   port/dock path, intended mode, hotplug, extend/mirror and suspend recovery.
   Resolve Type-C/alt-mode/HPD integration. Never live-unbind/rebind MSM components.
+  **User report, October 4:** connected dock monitor shows nothing; boot and
+  dock model pending. Mainline lacks the Surface USC-to-HPD forwarding module.
+  [Follow-up](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md).
 - [ ] **U04 — Dock and Surface Connect.** Inventory actual Surface Connect/dock
   capabilities; validate supported charging, USB, Ethernet, display and audio
   concurrently with the relevant accessories. Identify USB vs Thunderbolt mode
@@ -762,6 +787,7 @@ performance governor. `s2idle` is exposed; no suspend cycle has been signed off.
   observed discharge and charging, AC transitions, charge limits where supported
   and low-battery behavior. Test applicable USB-C and Surface Connect chargers;
   distinguish policy/threshold behavior from a driver fault.
+  **User report, October 4:** USB-C charging works, with boot attribution pending.
 - [ ] **P02 — Idle/runtime power.** Measure idle and active consumption, CPU/GPU
   frequency scaling, runtime-PM behavior and battery endurance against a recorded
   reference under comparable conditions. Remove/justify diagnostic power pins,
@@ -776,6 +802,10 @@ performance governor. `s2idle` is exposed; no suspend cycle has been signed off.
   physical wake. Identify/validate an intended wake fixture before controlled
   sleep; no suspend was attempted during the RTC/GPU trial.
   [Wake audit](tools/spx/boot-diagnostics/WAKE-AUDIT-20261003.md).
+  **User report, October 4:** no suspend option; short power press opens shutdown
+  prompt. Current recovery exposes s2idle, but shared systemd sleep/suspend
+  targets are masked and `CanSuspend` is `no`. No sleep was attempted.
+  [Follow-up](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md).
 - [ ] **P04 — Hibernate applicability.** Establish whether the intended platform/
   storage/security setup supports hibernation; if supported, verify image restore
   and the same functional regression checks. An exposed `disk` state is not proof.
