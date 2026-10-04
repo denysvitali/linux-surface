@@ -97,6 +97,14 @@ sudo python3 -B tools/spx/trial.py audio ATTEMPT --audio-action feedback \
   --allow-amp-power --allow-playback --allow-capture
 ```
 
+To run automatically after the next trial starts, replace `audio` with
+`arm-audio` before selecting the boot. The startup check consumes the request
+once before accessing hardware. Add `--return-after-audio-seconds 120` to
+schedule recovery two minutes after the test and log collection finish; the
+original trial deadline still applies if startup never reaches the test.
+BN passed this complete loop; see
+[the recorded result](boot-diagnostics/RESULT-20261004bn.md).
+
 This holds one internal DMIC1 capture on MM2 across quiet, amplifier startup,
 and the left/right/both sequence. It aborts on clipping, a large level increase,
 capture stalls or ALSA failures; each requested tone must sustain for 0.4 seconds

@@ -6,16 +6,16 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-04, BM collected; corrected speaker replay queued in BN)
+## Status (2026-10-04, BN: speaker tones verified by the internal microphone)
 
-Latest result: [BM](tools/spx/boot-diagnostics/RESULT-20261004bm.md). Kernel
+Latest result: [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md). Kernel
 changes are committed on `spx/next` as one commit per feature.
 New [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
 awaits tested-kernel confirmation; recovery diagnostics are identified separately.
-BM ran `7.3.0-rc2-spx-mainline-20261004bg+`; input/BT confirmations belong to BI.
-The mic loop passes simultaneous playback/capture and stereo-port checks. The
-replay used the wrong DAPM endpoint; the corrected module and automatic test are
-queued in BN. A second unexplained restart returned to recovery6.18.
+BN ran `7.3.0-rc2-spx-mainline-20261004bg+`; input/BT confirmations belong to BI.
+The automatic mic loop detected left, right and simultaneous speaker tones;
+the same digital tones disappeared with both amps off. BN returned to recovery
+on schedule. Desktop audio and clean stream teardown remain unfinished.
 
 | Area | State | What is missing |
 |---|---|---|
@@ -28,8 +28,8 @@ queued in BN. A second unexplained restart returned to recovery6.18.
 | RTC (B05) | Readback and warm reboot pass | Cold power-off retention |
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
-| Speakers (A01) | BM: stereo transport and minimum-gain checks pass | Fix late initialization, then microphone-verified output |
-| Microphones (A02) | BK/BL: internal DMIC1 capture and reopen work | Known acoustic stimulus, both mics, quality and full lifecycle |
+| Speakers (A01) | **BN: left/right/both tone output verified by microphone** | Physical channel mapping, balance, volume and clean teardown |
+| Microphones (A02) | **BN: DMIC1 records known speaker tones** | Other fitted mics, quality and full lifecycle |
 | Cameras (C01–C05) | Rear sensor identifies | No frame captured |
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
 | Keyboard, touchpad (I04, I05) | **BI keyboard works**; BH touchpad basic use | Full keys/gestures and resume |
@@ -58,8 +58,9 @@ queued in BN. A second unexplained restart returned to recovery6.18.
 3. **Touch startup reliability (I01):** recovery's failed udev identification
    left no IPTSD instance to retry. One targeted add event restored the service;
    BI now starts automatically and physical touch/pen work. Verify reliability.
-4. **Audio (A01–A03):** port the working 6.18 findings; the listening test
-   needs the user's go-ahead for that run.
+4. **Audio (A01–A03):** integrate BN's working startup into normal desktop
+   playback and fix teardown/reopen. The user authorized bounded automated
+   speaker/microphone testing; announce capture and park the amps afterwards.
 5. **Camera frames (C02–C04).**
 6. External display and dock (U03, U04), cellular (N03), then video (D03).
 7. Final candidate and regression (F01–F04).
@@ -535,14 +536,14 @@ this does not explain AO's failure. Physical input has not been signed off.
 
 ## Audio
 
-Current: **partial; stereo playback unproven**. BJ verified native initialization
-of both physical amps at separate addresses and powerdown. Both speakers have
-not passed acoustic verification. Older Y tests submitted
-PCM successfully, which is not proof of sound. Correctly routed microphone capture
-on MM2 worked historically; the earlier MM1 EINVAL was a test-routing defect.
-Read [BJ](tools/spx/boot-diagnostics/RESULT-20261004bj.md),
-[Y correction](tools/spx/boot-diagnostics/RESULT-20260927y.md) and
-[microphone evidence](tools/spx/boot-diagnostics/AUDIO-ORACLE-RESTORED-20260928.md).
+Current: **partial; automatic acoustic feedback works on mainline**. BN detected
+left-channel 440 Hz, right-channel 660 Hz and both simultaneously through DMIC1;
+all disappeared in the amps-off control with digital playback still running.
+Both codecs passed late initialization at minimum PA gain. No capture clipping
+or ALSA capture error occurred. Desktop integration, physical speaker mapping,
+quality and clean teardown/reopen remain open: powering amps down before PCM
+close still causes SoundWire FIFO errors.
+Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md).
 
 - [ ] **A01 — Both physical speakers.** Correct independent left/right acoustic
   output, channel mapping, balance, useful volume range and mute; no static,
@@ -556,10 +557,25 @@ Read [BJ](tools/spx/boot-diagnostics/RESULT-20261004bj.md),
   `1f02d693-c8b9-4372-afcd-32f599ecb35a`, kernel
   `7.3.0-rc2-spx-mainline-20261004bg+`, followed by verified amps-off readback.
   No PCM or acoustic test ran. [BJ result](tools/spx/boot-diagnostics/RESULT-20261004bj.md).
+
+  - [x] **A01a — Microphone-verified channel test signals.** BN passed left,
+    right and simultaneous tones plus an amps-off negative control on boot
+    `b6ebb51f-0d63-4946-a631-e2ab3f424569`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`.
+    [BN result](tools/spx/boot-diagnostics/RESULT-20261004bn.md). This establishes
+    output from both digital channels, not their physical location or balance.
+
 - [ ] **A02 — Internal microphones.** Real known stimulus/voice recorded on each
   fitted microphone, correct routing/channel assignment and usable gain/noise;
   repeated capture/open/close without leaks or hangs. Noise-floor samples alone
   do not establish full microphone quality. Do not retain incidental private audio.
+
+  - [x] **A02a — DMIC1 records a known acoustic stimulus.** BN captured the
+    speaker test tones on MM2, S16_LE/48 kHz/mono, without clipping or capture
+    errors, on boot `b6ebb51f-0d63-4946-a631-e2ab3f424569`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`.
+    [BN result](tools/spx/boot-diagnostics/RESULT-20261004bn.md).
+
 - [ ] **A03 — Audio lifecycle/userspace.** Normal PipeWire/ALSA/UCM playback and
   capture, simultaneous use, volume/mute controls and repeated open/close work
   after reboot/resume without manual mixer setup or ad-hoc repair. Resolve or
