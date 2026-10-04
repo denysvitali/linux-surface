@@ -1,0 +1,47 @@
+#!/bin/bash
+# Exclusive locks for the two things only one agent may use at a time:
+#   device - the live hardware (module reload, live tests, trial boots)
+#   build  - the shared kernel build directory
+# Locks live in /tmp (tmpfs), so a reboot releases them.
+set -u
+dir=/tmp/spx-locks; mkdir -p -m 1777 $dir
+usage() { echo "usage: spx-lock acquire|release <device|build> <owner> [note] | spx-lock status" >&2; exit 2; }
+[ $# -ge 1 ] || usage
+cmd=$1
+case $cmd in
+status)
+	for r in device build; do
+		l=$dir/spx-$r.lock
+		if [ -d "$l" ]; then
+			echo "$r: held by $(cat "$l/owner") since $(cat "$l/since") ($(cat "$l/note"))"
+		else
+			echo "$r: free"
+		fi
+	done
+	exit 0;;
+acquire|release) ;;
+*) usage;;
+esac
+[ $# -ge 3 ] || usage
+res=$2 owner=$3 note=${4:-}
+case $res in device|build) ;; *) usage;; esac
+l=$dir/spx-$res.lock
+if [ "$cmd" = acquire ]; then
+	if mkdir "$l" 2>/dev/null; then
+		echo "$owner" >"$l/owner"; date -Is >"$l/since"; echo "$note" >"$l/note"
+		echo "$res: acquired by $owner"
+	elif [ "$(cat "$l/owner" 2>/dev/null)" = "$owner" ]; then
+		echo "$res: already held by $owner"
+	else
+		echo "$res: BUSY, held by $(cat "$l/owner" 2>/dev/null) since $(cat "$l/since" 2>/dev/null)" >&2
+		exit 1
+	fi
+else
+	[ -d "$l" ] || { echo "$res: not held"; exit 0; }
+	if [ "$(cat "$l/owner")" != "$owner" ]; then
+		echo "$res: held by $(cat "$l/owner"), not $owner; not released" >&2
+		exit 1
+	fi
+	rm -f "$l/owner" "$l/since" "$l/note"; rmdir "$l"
+	echo "$res: released"
+fi

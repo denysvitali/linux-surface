@@ -66,6 +66,29 @@ half of all tool calls spent on hashing and verification.
   `~/.claude/projects/-home-dvitali-Documents-git-linux-surface-kernel/memory/MEMORY.md`.
   Read the entries for a feature before working on it.
 
+## Agents and coordination (2026-10-04)
+
+One coordinator session owns the checklist, the shared build directory, the
+device and every reboot. It spawns agents for bounded work and integrates
+their results. This applies to any harness that can spawn agents.
+
+- **Roles.** A researcher collects what is known about one feature (read-only).
+  A porter writes the patch for one feature in its own git worktree and returns
+  commits on `spx/wip/<feature>`. A device tester runs one functional test on
+  the live hardware. Claude Code definitions are in `.claude/agents/`; the
+  coordinator loop is the `spx-port` skill in `.claude/skills/`.
+- **Parallel:** research and patch writing, one agent per feature, at most four.
+- **Exclusive:** the device and the build directory. Take the lock first:
+  `tools/spx/spx-lock acquire device|build <owner>`, release it afterwards,
+  check with `tools/spx/spx-lock status`. A reboot clears the locks.
+- **Only the coordinator** builds, integrates onto `spx/next`, ticks checklist
+  boxes, and reboots (under the reboot rules below). Agents never reboot.
+- **Batch features per boot.** Put several independent changes into one trial
+  boot when each has its own functional test; bisect only if the boot fails.
+- **No review agents.** Do not spawn agents to review manifests, re-hash
+  artifacts or verify another agent's bookkeeping. In the 2026-09-22 session
+  22 of 31 spawned agents were reviewers.
+
 ## Authorized SPX reboot loop (2026-09-22)
 
 The user explicitly authorized repeated experimental boots to complete the
