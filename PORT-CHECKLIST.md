@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-04, BH running)
+## Status (2026-10-04, after BH)
 
 Latest result: [BH](tools/spx/boot-diagnostics/RESULT-20261004bh.md). Kernel
 changes are committed on `spx/next` as one commit per feature.
