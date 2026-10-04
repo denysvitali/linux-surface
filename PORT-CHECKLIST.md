@@ -6,17 +6,17 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-04, BO desktop test stopped; BN acoustic pass retained)
+## Status (2026-10-04, BP: desktop playback and SoundWire shutdown pass)
 
-Latest result: [BO](tools/spx/boot-diagnostics/RESULT-20261004bo.md). Kernel
+Latest result: [BP](tools/spx/boot-diagnostics/RESULT-20261004bp.md). Kernel
 changes are committed on `spx/next` as one commit per feature.
 New [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
 awaits tested-kernel confirmation; recovery diagnostics are identified separately.
-BN ran `7.3.0-rc2-spx-mainline-20261004bg+`; input/BT confirmations belong to BI.
-BN's mic loop detected both speaker channels and passed the amps-off control.
-BO reached a desktop left-tone test but stopped on insufficient contrast against
-startup noise. Another unexplained restart followed; interrupted Git writes are
-repaired. Fresh per-phase quiet references are prepared for the next test.
+BP ran `7.3.0-rc2-spx-mainline-20261004bg+`; input/BT confirmations belong to BI.
+The microphone verified all desktop test phases, including another application
+after idle. SoundWire shutdown left an empty FIFO; BP returned on schedule.
+Persistent desktop integration, WCD/ADM lifecycle faults and unexplained stops
+on earlier longer trials remain open. BO's interrupted Git writes are repaired.
 
 | Area | State | What is missing |
 |---|---|---|
@@ -29,7 +29,7 @@ repaired. Fresh per-phase quiet references are prepared for the next test.
 | RTC (B05) | Readback and warm reboot pass | Cold power-off retention |
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
-| Speakers (A01) | **BN: left/right/both tone output verified by microphone** | Physical channel mapping, balance, volume and clean teardown |
+| Speakers (A01) | **BP: desktop left/right/both and repeat after idle verified by mic** | Persistent integration, mapping, balance, volume and WCD/ADM lifecycle |
 | Microphones (A02) | **BN: DMIC1 records known speaker tones** | Other fitted mics, quality and full lifecycle |
 | Cameras (C01–C05) | Rear sensor identifies | No frame captured |
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
@@ -59,8 +59,8 @@ repaired. Fresh per-phase quiet references are prepared for the next test.
 3. **Touch startup reliability (I01):** recovery's failed udev identification
    left no IPTSD instance to retry. One targeted add event restored the service;
    BI now starts automatically and physical touch/pen work. Verify reliability.
-4. **Audio (A01–A03):** integrate BN's working startup into normal desktop
-   playback and fix teardown/reopen. The user authorized bounded automated
+4. **Audio (A01–A03):** make BP's desktop path persistent, resolve WCD/ADM
+   close faults and test hardware reopen. The user authorized bounded automated
    speaker/microphone testing; announce capture and park the amps afterwards.
 5. **Camera frames (C02–C04).**
 6. External display and dock (U03, U04), cellular (N03), then video (D03).
@@ -537,18 +537,16 @@ this does not explain AO's failure. Physical input has not been signed off.
 
 ## Audio
 
-Current: **partial; automatic acoustic feedback works on mainline**. BN detected
-left-channel 440 Hz, right-channel 660 Hz and both simultaneously through DMIC1;
-all disappeared in the amps-off control with digital playback still running.
-Both codecs passed late initialization at minimum PA gain. No capture clipping
-or ALSA capture error occurred. Desktop integration, physical speaker mapping,
-quality and clean teardown/reopen remain open: powering amps down before PCM
-close still causes SoundWire FIFO errors.
-BO's first desktop application produced a recorded left tone, but the unchanged
-contrast gate stopped the sequence. Right/both, repeat after idle and normal
-teardown remain untested through the desktop graph.
+Current: **partial; bounded desktop playback works on mainline**. BP's internal
+DMIC1 verified left/right/both and a second application after idle through
+PipeWire/PulseAudio and one initialized native PCM. No capture clipping or ALSA
+capture error occurred. Closing playback while amplifiers remained attached
+disabled the speaker streams and left an empty SoundWire FIFO; then the helper
+parked both amps. BN supplies the amps-off acoustic control. Persistent desktop
+integration, physical mapping, quality and repeated hardware reopen remain open,
+as do WCD RX overflow messages and ADM capture-close timeout(-110).
 Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
-[BO](tools/spx/boot-diagnostics/RESULT-20261004bo.md).
+[BP](tools/spx/boot-diagnostics/RESULT-20261004bp.md).
 
 - [ ] **A01 — Both physical speakers.** Correct independent left/right acoustic
   output, channel mapping, balance, useful volume range and mute; no static,
@@ -585,6 +583,16 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
   capture, simultaneous use, volume/mute controls and repeated open/close work
   after reboot/resume without manual mixer setup or ad-hoc repair. Resolve or
   explicitly validate the parked-session workaround and its resource lifetime.
+
+  - [x] **A03a — Bounded desktop applications and SoundWire shutdown.** BP
+    passed microphone-verified left/right/both playback and another application
+    after five seconds idle through a public Pulse sink and the same ALSA owner.
+    Stream close while amps remained attached left both speaker paths disabled
+    and an empty command FIFO. Boot `a208387a-004a-4e7b-98f4-8c8a7945cde6`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`.
+    [BP result](tools/spx/boot-diagnostics/RESULT-20261004bp.md). Temporary graph
+    only; WCD/ADM close faults and persistent/default integration remain open.
+
 - [ ] **A04 — External audio.** Test applicable USB-C audio/dock and Bluetooth
   output/input devices, routing, hotplug and reconnect. The logical codec
   "Headset Jack" node does not establish a physical analog jack on this device.

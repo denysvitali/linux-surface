@@ -1,36 +1,36 @@
-# Desktop audio after BO's stopped test
+# Audio after BP's desktop playback pass
 
-BN passed automatic left/right/both acoustic verification on mainline; the
-amps-off control removed the tones. BO forwarded one real desktop application's
-left tone through PipeWire/PulseAudio into that native stream, but stopped on
-insufficient contrast against the earlier startup reference. See [BO](RESULT-20261004bo.md).
-Full A01/A02/A03 acceptance remains open.
+BP passed microphone-verified desktop left/right/both tones and a second
+application after five seconds idle, through a temporary public Pulse sink and
+one initialized native ALSA PCM. Closing playback while amps remained attached
+left both speaker paths disabled and an empty SoundWire FIFO. Physical parking
+then kept the FIFO empty. See [BP](RESULT-20261004bp.md). A03a is closed;
+full A01/A02/A03 remain open. BN supplies the amps-off acoustic control.
 
-The bounded `audio.py desktop` action is implemented. It initializes one fresh
-S16_LE/48 kHz/stereo PCM, period 2400/buffer 12000, and forwards a temporary public
-Pulse sink at unity gain. All applications explicitly select this test sink;
-the default output is unchanged. Legacy bridges and hardware probing stay off.
-Temporary graph overrides are removed afterwards. Keep WCD/ASM persistence and
-fixed geometry; never reload the WCD clock provider to repair parked ownership.
+The working recipe is `audio.py desktop`: native sequential enumeration,
+minimum PA gain, post-RUNNING late initialization, S16_LE/48 kHz/stereo,
+period 2400/buffer 12000, unity-gain monitor forwarding. Keep WCD/ASM persistence
+and fixed geometry. Each phase scores against two fixed seconds of quiet taken
+before playback; thresholds and signal levels remain unchanged. Do not repeat
+the earlier global startup-reference mistake or increase gain to hide noise.
 
-The next trial uses two fixed seconds of quiet immediately before each tone,
-chosen before playback, with unchanged tone levels, 10 dB contrast, clipping
-and noise limits. It checks left/right/both, five seconds idle and a second app,
-all within the 45-second desktop session and continuous DMIC1 monitoring.
-Retain the same native PCM owner across applications. On normal completion,
-close PCM while amps remain attached, require ports/PA off and an empty FIFO,
-then park GPIOs. Abort still parks immediately; monitor queue production stops
-before the PCM consumer closes so cleanup cannot invent a forwarding stall.
+The next useful desktop change is a persistent, clearly owned producer using
+this validated startup/forwarding path, so normal applications can select the
+existing `spx_speakers` output. The bounded test currently removes its temporary
+sink/graph and does not install a daily-use bridge. Keep legacy 44x amplification
+and channel dropping excluded. Generic sdm845 UCM uses SLIMBUS_0_RX instead of
+working SLIMBUS_2_RX and cannot itself perform late initialization.
 
-External power is connected. BO's later unexplained interruption left incomplete
-filesystem writes; the exact Git commit/history and helper were restored and
-connectivity verification passed. Next trial returns 61 seconds after results
-are saved. This bounded return does not resolve the unexpected-stop cause or
-establish long-term stability. Do not blindly re-arm a consumed test.
+Before claiming lifecycle reliability, resolve the remaining WCD RX-port
+overflow and ADM capture-COPP close timeout (-110), then test same-geometry
+hardware reopen and repeated boot/resume. A second desktop application on the
+same retained PCM is not a hardware reopen. Never reload the WCD clock provider
+as a shortcut around parked ownership. Preserve immediate amp parking on
+failures and the verified close-before-powerdown sequence on normal completion.
 
-A successful bounded result would support a subsequent persistent desktop bridge
-and same-geometry reopen test. Generic sdm845 UCM still uses the wrong playback
-route, SLIMBUS_0_RX instead of the working SLIMBUS_2_RX, and cannot perform the
-required post-RUNNING late initialization by itself. The installed old bridge's
-44x gain and channel drop must remain excluded. Useful volume, balance, physical
-channel mapping, other microphones and reboot/resume need separate coverage.
+BN and BP returned on schedule. BL/BM/BO stopped unexpectedly before their
+returns; the cause remains unknown. BO's incomplete Git/helper writes were
+recovered exactly and connectivity verification passed. Keep changes committed
+and synced before boots. BP's short successful run does not prove longer-term
+stability. Useful volume, physical channel mapping/balance and other fitted
+microphones still need coverage. No new trial or audio request is pending.

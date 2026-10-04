@@ -116,8 +116,9 @@ removed afterwards; this test does not install a persistent desktop bridge.
 Unlike `feedback`'s amps-off control, normal desktop-test completion closes the
 PCM while amps are still attached, verifies teardown, then powers them down.
 Failures retain immediate amplifier powerdown. Read `audio/desktop-result.json`
-for separate acoustic and teardown outcomes; the implementation needs a live
-trial before it establishes either result.
+for separate acoustic and teardown outcomes.
+[BP passed both checks](boot-diagnostics/RESULT-20261004bp.md); WCD RX overflow
+and ADM capture-close faults remain separate lifecycle issues.
 
 The `feedback` action holds one internal DMIC1 capture on MM2 across quiet, amplifier startup,
 and the left/right/both sequence. It aborts on clipping, a large level increase,
