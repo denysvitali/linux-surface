@@ -93,6 +93,7 @@ struct venus_resources {
 	const char * const resets[VIDC_RESETS_NUM_MAX];
 	unsigned int resets_num;
 	enum hfi_version hfi_version;
+	u32 hfi_video_arch;
 	enum vpu_version vpu_version;
 	u8 num_vpp_pipes;
 	u32 max_load;

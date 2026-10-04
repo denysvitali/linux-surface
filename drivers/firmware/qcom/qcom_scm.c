@@ -4,6 +4,7 @@
  */
 
 #include <linux/arm-smccc.h>
+#include <linux/atomic.h>
 #include <linux/bitfield.h>
 #include <linux/bits.h>
 #include <linux/cleanup.h>
@@ -39,6 +40,33 @@
 #include "qcom_tzmem.h"
 
 static u32 download_mode;
+
+static bool spx_pas_diag;
+module_param_named(spx_pas_diag, spx_pas_diag, bool, 0400);
+MODULE_PARM_DESC(spx_pas_diag, "Bounded PAS9 image/memory setup diagnostics");
+
+static bool spx_pas_area_diag;
+module_param_named(spx_pas_area_diag, spx_pas_area_diag, bool, 0400);
+MODULE_PARM_DESC(spx_pas_area_diag, "One PAS9-triggered PIL memory area query diagnostic");
+
+static atomic_t spx_pas_image_diag_count = ATOMIC_INIT(0);
+static atomic_t spx_pas_mem_diag_count = ATOMIC_INIT(0);
+static atomic_t spx_pas_area_diag_count = ATOMIC_INIT(0);
+
+bool qcom_scm_spx_pas_diag(const struct qcom_scm_desc *desc)
+{
+	if (READ_ONCE(spx_pas_area_diag) &&
+	    desc->owner == ARM_SMCCC_OWNER_SIP &&
+	    desc->svc == QCOM_SCM_SVC_PIL &&
+	    desc->cmd == QCOM_SCM_PIL_PAS_GET_MEM_AREA &&
+	    desc->arginfo == QCOM_SCM_ARGS(1) && !desc->args[0])
+		return true;
+
+	return READ_ONCE(spx_pas_diag) && desc->owner == ARM_SMCCC_OWNER_SIP &&
+	       desc->svc == QCOM_SCM_SVC_PIL && desc->args[0] == 9 &&
+	       (desc->cmd == QCOM_SCM_PIL_PAS_INIT_IMAGE ||
+		desc->cmd == QCOM_SCM_PIL_PAS_MEM_SETUP);
+}
 
 #define GIC_SPI_BASE        32
 #define GIC_MAX_SPI       1019  // SPIs in GICv3 spec range from 32..1019
@@ -596,6 +624,29 @@ struct qcom_scm_pas_context *devm_qcom_scm_pas_context_alloc(struct device *dev,
 }
 EXPORT_SYMBOL_GPL(devm_qcom_scm_pas_context_alloc);
 
+static void qcom_scm_spx_pas_area_query(struct device *dev)
+{
+	struct qcom_scm_desc desc = {
+		.svc = QCOM_SCM_SVC_PIL,
+		.cmd = QCOM_SCM_PIL_PAS_GET_MEM_AREA,
+		.arginfo = QCOM_SCM_ARGS(1),
+		.args[0] = 0,
+		.owner = ARM_SMCCC_OWNER_SIP,
+	};
+	struct qcom_scm_res res;
+	int ret;
+
+	if (!READ_ONCE(spx_pas_area_diag) ||
+	    !atomic_add_unless(&spx_pas_area_diag_count, 1, 1))
+		return;
+
+	dev_info(dev, "SPX PAS area query begin spare=0\n");
+	ret = qcom_scm_call(dev, &desc, &res);
+	dev_info(dev, "SPX PAS area query transport ret=%d result_valid=%d r0=0x%llx r1=0x%llx r2=0x%llx\n",
+		 ret, !ret, ret ? 0ULL : res.result[0],
+		 ret ? 0ULL : res.result[1], ret ? 0ULL : res.result[2]);
+}
+
 static int __qcom_scm_pas_init_image(struct device *dev, u32 pas_id,
 				     dma_addr_t mdata_phys,
 				     struct qcom_scm_res *res)
@@ -607,19 +658,35 @@ static int __qcom_scm_pas_init_image(struct device *dev, u32 pas_id,
 		.args[0] = pas_id,
 		.owner = ARM_SMCCC_OWNER_SIP,
 	};
+	bool diag = qcom_scm_spx_pas_diag(&desc) &&
+		    atomic_add_unless(&spx_pas_image_diag_count, 1, 4);
 	int ret;
 
+	if (diag)
+		dev_info(dev, "SPX PAS diag init-image begin pas=%u metadata=%pad\n",
+			 pas_id, &mdata_phys);
 	ret = qcom_scm_clk_enable();
-	if (ret)
+	if (ret) {
+		if (diag)
+			dev_info(dev, "SPX PAS diag init-image clock ret=%d\n", ret);
 		return ret;
+	}
 
 	ret = qcom_scm_bw_enable();
-	if (ret)
+	if (ret) {
+		if (diag)
+			dev_info(dev, "SPX PAS diag init-image bandwidth ret=%d\n", ret);
 		goto disable_clk;
+	}
 
 	desc.args[1] = mdata_phys;
+	if (pas_id == 9)
+		qcom_scm_spx_pas_area_query(dev);
 
 	ret = qcom_scm_call(dev, &desc, res);
+	if (diag)
+		dev_info(dev, "SPX PAS diag init-image transport ret=%d service_valid=%d service=0x%llx\n",
+			 ret, !ret && res, !ret && res ? res->result[0] : 0ULL);
 	qcom_scm_bw_disable();
 
 disable_clk:
@@ -734,17 +801,31 @@ static int __qcom_scm_pas_mem_setup(struct device *dev, u32 pas_id,
 		.args[2] = size,
 		.owner = ARM_SMCCC_OWNER_SIP,
 	};
+	bool diag = qcom_scm_spx_pas_diag(&desc) &&
+		    atomic_add_unless(&spx_pas_mem_diag_count, 1, 4);
 	struct qcom_scm_res res;
 
+	if (diag)
+		dev_info(dev, "SPX PAS diag mem-setup begin pas=%u addr=%pa size=%pa\n",
+			 pas_id, &addr, &size);
 	ret = qcom_scm_clk_enable();
-	if (ret)
+	if (ret) {
+		if (diag)
+			dev_info(dev, "SPX PAS diag mem-setup clock ret=%d\n", ret);
 		return ret;
+	}
 
 	ret = qcom_scm_bw_enable();
-	if (ret)
+	if (ret) {
+		if (diag)
+			dev_info(dev, "SPX PAS diag mem-setup bandwidth ret=%d\n", ret);
 		goto disable_clk;
+	}
 
 	ret = qcom_scm_call(dev, &desc, &res);
+	if (diag)
+		dev_info(dev, "SPX PAS diag mem-setup transport ret=%d service_valid=%d service=0x%llx\n",
+			 ret, !ret, ret ? 0ULL : res.result[0]);
 	qcom_scm_bw_disable();
 
 disable_clk:

@@ -3,6 +3,7 @@
  */
 
 #include <linux/cleanup.h>
+#include <linux/atomic.h>
 #include <linux/io.h>
 #include <linux/errno.h>
 #include <linux/delay.h>
@@ -28,6 +29,8 @@ struct arm_smccc_args {
 #include "qcom_scm_trace.h"
 
 static DEFINE_MUTEX(qcom_scm_lock);
+
+static atomic_t spx_pas_smc_diag_count = ATOMIC_INIT(0);
 
 #define QCOM_SCM_EBUSY_WAIT_MS 30
 #define QCOM_SCM_EBUSY_MAX_RETRY 20
@@ -159,6 +162,8 @@ int __scm_smc_call(struct device *dev, const struct qcom_scm_desc *desc,
 		   enum qcom_scm_convention qcom_convention,
 		   struct qcom_scm_res *res, bool atomic)
 {
+	bool diag = dev && !atomic && qcom_scm_spx_pas_diag(desc) &&
+		    atomic_add_unless(&spx_pas_smc_diag_count, 1, 8);
 	int arglen = desc->arginfo & 0xf;
 	int i, ret;
 	void *args_virt __free(qcom_tzmem) = NULL;
@@ -207,7 +212,20 @@ int __scm_smc_call(struct device *dev, const struct qcom_scm_desc *desc,
 		smc.args[SCM_SMC_LAST_REG_IDX] = qcom_tzmem_to_phys(args_virt);
 	}
 
+	if (diag)
+		dev_info(dev, "SPX PAS diag smc begin id=0x%lx convention=%d arginfo=0x%lx args=0x%lx/0x%lx/0x%lx\n",
+			 smc.args[0], qcom_convention, smc.args[1],
+			 smc.args[2], smc.args[3], smc.args[4]);
 	ret = __scm_smc_do(dev, &smc, &smc_res, atomic);
+	if (diag) {
+		if (ret)
+			dev_info(dev, "SPX PAS diag smc done id=0x%lx ret=%d raw_valid=0\n",
+				 smc.args[0], ret);
+		else
+			dev_info(dev, "SPX PAS diag smc done id=0x%lx ret=0 raw_valid=1 a0=0x%lx a1=0x%lx a2=0x%lx a3=0x%lx\n",
+				 smc.args[0], smc_res.a0, smc_res.a1,
+				 smc_res.a2, smc_res.a3);
+	}
 
 	trace_scm_smc_done(ret, smc.args[0], &smc_res);
 

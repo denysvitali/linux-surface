@@ -1,0 +1,121 @@
+# SPDX-License-Identifier: (GPL-2.0 OR BSD-2-Clause)
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/media/qcom,sc8180x-venus.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: Qualcomm SC8180X Iris1 video encode and decode accelerator
+
+maintainers:
+  - Stanimir Varbanov <stanimir.k.varbanov@gmail.com>
+  - Vikash Garodia <quic_vgarodia@quicinc.com>
+
+description: |
+  Iris1 has a controller, one video codec engine (MVS0) and a computer
+  vision engine (MVS1). All three power domains and their clocks are
+  needed during firmware startup. MVS1 is not a second video codec core.
+
+allOf:
+  - $ref: qcom,venus-common.yaml#
+
+properties:
+  compatible:
+    const: qcom,sc8180x-venus
+
+  clocks:
+    minItems: 7
+    maxItems: 7
+
+  clock-names:
+    items:
+      - const: core
+      - const: iface
+      - const: bus
+      - const: vcodec0_core
+      - const: vcodec0_bus
+      - const: vcodec1_core
+      - const: vcodec1_bus
+
+  power-domains:
+    minItems: 4
+    maxItems: 4
+
+  power-domain-names:
+    items:
+      - const: venus
+      - const: vcodec0
+      - const: vcodec1
+      - const: mmcx
+
+  resets:
+    maxItems: 2
+
+  reset-names:
+    items:
+      - const: bus
+      - const: core
+
+  iommus:
+    maxItems: 1
+
+  interconnects:
+    maxItems: 2
+
+  interconnect-names:
+    items:
+      - const: video-mem
+      - const: cpu-cfg
+
+  operating-points-v2: true
+
+  opp-table:
+    type: object
+
+required:
+  - compatible
+  - power-domain-names
+  - resets
+  - reset-names
+  - iommus
+  - interconnects
+  - interconnect-names
+  - operating-points-v2
+
+unevaluatedProperties: false
+
+examples:
+  - |
+    #include <dt-bindings/clock/qcom,gcc-sc8180x.h>
+    #include <dt-bindings/clock/qcom,videocc-sm8150.h>
+    #include <dt-bindings/interconnect/qcom,sc8180x.h>
+    #include <dt-bindings/interrupt-controller/arm-gic.h>
+    #include <dt-bindings/power/qcom,rpmhpd.h>
+
+    video-codec@aa00000 {
+        compatible = "qcom,sc8180x-venus";
+        reg = <0x0aa00000 0x100000>;
+        interrupts = <GIC_SPI 174 IRQ_TYPE_LEVEL_HIGH>;
+        clocks = <&videocc VIDEO_CC_MVSC_CORE_CLK>,
+                 <&videocc VIDEO_CC_IRIS_AHB_CLK>,
+                 <&gcc GCC_VIDEO_AXIC_CLK>,
+                 <&videocc VIDEO_CC_MVS0_CORE_CLK>,
+                 <&gcc GCC_VIDEO_AXI0_CLK>,
+                 <&videocc VIDEO_CC_MVS1_CORE_CLK>,
+                 <&gcc GCC_VIDEO_AXI1_CLK>;
+        clock-names = "core", "iface", "bus", "vcodec0_core",
+                      "vcodec0_bus", "vcodec1_core", "vcodec1_bus";
+        power-domains = <&videocc VENUS_GDSC>,
+                        <&videocc VCODEC0_GDSC>,
+                        <&videocc VCODEC1_GDSC>,
+                        <&rpmhpd SC8180X_MMCX>;
+        power-domain-names = "venus", "vcodec0", "vcodec1", "mmcx";
+        resets = <&gcc GCC_VIDEO_AXIC_CLK_BCR>,
+                 <&videocc VIDEO_CC_MVSC_CORE_CLK_BCR>;
+        reset-names = "bus", "core";
+        interconnects = <&mmss_noc MASTER_VIDEO_P0 &mc_virt SLAVE_EBI_CH0>,
+                        <&gem_noc MASTER_AMPSS_M0 &config_noc SLAVE_VENUS_CFG>;
+        interconnect-names = "video-mem", "cpu-cfg";
+        iommus = <&apps_smmu 0x2300 0x60>;
+        memory-region = <&venus_mem>;
+        operating-points-v2 = <&venus_opp_table>;
+    };

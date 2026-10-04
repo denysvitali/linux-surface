@@ -381,6 +381,7 @@ static int venus_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct venus_core *core;
+	bool powered = false;
 	int ret;
 
 	core = devm_kzalloc(dev, sizeof(*core), GFP_KERNEL);
@@ -411,7 +412,7 @@ static int venus_probe(struct platform_device *pdev)
 
 	mutex_init(&core->pm_lock);
 
-	core->pm_ops = venus_pm_get(core->res->hfi_version);
+	core->pm_ops = venus_pm_get(core);
 	if (!core->pm_ops)
 		return -ENODEV;
 
@@ -455,6 +456,7 @@ static int venus_probe(struct platform_device *pdev)
 	ret = pm_runtime_get_sync(dev);
 	if (ret < 0)
 		goto err_runtime_disable;
+	powered = true;
 
 	ret = venus_firmware_init(core);
 	if (ret)
@@ -519,6 +521,18 @@ err_venus_shutdown:
 err_firmware_deinit:
 	venus_firmware_deinit(core);
 err_runtime_disable:
+	if (IS_IRIS1(core) && powered) {
+		int power_ret;
+
+		disable_irq(core->irq);
+		power_ret = core->pm_ops->core_power(core, POWER_OFF);
+
+		if (power_ret)
+			dev_warn(dev, "failed to power off Iris1 after probe error (%d)\n",
+				 power_ret);
+		icc_set_bw(core->cpucfg_path, 0, 0);
+		icc_set_bw(core->video_path, 0, 0);
+	}
 	pm_runtime_put_noidle(dev);
 	pm_runtime_disable(dev);
 	pm_runtime_set_suspended(dev);
@@ -638,21 +652,34 @@ static __maybe_unused int venus_runtime_resume(struct device *dev)
 	const struct venus_pm_ops *pm_ops = core->pm_ops;
 	int ret;
 
-	ret = icc_set_bw(core->video_path, kbps_to_icc(20000), 0);
+	ret = icc_set_bw(core->video_path,
+			 kbps_to_icc(IS_IRIS1(core) ? 200000 : 20000), 0);
 	if (ret)
 		return ret;
 
 	ret = icc_set_bw(core->cpucfg_path, kbps_to_icc(1000), 0);
 	if (ret)
-		return ret;
+		goto err_video_bw;
 
 	if (pm_ops->core_power) {
 		ret = pm_ops->core_power(core, POWER_ON);
 		if (ret)
-			return ret;
+			goto err_cfg_bw;
 	}
 
-	return hfi_core_resume(core, false);
+	ret = hfi_core_resume(core, false);
+	if (!ret || !IS_IRIS1(core))
+		return ret;
+
+	if (pm_ops->core_power)
+		pm_ops->core_power(core, POWER_OFF);
+err_cfg_bw:
+	if (IS_IRIS1(core))
+		icc_set_bw(core->cpucfg_path, 0, 0);
+err_video_bw:
+	if (IS_IRIS1(core))
+		icc_set_bw(core->video_path, 0, 0);
+	return ret;
 }
 
 static const struct dev_pm_ops venus_pm_ops = {
@@ -944,6 +971,45 @@ static const struct venus_resources sdm845_res_v2 = {
 	.enc_nodename = "video-core1",
 };
 
+static const struct freq_tbl sc8180x_freq_table[] = {
+	{ 0, 533000000 },
+	{ 0, 444000000 },
+	{ 0, 365000000 },
+	{ 0, 338000000 },
+	{ 0, 240000000 },
+	{ 0, 200000000 },
+};
+
+static const struct venus_resources sc8180x_res = {
+	.freq_tbl = sc8180x_freq_table,
+	.freq_tbl_size = ARRAY_SIZE(sc8180x_freq_table),
+	.bw_tbl_enc = sdm845_bw_table_enc,
+	.bw_tbl_enc_size = ARRAY_SIZE(sdm845_bw_table_enc),
+	.bw_tbl_dec = sdm845_bw_table_dec,
+	.bw_tbl_dec_size = ARRAY_SIZE(sdm845_bw_table_dec),
+	.clks = { "core", "iface", "bus" },
+	.clks_num = 3,
+	.vcodec0_clks = { "vcodec0_core", "vcodec0_bus" },
+	.vcodec1_clks = { "vcodec1_core", "vcodec1_bus" },
+	.vcodec_clks_num = 2,
+	.vcodec_pmdomains = (const char *[]) { "venus", "vcodec0", "vcodec1" },
+	.vcodec_pmdomains_num = 3,
+	.opp_pmdomain = (const char *[]) { "mmcx" },
+	.opp_pmdomain_num = 1,
+	/* MVS1 is the CVP engine, not a second video codec core. */
+	.vcodec_num = 1,
+	.resets = { "bus", "core" },
+	.resets_num = 2,
+	.hfi_version = HFI_VERSION_4XX,
+	.hfi_video_arch = 2,
+	.vpu_version = VPU_VERSION_IRIS1,
+	.vmem_id = VIDC_RESOURCE_NONE,
+	.dma_mask = 0xc0000000 - 1,
+	.fwname = "qcom/sc8180x/qcvss8180.mbn",
+	.dec_nodename = "video-decoder",
+	.enc_nodename = "video-encoder",
+};
+
 static const struct freq_tbl sc7180_freq_table[] = {
 	{  0, 500000000 },
 	{  0, 434000000 },
@@ -1177,6 +1243,7 @@ static const struct of_device_id venus_dt_match[] = {
 	{ .compatible = "qcom,msm8998-venus", .data = &msm8998_res, },
 	{ .compatible = "qcom,qcm2290-venus", .data = &qcm2290_res, },
 	{ .compatible = "qcom,sc7180-venus", .data = &sc7180_res, },
+	{ .compatible = "qcom,sc8180x-venus", .data = &sc8180x_res, },
 	{ .compatible = "qcom,sdm660-venus", .data = &sdm660_res, },
 	{ .compatible = "qcom,sdm845-venus", .data = &sdm845_res, },
 	{ .compatible = "qcom,sdm845-venus-v2", .data = &sdm845_res_v2, },

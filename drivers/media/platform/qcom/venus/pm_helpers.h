@@ -27,7 +27,7 @@ struct venus_pm_ops {
 	int (*load_scale)(struct venus_inst *inst);
 };
 
-const struct venus_pm_ops *venus_pm_get(enum hfi_version version);
+const struct venus_pm_ops *venus_pm_get(struct venus_core *core);
 
 static inline int venus_pm_load_scale(struct venus_inst *inst)
 {

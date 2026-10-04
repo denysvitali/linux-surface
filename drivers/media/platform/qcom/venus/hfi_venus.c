@@ -4,12 +4,15 @@
  * Copyright (C) 2017 Linaro Ltd.
  */
 
+#include <linux/atomic.h>
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
 #include <linux/iopoll.h>
 #include <linux/kernel.h>
+#include <linux/moduleparam.h>
+#include <linux/of.h>
 #include <linux/slab.h>
 
 #include "core.h"
@@ -18,6 +21,25 @@
 #include "hfi_venus.h"
 #include "hfi_venus_io.h"
 #include "firmware.h"
+
+static bool spx_hfi_startup_diag;
+module_param_named(spx_hfi_startup_diag, spx_hfi_startup_diag, bool, 0400);
+MODULE_PARM_DESC(spx_hfi_startup_diag, "Bounded Iris1 firmware/core startup diagnostics");
+
+static bool spx_uc_shared_alloc;
+module_param_named(spx_uc_shared_alloc, spx_uc_shared_alloc, bool, 0400);
+MODULE_PARM_DESC(spx_uc_shared_alloc, "SC8180X trial: back the declared UC region with one shared allocation");
+
+static atomic_t spx_hfi_startup_diag_lines = ATOMIC_INIT(0);
+
+bool venus_hfi_startup_diag(const struct venus_core *core)
+{
+	if (!READ_ONCE(spx_hfi_startup_diag) || !IS_IRIS1(core) ||
+	    atomic_read(&spx_hfi_startup_diag_lines) >= 32)
+		return false;
+
+	return atomic_inc_return(&spx_hfi_startup_diag_lines) <= 32;
+}
 
 #define HFI_MASK_QHDR_TX_TYPE		0xff000000
 #define HFI_MASK_QHDR_RX_TYPE		0x00ff0000
@@ -124,6 +146,8 @@ struct venus_hfi_device {
 	struct completion release_resource;
 	struct mem_desc ifaceq_table;
 	struct mem_desc sfr;
+	/* Allocation owner when ifaceq_table and sfr are borrowed UC views. */
+	struct mem_desc shared_uc;
 	struct iface_queue queues[IFACEQ_NUM];
 	u8 pkt_buf[IFACEQ_VAR_HUGE_PKT_SIZE];
 	u8 dbg_buf[IFACEQ_VAR_HUGE_PKT_SIZE];
@@ -473,7 +497,11 @@ static int venus_boot_core(struct venus_hfi_device *hdev)
 	void __iomem *wrapper_base = hdev->core->wrapper_base;
 	int ret = 0;
 
-	if (IS_IRIS2(hdev->core) || IS_IRIS2_1(hdev->core)) {
+	if (IS_IRIS1(hdev->core)) {
+		mask_val = readl(wrapper_base + WRAPPER_INTR_MASK);
+		mask_val &= ~(WRAPPER_INTR_MASK_A2HWD_BASK |
+			      WRAPPER_INTR_MASK_A2HCPU_MASK);
+	} else if (IS_IRIS2(hdev->core) || IS_IRIS2_1(hdev->core)) {
 		mask_val = readl(wrapper_base + WRAPPER_INTR_MASK);
 		mask_val &= ~(WRAPPER_INTR_MASK_A2HWD_BASK_V6 |
 			      WRAPPER_INTR_MASK_A2HCPU_MASK);
@@ -500,6 +528,11 @@ static int venus_boot_core(struct venus_hfi_device *hdev)
 
 	if (count >= max_tries)
 		ret = -ETIMEDOUT;
+
+	if (venus_hfi_startup_diag(hdev->core))
+		dev_info(dev, "SPX Venus startup poll ret=%d count=%u status=%#x mask=%#x hw=%#x\n",
+			 ret, count, ctrl_status, mask_val,
+			 readl(wrapper_base + WRAPPER_HW_VERSION));
 
 	if (IS_IRIS2(hdev->core) || IS_IRIS2_1(hdev->core) || IS_AR50_LITE(hdev->core)) {
 		writel(0x1, cpu_cs_base + CPU_CS_H2XSOFTINTEN_V6);
@@ -541,6 +574,11 @@ static int venus_run(struct venus_hfi_device *hdev)
 	 * regulator_disable() and _enable()
 	 */
 	venus_set_registers(hdev);
+
+	if (venus_hfi_startup_diag(hdev->core))
+		dev_info(dev, "SPX Venus startup buffers queue=%pad queue_size=%u uc_size=%u sfr=%pad sfr_size=%u tz=%u\n",
+			 &hdev->ifaceq_table.da, hdev->ifaceq_table.size, (u32)SHARED_QSIZE,
+			 &hdev->sfr.da, hdev->sfr.size, hdev->core->use_tz);
 
 	writel(hdev->ifaceq_table.da, cpu_cs_base + UC_REGION_ADDR);
 	writel(SHARED_QSIZE, cpu_cs_base + UC_REGION_SIZE);
@@ -779,12 +817,17 @@ static void venus_interface_queues_release(struct venus_hfi_device *hdev)
 {
 	mutex_lock(&hdev->lock);
 
-	venus_free(hdev, &hdev->ifaceq_table);
-	venus_free(hdev, &hdev->sfr);
+	if (hdev->shared_uc.kva) {
+		venus_free(hdev, &hdev->shared_uc);
+	} else {
+		venus_free(hdev, &hdev->ifaceq_table);
+		venus_free(hdev, &hdev->sfr);
+	}
 
 	memset(hdev->queues, 0, sizeof(hdev->queues));
 	memset(&hdev->ifaceq_table, 0, sizeof(hdev->ifaceq_table));
 	memset(&hdev->sfr, 0, sizeof(hdev->sfr));
+	memset(&hdev->shared_uc, 0, sizeof(hdev->shared_uc));
 
 	mutex_unlock(&hdev->lock);
 }
@@ -795,13 +838,24 @@ static int venus_interface_queues_init(struct venus_hfi_device *hdev)
 	struct iface_queue *queue;
 	struct hfi_sfr *sfr;
 	struct mem_desc desc = {0};
+	bool shared_uc = READ_ONCE(spx_uc_shared_alloc) &&
+		IS_IRIS1(hdev->core) &&
+		of_device_is_compatible(hdev->core->dev->of_node,
+					"qcom,sc8180x-venus");
 	unsigned int offset;
 	unsigned int i;
 	int ret;
 
-	ret = venus_alloc(hdev, &desc, ALIGNED_QUEUE_SIZE);
+	ret = venus_alloc(hdev, &desc,
+			  shared_uc ? SHARED_QSIZE : ALIGNED_QUEUE_SIZE);
 	if (ret)
 		return ret;
+
+	if (shared_uc) {
+		memset(desc.kva, 0, desc.size);
+		hdev->shared_uc = desc;
+		desc.size = ALIGNED_QUEUE_SIZE;
+	}
 
 	hdev->ifaceq_table = desc;
 	offset = IFACEQ_TABLE_SIZE;
@@ -842,13 +896,22 @@ static int venus_interface_queues_init(struct venus_hfi_device *hdev)
 	queue = &hdev->queues[IFACEQ_DBG_IDX];
 	queue->qhdr->rx_req = 0;
 
-	ret = venus_alloc(hdev, &desc, ALIGNED_SFR_SIZE);
-	if (ret) {
-		hdev->sfr.da = 0;
-	} else {
-		hdev->sfr = desc;
+	if (shared_uc) {
+		hdev->sfr = hdev->shared_uc;
+		hdev->sfr.da += ALIGNED_QUEUE_SIZE;
+		hdev->sfr.kva += ALIGNED_QUEUE_SIZE;
+		hdev->sfr.size = ALIGNED_SFR_SIZE;
 		sfr = hdev->sfr.kva;
 		sfr->buf_size = ALIGNED_SFR_SIZE;
+	} else {
+		ret = venus_alloc(hdev, &desc, ALIGNED_SFR_SIZE);
+		if (ret) {
+			hdev->sfr.da = 0;
+		} else {
+			hdev->sfr = desc;
+			sfr = hdev->sfr.kva;
+			sfr->buf_size = ALIGNED_SFR_SIZE;
+		}
 	}
 
 	/* ensure table and queue header structs are settled in memory */
@@ -1144,7 +1207,13 @@ static irqreturn_t venus_isr(struct venus_core *core)
 
 	status = readl(wrapper_base + WRAPPER_INTR_STATUS);
 
-	if (IS_AR50_LITE(core)) {
+	if (IS_IRIS1(core)) {
+		if (status & WRAPPER_INTR_STATUS_D2H_MASK_IRIS1 ||
+		    status & WRAPPER_INTR_STATUS_A2H_MASK ||
+		    status & WRAPPER_INTR_STATUS_A2HWD_MASK ||
+		    status & CPU_CS_SCIACMDARG0_INIT_IDLE_MSG_MASK)
+			hdev->irq_status = status;
+	} else if (IS_AR50_LITE(core)) {
 		if (status & WRAPPER_INTR_STATUS_A2H_MASK ||
 		    status & WRAPPER_INTR_STATUS_A2HWD_MASK_V4_LITE ||
 		    status & CPU_CS_SCIACMDARG0_INIT_IDLE_MSG_MASK)
@@ -1160,6 +1229,16 @@ static irqreturn_t venus_isr(struct venus_core *core)
 		    status & CPU_CS_SCIACMDARG0_INIT_IDLE_MSG_MASK)
 			hdev->irq_status = status;
 	}
+	if (IS_IRIS1(core)) {
+		/* Iris1 has separate DSP and CPU interrupt sources. */
+		if (status & WRAPPER_INTR_STATUS_D2H_MASK_IRIS1)
+			writel(CPU_CS_D2HSOFTINTCLR_MASK_IRIS1,
+			       cpu_cs_base + CPU_CS_D2HSOFTINTCLR_IRIS1);
+		if (status & WRAPPER_INTR_STATUS_A2H_MASK)
+			writel(1, cpu_cs_base + CPU_CS_A2HSOFTINTCLR);
+		return IRQ_WAKE_THREAD;
+	}
+
 	writel(1, cpu_cs_base + CPU_CS_A2HSOFTINTCLR);
 	if (!(IS_IRIS2(core) || IS_IRIS2_1(core) || IS_AR50_LITE(core)))
 		writel(status, wrapper_base + WRAPPER_INTR_CLEAR);
@@ -1175,7 +1254,7 @@ static int venus_core_init(struct venus_core *core)
 	struct hfi_sys_init_pkt pkt;
 	int ret;
 
-	pkt_sys_init(&pkt, HFI_VIDEO_ARCH_OX);
+	pkt_sys_init(&pkt, core->res->hfi_video_arch ?: HFI_VIDEO_ARCH_OX);
 
 	venus_set_state(hdev, VENUS_STATE_INIT);
 

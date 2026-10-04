@@ -1316,9 +1316,136 @@ static const struct venus_pm_ops pm_ops_v4 = {
 	.load_scale = load_scale_v4,
 };
 
-const struct venus_pm_ops *venus_pm_get(enum hfi_version version)
+static int iris1_clks_power(struct venus_core *core, int on)
 {
-	switch (version) {
+	struct clk_bulk_data clks[] = {
+		{ .clk = core->clks[2] },		/* AXIC */
+		{ .clk = core->vcodec0_clks[1] },	/* AXI0 */
+		{ .clk = core->vcodec1_clks[1] },	/* AXI1 */
+		{ .clk = core->clks[1] },		/* AHB */
+		{ .clk = core->clks[0] },		/* MVSC */
+		{ .clk = core->vcodec0_clks[0] },	/* MVS0 */
+		{ .clk = core->vcodec1_clks[0] },	/* MVS1 */
+	};
+
+	if (on == POWER_ON)
+		return clk_bulk_prepare_enable(ARRAY_SIZE(clks), clks);
+
+	clk_bulk_disable_unprepare(ARRAY_SIZE(clks), clks);
+	return 0;
+}
+
+static int iris1_resets_reset(struct venus_core *core)
+{
+	struct reset_control_bulk_data resets[VIDC_RESETS_NUM_MAX];
+	unsigned int i;
+	int ret;
+
+	for (i = 0; i < core->res->resets_num; i++)
+		resets[i].rstc = core->resets[i];
+
+	/* Both sides of the AHB-to-AXI bridge must be held in reset together. */
+	ret = reset_control_bulk_assert(core->res->resets_num, resets);
+	if (ret)
+		return ret;
+
+	usleep_range(150, 250);
+
+	return reset_control_bulk_deassert(core->res->resets_num, resets);
+}
+
+static int core_power_iris1(struct venus_core *core, int on)
+{
+	struct device *dev = core->dev;
+	unsigned long freq = 0;
+	struct dev_pm_opp *opp;
+	int ret;
+
+	if (on == POWER_OFF) {
+		ret = vcodec_domains_set_hw(core, false);
+		if (ret)
+			return ret;
+
+		iris1_clks_power(core, POWER_OFF);
+		vcodec_domains_disable(core);
+		ret = dev_pm_opp_set_rate(dev, 0);
+		if (ret)
+			dev_warn(dev, "failed to drop Iris1 OPP vote (%d)\n", ret);
+
+		return 0;
+	}
+
+	opp = dev_pm_opp_find_freq_ceil(dev, &freq);
+	if (IS_ERR(opp))
+		return PTR_ERR(opp);
+	dev_pm_opp_put(opp);
+
+	ret = core_clks_set_rate(core, freq);
+	if (ret)
+		goto err_opp;
+
+	/* Iris1 needs MVS0 and MVS1 powered before the firmware is booted. */
+	ret = vcodec_domains_enable(core);
+	if (ret)
+		goto err_opp;
+
+	ret = iris1_resets_reset(core);
+	if (ret)
+		goto err_domains;
+
+	ret = iris1_clks_power(core, POWER_ON);
+	if (ret)
+		goto err_domains;
+
+	ret = vcodec_domains_set_hw(core, true);
+	if (ret)
+		goto err_clks;
+
+	return 0;
+
+err_clks:
+	iris1_clks_power(core, POWER_OFF);
+err_domains:
+	vcodec_domains_disable(core);
+err_opp:
+	dev_pm_opp_set_rate(dev, 0);
+	return ret;
+}
+
+static int coreid_power_iris1(struct venus_inst *inst, int on)
+{
+	int ret;
+
+	if (on == POWER_ON) {
+		if (inst->core_acquired)
+			return 0;
+
+		ret = decide_core(inst);
+		if (ret)
+			return ret;
+
+		inst->core_acquired = true;
+	} else {
+		inst->clk_data.core_id = VIDC_CORE_ID_DEFAULT;
+		inst->core_acquired = false;
+	}
+
+	return 0;
+}
+
+static const struct venus_pm_ops pm_ops_iris1 = {
+	.core_get = core_get_v4,
+	.core_power = core_power_iris1,
+	.coreid_power = coreid_power_iris1,
+	.load_scale = load_scale_v4,
+};
+
+const struct venus_pm_ops *venus_pm_get(struct venus_core *core)
+{
+	if (IS_IRIS1(core))
+		return &pm_ops_iris1;
+
+	switch (core->res->hfi_version) {
 	case HFI_VERSION_1XX:
 	default:
 		return &pm_ops_v1;

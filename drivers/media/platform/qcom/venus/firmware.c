@@ -60,6 +60,9 @@ int venus_set_hw_state(struct venus_core *core, bool resume)
 
 	if (core->use_tz) {
 		ret = qcom_pas_set_remote_state(resume, 0);
+		if (venus_hfi_startup_diag(core))
+			dev_info(core->dev, "SPX Venus startup remote-state resume=%u ret=%d\n",
+				 resume, ret);
 		if (resume && ret == -EINVAL)
 			ret = 0;
 		return ret;
@@ -229,8 +232,8 @@ int venus_boot(struct venus_core *core)
 
 	ret = venus_load_fw(core, fwpath, &mem_phys, &mem_size);
 	if (ret) {
-		dev_err(dev, "fail to load video firmware\n");
-		return -EINVAL;
+		dev_err(dev, "failed to load video firmware %s (%d)\n", fwpath, ret);
+		return ret;
 	}
 
 	core->fw.mem_size = mem_size;
@@ -241,8 +244,14 @@ int venus_boot(struct venus_core *core)
 	else
 		ret = venus_boot_no_tz(core, mem_phys, mem_size);
 
-	if (ret)
+	if (core->use_tz && venus_hfi_startup_diag(core))
+		dev_info(dev, "SPX Venus startup auth-reset pas=%u ret=%d\n",
+			 VENUS_PAS_ID, ret);
+
+	if (ret) {
+		dev_err(dev, "failed to boot video firmware (%d)\n", ret);
 		return ret;
+	}
 
 	if (core->use_tz && res->cp_size) {
 		/*

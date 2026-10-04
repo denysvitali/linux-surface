@@ -160,6 +160,11 @@
 			no-map;
 		};
 
+		venus_mem: video-firmware@8d300000 {
+			reg = <0 0x8d300000 0 0x500000>;
+			no-map;
+		};
+
 		mpss_mem: memory@8d800000 {
 			reg = <0x0 0x8d800000 0x0 0x9600000>;
 			no-map;
@@ -1383,6 +1388,13 @@
 
 		current-speed = <4000000>;
 	};
+};
+
+&venus {
+	status = "okay";
+	firmware-name = "qcom/msft/surface/pro-x-sq2/qcvss8180.mbn";
+	iommus = <&apps_smmu 0x2300 0x60>;
+	memory-region = <&venus_mem>;
 };
 
 &wifi {

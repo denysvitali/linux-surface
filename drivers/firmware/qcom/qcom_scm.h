@@ -58,6 +58,8 @@ struct qcom_scm_desc {
 	u32 owner;
 };
 
+bool qcom_scm_spx_pas_diag(const struct qcom_scm_desc *desc);
+
 /**
  * struct qcom_scm_res
  * @result:	The values returned by the secure syscall
@@ -104,6 +106,7 @@ int qcom_scm_shm_bridge_enable(struct device *scm_dev);
 #define QCOM_SCM_PIL_PAS_AUTH_AND_RESET	0x05
 #define QCOM_SCM_PIL_PAS_SHUTDOWN	0x06
 #define QCOM_SCM_PIL_PAS_IS_SUPPORTED	0x07
+#define QCOM_SCM_PIL_PAS_GET_MEM_AREA	0x09
 #define QCOM_SCM_PIL_PAS_MSS_RESET	0x0a
 #define QCOM_SCM_PIL_PAS_GET_RSCTABLE	0x21
 
