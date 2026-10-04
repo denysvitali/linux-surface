@@ -129,23 +129,35 @@ def assert_desktop_paused(username):
              f'Desktop audio process still running: {name}')
 
 
-def codec_writer():
-    matches = []
+def codec_paths():
+    codecs = []
     for path in Path('/sys/bus/slimbus/devices').iterdir():
         if (path / 'driver').exists() and (path / 'driver').resolve().name == 'wcd934x-slim':
-            node = Path('/sys/kernel/debug') / path.name / 'write_reg'
-            if node.exists():
-                matches.append(node)
-    need(len(matches) == 1, 'Need exactly one bound WCD codec debugfs write_reg node')
-    return matches[0]
+            codecs.append(path)
+    need(len(codecs) == 1, 'Need exactly one bound WCD codec')
+    codec = codecs[0]
+    masters = [path.resolve() for path in
+               Path('/sys/bus/platform/drivers/qcom-soundwire').iterdir()
+               if path.is_symlink() and path.resolve().is_relative_to(codec.resolve())]
+    need(len(masters) == 1, 'Need exactly one bound SoundWire master below the WCD codec')
+    return Path('/sys/kernel/debug') / codec.name / 'write_reg', masters[0]
 
 
-def inventory():
+def inventory(master=None):
+    if master is None:
+        _, master = codec_paths()
+    power = {'device': str(master), 'control': read_text(master / 'power/control'),
+             'status': read_text(master / 'power/runtime_status')}
     cards = read_text('/proc/asound/cards')
     card_numbers = re.findall(r'^\s*(\d+)\s+\[[^\]]+\].*Surface Pro X', cards, re.M)
-    return {'boot_id': read_text('/proc/sys/kernel/random/boot_id'),
-            'release': os.uname().release, 'internal_cards': card_numbers,
-            'devices': devices(), 'state': state()}
+    result = {'boot_id': read_text('/proc/sys/kernel/random/boot_id'),
+              'release': os.uname().release, 'internal_cards': card_numbers,
+              'devices': devices(), 'runtime_power': power, 'state': None}
+    if power['status'] == 'active' and power['control'] == 'on':
+        result['state'] = state()
+    else:
+        result['state_deferred'] = 'Hardware reads require an active master held on; initialize establishes that hold'
+    return result
 
 
 def save_initialize_result(directory, report):
@@ -177,17 +189,15 @@ def initialize(args, report):
         need(parameter(module, name) == expected, f'{module}.{name} must be {expected}')
     assert_desktop_paused(args.desktop_user)
     assert_pcm_idle()
-    writer = codec_writer()
-    initial = inventory()
-    need(len(initial['internal_cards']) == 1, 'Cannot identify one internal ALSA card')
-    need(initial['state']['GPIO_DIR'] & 0x1e == 0x1e and
-         initial['state']['GPIO_VAL'] & 0x1e == 0x18,
-         'Physical GPIO state is not parked 0x1e/0x18')
-    need(initial['state']['SLV_STATUS'] == 0, 'Amps must be detached before the test')
-    report['before'] = initial
+    writer, master = codec_paths()
+    need(writer.exists(), 'WCD codec debugfs write_reg node is unavailable')
+    control = master / 'power/control'
+    saved_control = read_text(control)
+    need(saved_control in ('auto', 'on'), 'Unknown master runtime PM policy')
+    report['runtime_pm'] = {'master': str(master), 'saved_control': saved_control,
+                            'restored': False}
     report['stages'] = []
-    report['parked'] = True
-    parked = initial['state']['GPIO_VAL'] & ~0x06
+    parked = None
     signals = {}
 
     def interrupted(signum, frame):
@@ -197,6 +207,23 @@ def initialize(args, report):
     for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signals[signum] = signal.signal(signum, interrupted)
     try:
+        # Native runtime resume can restart the master/enumerator, but its GPIO
+        # writes are gated by exact_windows_init or core_enum, both rejected above.
+        control.write_text('on\n')
+        deadline = time.monotonic() + 2
+        while read_text(master / 'power/runtime_status') != 'active':
+            need(time.monotonic() < deadline, 'SoundWire master did not resume')
+            time.sleep(0.05)
+        initial = inventory(master)
+        report['before'] = initial
+        need(initial['state'] is not None, 'SoundWire master is not held active')
+        parked = initial['state']['GPIO_VAL'] & ~0x06
+        need(len(initial['internal_cards']) == 1, 'Cannot identify one internal ALSA card')
+        need(initial['state']['GPIO_DIR'] & 0x1e == 0x1e and
+             initial['state']['GPIO_VAL'] & 0x1e == 0x18,
+             'Physical GPIO state is not parked 0x1e/0x18')
+        need(initial['state']['SLV_STATUS'] == 0, 'Amps must be detached before the test')
+        report['parked'] = True
         for bits, expected in ((0x02, {3}), (0x06, {3, 4})):
             assert_desktop_paused(args.desktop_user)
             assert_pcm_idle()
@@ -230,11 +257,16 @@ def initialize(args, report):
         for signum in signals:
             signal.signal(signum, signal.SIG_IGN)
         try:
-            writer.write_text(f'43 {parked:02x}\n')
-            report['parked_state'] = state()
-            need(report['parked_state']['GPIO_VAL'] & 0x1e == 0x18,
-                 'Amplifier powerdown could not be confirmed')
-            report['parked'] = True
+            report['parked'] = False
+            if parked is not None:
+                writer.write_text(f'43 {parked:02x}\n')
+                report['parked_state'] = state()
+                need(report['parked_state']['GPIO_VAL'] & 0x1e == 0x18,
+                     'Amplifier powerdown could not be confirmed')
+                report['parked'] = True
+                control.write_text(saved_control + '\n')
+                need(read_text(control) == saved_control, 'Master runtime PM policy was not restored')
+                report['runtime_pm']['restored'] = True
         finally:
             for signum, handler in signals.items():
                 signal.signal(signum, handler)
@@ -262,11 +294,13 @@ def main():
                 save_initialize_result(args.output, report)
         if args.action == 'plan':
             report['initialization'] = (
-                'Pause desktop audio services/sockets. Require parked GPIO 0x1e/0x18 '
+                'Pause desktop audio services/sockets. Hold the discovered native '
+                'SoundWire master active. Require parked GPIO 0x1e/0x18 '
                 'and no playback PCM. Power pin1 and require native unit3, then power '
                 'pin2 and require both native units3/4 at distinct addresses1/2. '
                 'Allow five seconds per stage and require two agreeing samples. '
-                'Always park both amps and verify physical GPIO readback afterwards. '
+                'Attempt to park both amps, verify physical GPIO readback and only '
+                'then restore the saved runtime PM policy. '
                 'No PCM, tone, microphone capture, or amplifier gain/protection changes.')
         elif args.action == 'inspect':
             report['inventory'] = inventory()
