@@ -6,16 +6,16 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-04, BL live; microphone loop isolates missing right-speaker port)
+## Status (2026-10-04, BL collected; diagnostic port-address fix ready for mainline retry)
 
 Latest result: [BL](tools/spx/boot-diagnostics/RESULT-20261004bl.md). Kernel
 changes are committed on `spx/next` as one commit per feature.
 New [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
 awaits tested-kernel confirmation; recovery diagnostics are identified separately.
-BL runs `7.3.0-rc2-spx-mainline-20261004bg+`; input/BT user confirmations belong
-to BI. Automatic microphone feedback ran across speaker startup; simultaneous
-playback/capture started, but missing master DP4 stopped tones. Driver fix pending.
-No human listening response is needed for this authorized acoustic loop.
+BL ran `7.3.0-rc2-spx-mainline-20261004bg+`; input/BT confirmations belong to BI.
+Automatic mic capture and simultaneous playback started. A diagnostic address bug
+falsely reported missing DP4 and stopped tones; fixed in source. An unexplained
+restart returned to recovery6.18. The next mainline test will run automatically.
 
 | Area | State | What is missing |
 |---|---|---|
@@ -28,7 +28,7 @@ No human listening response is needed for this authorized acoustic loop.
 | RTC (B05) | Readback and warm reboot pass | Cold power-off retention |
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
-| Speakers (A01) | BL: simultaneous PCM/capture starts; DP4 missing | Master right-port programming, then microphone-verified output |
+| Speakers (A01) | BL: both master ports verified; snapshot bug stopped tones | Corrected diagnostic loaded, then microphone-verified output |
 | Microphones (A02) | BK/BL: internal DMIC1 capture and reopen work | Known acoustic stimulus, both mics, quality and full lifecycle |
 | Cameras (C01–C05) | Rear sensor identifies | No frame captured |
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
