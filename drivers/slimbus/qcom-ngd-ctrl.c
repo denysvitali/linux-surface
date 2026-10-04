@@ -175,6 +175,11 @@ module_param(spx_stage7_step, int, 0644);
 MODULE_PARM_DESC(spx_stage7_step,
 		 "Surface Pro X stage 7 sub-step: 0=QMI power+reads, 1=RX chan, 2=RX buffer, 3=RX desc submit only, 4=RX desc issue, 5=RX+TX DMA, 6=NGD_CFG enable, 7=capability polling");
 
+static int spx_stage8_step;
+module_param(spx_stage8_step, int, 0444);
+MODULE_PARM_DESC(spx_stage8_step,
+		 "Surface Pro X stage 8 sub-step: 0=stop before runtime resume, 1=PIO runtime resume only, 2=full SLIM registration (requires spx_allow_full)");
+
 static int spx_select_mode;
 module_param(spx_select_mode, int, 0644);
 MODULE_PARM_DESC(spx_select_mode,
@@ -2196,6 +2201,9 @@ static int qcom_slim_ngd_power_up(struct qcom_slim_ngd_ctrl *ctrl)
 
 	laddr = readl_relaxed(ngd->base + NGD_STATUS);
 	if (laddr & NGD_LADDR) {
+		dev_info(ctrl->dev,
+			 "SPX: power up retained logical address status=0x%x state=%d\n",
+			 laddr, cur_state);
 		/*
 		 * external MDM restart case where ADSP itself was active framer
 		 * For example, modem restarted when playback was active
@@ -2206,6 +2214,9 @@ static int qcom_slim_ngd_power_up(struct qcom_slim_ngd_ctrl *ctrl)
 		}
 		return qcom_slim_ngd_setup(ctrl);
 	}
+	dev_info(ctrl->dev,
+		 "SPX: power up needs capability setup status=0x%x state=%d\n",
+		 laddr, cur_state);
 
 	/*
 	 * Reinitialize only when registers are not retained or when enumeration
@@ -2346,7 +2357,7 @@ static int qcom_slim_ngd_spx_stage7_probe(struct qcom_slim_ngd_ctrl *ctrl)
 
 		if (spx_stage7_step == 6) {
 			dev_info(ctrl->dev,
-				 "SPX: stage 7 PIO observe-only soak (no TX); heartbeat logs follow\n");
+				 "SPX: stage 7 PIO RX/reactive capability soak (no proactive TX); heartbeat logs follow\n");
 			return 0;
 		}
 
@@ -2462,11 +2473,12 @@ static void qcom_slim_ngd_master_worker(struct work_struct *work)
 	txn.msg = &msg;
 	txn.msg->wbuf = wbuf;
 	txn.msg->num_bytes = 4;
-	txn.rl = 8;
 
 	dev_info(ctrl->dev, "SLIM SAT: Rcvd master capability\n");
 
 capability_retry:
+	/* xfer_msg consumes the length byte on every attempt. */
+	txn.rl = 8;
 	ret = qcom_slim_ngd_xfer_msg(&ctrl->ctrl, &txn);
 	if (!ret) {
 		if (ctrl->state >= QCOM_SLIM_NGD_CTRL_ASLEEP)
@@ -2714,10 +2726,11 @@ static int qcom_slim_ngd_enable(struct qcom_slim_ngd_ctrl *ctrl, bool enable)
 				return 0;
 			}
 
-			if (spx_probe_stage < 8) {
+			if (spx_probe_stage != 8 || spx_stage8_step < 0 ||
+			    spx_stage8_step > 2) {
 				dev_err(ctrl->dev,
-					"SPX: refusing unknown probe stage=%d\n",
-					spx_probe_stage);
+					"SPX: refusing probe stage=%d stage8_step=%d\n",
+					spx_probe_stage, spx_stage8_step);
 				return -EINVAL;
 			}
 
@@ -2727,20 +2740,51 @@ static int qcom_slim_ngd_enable(struct qcom_slim_ngd_ctrl *ctrl, bool enable)
 				return -EPERM;
 			}
 
-			if (!spx_allow_full) {
+			if (spx_stage8_step == 0) {
+				dev_info(ctrl->dev,
+					 "SPX: stage 8 step 0 stopping before runtime resume and SLIM registration\n");
+				return 0;
+			}
+
+			if (spx_stage8_step == 1 && !spx_pio_mode) {
+				dev_err(ctrl->dev,
+					"SPX: refusing stage 8 step 1 without PIO mode\n");
+				return -EPERM;
+			}
+
+			if (spx_stage8_step == 2 && !spx_allow_full) {
 				dev_err(ctrl->dev,
 					"SPX: refusing full SLIMbus bring-up without spx_allow_full=1\n");
 				return -EPERM;
 		}
 
+		dev_info(ctrl->dev,
+			 "SPX: stage 8 runtime resume begin step=%d state=%d suspended=%d\n",
+			 spx_stage8_step, ctrl->state,
+			 pm_runtime_suspended(ctrl->ctrl.dev));
 		if (!pm_runtime_enabled(ctrl->ctrl.dev) ||
 			 !pm_runtime_suspended(ctrl->ctrl.dev))
 			ret = qcom_slim_ngd_runtime_resume(ctrl->ctrl.dev);
 		else
 			ret = pm_runtime_resume(ctrl->ctrl.dev);
-		if (ret) {
-			dev_err(ctrl->dev, "SPX: runtime resume failed:%d\n", ret);
+		if (ret < 0) {
+			dev_err(ctrl->dev,
+				"SPX: stage 8 runtime resume failed step=%d ret=%d; keeping module pinned\n",
+				spx_stage8_step, ret);
+			/* Avoid the staged-error QMI power-off path after mutation. */
+			if (spx_stage8_step == 1)
+				return 0;
 			return ret;
+		}
+		dev_info(ctrl->dev,
+			 "SPX: stage 8 runtime resume done step=%d ret=%d state=%d active=%d\n",
+			 spx_stage8_step, ret, ctrl->state,
+			 pm_runtime_active(ctrl->ctrl.dev));
+
+		if (spx_stage8_step == 1) {
+			dev_info(ctrl->dev,
+				 "SPX: stopping after stage 8 runtime resume before SLIM registration\n");
+			return 0;
 		}
 
 		pm_runtime_mark_last_busy(ctrl->ctrl.dev);
@@ -3005,8 +3049,9 @@ static int qcom_slim_ngd_probe(struct platform_device *pdev)
 	int ret;
 
 	dev_info(dev,
-		 "SPX: child probe entry stage=%d stage7=%d allow_dma=%d bam_stop unavailable-here\n",
-		 spx_probe_stage, spx_stage7_step, spx_allow_dma);
+		 "SPX: child probe entry stage=%d stage7=%d stage8=%d allow_dma=%d bam_stop unavailable-here\n",
+		 spx_probe_stage, spx_stage7_step, spx_stage8_step,
+		 spx_allow_dma);
 	ctrl->ctrl.dev = dev;
 
 	platform_set_drvdata(pdev, ctrl);

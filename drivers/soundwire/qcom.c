@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 // Copyright (c) 2019, Linaro Limited
 
+#include <linux/atomic.h>
 #include <linux/clk.h>
 #include <linux/completion.h>
 #include <linux/interrupt.h>
@@ -16,6 +17,8 @@
 #include <linux/slab.h>
 #include <linux/pm_wakeirq.h>
 #include <linux/slimbus.h>
+#include <linux/spinlock.h>
+#include <linux/timekeeping.h>
 #include <linux/soundwire/sdw.h>
 #include <linux/soundwire/sdw_registers.h>
 #include <sound/pcm_params.h>
@@ -83,6 +86,18 @@ static int spx_force_attach;
 module_param(spx_force_attach, int, 0644);
 MODULE_PARM_DESC(spx_force_attach,
 		 "SPX: blind-assign dev#1 + force-attach the WSA slave (bypass marginal enum reads)");
+
+/* Observe existing enumerator reads only; never add a diagnostic bus access. */
+static bool spx_enum_diag;
+module_param(spx_enum_diag, bool, 0444);
+MODULE_PARM_DESC(spx_enum_diag,
+		 "SPX: log at most eight enumerator-table transactions per controller");
+
+/* Software submission history only: no diagnostic register access. */
+static bool spx_cmd_diag;
+module_param(spx_cmd_diag, bool, 0444);
+MODULE_PARM_DESC(spx_cmd_diag,
+		 "SPX: dump the last sixteen FIFO command submissions on at most two command errors");
 /*
  * SPX: skip the DevID read-back verification in force-attach. The two amps
  * clash on reads (both answer dev1 simultaneously), but writes are
@@ -408,6 +423,17 @@ enum {
 	SWRM_OFFSET_DP_SAMPLECTRL2_BANK,
 };
 
+#define SPX_CMD_DIAG_RECORDS 16
+#define SPX_CMD_DIAG_DUMPS 2
+
+struct spx_cmd_diag_record {
+	u64 sequence;
+	u64 submitted_ns;
+	u32 packed;
+	int bridge_result;
+	bool read;
+};
+
 struct qcom_swrm_ctrl {
 	struct sdw_bus bus;
 	struct device *dev;
@@ -455,6 +481,14 @@ struct qcom_swrm_ctrl {
 	struct delayed_work spx_enum_work;	/* SPX: poll-enumerate, IRQ-less */
 	int spx_enum_tries;
 	bool spx_diag_done;			/* SPX: one-shot DevID probe ran */
+	atomic_t spx_enum_diag_budget;
+	bool spx_cmd_diag_enabled;
+	spinlock_t spx_cmd_diag_lock;
+	struct spx_cmd_diag_record spx_cmd_history[SPX_CMD_DIAG_RECORDS];
+	u64 spx_cmd_sequence;
+	unsigned int spx_cmd_head;
+	unsigned int spx_cmd_count;
+	unsigned int spx_cmd_dumps_left;
 	struct delayed_work spx_wd_work;	/* SPX: amp-presence watchdog */
 	int spx_wd_state;
 	int spx_wd_fails;
@@ -725,6 +759,76 @@ static int __qcom_swrm_ahb_reg_write(struct qcom_swrm_ctrl *ctrl,
 	return SDW_CMD_OK;
 }
 
+/* Called with ahb_lock held, preserving software submission order. */
+static void spx_cmd_diag_record(struct qcom_swrm_ctrl *ctrl, unsigned int reg,
+				u32 packed, int bridge_result)
+{
+	struct spx_cmd_diag_record *record;
+	unsigned long flags;
+
+	if (!ctrl->spx_cmd_diag_enabled ||
+	    (reg != ctrl->reg_layout[SWRM_REG_CMD_FIFO_WR_CMD] &&
+	     reg != ctrl->reg_layout[SWRM_REG_CMD_FIFO_RD_CMD]))
+		return;
+
+	spin_lock_irqsave(&ctrl->spx_cmd_diag_lock, flags);
+	record = &ctrl->spx_cmd_history[ctrl->spx_cmd_head];
+	record->sequence = ++ctrl->spx_cmd_sequence;
+	record->submitted_ns = ktime_get_ns();
+	record->packed = packed;
+	record->bridge_result = bridge_result;
+	record->read = reg == ctrl->reg_layout[SWRM_REG_CMD_FIFO_RD_CMD];
+	ctrl->spx_cmd_head = (ctrl->spx_cmd_head + 1) % SPX_CMD_DIAG_RECORDS;
+	if (ctrl->spx_cmd_count < SPX_CMD_DIAG_RECORDS)
+		ctrl->spx_cmd_count++;
+	spin_unlock_irqrestore(&ctrl->spx_cmd_diag_lock, flags);
+}
+
+/* Snapshot before recovery; print after the existing FIFO flush. */
+static unsigned int spx_cmd_diag_snapshot(struct qcom_swrm_ctrl *ctrl,
+					 struct spx_cmd_diag_record *snapshot)
+{
+	unsigned int count = 0, first, i;
+	unsigned long flags;
+
+	if (!ctrl->spx_cmd_diag_enabled)
+		return 0;
+
+	spin_lock_irqsave(&ctrl->spx_cmd_diag_lock, flags);
+	if (ctrl->spx_cmd_dumps_left) {
+		ctrl->spx_cmd_dumps_left--;
+		count = ctrl->spx_cmd_count;
+		first = (ctrl->spx_cmd_head + SPX_CMD_DIAG_RECORDS - count) %
+			SPX_CMD_DIAG_RECORDS;
+		for (i = 0; i < count; i++)
+			snapshot[i] = ctrl->spx_cmd_history[(first + i) %
+							 SPX_CMD_DIAG_RECORDS];
+	}
+	spin_unlock_irqrestore(&ctrl->spx_cmd_diag_lock, flags);
+
+	return count;
+}
+
+static void spx_cmd_diag_print(struct qcom_swrm_ctrl *ctrl,
+			       const struct spx_cmd_diag_record *snapshot,
+			       unsigned int count)
+{
+	unsigned int i;
+
+	if (!count)
+		return;
+
+	dev_info(ctrl->dev, "SPX cmd diag history count=%u submission-only\n",
+		 count);
+	for (i = 0; i < count; i++)
+		dev_info(ctrl->dev,
+			 "SPX cmd diag seq=%llu submitted_ns=%llu op=%c packed=%08x bridge_rc=%d\n",
+			 (unsigned long long)snapshot[i].sequence,
+			 (unsigned long long)snapshot[i].submitted_ns,
+			 snapshot[i].read ? 'R' : 'W', snapshot[i].packed,
+			 snapshot[i].bridge_result);
+}
+
 static int qcom_swrm_ahb_reg_write(struct qcom_swrm_ctrl *ctrl,
 				   int reg, int val)
 {
@@ -732,6 +836,7 @@ static int qcom_swrm_ahb_reg_write(struct qcom_swrm_ctrl *ctrl,
 
 	mutex_lock(&ctrl->ahb_lock);
 	ret = __qcom_swrm_ahb_reg_write(ctrl, reg, val);
+	spx_cmd_diag_record(ctrl, reg, val, ret);
 	mutex_unlock(&ctrl->ahb_lock);
 
 	return ret;
@@ -855,6 +960,8 @@ static int qcom_swrm_cmd_fifo_wr_cmd(struct qcom_swrm_ctrl *ctrl, u8 cmd_data,
 	int ret = 0;
 	u8 cmd_id = 0x0;
 	u8 target = dev_addr;
+	bool spx_blind_fifo = ctrl->spx_windows_init || spx_core_enum ||
+			      spx_forced_attached;
 
 	/* Leave SCP addressing and synchronized frame switches untouched. Ordinary
 	 * codec/DP broadcasts retain their ordinary FIFO tag; only the existing
@@ -879,9 +986,11 @@ static int qcom_swrm_cmd_fifo_wr_cmd(struct qcom_swrm_ctrl *ctrl, u8 cmd_data,
 	 * write-FIFO count is stale/unreliable (often permanently reports full),
 	 * although the command register remains usable.  Serialize blind writes
 	 * with a flush and enough bridge settle time instead of rejecting DAPM
-	 * power writes based on that count.
+	 * power writes based on that count. Force-attached slaves need this
+	 * treatment too: their codec cold init otherwise hits a stale full count
+	 * after the logical attach and fails before the PA sequence completes.
 	 */
-	if (ctrl->spx_windows_init || spx_core_enum) {
+	if (spx_blind_fifo) {
 		ctrl->reg_write(ctrl, SWRM_CMD_FIFO_CMD, SWRM_CMD_FIFO_FLUSH);
 		usleep_range(500, 550);
 	} else if (swrm_wait_for_wr_fifo_avail(ctrl)) {
@@ -893,7 +1002,7 @@ static int qcom_swrm_cmd_fifo_wr_cmd(struct qcom_swrm_ctrl *ctrl, u8 cmd_data,
 
 	/* Its assumed that write is okay as we do not get any status back */
 	ctrl->reg_write(ctrl, ctrl->reg_layout[SWRM_REG_CMD_FIFO_WR_CMD], val);
-	if (ctrl->spx_windows_init || spx_core_enum) {
+	if (spx_blind_fifo) {
 		usleep_range(1200, 1300);
 	}
 
@@ -1077,15 +1186,30 @@ static int qcom_swrm_enumerate(struct sdw_bus *bus)
 	char *buf1 = (char *)&val1, *buf2 = (char *)&val2;
 
 	for (i = 1; i <= SDW_MAX_DEVICES; i++) {
+		bool diag;
+		int id1_ret, id2_ret;
+
 		/* do not continue if the status is Not Present  */
 		if (!ctrl->status[i])
 			continue;
 
 		/*SCP_Devid5 - Devid 4*/
-		ctrl->reg_read(ctrl, SWRM_ENUMERATOR_SLAVE_DEV_ID_1(i), &val1);
+		id1_ret = ctrl->reg_read(ctrl, SWRM_ENUMERATOR_SLAVE_DEV_ID_1(i),
+					 &val1);
 
 		/*SCP_Devid3 - DevId 2 Devid 1 Devid 0*/
-		ctrl->reg_read(ctrl, SWRM_ENUMERATOR_SLAVE_DEV_ID_2(i), &val2);
+		id2_ret = ctrl->reg_read(ctrl, SWRM_ENUMERATOR_SLAVE_DEV_ID_2(i),
+					 &val2);
+
+		diag = spx_enum_diag &&
+			atomic_dec_if_positive(&ctrl->spx_enum_diag_budget) >= 0;
+		if (diag)
+			dev_info(ctrl->dev,
+				 "SPX enum diag slot=%d status_snapshot=%#x used_status=%u force_pending=%d forced=%u rc=%d/%d words=%08x/%08x\n",
+				 i, ctrl->slave_status, ctrl->status[i],
+				 spx_force_attach, spx_forced_attached,
+				 id1_ret, id2_ret,
+				 id1_ret ? 0 : val1, id2_ret ? 0 : val2);
 
 		if (!val1 && !val2) {
 			if (ctrl->spx_windows_init)
@@ -1098,6 +1222,11 @@ static int qcom_swrm_enumerate(struct sdw_bus *bus)
 			((u64)buf1[0] << 40);
 
 		sdw_extract_slave_id(bus, addr, &id);
+		if (diag && !id1_ret && !id2_ret)
+			dev_info(ctrl->dev,
+				 "SPX enum diag slot=%d decoded=%04x:%04x unique=%x version=%x class=%x\n",
+				 i, id.mfg_id, id.part_id, id.unique_id,
+				 id.sdw_version, id.class_id);
 		found = false;
 		ctrl->clock_stop_not_supported = false;
 		/* Now compare with entries */
@@ -2132,6 +2261,11 @@ static irqreturn_t qcom_swrm_irq_handler(int irq, void *dev_id)
 				ctrl->reg_write(ctrl, SWRM_CMD_FIFO_CMD, 0x1);
 				break;
 			case SWRM_INTERRUPT_STATUS_CMD_ERROR:
+			{
+				struct spx_cmd_diag_record snapshot[SPX_CMD_DIAG_RECORDS];
+				unsigned int count;
+
+				count = spx_cmd_diag_snapshot(ctrl, snapshot);
 				ctrl->reg_read(ctrl,
 					       ctrl->reg_layout[SWRM_REG_CMD_FIFO_STATUS],
 					       &value);
@@ -2139,7 +2273,9 @@ static irqreturn_t qcom_swrm_irq_handler(int irq, void *dev_id)
 					"%s: SWR CMD error, fifo status 0x%x, flushing fifo\n",
 					__func__, value);
 				ctrl->reg_write(ctrl, SWRM_CMD_FIFO_CMD, 0x1);
+				spx_cmd_diag_print(ctrl, snapshot, count);
 				break;
+			}
 			case SWRM_INTERRUPT_STATUS_DOUT_PORT_COLLISION:
 				dev_err_ratelimited(ctrl->dev,
 						"%s: SWR Port collision detected\n",
@@ -3675,6 +3811,11 @@ static int qcom_swrm_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	mutex_init(&ctrl->ahb_lock);
 	mutex_init(&ctrl->controller_lock);
+	atomic_set(&ctrl->spx_enum_diag_budget, 8);
+	spin_lock_init(&ctrl->spx_cmd_diag_lock);
+	ctrl->spx_cmd_diag_enabled = spx_cmd_diag &&
+		of_machine_is_compatible("microsoft,surface-pro-x");
+	ctrl->spx_cmd_dumps_left = SPX_CMD_DIAG_DUMPS;
 
 	/* Fail fast on an out-of-range spx_idle_clk_stop_ms cmdline value
 	 * instead of silently ignoring it at activation time.

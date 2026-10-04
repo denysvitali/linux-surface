@@ -854,13 +854,23 @@ static bool wsa881x_spx_windows_pa(struct wsa881x_priv *wsa881x)
 	return wsa881x->spx_write_only || spx_enumerated_mode;
 }
 
+static bool wsa881x_spx_slave_available(struct wsa881x_priv *wsa881x)
+{
+	/* Force-attach can leave a stale dev_num on the second DT slave.
+	 * Only the slave whose bus status is ATTACHED may join the stream.
+	 */
+	return !spx_enumerated_mode ||
+	       READ_ONCE(wsa881x->slave->status) == SDW_SLAVE_ATTACHED;
+}
+
 static bool wsa881x_spx_transport_enabled(struct wsa881x_priv *wsa881x)
 {
 	unsigned int dev_num = wsa881x->slave->dev_num;
 
 	if (!spx_enumerated_mode)
 		return true;
-	return dev_num >= 1 && dev_num <= 2 &&
+	return wsa881x_spx_slave_available(wsa881x) &&
+	       dev_num >= 1 && dev_num <= 2 &&
 	       (spx_stream_device_mask & BIT(dev_num - 1));
 }
 
@@ -1275,6 +1285,9 @@ static int wsa881x_put_pa_gain(struct snd_kcontrol *kc,
 	unsigned int mask = (1 << fls(max)) - 1;
 	int val, ret, min_gain, max_gain;
 
+	if (!wsa881x_spx_slave_available(wsa881x))
+		return -ENODEV;
+
 	ret = pm_runtime_resume_and_get(comp->dev);
 	if (ret < 0 && ret != -EACCES)
 		return ret;
@@ -1351,6 +1364,10 @@ static int wsa881x_set_port(struct snd_kcontrol *kcontrol,
 		(struct soc_mixer_control *)kcontrol->private_value;
 	int portidx = mixer->reg;
 
+	if (portidx == WSA881X_PORT_BOOST &&
+	    !wsa881x_spx_slave_available(data))
+		return -ENODEV;
+
 	if (ucontrol->value.integer.value[0]) {
 		if (data->port_enable[portidx])
 			return 0;
@@ -1387,10 +1404,59 @@ static const struct soc_enum smart_boost_lvl_enum =
 			ARRAY_SIZE(smart_boost_lvl_text),
 			smart_boost_lvl_text);
 
+static int wsa881x_get_smart_boost_level(struct snd_kcontrol *kcontrol,
+					 struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *comp = snd_kcontrol_chip(kcontrol);
+	struct wsa881x_priv *wsa881x = snd_soc_component_get_drvdata(comp);
+	const struct soc_enum *e = &smart_boost_lvl_enum;
+	unsigned int val;
+
+	if (!wsa881x_use_shadow(wsa881x))
+		return snd_soc_get_enum_double(kcontrol, ucontrol);
+
+	mutex_lock(&wsa881x->spx_shadow_lock);
+	val = (wsa881x->spx_reg_shadow[e->reg] >> e->shift_l) & e->mask;
+	mutex_unlock(&wsa881x->spx_shadow_lock);
+	ucontrol->value.enumerated.item[0] = snd_soc_enum_val_to_item(e, val);
+	return 0;
+}
+
+static int wsa881x_put_smart_boost_level(struct snd_kcontrol *kcontrol,
+					 struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_component *comp = snd_kcontrol_chip(kcontrol);
+	struct wsa881x_priv *wsa881x = snd_soc_component_get_drvdata(comp);
+	const struct soc_enum *e = &smart_boost_lvl_enum;
+	unsigned int item = ucontrol->value.enumerated.item[0];
+	unsigned int mask = e->mask << e->shift_l;
+	unsigned int val, old;
+	int ret;
+
+	if (!wsa881x_use_shadow(wsa881x))
+		return snd_soc_put_enum_double(kcontrol, ucontrol);
+	if (item >= e->items)
+		return -EINVAL;
+	if (!wsa881x_spx_slave_available(wsa881x))
+		return -ENODEV;
+
+	val = snd_soc_enum_item_to_val(e, item) << e->shift_l;
+	mutex_lock(&wsa881x->spx_shadow_lock);
+	old = wsa881x->spx_reg_shadow[e->reg] & mask;
+	mutex_unlock(&wsa881x->spx_shadow_lock);
+	if (old == val)
+		return 0;
+
+	ret = wsa881x_update_bits(wsa881x, e->reg, mask, val);
+	return ret < 0 ? ret : 1;
+}
+
 static const DECLARE_TLV_DB_SCALE(pa_gain, 0, 150, 0);
 
 static const struct snd_kcontrol_new wsa881x_snd_controls[] = {
-	SOC_ENUM("Smart Boost Level", smart_boost_lvl_enum),
+	SOC_ENUM_EXT("Smart Boost Level", smart_boost_lvl_enum,
+		     wsa881x_get_smart_boost_level,
+		     wsa881x_put_smart_boost_level),
 	WSA881X_PA_GAIN_TLV("PA Volume", WSA881X_SPKR_DRV_GAIN,
 			    4, 0xC, 1, pa_gain),
 	SOC_SINGLE_EXT("DAC Switch", WSA881X_PORT_DAC, 0, 1, 0,
@@ -1460,6 +1526,9 @@ static int wsa881x_spkr_pa_event(struct snd_soc_dapm_widget *w,
 	if (!ret) \
 		ret = wsa881x_update_bits(wsa881x, (_reg), (_mask), (_val)); \
 } while (0)
+
+	if (!wsa881x_spx_slave_available(wsa881x))
+		return 0;
 
 	if (!transport_enabled) {
 		if (event == SND_SOC_DAPM_PRE_PMU ||
@@ -1746,6 +1815,9 @@ static int wsa881x_rdac_event(struct snd_soc_dapm_widget *w,
 	struct snd_soc_component *comp = snd_soc_dapm_to_component(w->dapm);
 	struct wsa881x_priv *wsa881x = snd_soc_component_get_drvdata(comp);
 
+	if (!wsa881x_spx_slave_available(wsa881x))
+		return 0;
+
 	if (!wsa881x_spx_transport_enabled(wsa881x))
 		return wsa881x_update_bits(wsa881x, WSA881X_SPKR_DAC_CTL,
 					   BIT(7), 0);
@@ -1915,6 +1987,9 @@ static int wsa881x_set_sdw_stream(struct snd_soc_dai *dai,
 static int wsa881x_digital_mute(struct snd_soc_dai *dai, int mute, int stream)
 {
 	struct wsa881x_priv *wsa881x = dev_get_drvdata(dai->dev);
+
+	if (!wsa881x_spx_slave_available(wsa881x))
+		return 0;
 
 	if (mute || !wsa881x_spx_transport_enabled(wsa881x))
 		return wsa881x_update_bits(wsa881x, WSA881X_SPKR_DRV_EN,
