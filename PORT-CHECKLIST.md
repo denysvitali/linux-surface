@@ -30,7 +30,7 @@ awaits tested-kernel confirmation; recovery diagnostics are identified separatel
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
 | Keyboard, touchpad (I04, I05) | BH basic use; user: detach/reattach works slowly, boot pending | Full keys/gestures and resume |
 | Buttons (I06) | User: short power press opens shutdown prompt, boot pending | Volume/posture and intended wake |
-| Bluetooth (N02) | BH discovery works; user GNOME toggle fails; recovery controller repaired | GNOME toggle, pairing, peripheral use, resume |
+| Bluetooth (N02) | BH discovery works; user confirms Bluetooth works on repaired recovery boot | Mainline GNOME toggle, pairing, peripheral use, resume |
 | USB data (U01) | Untested | Both ports/orientations, fixtures |
 | USB-C PD, DisplayPort, dock (U02–U04) | User: charging works, dock monitor blank; boot pending | Roles/PD, DP hotplug integration, visible output |
 | Battery and charging (P01) | User: USB-C charging works; boot attribution pending | Discharge, transitions and charger coverage |
@@ -566,8 +566,10 @@ host datapath; that is not current cellular service verification.
   firmware setup, but RFCOMM/HIDP/UHID are disabled. BH adds those modules and
   discovers 19 devices after unblock/setup. User later reports GNOME cannot
   enable Bluetooth, with boot attribution pending. Current recovery controller
-  restored by runtime address configuration; GNOME toggle/pairing still need
-  physical confirmation. [BH result](tools/spx/boot-diagnostics/RESULT-20261004bh.md).
+  restored by runtime address configuration. User confirms “BT works now” on
+  recovery boot `f309dbfa-4e99-4bdd-9059-efc12f21b817`, `6.18.3-1-surface+`.
+  Mainline GNOME toggle, pairing, peripheral use, persistence and resume remain
+  unverified. [BH result](tools/spx/boot-diagnostics/RESULT-20261004bh.md).
   [Follow-up](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md).
 - [ ] **N03 — Cellular control/data.** Stable modem startup and discovery, correct
   SIM/eSIM applicability, network registration and actual bidirectional data with

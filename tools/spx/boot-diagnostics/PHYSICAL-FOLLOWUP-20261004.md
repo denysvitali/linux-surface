@@ -15,8 +15,9 @@ The coordinator inspected recovery boot
 - Bluetooth lacked its public address, so BlueZ had no controller. Restoring the
   documented installation address made it appear with `Powered: yes` and
   `PowerState: on`. This is a runtime repair only. The disabled installer service
-  contains a different address; it was left unchanged. GNOME toggle/pairing still
-  needs a person. BH already supplied the address through its private DTB and
+  contains a different address; it was left unchanged. The user subsequently
+  confirms “BT works now” on this recovery boot. Pairing/peripheral use and
+  persistence remain untested. BH supplied the address through its private DTB and
   successfully scanned after software unblock and firmware setup.
 - `sleep.target` and `suspend.target` are masked. `CanSuspend` returns `no`,
   although the kernel exposes `freeze mem disk` and `[s2idle]`. The masks date
@@ -36,8 +37,8 @@ output. Connector enumeration in older logs never proved visible pixels.
 
 ## Next functional checks
 
-1. Confirm the tested kernel; reopen GNOME Bluetooth settings and toggle off/on,
-   then pair/use one owned input device.
+1. Confirm the kernel used for the original five observations; test GNOME's
+   Bluetooth toggle on mainline, then pair/use one owned input device.
 2. On an identified boot with IPTSD active, capture input-event counts and SPI-HID
    metadata while the user drags a finger for five seconds and hovers/draws with
    the pen. Locate whether delivery stops before or after virtual input creation.
