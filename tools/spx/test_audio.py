@@ -557,6 +557,87 @@ class AudioTests(unittest.TestCase):
         self.assertEqual(report['public_desktop']['public_volume']['prior'], ['25559', '25559'])
         capture.close.assert_not_called()  # Caller closes only after this score succeeds.
 
+    def test_public_deadline_allows_setup_and_retains_interrupted_score_bounds(self):
+        import acoustic
+
+        for outcome in ('pass', 'deadline', 'external signal'):
+            with self.subTest(outcome=outcome):
+                clock, timers = [0.0], []
+                report = {}
+                capture, pcm, graph = Mock(), Mock(), Mock()
+
+                class Timer:
+                    def __init__(self, seconds, callback):
+                        self.end, self.callback = clock[0] + seconds, callback
+                        self.canceled = False
+
+                    def start(self):
+                        timers.append(self)
+
+                    def cancel(self):
+                        self.canceled = True
+
+                def advance(seconds):
+                    end = clock[0] + seconds
+                    for timer in timers:
+                        if not timer.canceled and timer.end <= end:
+                            clock[0] = timer.end
+                            timer.callback()
+                    clock[0] = end
+
+                capture.mark.side_effect = lambda: 150000 + round(clock[0] * 48000)
+                capture.wait_frames.side_effect = lambda frame: advance(
+                    max(0, (frame - capture.mark()) / 48000))
+                capture.samples.side_effect = lambda begin, end: (begin, end)
+                pcm.settle.side_effect = advance
+                graph.connect_public.side_effect = lambda *args, **kwargs: advance(12)
+                graph.public_restore = [('pactl', 'set-sink-volume', 'spx_speakers',
+                                         '65536', '65536')]
+                graph.monitor.peak = 1433
+
+                def play(*unused):
+                    graph.monitor.forward = True
+                    graph.monitor.input_peak = 32767
+                    advance(2)
+
+                def score(samples, reference, expected):
+                    evidence = report['public_desktop']
+                    self.assertFalse(graph.monitor.forward)
+                    self.assertEqual(samples, (evidence['start_frame'], evidence['end_frame']))
+                    self.assertEqual(reference, (evidence['reference_start_frame'],
+                                                 evidence['reference_end_frame']))
+                    if outcome == 'external signal':
+                        raise RuntimeError('Interrupted by signal 15')
+                    advance(25 if outcome == 'deadline' else 4)
+                    return {'passed': True, 'reason': 'detected'}
+
+                graph.play.side_effect = play
+                with patch.object(audio.threading, 'Timer', Timer), \
+                        patch.object(audio.time, 'monotonic', side_effect=lambda: clock[0]), \
+                        patch.object(audio, 'tone', return_value=b'test PCM'), \
+                        patch.object(acoustic, 'score_phase', side_effect=score), \
+                        patch.object(audio.os, 'kill', side_effect=RuntimeError(
+                            'Interrupted by signal 15')) as kill:
+                    if outcome == 'pass':
+                        audio.verify_public_playback(report, pcm, graph, capture)
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, 'signal 15'):
+                            audio.verify_public_playback(report, pcm, graph, capture)
+                evidence = report['public_desktop']
+                self.assertTrue(timers[0].canceled)
+                self.assertEqual(evidence['deadline_expired'], outcome == 'deadline')
+                self.assertEqual(evidence['acoustic_passed'], outcome == 'pass')
+                self.assertGreater(evidence['seconds'], 15)
+                self.assertEqual(evidence['output_peak_limit'], 1433)
+                if outcome == 'deadline':
+                    kill.assert_called_once_with(os.getpid(), audio.signal.SIGTERM)
+                    self.assertEqual(evidence['timeout_phase'], 'scoring')
+                    self.assertEqual(evidence['timeout_seconds'], 30)
+                    self.assertIn('deadline exceeded', evidence['timeout_reason'])
+                else:
+                    kill.assert_not_called()
+                    self.assertNotIn('timeout_reason', evidence)
+
     def test_serve_permission_and_duration_bounds(self):
         args = SimpleNamespace(action='serve', allow_amp_power=True,
                                allow_playback=True, allow_capture=False)

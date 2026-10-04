@@ -893,39 +893,63 @@ def verify_public_playback(report, pcm, graph, capture, desktop_peak=1433):
 
     evidence = report['public_desktop'] = {'acoustic_passed': False,
         'sink': 'spx_speakers', 'input_peak_limit': 32767, 'output_peak_limit': desktop_peak,
-        'gain': desktop_peak / 32768, 'maximum_seconds': 15}
-    deadline = threading.Timer(15, lambda: os.kill(os.getpid(), signal.SIGTERM))
+        'gain': desktop_peak / 32768, 'maximum_seconds': 30, 'deadline_expired': False,
+        'phase_seconds': {}}
+    started = time.monotonic()
+
+    def phase(name):
+        evidence['phase'] = name
+        evidence['phase_seconds'][name] = time.monotonic() - started
+
+    def expire():
+        evidence.update(deadline_expired=True, timeout_phase=evidence['phase'],
+                        timeout_seconds=time.monotonic() - started,
+                        timeout_reason='Public playback verification deadline exceeded')
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    # Include Pulse setup and CPU-bound scoring under frequency scaling. This
+    # does not lengthen the two-second tone or the overall 90-second capture cap.
+    phase('connect')
+    deadline = threading.Timer(evidence['maximum_seconds'], expire)
     deadline.start()
     try:
         graph.connect_public(pcm, desktop_peak=desktop_peak)
+        phase('settle')
         pcm.settle(0.5)
         graph.require_public_idle()
         graph.monitor.forward = False
         graph.monitor.input_peak = 0
+        phase('reference')
         quiet_begin = capture.mark()
         pcm.settle(2)
         capture.wait_frames(quiet_begin + 2 * 48000)
         quiet_end = capture.mark()
+        evidence.update(reference_start_frame=quiet_end - 2 * 48000,
+                        reference_end_frame=quiet_end)
         reference = capture.samples(quiet_end - 2 * 48000, quiet_end)
         graph.require_public_idle()
         need(graph.monitor.input_peak <= 1,
              'Public monitor was not silent during its acoustic reference')
         begin = capture.mark()
+        evidence['start_frame'] = begin
+        phase('playback')
         graph.play(tone({0, 1}, amplitude=32767), 'public-both')
+        phase('drain')
         pcm.settle(0.8)
         capture.wait_frames(begin + 3 * 48000)
         end = capture.mark()
+        evidence['end_frame'] = end
         graph.require_public_idle()
         # As in the temporary desktop test, score only after playback has
         # drained, using ALSA-paced local silence. A CPU-bound Python scorer
         # can starve the 5 ms monitor/feeder handoff even with queued samples.
         # Leave this mode in place through microphone close and mixer restore.
         graph.monitor.forward = False
+        evidence.update(input_peak=graph.monitor.input_peak, output_peak=graph.monitor.peak)
+        phase('scoring')
         scored = score_phase(capture.samples(begin, end), reference, [440, 660])
-        evidence.update(reference_start_frame=quiet_end - 2 * 48000,
-                        reference_end_frame=quiet_end, start_frame=begin,
-                        end_frame=end, score=scored, input_peak=graph.monitor.input_peak,
-                        output_peak=graph.monitor.peak)
+        evidence['score'] = scored
+        phase('validate')
         graph.require_public_idle()
         graph.monitor.healthy()
         pcm.healthy()
@@ -935,8 +959,10 @@ def verify_public_playback(report, pcm, graph, capture, desktop_peak=1433):
             'prior': list(next(command[3:] for command in graph.public_restore
                                if command[1] == 'set-sink-volume')),
             'restored_on_cleanup': True}
+        phase('complete')
     finally:
         deadline.cancel()
+        evidence['seconds'] = time.monotonic() - started
 
 
 def serve_desktop(args, report, pcm, graph, paths, mapping):
