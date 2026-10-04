@@ -236,66 +236,6 @@ class AudioTests(unittest.TestCase):
                         monitor.process.stdout.close()
                         os.close(writer)
 
-    def test_delayed_monitor_keeps_pcm_fed_and_preserves_received_stereo(self):
-        source_read, source_write = os.pipe()
-        output_read, output_write = os.pipe()
-        fcntl.fcntl(output_write, fcntl.F_SETPIPE_SZ, 4096)
-        os.set_blocking(output_write, False)
-        monitor = audio.DesktopMonitor(SimpleNamespace(
-            stdout=os.fdopen(source_read, 'rb', buffering=0), poll=lambda: None))
-        monitor.forward = True
-        pcm = audio.OwnedPCM.__new__(audio.OwnedPCM)
-        pcm.process = SimpleNamespace(stdin=os.fdopen(output_write, 'wb', buffering=0))
-        pcm.stop, pcm.pending = threading.Event(), queue.Queue()
-        pcm.error, pcm.source = None, monitor
-        pcm.source_lock = threading.Lock()
-        pcm.feed_stats = {'inserted_gap_events': 0, 'inserted_gap_frames': 0}
-        first = struct.pack('<hh', 900, -700) * 240
-        second = struct.pack('<hh', -500, 1100) * 240
-        third = struct.pack('<hh', 100, -1300) * 240
-
-        def produce():
-            os.write(source_write, first)
-            time.sleep(0.35)  # Longer than the actual ALSA 250 ms buffer.
-            os.write(source_write, second + third)
-
-        feeder, producer = threading.Thread(target=pcm.feed), threading.Thread(target=produce)
-        received, chunk_times = bytearray(), []
-        with patch.object(audio.os, 'kill') as abort:
-            monitor.thread.start()
-            feeder.start()
-            producer.start()
-            try:
-                start = time.monotonic()
-                while time.monotonic() - start < 0.6:
-                    block = bytearray()
-                    while len(block) < 960:
-                        self.assertTrue(select.select([output_read], [], [], 0.05)[0],
-                                        'PCM pipe starved during monitor delivery gap')
-                        block.extend(os.read(output_read, 960 - len(block)))
-                    received.extend(block)
-                    chunk_times.append(time.monotonic() - start)
-                    time.sleep(0.005)  # Consume 240 stereo frames at 48 kHz.
-                self.assertGreater(sum(0.05 <= t <= 0.30 for t in chunk_times), 30)
-                nonzero = [frame for frame in struct.iter_unpack('<hh', received) if frame != (0, 0)]
-                self.assertEqual(nonzero, list(struct.iter_unpack('<hh', first + second + third)))
-                self.assertGreater(pcm.feed_stats['inserted_gap_events'], 0)
-                self.assertEqual(pcm.feed_stats['inserted_gap_frames'],
-                                 240 * pcm.feed_stats['inserted_gap_events'])
-                self.assertGreater(monitor.max_interarrival_seconds, 0.25)
-                self.assertIsNone(pcm.error)
-                self.assertIsNone(monitor.error)
-                abort.assert_not_called()
-            finally:
-                pcm.stop.set()
-                monitor.stop.set()
-                producer.join(timeout=2)
-                feeder.join(timeout=2)
-                monitor.thread.join(timeout=2)
-                pcm.process.stdin.close()
-                monitor.process.stdout.close()
-                os.close(source_write)
-                os.close(output_read)
 
     def test_idle_monitor_drains_more_than_queue_capacity_without_enqueuing(self):
         reader, writer = os.pipe()
@@ -322,49 +262,66 @@ class AudioTests(unittest.TestCase):
                 monitor.process.stdout.close()
                 os.close(writer)
 
-    def test_idle_scoring_keeps_independent_48khz_sink_fed_with_bursty_monitor(self):
+    def test_bursty_active_audio_keeps_exact_timing_across_idle_and_scoring(self):
         import acoustic
 
-        # Source and sink run in different processes: slowing the test's GIL
-        # must not slow our simulated hardware clock and hide an underrun.
+        # Source and sink have independent clocks, outside the scorer's GIL.
+        # Start with the real 250 ms hardware ring and an empty monitor queue.
         source_read, source_write = os.pipe()
         output_read, output_write = os.pipe()
         result_read, result_write = os.pipe()
+        activate_read, activate_write = os.pipe()
         fcntl.fcntl(output_write, fcntl.F_SETPIPE_SZ, 4096)
+        waveform = audio.tone({0, 1}, amplitude=32767)
+        expected = b''.join(struct.pack('<h', int(value * 4000 / 32768))
+                            for value, in struct.iter_unpack('<h', waveform))
         producer = os.fork()
         if producer == 0:
-            for fd in (source_read, output_read, output_write, result_read, result_write):
+            for fd in (source_read, output_read, output_write, result_read,
+                       result_write, activate_write):
                 os.close(fd)
+            os.read(activate_read, 1)
+            os.close(activate_read)
+            time.sleep(0.145)  # Initial empty-source delay still fits the ring.
+            position = 0
+            deadline = time.monotonic()
             try:
-                for _ in range(60):
-                    started = time.monotonic()
-                    data = memoryview(bytes(19 * 960))
+                for burst in range(64):
+                    frames = 4560 if burst % 2 == 0 else 6960  # 95 / 145 ms.
+                    count = frames * 4
+                    chunk = waveform[position:position + count]
+                    position += len(chunk)
+                    data = memoryview(chunk + bytes(count - len(chunk)))
                     while data:
                         data = data[os.write(source_write, data):]
-                    time.sleep(max(0, 0.095 - (time.monotonic() - started)))
+                    deadline += frames / 48000
+                    time.sleep(max(0, deadline - time.monotonic()))
             except BrokenPipeError:
                 pass
             os._exit(0)
         consumer = os.fork()
         if consumer == 0:
-            for fd in (source_read, source_write, output_write, result_read):
+            for fd in (source_read, source_write, output_write, result_read,
+                       activate_read, activate_write):
                 os.close(fd)
-            buffered = bytearray()
+            buffered, played = bytearray(), bytearray()
             started = None
             levels = []
             underruns = 0
-            # Match actual PCM geometry: 2400-frame periods, 12000-frame ring.
-            while started is None or time.monotonic() - started < 4:
+            # Actual geometry: 2400-frame periods, 12000-frame ring.
+            while started is None or time.monotonic() - started < 6.5:
                 if started is None:
                     buffered.extend(os.read(output_read, min(4096, 48000 - len(buffered))))
                     if len(buffered) == 48000:
                         started = time.monotonic()
                         deadline = started + 0.05
+                        os.write(result_write, b'R')
                     continue
                 now = time.monotonic()
                 while now >= deadline:
                     levels.append(len(buffered))
                     underruns += len(buffered) < 9600
+                    played.extend(buffered[:9600])
                     del buffered[:9600]
                     deadline += 0.05
                 if len(buffered) < 48000 and select.select(
@@ -375,17 +332,29 @@ class AudioTests(unittest.TestCase):
                     buffered.extend(data)
                 else:
                     time.sleep(max(0, min(0.001, deadline - time.monotonic())))
+
+            def trim_idle(data):
+                frames = [data[i:i + 4] for i in range(0, len(data), 4)]
+                nonzero = [i for i, frame in enumerate(frames) if frame != bytes(4)]
+                return b''.join(frames[nonzero[0]:nonzero[-1] + 1]) if nonzero else b''
+
+            active = trim_idle(played)
+            reference = trim_idle(expected)
             os.write(result_write, json.dumps({'underruns': underruns,
-                'minimum_frames': min(levels) // 4, 'periods': len(levels)}).encode())
+                'minimum_frames': min(levels) // 4, 'periods': len(levels),
+                'waveform_matches': active == reference,
+                'active_frames': len(active) // 4,
+                'expected_frames': len(reference) // 4}).encode())
             os._exit(0)
         os.close(source_write)
         os.close(output_read)
         os.close(result_write)
+        os.close(activate_read)
         os.set_blocking(output_write, False)
         monitor = audio.DesktopMonitor(SimpleNamespace(
             stdout=os.fdopen(source_read, 'rb', buffering=0), poll=lambda: None),
             ordinary=True, desktop_peak=4000)
-        monitor.forward = False  # Required public verification scoring state.
+        monitor.forward = False
         pcm = audio.OwnedPCM.__new__(audio.OwnedPCM)
         pcm.process = SimpleNamespace(stdin=os.fdopen(output_write, 'wb', buffering=0))
         pcm.stop, pcm.pending = threading.Event(), queue.Queue()
@@ -398,15 +367,24 @@ class AudioTests(unittest.TestCase):
             monitor.thread.start()
             feeder.start()
             try:
-                # Exercise the actual pure-Python scorer while it contends for
-                # the GIL. Quiet input still makes it inspect all phase windows.
+                self.assertTrue(select.select([result_read], [], [], 2)[0])
+                self.assertEqual(os.read(result_read, 1), b'R')
+                monitor.forward = True
+                os.write(activate_write, b'G')
+                # Let the finite two-second waveform drain fully before scoring.
+                time.sleep(3)
+                monitor.forward = False
                 for _ in range(3):
                     acoustic.score_phase([0] * 150000, [0] * 96000, [440, 660])
                 self.assertTrue(select.select([result_read], [], [], 6)[0])
                 result = json.loads(os.read(result_read, 4096))
                 self.assertEqual(result['underruns'], 0, result)
                 self.assertGreaterEqual(result['minimum_frames'], 2400, result)
-                self.assertGreaterEqual(result['periods'], 75)
+                self.assertGreaterEqual(result['periods'], 125)
+                # Compare the whole waveform, including its zero crossings:
+                # filtering out inserted zero frames would hide timing damage.
+                self.assertTrue(result['waveform_matches'], result)
+                self.assertEqual(result['active_frames'], result['expected_frames'])
                 self.assertEqual(pcm.feed_stats['inserted_gap_frames'], 0)
                 self.assertIsNone(monitor.error)
                 self.assertIsNone(pcm.error)
@@ -419,6 +397,7 @@ class AudioTests(unittest.TestCase):
                 pcm.process.stdin.close()
                 monitor.process.stdout.close()
                 os.close(result_read)
+                os.close(activate_write)
                 for pid in (producer, consumer):
                     try:
                         terminate_child(pid, audio.signal.SIGTERM)

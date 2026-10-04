@@ -442,16 +442,15 @@ class OwnedPCM:
                                     data, done = bytes(2400 * 4), None
                                 else:
                                     try:
-                                        data, done = source.blocks.get(timeout=0.0025), None
+                                        data, done = source.blocks.get(timeout=0.1), None
                                     except queue.Empty:
                                         source.healthy()
-                                        # PipeWire has its own clock. Do not
-                                        # let a brief delivery gap starve ALSA.
-                                        # Wait less than this block's 5 ms so
-                                        # silence can sustain the hardware rate.
-                                        data, done = bytes(240 * 4), None
-                                        self.feed_stats['inserted_gap_events'] += 1
-                                        self.feed_stats['inserted_gap_frames'] += 240
+                                        # The 250 ms PCM ring absorbs normal
+                                        # monitor delivery bursts. Inserting
+                                        # silence here changes active waveform
+                                        # timing and shifts its spectrum. Real
+                                        # source failure/XRUN must still abort.
+                                        continue
                 remaining = memoryview(data)
                 while remaining and not self.stop.is_set():
                     if not select.select([], [fd], [], 0.1)[1]:
