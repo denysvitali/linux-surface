@@ -1045,6 +1045,11 @@ def initialize(args, report):
     finally:
         for signum in signals:
             signal.signal(signum, signal.SIG_IGN)
+        # Stop queue production without waiting, before closing its consumer.
+        # Physical parking below must not wait for desktop process teardown.
+        for graph in desktop_holder:
+            if graph.monitor:
+                graph.monitor.stop.set()
         try:
             report['parked'] = False
             if parked is not None:
