@@ -187,7 +187,7 @@ def configure_stereo(card, report):
     for side in ('Left', 'Right'):
         for name, value in (('PA Volume', '0'), ('COMP Switch', '0'),
                             ('VISENSE Switch', '0'), ('BOOST Switch', '1'),
-                            ('DAC Switch', '1'), ('Smart Boost Level', '0')):
+                            ('DAC Switch', '1')):
             settings.append((f'Spkr{side} {name}', value))
     settings += [('COMP7 Switch', '0'), ('COMP8 Switch', '0'),
                  ('RX7 Digital Volume', '84'), ('RX8 Digital Volume', '84'),
@@ -208,9 +208,13 @@ def configure_stereo(card, report):
         need(len(matches) == 1, f'Expected one ALSA control for {name}, got {matches}')
         actual, ident = matches[0]
         result = subprocess.run(base + ['cset', 'numid=' + ident, value],
-                                text=True, capture_output=True, timeout=5, check=True)
+                                text=True, capture_output=True, timeout=5)
         report['mixer'].append({'name': actual, 'requested': value,
-                                'readback': result.stdout.strip()})
+                                'returncode': result.returncode,
+                                'readback': result.stdout.strip(),
+                                'stderr': result.stderr.strip()})
+        need(result.returncode == 0,
+             f'Mixer {actual} failed ({result.returncode}): {result.stderr.strip()}')
 
 
 def tone(channels, seconds=2, amplitude=1433):

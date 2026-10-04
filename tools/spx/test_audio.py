@@ -89,6 +89,16 @@ class AudioTests(unittest.TestCase):
         self.assertEqual(observations[0]['master']['DP4_B0'], 0)
         self.assertFalse(observations[0]['passed'])
 
+    def test_mixer_error_is_retained_before_setup_stops(self):
+        controls = SimpleNamespace(stdout="numid=95,iface=MIXER,name='SpkrLeft PA Volume'\n")
+        failure = SimpleNamespace(returncode=1, stdout='', stderr='Input/output error\n')
+        report = {}
+        with patch.object(audio.subprocess, 'run', side_effect=[controls, failure]):
+            with self.assertRaisesRegex(RuntimeError, 'Input/output error'):
+                audio.configure_stereo(0, report)
+        self.assertEqual(report['mixer'][0]['returncode'], 1)
+        self.assertEqual(report['mixer'][0]['stderr'], 'Input/output error')
+
 
 if __name__ == '__main__':
     unittest.main()
