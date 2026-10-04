@@ -5,10 +5,11 @@ import os
 from pathlib import Path
 import queue
 import struct
+import tempfile
 import threading
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 spec = importlib.util.spec_from_file_location('spx_audio', Path(__file__).with_name('audio.py'))
 audio = importlib.util.module_from_spec(spec)
@@ -37,6 +38,8 @@ class AudioTests(unittest.TestCase):
         pcm.stop = threading.Event()
         pcm.pending = queue.Queue()
         pcm.error = None
+        pcm.source = None
+        pcm.source_lock = threading.Lock()
         data = audio.tone({1}, seconds=0.03)
         done = threading.Event()
         pcm.pending.put((data, done))
@@ -149,6 +152,138 @@ class AudioTests(unittest.TestCase):
         for slave in slaves:
             slave['initialized'] = True
         self.assertEqual(audio.identity_map(snapshot, slaves, {3, 4}), {3: 1, 4: 2})
+
+    def test_desktop_monitor_reassembles_partial_stereo_frames_without_gain(self):
+        reader, writer = os.pipe()
+        monitor = audio.DesktopMonitor(SimpleNamespace(
+            stdout=os.fdopen(reader, 'rb', buffering=0), poll=lambda: None))
+        monitor.forward = True
+        data = audio.tone({0, 1}, seconds=0.03)
+
+        def produce():
+            for offset in range(0, len(data), 13):
+                os.write(writer, data[offset:offset + 13])
+
+        with patch.object(audio.os, 'kill') as abort:
+            monitor.thread.start()
+            producer = threading.Thread(target=produce)
+            producer.start()
+            try:
+                received = b''.join(monitor.blocks.get(timeout=2)
+                                    for _ in range(len(data) // 960))
+                self.assertEqual(received, data)
+                self.assertLessEqual(monitor.peak, 1433)
+                self.assertIsNone(monitor.error)
+                abort.assert_not_called()
+            finally:
+                monitor.stop.set()
+                producer.join(timeout=2)
+                monitor.thread.join(timeout=2)
+                monitor.process.stdout.close()
+                os.close(writer)
+
+    def test_desktop_monitor_rejects_excess_before_forwarding(self):
+        reader, writer = os.pipe()
+        monitor = audio.DesktopMonitor(SimpleNamespace(
+            stdout=os.fdopen(reader, 'rb', buffering=0), poll=lambda: None))
+        monitor.forward = True
+        os.write(writer, struct.pack('<480h', *([1434] * 480)))
+        with patch.object(audio.os, 'kill') as abort:
+            try:
+                monitor.consume()
+                self.assertIn('peak limit', monitor.error)
+                self.assertTrue(monitor.blocks.empty())
+                abort.assert_called_once_with(os.getpid(), audio.signal.SIGTERM)
+            finally:
+                monitor.process.stdout.close()
+                os.close(writer)
+
+    def test_source_detach_waits_for_inflight_monitor_use(self):
+        reader, writer = os.pipe()
+        pcm = audio.OwnedPCM.__new__(audio.OwnedPCM)
+        pcm.process = SimpleNamespace(stdin=os.fdopen(writer, 'wb', buffering=0))
+        pcm.stop = threading.Event()
+        pcm.pending = queue.Queue()
+        pcm.error = None
+        pcm.source_lock = threading.Lock()
+        entered, release, detached = (threading.Event() for _ in range(3))
+
+        def healthy():
+            self.assertFalse(detached.is_set())
+            entered.set()
+            release.wait(timeout=2)
+
+        source = SimpleNamespace(healthy=healthy, blocks=queue.Queue())
+        source.blocks.put(bytes(960))
+        pcm.source = source
+        feeder = threading.Thread(target=pcm.feed)
+        detach = threading.Thread(target=lambda: (pcm.set_source(None), detached.set()))
+        feeder.start()
+        try:
+            self.assertTrue(entered.wait(timeout=2))
+            detach.start()
+            self.assertFalse(detached.wait(timeout=0.05))
+            release.set()
+            self.assertTrue(detached.wait(timeout=2))
+            self.assertIsNone(pcm.source)
+        finally:
+            release.set()
+            pcm.stop.set()
+            feeder.join(timeout=2)
+            detach.join(timeout=2)
+            pcm.process.stdin.close()
+            os.close(reader)
+        self.assertFalse(feeder.is_alive())
+        self.assertIsNone(pcm.error)
+
+    def test_graph_cleanup_restores_overrides_despite_stop_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / 'pipewire.service.d'
+            directory.mkdir()
+            override = directory / 'zz-spx-desktop.conf'
+            override.write_text('[Unit]\nConditionKernelCommandLine=\n')
+            foreign = directory / 'user.conf'
+            foreign.write_text('keep me')
+            graph = audio.DesktopGraph.__new__(audio.DesktopGraph)
+            graph.processes, graph.monitor, graph.module = [], None, None
+            graph.overrides, graph.directories = [override], [directory]
+            graph.started, graph.report = True, {}
+            graph.run = Mock(side_effect=[RuntimeError('stop failed'), ''])
+            with self.assertRaisesRegex(RuntimeError, 'stop failed'):
+                graph.close()
+            self.assertFalse(override.exists())
+            self.assertEqual(foreign.read_text(), 'keep me')
+            self.assertEqual(graph.run.call_args.args, ('systemctl', '--user', 'daemon-reload'))
+            self.assertFalse(graph.report['graph_restored'])
+
+    def test_desktop_requires_capture_permission_before_hardware(self):
+        args = SimpleNamespace(action='desktop', allow_amp_power=True,
+                               allow_playback=True, allow_capture=False)
+        with patch.object(audio.os, 'geteuid', return_value=0), \
+                patch.object(audio, 'parameter', side_effect=AssertionError('hardware read')):
+            with self.assertRaisesRegex(RuntimeError, 'allow-capture'):
+                audio.initialize(args, {})
+
+    def test_desktop_teardown_waits_for_empty_fifo_with_slaves_attached(self):
+        clean = {'SLV_STATUS': 0x14, 'GPIO_VAL': 0x1e, 'FIFO_STATUS': 0,
+                 'DP1_B0': 0x107, 'DP1_B1': 0x107,
+                 'DP4_B0': 0x607, 'DP4_B1': 0x607}
+        codec = {'STREAM_CONFIGURED': 0, 'STREAM_ENABLED': 0,
+                 'DAC_PREPARED': 0, 'SHADOW_PA_ENABLE': 0x7d}
+        report = {}
+        with patch.object(audio, 'state', side_effect=[dict(clean, FIFO_STATUS=0x100), clean]), \
+                patch.object(audio, 'playback_state', return_value=codec), \
+                patch.object(audio.time, 'sleep'), \
+                patch.object(audio, 'assert_pcm_idle') as idle:
+            audio.check_desktop_teardown({3: 'left', 4: 'right'}, report)
+        self.assertTrue(report['teardown']['passed'])
+        self.assertEqual(len(report['teardown']['samples']), 2)
+        idle.assert_called_once()
+        with patch.object(audio, 'state', return_value=dict(clean, FIFO_STATUS=0x100)), \
+                patch.object(audio, 'playback_state', return_value=codec), \
+                patch.object(audio.time, 'monotonic', side_effect=[0, 6]):
+            with self.assertRaisesRegex(RuntimeError, 'did not close cleanly'):
+                audio.check_desktop_teardown({3: 'left', 4: 'right'}, {})
 
 
 if __name__ == '__main__':
