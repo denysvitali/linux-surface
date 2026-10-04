@@ -874,6 +874,19 @@ static bool wsa881x_spx_transport_enabled(struct wsa881x_priv *wsa881x)
 	       (spx_stream_device_mask & BIT(dev_num - 1));
 }
 
+static unsigned int wsa881x_spx_native_unit(struct wsa881x_priv *wsa881x)
+{
+	const struct sdw_slave_id *id = &wsa881x->slave->id;
+
+	if (!of_machine_is_compatible("microsoft,surface-pro-x") ||
+	    !spx_enumerated_mode || wsa881x->spx_write_only ||
+	    id->mfg_id != 0x0217 || id->part_id != 0x2110 || id->class_id ||
+	    (id->unique_id != 3 && id->unique_id != 4))
+		return 0;
+
+	return id->unique_id;
+}
+
 static int wsa881x_update_bits(struct wsa881x_priv *wsa881x,
 			       unsigned int reg, unsigned int mask,
 			       unsigned int val)
@@ -1886,7 +1899,22 @@ static int wsa881x_hw_params(struct snd_pcm_substream *substream,
 	int i, ret;
 
 	mutex_lock(&wsa881x->spx_state_lock);
-	if (spx_enumerated_mode && wsa881x->slave->dev_num >= 1 &&
+	if (of_machine_is_compatible("microsoft,surface-pro-x") &&
+	    spx_enumerated_mode && !wsa881x->spx_write_only) {
+		unsigned int unit = wsa881x_spx_native_unit(wsa881x);
+
+		if (!unit) {
+			mutex_unlock(&wsa881x->spx_state_lock);
+			return -ENODEV;
+		}
+		/* Native addresses can change; the physical speaker cannot. */
+		wsa881x->slave->m_port_map[WSA881X_PORT_DAC + 1] =
+			unit == 3 ? 1 : 4;
+		dev_info(wsa881x->dev,
+			 "SPX: unit=%u device=%u DAC -> master DP%u\n", unit,
+			 wsa881x->slave->dev_num,
+			 wsa881x->slave->m_port_map[WSA881X_PORT_DAC + 1]);
+	} else if (spx_enumerated_mode && wsa881x->slave->dev_num >= 1 &&
 	    wsa881x->slave->dev_num <= 2) {
 		if (spx_swap_dac_master_ports)
 			wsa881x->slave->m_port_map[WSA881X_PORT_DAC + 1] =
