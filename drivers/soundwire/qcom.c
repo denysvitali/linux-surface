@@ -2053,7 +2053,7 @@ static int spx_audio_state_get(char *buffer, const struct kernel_param *kp)
 	};
 	struct qcom_swrm_ctrl *ctrl;
 	u32 values[ARRAY_SIZE(registers)], canary, gpio_dir, gpio_val;
-	u32 codec_values[ARRAY_SIZE(codec_registers)], ports[2][2], offset;
+	u32 codec_values[ARRAY_SIZE(codec_registers)], ports[2][2], offset, fifo;
 	int i, bank, len = 0, ret;
 
 	mutex_lock(&spx_dbg_lock);
@@ -2071,6 +2071,12 @@ static int spx_audio_state_get(char *buffer, const struct kernel_param *kp)
 			ret = -EIO;
 			goto unlock_controller;
 		}
+	}
+	ret = ctrl->reg_read(ctrl, ctrl->reg_layout[SWRM_REG_CMD_FIFO_STATUS],
+			     &fifo);
+	if (ret) {
+		ret = -EIO;
+		goto unlock_controller;
 	}
 	offset = ctrl->reg_layout[SWRM_OFFSET_DP_PORT_CTRL_BANK];
 	for (i = 0; i < ARRAY_SIZE(ports); i++) {
@@ -2131,6 +2137,9 @@ static int spx_audio_state_get(char *buffer, const struct kernel_param *kp)
 			 "GPIO_DIR=0x%02x\nGPIO_VAL=0x%02x\n", gpio_dir, gpio_val);
 	len += scnprintf(buffer + len, PAGE_SIZE - len, "FORCED_ATTACH=%u\n",
 			 spx_forced_attached);
+	len += scnprintf(buffer + len, PAGE_SIZE - len,
+			 "FIFO_STATUS=0x%08x\nFIFO_DEPTH=%u\n", fifo,
+			 ctrl->wr_fifo_depth);
 	ret = len;
 
 unlock_controller:
@@ -2146,6 +2155,129 @@ static const struct kernel_param_ops spx_audio_state_ops = {
 module_param_cb(spx_audio_state, &spx_audio_state_ops, NULL, 0400);
 MODULE_PARM_DESC(spx_audio_state,
 		 "SPX: read native speaker identities, frame and GPIO state without powering amps");
+
+/* Recover only the command FIFO; never reset the bus or power a slave. */
+static int spx_audio_flush_set(const char *val, const struct kernel_param *kp)
+{
+	struct qcom_swrm_ctrl *ctrl;
+	u32 gpio_dir, gpio_val, status, canary, before, after;
+	int i, ret;
+
+	if (!sysfs_streq(val, "1"))
+		return -EINVAL;
+
+	mutex_lock(&spx_dbg_lock);
+	ctrl = spx_dbg_ctrl;
+	if (!ctrl || ctrl->spx_stopping || !ctrl->spx_paged_bridge ||
+	    !ctrl->regmap || !ctrl->sruntime || ctrl->spx_windows_init ||
+	    spx_core_enum || spx_force_attach || spx_forced_attached ||
+	    spx_watchdog || !of_machine_is_compatible("microsoft,surface-pro-x")) {
+		ret = -ENODEV;
+		goto out;
+	}
+
+	/* The caller must keep the master active; do not implicitly resume it. */
+	ret = pm_runtime_get_if_active(ctrl->dev);
+	if (ret <= 0) {
+		if (!ret)
+			ret = -EAGAIN;
+		goto out;
+	}
+
+	/* Match port allocation's port_lock -> bus_lock ordering. */
+	mutex_lock(&ctrl->port_lock);
+	mutex_lock(&ctrl->bus.bus_lock);
+	ret = -EBUSY;
+	if (ctrl->port_mask != BIT(0) || !list_empty(&ctrl->bus.m_rt_list))
+		goto unlock_bus;
+	for (i = 0; i < ctrl->num_dout_ports + ctrl->num_din_ports; i++)
+		if (ctrl->sruntime[i])
+			goto unlock_bus;
+
+	mutex_lock(&ctrl->bus.msg_lock);
+	mutex_lock(&ctrl->controller_lock);
+	ret = ctrl->reg_read(ctrl, SWRM_COMP_PARAMS, &canary);
+	if (ret || canary != 0x016840c6 || !ctrl->wr_fifo_depth) {
+		ret = -EIO;
+		goto unlock_controller;
+	}
+
+	/* Keep the paged regmap's selector cache coherent while refreshing GPIO. */
+	ret = regcache_drop_region(ctrl->regmap, WCD934X_GPIO_DIR_CTL,
+				   WCD934X_GPIO_VAL_CTL);
+	if (ret)
+		goto unlock_controller;
+	ret = regmap_read(ctrl->regmap, WCD934X_GPIO_DIR_CTL, &gpio_dir);
+	if (ret)
+		goto unlock_controller;
+	ret = regmap_read(ctrl->regmap, WCD934X_GPIO_VAL_CTL, &gpio_val);
+	if (ret)
+		goto unlock_controller;
+	if ((gpio_dir & 0x06) != 0x06 || (gpio_val & 0x06)) {
+		ret = -EBUSY;
+		goto unlock_controller;
+	}
+	ret = ctrl->reg_read(ctrl, SWRM_MCP_SLV_STATUS, &status);
+	if (ret) {
+		ret = -EIO;
+		goto unlock_controller;
+	}
+	if (status) {
+		ret = -EBUSY;
+		goto unlock_controller;
+	}
+	ret = ctrl->reg_read(ctrl, SWRM_COMP_PARAMS, &canary);
+	if (ret || canary != 0x016840c6) {
+		ret = -EIO;
+		goto unlock_controller;
+	}
+	ret = ctrl->reg_read(ctrl, ctrl->reg_layout[SWRM_REG_CMD_FIFO_STATUS],
+			     &before);
+	if (ret) {
+		ret = -EIO;
+		goto unlock_controller;
+	}
+	ret = ctrl->reg_write(ctrl, SWRM_CMD_FIFO_CMD, SWRM_CMD_FIFO_FLUSH);
+	if (ret) {
+		dev_err(ctrl->dev, "SPX: parked FIFO flush write failed: %d\n", ret);
+		ret = -EIO;
+		goto unlock_controller;
+	}
+	usleep_range(500, 550);
+	ret = ctrl->reg_read(ctrl, ctrl->reg_layout[SWRM_REG_CMD_FIFO_STATUS],
+			     &after);
+	if (ret) {
+		dev_err(ctrl->dev,
+			"SPX: parked FIFO flush readback failed (before %#x): %d\n",
+			before, ret);
+		ret = -EIO;
+		goto unlock_controller;
+	}
+	ret = after & (SWRM_WR_CMD_FIFO_CNT_MASK | SWRM_RD_CMD_FIFO_CNT_MASK) ?
+		-EBUSY : 0;
+	dev_info(ctrl->dev,
+		 "SPX: parked FIFO flush before=%#x after=%#x depth=%u result=%d\n",
+		 before, after, ctrl->wr_fifo_depth, ret);
+
+unlock_controller:
+	mutex_unlock(&ctrl->controller_lock);
+	mutex_unlock(&ctrl->bus.msg_lock);
+unlock_bus:
+	mutex_unlock(&ctrl->bus.bus_lock);
+	mutex_unlock(&ctrl->port_lock);
+	pm_runtime_mark_last_busy(ctrl->dev);
+	pm_runtime_put_autosuspend(ctrl->dev);
+out:
+	mutex_unlock(&spx_dbg_lock);
+	return ret;
+}
+
+static const struct kernel_param_ops spx_audio_flush_ops = {
+	.set = spx_audio_flush_set,
+};
+module_param_cb(spx_audio_flush, &spx_audio_flush_ops, NULL, 0200);
+MODULE_PARM_DESC(spx_audio_flush,
+		 "SPX: write 1 to flush the native command FIFO only with amps off and no streams");
 
 /*
  * Diagnostic-only physical-device readback. Force-attach represents the WSA
@@ -3708,7 +3840,9 @@ static int qcom_swrm_set_sdw_stream(struct snd_soc_dai *dai,
 {
 	struct qcom_swrm_ctrl *ctrl = dev_get_drvdata(dai->dev);
 
+	mutex_lock(&ctrl->port_lock);
 	ctrl->sruntime[dai->id] = stream;
+	mutex_unlock(&ctrl->port_lock);
 
 	return 0;
 }
