@@ -1,5 +1,7 @@
 # BI: dock hotplug forwarding and touch startup availability
 
+Historical preparation below; BI has since booted. See [live result](RESULT-20261004bi.md).
+
 Installed, **not selected or booted**. Recovery remains boot
 `f309dbfa-4e99-4bdd-9059-efc12f21b817`, `6.18.3-1-surface+`.
 The candidate keeps release `7.3.0-rc2-spx-mainline-20261004bg+` and build
