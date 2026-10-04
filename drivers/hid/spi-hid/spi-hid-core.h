@@ -209,6 +209,20 @@ struct spi_hid {
 	u16 hid_desc_addr;
 	u8 power_state;
 	u8 attempts;
+	/* Startup polling state is protected by input_lock. */
+	bool startup_active;
+	bool stopping;
+	unsigned long startup_deadline;
+	/* Optional startup metadata; protected by input_lock. */
+	bool diag_active;
+	u8 diag_window;
+	u8 diag_events;
+	u32 diag_suppressed;
+	u32 diag_irqs;
+	u32 diag_polls;
+	u32 diag_headers;
+	u32 diag_resets;
+	u32 diag_descriptors;
 
 	/*
 	* ready flag indicates that the FW is ready to accept commands and requests.
@@ -238,8 +252,11 @@ struct spi_hid {
 	struct work_struct error_work;
 
 	struct mutex lock;
+	/* Serializes output transfers and supply transitions. */
+	struct mutex output_lock;
 	struct completion output_done;
 	struct completion ready_done;
+	struct completion input_idle;
 
 	__u8 read_approval[SPI_HID_READ_APPROVAL_LEN];
 

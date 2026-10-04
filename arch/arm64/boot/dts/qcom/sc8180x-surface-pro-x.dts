@@ -307,6 +307,8 @@
 
 		regulator-min-microvolt = <5000000>;
 		regulator-max-microvolt = <5000000>;
+		/* Firmware waits 300 ms before releasing digitizer reset. */
+		startup-delay-us = <300000>;
 
 		gpio = <&pmc8180e_gpios 10 GPIO_ACTIVE_HIGH>;
 		enable-active-high;

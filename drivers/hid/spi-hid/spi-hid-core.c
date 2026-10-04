@@ -54,6 +54,124 @@
 
 #define SPI_HID_MAX_RESET_ATTEMPTS 3
 
+static bool startup_diag;
+module_param(startup_diag, bool, 0444);
+MODULE_PARM_DESC(startup_diag, "Log bounded startup metadata (no report payloads)");
+
+#define SPI_HID_DIAG_WINDOWS	8
+#define SPI_HID_DIAG_EVENTS	48
+
+enum spi_hid_diag_event {
+	SPI_HID_DIAG_BEGIN,
+	SPI_HID_DIAG_SLEEP,
+	SPI_HID_DIAG_IRQ_REQUEST,
+	SPI_HID_DIAG_ASSERT,
+	SPI_HID_DIAG_REGULATOR,
+	SPI_HID_DIAG_DEASSERT,
+	SPI_HID_DIAG_ARM,
+	SPI_HID_DIAG_IRQ,
+	SPI_HID_DIAG_POLL,
+	SPI_HID_DIAG_HEADER,
+	SPI_HID_DIAG_BODY,
+	SPI_HID_DIAG_REPORT,
+	SPI_HID_DIAG_DESC_REQUEST,
+	SPI_HID_DIAG_DESC_SENT,
+	SPI_HID_DIAG_READY,
+	SPI_HID_DIAG_DOWN,
+	SPI_HID_DIAG_TIMEOUT,
+};
+
+/* No extra I/O: every value is software state or an existing call's result. */
+static void spi_hid_diag_locked(struct spi_hid *shid,
+				enum spi_hid_diag_event event, int ret, u32 value)
+{
+	static const char * const names[] = {
+		"begin", "sleep-select", "irq-request", "reset-assert",
+		"regulator-enable", "reset-deassert", "arm", "irq", "poll",
+		"header", "body", "report", "descriptor-request",
+		"descriptor-sent", "ready", "power-down", "timeout",
+	};
+	bool end = event == SPI_HID_DIAG_READY || event == SPI_HID_DIAG_DOWN ||
+		   event == SPI_HID_DIAG_TIMEOUT;
+
+	if (!startup_diag || !shid->diag_active)
+		return;
+
+	switch (event) {
+	case SPI_HID_DIAG_IRQ:
+		shid->diag_irqs++;
+		break;
+	case SPI_HID_DIAG_POLL:
+		shid->diag_polls++;
+		break;
+	case SPI_HID_DIAG_HEADER:
+		shid->diag_headers++;
+		break;
+	case SPI_HID_DIAG_REPORT:
+		if (value == SPI_HID_REPORT_TYPE_RESET_RESP)
+			shid->diag_resets++;
+		if (value == SPI_HID_REPORT_TYPE_DEVICE_DESC)
+			shid->diag_descriptors++;
+		break;
+	default:
+		break;
+	}
+
+	/* Reserve the final line for the terminal summary, even after a flood. */
+	if (!end && shid->diag_events >= SPI_HID_DIAG_EVENTS - 1) {
+		shid->diag_suppressed++;
+		return;
+	}
+	shid->diag_events++;
+	dev_info(&shid->spi->dev,
+		 "startup-diag: window=%u event=%s ret=%d value=%u powered=%u power=%u ready=%u active=%u stopping=%u irq-enabled=%u pending=%u stage=%u irq=%u poll=%u header=%u reset=%u desc=%u suppressed=%u now=%lu deadline=%lu\n",
+		 shid->diag_window, names[event], ret, value, shid->powered,
+		 shid->power_state, shid->ready, shid->startup_active,
+		 shid->stopping, shid->irq_enabled,
+		 shid->input_transfer_pending, shid->input_stage, shid->diag_irqs,
+		 shid->diag_polls, shid->diag_headers, shid->diag_resets,
+		 shid->diag_descriptors, shid->diag_suppressed, jiffies,
+		 shid->startup_deadline);
+	if (end)
+		shid->diag_active = false;
+}
+
+static void spi_hid_diag(struct spi_hid *shid, enum spi_hid_diag_event event,
+			 int ret, u32 value)
+{
+	unsigned long flags;
+
+	if (!startup_diag)
+		return;
+	spin_lock_irqsave(&shid->input_lock, flags);
+	spi_hid_diag_locked(shid, event, ret, value);
+	spin_unlock_irqrestore(&shid->input_lock, flags);
+}
+
+static void spi_hid_diag_begin(struct spi_hid *shid, bool probe)
+{
+	unsigned long flags;
+
+	if (!startup_diag)
+		return;
+	spin_lock_irqsave(&shid->input_lock, flags);
+	if (shid->diag_window < SPI_HID_DIAG_WINDOWS) {
+		shid->diag_window++;
+		shid->diag_events = 0;
+		shid->diag_suppressed = 0;
+		shid->diag_irqs = 0;
+		shid->diag_polls = 0;
+		shid->diag_headers = 0;
+		shid->diag_resets = 0;
+		shid->diag_descriptors = 0;
+		shid->diag_active = true;
+		spi_hid_diag_locked(shid, SPI_HID_DIAG_BEGIN, 0, probe);
+	} else {
+		shid->diag_active = false;
+	}
+	spin_unlock_irqrestore(&shid->input_lock, flags);
+}
+
 static struct hid_ll_driver spi_hid_ll_driver;
 
 static void spi_hid_parse_dev_desc(struct spi_hid_device_desc_raw *raw,
@@ -175,8 +293,10 @@ static int spi_hid_input_async(struct spi_hid *shid, void *buf, u16 length,
 			shid->input_transfer[1].rx_buf,
 			shid->input_transfer[1].len, 0);
 
+	reinit_completion(&shid->input_idle);
 	ret = spi_async(shid->spi, &shid->input_message);
 	if (ret) {
+		complete_all(&shid->input_idle);
 		shid->bus_error_count++;
 		shid->bus_last_error = ret;
 	}
@@ -189,6 +309,12 @@ static int spi_hid_output(struct spi_hid *shid, void *buf, u16 length)
 	struct spi_transfer transfer;
 	struct spi_message message;
 	int ret;
+
+	mutex_lock(&shid->output_lock);
+	if (READ_ONCE(shid->stopping) || !READ_ONCE(shid->powered)) {
+		ret = -ESHUTDOWN;
+		goto out;
+	}
 
 	memset(&transfer, 0, sizeof(transfer));
 
@@ -216,6 +342,8 @@ static int spi_hid_output(struct spi_hid *shid, void *buf, u16 length)
 		shid->bus_last_error = ret;
 	}
 
+out:
+	mutex_unlock(&shid->output_lock);
 	return ret;
 }
 
@@ -239,30 +367,44 @@ static int spi_hid_power_down(struct spi_hid *shid)
 {
 	struct device *dev = &shid->spi->dev;
 	unsigned long flags;
+	bool powered;
 	int ret;
 
+	mutex_lock(&shid->output_lock);
 	spin_lock_irqsave(&shid->input_lock, flags);
-	if (!shid->powered) {
-		spin_unlock_irqrestore(&shid->input_lock, flags);
-		return 0;
-	}
-
-	/* Make any completion racing the shutdown discard its input. */
+	powered = shid->powered;
+	/* Gate IRQs and the worker before draining a racing SPI completion. */
 	shid->powered = false;
+	shid->startup_active = false;
 	spin_unlock_irqrestore(&shid->input_lock, flags);
+
+	cancel_delayed_work_sync(&shid->startup_work);
+	wait_for_completion(&shid->input_idle);
+	/* A terminal callback signals input_idle while still holding this lock. */
+	spin_lock_irqsave(&shid->input_lock, flags);
+	shid->input_transfer_pending = 0;
+	shid->input_stage = SPI_HID_INPUT_STAGE_IDLE;
+	spin_unlock_irqrestore(&shid->input_lock, flags);
+	if (!powered) {
+		spi_hid_diag(shid, SPI_HID_DIAG_DOWN, 0, 0);
+		ret = 0;
+		goto out;
+	}
 
 	pinctrl_select_state(shid->pinctrl, shid->pinctrl_sleep);
 
 	ret = regulator_disable(shid->supply);
+	spi_hid_diag(shid, SPI_HID_DIAG_DOWN, ret, 0);
 	if (ret) {
 		dev_err(dev, "failed to disable regulator\n");
 		spin_lock_irqsave(&shid->input_lock, flags);
 		shid->powered = true;
 		spin_unlock_irqrestore(&shid->input_lock, flags);
-		return ret;
 	}
 
-	return 0;
+out:
+	mutex_unlock(&shid->output_lock);
+	return ret;
 }
 
 static struct hid_device *spi_hid_disconnect_hid(struct spi_hid *shid)
@@ -277,13 +419,18 @@ static struct hid_device *spi_hid_disconnect_hid(struct spi_hid *shid)
 static void spi_hid_stop_hid(struct spi_hid *shid)
 {
 	struct hid_device *hid;
+	unsigned long flags;
 
+	spin_lock_irqsave(&shid->input_lock, flags);
+	shid->stopping = true;
+	spin_unlock_irqrestore(&shid->input_lock, flags);
+
+	/* Publishers can still use shid->hid until their work has finished. */
+	cancel_work_sync(&shid->create_device_work);
+	cancel_work_sync(&shid->refresh_device_work);
 	hid = spi_hid_disconnect_hid(shid);
-	if (hid) {
-		cancel_work_sync(&shid->create_device_work);
-		cancel_work_sync(&shid->refresh_device_work);
+	if (hid)
 		hid_destroy_device(hid);
-	}
 }
 
 /*
@@ -301,16 +448,70 @@ static void spi_hid_stop_hid(struct spi_hid *shid)
  * finished unmasking the line during early boot.
  */
 #define SPI_HID_STARTUP_FALLBACK_MS	500
+#define SPI_HID_STARTUP_TIMEOUT_MS	2000
 
 static int spi_hid_bus_input_report(struct spi_hid *shid);
+
+static void spi_hid_startup_begin(struct spi_hid *shid)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&shid->input_lock, flags);
+	shid->startup_active = !shid->stopping;
+	shid->attempts = 0;
+	spin_unlock_irqrestore(&shid->input_lock, flags);
+}
+
+static void spi_hid_startup_arm(struct spi_hid *shid)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&shid->input_lock, flags);
+	if (shid->startup_active && shid->powered) {
+		shid->startup_deadline = jiffies +
+			msecs_to_jiffies(SPI_HID_STARTUP_TIMEOUT_MS);
+		mod_delayed_work(system_wq, &shid->startup_work,
+				 msecs_to_jiffies(SPI_HID_STARTUP_FALLBACK_MS));
+		spi_hid_diag_locked(shid, SPI_HID_DIAG_ARM, 0, 0);
+	}
+	spin_unlock_irqrestore(&shid->input_lock, flags);
+}
+
+/* Called at a terminal input failure, with input_lock held. */
+static void spi_hid_input_error(struct spi_hid *shid)
+{
+	shid->input_stage = SPI_HID_INPUT_STAGE_IDLE;
+	shid->input_transfer_pending = 0;
+	/* Startup has its own bounded, non-resetting recovery window. */
+	if (!shid->startup_active)
+		schedule_work(&shid->error_work);
+}
+
+static void spi_hid_schedule_error(struct spi_hid *shid)
+{
+	unsigned long flags;
+
+	/* Serialize recovery publication with shutdown's stopping gate. */
+	spin_lock_irqsave(&shid->input_lock, flags);
+	if (!shid->stopping && shid->powered && !shid->startup_active &&
+	    shid->power_state != SPI_HID_POWER_MODE_OFF)
+		schedule_work(&shid->error_work);
+	spin_unlock_irqrestore(&shid->input_lock, flags);
+}
 
 static int spi_hid_error_handler(struct spi_hid *shid)
 {
 	struct device *dev = &shid->spi->dev;
+	unsigned long flags;
 	int ret;
 
-	if (shid->power_state == SPI_HID_POWER_MODE_OFF)
+	spin_lock_irqsave(&shid->input_lock, flags);
+	if (shid->stopping || !shid->powered || shid->startup_active ||
+	    shid->power_state == SPI_HID_POWER_MODE_OFF) {
+		spin_unlock_irqrestore(&shid->input_lock, flags);
 		return 0;
+	}
+	spin_unlock_irqrestore(&shid->input_lock, flags);
 
 	dev_err(dev, "Error Handler (attempt %u)\n", shid->attempts);
 
@@ -325,9 +526,11 @@ static int spi_hid_error_handler(struct spi_hid *shid)
 	shid->ready = false;
 	sysfs_notify(&dev->kobj, NULL, "ready");
 
-	shid->input_stage = SPI_HID_INPUT_STAGE_IDLE;
-	shid->input_transfer_pending = 0;
-	cancel_work_sync(&shid->reset_work);
+	/* A failed descriptor write can enter from reset_work itself. */
+	if (current_work() == &shid->reset_work)
+		cancel_work(&shid->reset_work);
+	else
+		cancel_work_sync(&shid->reset_work);
 
 	/*
 	 * For the first SPI_HID_SOFT_RETRY_ATTEMPTS failures, just
@@ -389,6 +592,9 @@ static void spi_hid_reset_work(struct work_struct *work)
 
 	trace_spi_hid_reset_work(shid);
 
+	if (READ_ONCE(shid->stopping) || !READ_ONCE(shid->powered))
+		return;
+
 	dev_dbg(dev, "Reset Handler\n");
 	if (shid->ready) {
 		dev_err(dev, "Spontaneous FW reset!");
@@ -407,14 +613,18 @@ static void spi_hid_reset_work(struct work_struct *work)
 	if (flush_work(&shid->refresh_device_work))
 		dev_err(dev, "Reset handler waited for refresh_device_work");
 
+	mutex_lock(&shid->lock);
 	memset(&buf->body, 0x00, SPI_HID_OUTPUT_BODY_LEN);
 	spi_hid_output_header(buf->header, shid->hid_desc_addr,
 			round_up(sizeof(buf->body), 4));
+	spi_hid_diag(shid, SPI_HID_DIAG_DESC_REQUEST, 0, shid->hid_desc_addr);
 	ret =  spi_hid_output(shid, buf, SPI_HID_OUTPUT_HEADER_LEN +
 			SPI_HID_OUTPUT_BODY_LEN);
+	spi_hid_diag(shid, SPI_HID_DIAG_DESC_SENT, ret, 0);
+	mutex_unlock(&shid->lock);
 	if (ret) {
 		dev_err(dev, "failed to send device descriptor request\n");
-		spi_hid_error_handler(shid);
+		spi_hid_schedule_error(shid);
 		return;
 	}
 }
@@ -427,23 +637,32 @@ static void spi_hid_startup_work(struct work_struct *work)
 	unsigned long flags;
 	int ret;
 
-	/* The IRQ path already completed startup. */
-	if (shid->ready || shid->power_state == SPI_HID_POWER_MODE_OFF)
-		return;
-
 	/*
-	 * A missed edge leaves the reset response at the head of the device's
-	 * input queue.  Drain it exactly as the IRQ handler would; processing
-	 * that response will schedule reset_work and then request the descriptor.
+	 * An invalid early response can consume the only interrupt edge. Retry
+	 * within the same two-second window as open, without resetting the EC.
+	 * Poll only an idle bus: counting a synthetic IRQ while busy would add
+	 * another read to input_transfer_pending instead of observing progress.
 	 */
-	dev_warn(dev, "reset-complete IRQ missed, draining pending response\n");
 	spin_lock_irqsave(&shid->input_lock, flags);
-	ret = spi_hid_bus_input_report(shid);
-	spin_unlock_irqrestore(&shid->input_lock, flags);
-	if (ret) {
-		dev_err(dev, "failed to drain startup response: %d\n", ret);
-		schedule_work(&shid->error_work);
+	if (!shid->startup_active || shid->stopping || !shid->powered || shid->ready ||
+	    shid->power_state == SPI_HID_POWER_MODE_OFF)
+		goto out;
+	if (time_after_eq(jiffies, shid->startup_deadline)) {
+		spi_hid_diag_locked(shid, SPI_HID_DIAG_TIMEOUT, 0, 0);
+		dev_warn(dev, "startup response polling timed out\n");
+		goto out;
 	}
+	if (!shid->input_transfer_pending) {
+		spi_hid_diag_locked(shid, SPI_HID_DIAG_POLL, 0, 0);
+		dev_warn(dev, "startup incomplete, polling pending response\n");
+		ret = spi_hid_bus_input_report(shid);
+		if (ret)
+			dev_err(dev, "failed to poll startup response: %d\n", ret);
+	}
+	mod_delayed_work(system_wq, &shid->startup_work,
+			 msecs_to_jiffies(SPI_HID_STARTUP_FALLBACK_MS));
+out:
+	spin_unlock_irqrestore(&shid->input_lock, flags);
 }
 
 static int spi_hid_input_report_handler(struct spi_hid *shid,
@@ -507,20 +726,29 @@ static int spi_hid_send_output_report(struct spi_hid *shid, u32 output_register,
 	struct spi_hid_output_buf *buf = &shid->output;
 	struct device *dev = &shid->spi->dev;
 
-	u16 padded_length;
-	u16 body_length;
-	u8 padding;
-	u16 max_length;
+	size_t padded_length;
+	size_t body_length;
+	size_t payload_length;
+	size_t max_length;
 
 	int ret;
 
+	/* Content length includes its two-byte length and the report ID. */
+	if (report->content_length < 3)
+		return -EINVAL;
+	payload_length = report->content_length - 3;
+	if (payload_length && !report->content)
+		return -EINVAL;
+
+	/* Preserve the existing transfer size, including its trailing bytes. */
 	body_length = sizeof(buf->body) + report->content_length;
 	padded_length = round_up(body_length, 4);
-	padding = padded_length - body_length;
 	max_length = round_up(shid->desc.max_output_length + 3
 						+ sizeof(buf->body), 4);
 
-	if (padded_length > max_length) {
+	/* The output header carries a 12-bit byte count. */
+	if (padded_length > 0xfff || padded_length > max_length ||
+	    padded_length > sizeof(buf->body) + sizeof(buf->content)) {
 		dev_err(dev, "Output report too big\n");
 		ret = -E2BIG;
 		goto out;
@@ -529,10 +757,11 @@ static int spi_hid_send_output_report(struct spi_hid *shid, u32 output_register,
 	spi_hid_output_header(buf->header, output_register, padded_length);
 	spi_hid_output_body(buf->body, report);
 
-	if (report->content_length - 3)
-		memcpy(&buf->content, report->content, report->content_length);
+	if (payload_length)
+		memcpy(buf->content, report->content, payload_length);
 
-	memset(&buf->content[report->content_length], 0, padding);
+	memset(buf->content + payload_length, 0,
+	       padded_length - sizeof(buf->body) - payload_length);
 
 	ret = spi_hid_output(shid, buf, sizeof(buf->header) +
 			padded_length);
@@ -572,7 +801,8 @@ static int spi_hid_sync_request(struct spi_hid *shid, u16 output_register,
 	mutex_lock(&shid->lock);
 	if (ret == 0) {
 		dev_err(dev, "response timed out\n");
-		spi_hid_error_handler(shid);
+		/* Recovery can wait for the worker or mutex of this caller. */
+		spi_hid_schedule_error(shid);
 		return -ETIMEDOUT;
 	}
 
@@ -631,6 +861,7 @@ static int spi_hid_process_input_report(struct spi_hid *shid,
 							header.report_length);
 		return -EINVAL;
 	}
+	spi_hid_diag_locked(shid, SPI_HID_DIAG_REPORT, 0, header.report_type);
 
 	if (body.content_id == SPI_HID_HEARTBEAT_REPORT_ID) {
 		dev_warn(dev, "Heartbeat ID 0x%x from device %u\n",
@@ -647,6 +878,7 @@ static int spi_hid_process_input_report(struct spi_hid *shid,
 		break;
 	case SPI_HID_REPORT_TYPE_DEVICE_DESC:
 		dev_dbg(dev, "Received device descriptor\n");
+		shid->startup_active = false;
 		cancel_delayed_work(&shid->startup_work);
 		/* Reset attempts at every device descriptor fetch */
 		shid->attempts = 0;
@@ -765,13 +997,13 @@ static void spi_hid_create_device_work(struct work_struct *work)
 
 	trace_spi_hid_create_device_work(shid);
 	dev_dbg(dev, "Create device work\n");
+	if (READ_ONCE(shid->stopping) || !READ_ONCE(shid->powered))
+		return;
 
 	if (shid->desc.hid_version != SPI_HID_SUPPORTED_VERSION) {
 		dev_err(dev, "Unsupported device descriptor version %4x\n",
 			shid->desc.hid_version);
-		ret = spi_hid_error_handler(shid);
-		if (ret)
-			dev_err(dev, "%s: error handler failed\n", __func__);
+		spi_hid_schedule_error(shid);
 		return;
 	}
 
@@ -828,13 +1060,13 @@ static void spi_hid_refresh_device_work(struct work_struct *work)
 
 	trace_spi_hid_refresh_device_work(shid);
 	dev_dbg(dev, "Refresh device work\n");
+	if (READ_ONCE(shid->stopping) || !READ_ONCE(shid->powered))
+		return;
 
 	if (shid->desc.hid_version != SPI_HID_SUPPORTED_VERSION) {
 		dev_err(dev, "Unsupported device descriptor version %4x\n",
 			shid->desc.hid_version);
-		ret = spi_hid_error_handler(shid);
-		if (ret)
-			dev_err(dev, "%s: error handler failed\n", __func__);
+		spi_hid_schedule_error(shid);
 		return;
 	}
 
@@ -852,6 +1084,7 @@ static void spi_hid_refresh_device_work(struct work_struct *work)
 		dev_dbg(dev, "Refresh device work - returning\n");
 		shid->ready = true;
 		complete_all(&shid->ready_done);
+		spi_hid_diag(shid, SPI_HID_DIAG_READY, 0, 0);
 		cancel_delayed_work(&shid->startup_work);
 		sysfs_notify(&dev->kobj, NULL, "ready");
 		return;
@@ -874,6 +1107,7 @@ static void spi_hid_refresh_device_work(struct work_struct *work)
 	shid->refresh_in_progress = false;
 	shid->ready = true;
 	complete_all(&shid->ready_done);
+	spi_hid_diag(shid, SPI_HID_DIAG_READY, 0, 0);
 	cancel_delayed_work(&shid->startup_work);
 	sysfs_notify(&dev->kobj, NULL, "ready");
 }
@@ -888,7 +1122,10 @@ static void spi_hid_input_body_complete(void *_shid)
 	int ret;
 
 	spin_lock_irqsave(&shid->input_lock, flags);
-	if (!shid->powered)
+	spi_hid_diag_locked(shid, SPI_HID_DIAG_BODY,
+			    shid->input_message.status,
+			    shid->input_message.actual_length);
+	if (shid->stopping || !shid->powered)
 		goto out;
 
 	trace_spi_hid_input_body_complete(shid,
@@ -905,7 +1142,7 @@ static void spi_hid_input_body_complete(void *_shid)
 				shid->input_message.status);
 		shid->bus_error_count++;
 		shid->bus_last_error = shid->input_message.status;
-		schedule_work(&shid->error_work);
+		spi_hid_input_error(shid);
 		goto out;
 	}
 
@@ -918,7 +1155,7 @@ static void spi_hid_input_body_complete(void *_shid)
 	ret = spi_hid_process_input_report(shid, &shid->input);
 	if (ret) {
 		dev_err(dev, "failed input callback: %d\n", ret);
-		schedule_work(&shid->error_work);
+		spi_hid_input_error(shid);
 		goto out;
 	}
 
@@ -928,11 +1165,17 @@ static void spi_hid_input_body_complete(void *_shid)
 		ret = spi_hid_input_async(shid, buf->header,
 				sizeof(buf->header),
 				spi_hid_input_header_complete);
-		if (ret)
+		if (ret) {
 			dev_err(dev, "failed to start header --> %d\n", ret);
+			spi_hid_input_error(shid);
+		} else {
+			goto unlock;
+		}
 	}
 
 out:
+	complete_all(&shid->input_idle);
+unlock:
 	spin_unlock_irqrestore(&shid->input_lock, flags);
 }
 
@@ -946,7 +1189,10 @@ static void spi_hid_input_header_complete(void *_shid)
 	int ret = 0;
 
 	spin_lock_irqsave(&shid->input_lock, flags);
-	if (!shid->powered)
+	spi_hid_diag_locked(shid, SPI_HID_DIAG_HEADER,
+			    shid->input_message.status,
+			    shid->input_message.actual_length);
+	if (shid->stopping || !shid->powered)
 		goto out;
 
 	trace_spi_hid_input_header_complete(shid,
@@ -961,7 +1207,7 @@ static void spi_hid_input_header_complete(void *_shid)
 				shid->input_message.status);
 		shid->bus_error_count++;
 		shid->bus_last_error = shid->input_message.status;
-		schedule_work(&shid->error_work);
+		spi_hid_input_error(shid);
 		goto out;
 	}
 
@@ -984,13 +1230,11 @@ static void spi_hid_input_header_complete(void *_shid)
 		shid->bus_error_count++;
 		shid->bus_last_error = ret;
 		/*
-		 * Garbage on the wire (e.g. the EC is not yet booted, or
-		 * a brief bus glitch) leaves the driver in an infinite
-		 * loop of useless header reads unless we explicitly kick
-		 * the error worker. The body path does this; mirror it
-		 * here.
+		 * Retire the failed transfer before another IRQ can reuse it.
+		 * Startup polling owns recovery until the descriptor arrives;
+		 * a running device uses the ordinary error worker.
 		 */
-		schedule_work(&shid->error_work);
+		spi_hid_input_error(shid);
 		goto out;
 	}
 
@@ -1007,13 +1251,16 @@ static void spi_hid_input_header_complete(void *_shid)
 
 	ret = spi_hid_input_async(shid, buf->body, header.report_length,
 			spi_hid_input_body_complete);
-	if (ret)
+	if (ret) {
 		dev_err(dev, "failed body async transfer: %d\n", ret);
+		spi_hid_input_error(shid);
+	} else {
+		goto unlock;
+	}
 
 out:
-	if (ret)
-		shid->input_transfer_pending = 0;
-
+	complete_all(&shid->input_idle);
+unlock:
 	spin_unlock_irqrestore(&shid->input_lock, flags);
 }
 
@@ -1032,7 +1279,8 @@ static int spi_hid_bus_input_report(struct spi_hid *shid)
 	 * back up; starting an SPI read now just clocks 0xff out of a
 	 * floating MISO and trips the header validator.
 	 */
-	if (shid->power_state == SPI_HID_POWER_MODE_OFF) {
+	if (shid->stopping || !shid->powered ||
+	    shid->power_state == SPI_HID_POWER_MODE_OFF) {
 		dev_dbg(dev, "spurious IRQ while device is in D3, ignoring\n");
 		return 0;
 	}
@@ -1045,6 +1293,7 @@ static int spi_hid_bus_input_report(struct spi_hid *shid)
 			spi_hid_input_header_complete);
 	if (ret) {
 		dev_err(dev, "Failed to receive header: %d\n", ret);
+		spi_hid_input_error(shid);
 		return ret;
 	}
 
@@ -1056,6 +1305,7 @@ static int spi_hid_assert_reset(struct spi_hid *shid)
 	int ret;
 
 	ret = pinctrl_select_state(shid->pinctrl, shid->pinctrl_reset);
+	spi_hid_diag(shid, SPI_HID_DIAG_ASSERT, ret, 0);
 	if (ret)
 		return ret;
 
@@ -1070,6 +1320,7 @@ static int spi_hid_deassert_reset(struct spi_hid *shid)
 	int ret;
 
 	ret = pinctrl_select_state(shid->pinctrl, shid->pinctrl_active);
+	spi_hid_diag(shid, SPI_HID_DIAG_DEASSERT, ret, 0);
 	if (ret)
 		return ret;
 
@@ -1081,29 +1332,43 @@ static int spi_hid_deassert_reset(struct spi_hid *shid)
 
 static int spi_hid_power_up(struct spi_hid *shid)
 {
+	unsigned long flags;
 	int ret;
 
-	if (shid->powered)
-		return 0;
-
-	shid->input_transfer_pending = 0;
-	shid->powered = true;
+	mutex_lock(&shid->output_lock);
+	if (READ_ONCE(shid->stopping)) {
+		ret = -ESHUTDOWN;
+		goto out;
+	}
+	if (READ_ONCE(shid->powered)) {
+		ret = 0;
+		goto out;
+	}
 
 	ret = regulator_enable(shid->supply);
+	spi_hid_diag(shid, SPI_HID_DIAG_REGULATOR, ret, 0);
 	if (ret) {
 		shid->regulator_error_count++;
 		shid->regulator_last_error = ret;
-		goto err0;
+		goto out;
 	}
 
 	/* Let VREG_S10B_1P8V stabilize */
 	usleep_range(5000, 6000);
 
-	return 0;
-
-err0:
-	shid->powered = false;
-
+	spin_lock_irqsave(&shid->input_lock, flags);
+	if (shid->stopping) {
+		spin_unlock_irqrestore(&shid->input_lock, flags);
+		regulator_disable(shid->supply);
+		ret = -ESHUTDOWN;
+		goto out;
+	}
+	shid->input_transfer_pending = 0;
+	shid->input_stage = SPI_HID_INPUT_STAGE_IDLE;
+	shid->powered = true;
+	spin_unlock_irqrestore(&shid->input_lock, flags);
+out:
+	mutex_unlock(&shid->output_lock);
 	return ret;
 }
 
@@ -1143,13 +1408,13 @@ static irqreturn_t spi_hid_dev_irq(int irq, void *_shid)
 	int ret = 0;
 
 	spin_lock(&shid->input_lock);
+	spi_hid_diag_locked(shid, SPI_HID_DIAG_IRQ, 0, irq);
 	trace_spi_hid_dev_irq(shid, irq);
 
 	ret = spi_hid_bus_input_report(shid);
 
 	if (ret) {
 		dev_err(dev, "Input transaction failed: %d\n", ret);
-		schedule_work(&shid->error_work);
 	}
 	spin_unlock(&shid->input_lock);
 
@@ -1186,6 +1451,9 @@ static int spi_hid_ll_open(struct hid_device *hid)
 	u8 prev_state = shid->power_state;
 	int ret;
 
+	if (READ_ONCE(shid->stopping))
+		return -ESHUTDOWN;
+
 	/*
 	 * The SPI core runtime-resumes the controller for each individual
 	 * message and autosuspends it shortly afterwards.  That is fine for
@@ -1210,13 +1478,15 @@ static int spi_hid_ll_open(struct hid_device *hid)
 	    (prev_state == SPI_HID_POWER_MODE_ACTIVE && shid->ready))
 		return 0;
 
+	spi_hid_diag_begin(shid, false);
 	reinit_completion(&shid->ready_done);
 	shid->ready = false;
+	spi_hid_startup_begin(shid);
 
 	ret = spi_hid_assert_reset(shid);
 	if (ret) {
 		dev_err(dev, "%s: failed to assert reset\n", __func__);
-		goto err0;
+		goto err2;
 	}
 
 	shid->power_state = SPI_HID_POWER_MODE_ACTIVE;
@@ -1233,7 +1503,7 @@ static int spi_hid_ll_open(struct hid_device *hid)
 	ret = spi_hid_power_up(shid);
 	if (ret) {
 		dev_err(dev, "%s: could not power up\n", __func__);
-		goto err1;
+		goto err2;
 	}
 
 	ret = spi_hid_deassert_reset(shid);
@@ -1242,10 +1512,9 @@ static int spi_hid_ll_open(struct hid_device *hid)
 		goto err2;
 	}
 
-	mod_delayed_work(system_wq, &shid->startup_work,
-			 msecs_to_jiffies(SPI_HID_STARTUP_FALLBACK_MS));
+	spi_hid_startup_arm(shid);
 	ret = wait_for_completion_interruptible_timeout(&shid->ready_done,
-						 msecs_to_jiffies(2000));
+				 msecs_to_jiffies(SPI_HID_STARTUP_TIMEOUT_MS));
 	if (ret <= 0) {
 		if (!ret)
 			ret = -ETIMEDOUT;
@@ -1267,11 +1536,9 @@ err2:
 	}
 	spi_hid_power_down(shid);
 
-err1:
 	shid->power_state = SPI_HID_POWER_MODE_OFF;
 	pinctrl_select_state(shid->pinctrl, shid->pinctrl_sleep);
 
-err0:
 	if (shid->controller_pm_held) {
 		pm_runtime_mark_last_busy(controller_parent);
 		pm_runtime_put_autosuspend(controller_parent);
@@ -1373,6 +1640,7 @@ static int spi_hid_ll_parse(struct hid_device *hid)
 		/* The report-descriptor response means firmware is command-ready. */
 		shid->ready = true;
 		complete_all(&shid->ready_done);
+		spi_hid_diag(shid, SPI_HID_DIAG_READY, 0, 0);
 		cancel_delayed_work(&shid->startup_work);
 		sysfs_notify(&dev->kobj, NULL, "ready");
 	}
@@ -1391,6 +1659,12 @@ static int spi_hid_ll_raw_request(struct hid_device *hid,
 	struct spi_hid *shid = spi_get_drvdata(spi);
 	struct device *dev = &spi->dev;
 	int ret;
+
+	if (!len)
+		return -EINVAL;
+	if (reqtype == HID_REQ_SET_REPORT &&
+	    len - 1 > sizeof(shid->output.content))
+		return -E2BIG;
 
 	if (!shid->ready) {
 		dev_err(&shid->spi->dev, "%s called in unready state\n", __func__);
@@ -1447,10 +1721,15 @@ static int spi_hid_ll_output_report(struct hid_device *hid,
 	struct device *dev = &spi->dev;
 	struct spi_hid_output_report report = {
 		.content_type = SPI_HID_CONTENT_TYPE_OUTPUT_REPORT,
-		.content_length = len - 1 + 3,
-		.content_id = buf[0],
-		.content = &buf[1],
 	};
+
+	if (!len)
+		return -EINVAL;
+	if (len - 1 > sizeof(shid->output.content))
+		return -E2BIG;
+	report.content_length = len - 1 + 3;
+	report.content_id = buf[0];
+	report.content = &buf[1];
 
 	mutex_lock(&shid->lock);
 	if (!shid->ready) {
@@ -1551,6 +1830,24 @@ static const struct attribute *const spi_hid_attributes[] = {
 	NULL	/* Terminator */
 };
 
+static void spi_hid_shutdown(struct spi_hid *shid)
+{
+	unsigned long flags;
+
+	/* Keep every IRQ/work/open path quiescent even if power-off fails. */
+	spin_lock_irqsave(&shid->input_lock, flags);
+	shid->stopping = true;
+	spin_unlock_irqrestore(&shid->input_lock, flags);
+	spi_hid_power_down(shid);
+	cancel_work_sync(&shid->error_work);
+	cancel_work_sync(&shid->reset_work);
+	cancel_work_sync(&shid->create_device_work);
+	cancel_work_sync(&shid->refresh_device_work);
+	spi_hid_stop_hid(shid);
+	free_irq(shid->spi->irq, shid);
+	shid->irq_enabled = false;
+}
+
 static int spi_hid_probe(struct spi_device *spi)
 {
 	struct device *dev = &spi->dev;
@@ -1596,8 +1893,13 @@ static int spi_hid_probe(struct spi_device *spi)
 	shid->desc.input_register = SPI_HID_DEFAULT_INPUT_REGISTER;
 
 	mutex_init(&shid->lock);
+	mutex_init(&shid->output_lock);
+	spin_lock_init(&shid->input_lock);
+	spi_hid_diag_begin(shid, true);
 	init_completion(&shid->output_done);
 	init_completion(&shid->ready_done);
+	init_completion(&shid->input_idle);
+	complete_all(&shid->input_idle);
 
 	shid->supply = devm_regulator_get(dev, "vdd");
 	if (IS_ERR(shid->supply)) {
@@ -1641,6 +1943,7 @@ static int spi_hid_probe(struct spi_device *spi)
 	}
 
 	ret = pinctrl_select_state(shid->pinctrl, shid->pinctrl_sleep);
+	spi_hid_diag(shid, SPI_HID_DIAG_SLEEP, ret, 0);
 	if (ret) {
 		dev_err(dev, "Could not select sleep state\n");
 		goto err1;
@@ -1650,16 +1953,17 @@ static int spi_hid_probe(struct spi_device *spi)
 
 	shid->hid_desc_addr = shid->device_descriptor_register;
 
-	spin_lock_init(&shid->input_lock);
 	INIT_WORK(&shid->reset_work, spi_hid_reset_work);
 	INIT_DELAYED_WORK(&shid->startup_work, spi_hid_startup_work);
 	INIT_WORK(&shid->create_device_work, spi_hid_create_device_work);
 	INIT_WORK(&shid->refresh_device_work, spi_hid_refresh_device_work);
 	INIT_WORK(&shid->error_work, spi_hid_error_work);
+	spi_hid_startup_begin(shid);
 
 	irqflags = irq_get_trigger_type(spi->irq);
 	ret = request_irq(spi->irq, spi_hid_dev_irq, irqflags,
 			dev_name(&spi->dev), shid);
+	spi_hid_diag(shid, SPI_HID_DIAG_IRQ_REQUEST, ret, irqflags);
 	if (ret)
 		goto err1;
 	else
@@ -1668,36 +1972,35 @@ static int spi_hid_probe(struct spi_device *spi)
 	ret = spi_hid_assert_reset(shid);
 	if (ret) {
 		dev_err(dev, "%s: failed to assert reset\n", __func__);
-		goto err1;
+		goto err_irq;
 	}
 
 	ret = spi_hid_power_up(shid);
 	if (ret) {
 		dev_err(dev, "%s: could not power up\n", __func__);
-		goto err1;
+		goto err_irq;
 	}
 
 	ret = spi_hid_deassert_reset(shid);
 	if (ret) {
 		dev_err(dev, "%s: failed to deassert reset\n", __func__);
-		goto err1;
+		goto err_irq;
 	}
 
 	/*
-	 * Give the EC's boot ROM and SPI bring-up time to actually
-	 * complete before we let the IRQ handler run. Without this,
-	 * the first IRQ after probe hits a not-yet-ready EC and the
-	 * header validator sees 0xff on the floating MISO line.
+	 * Allow the EC's boot ROM to settle before arming fallback polling.
+	 * IRQ-driven startup is already enabled and may finish during this wait.
 	 */
 	msleep(150);
-	schedule_delayed_work(&shid->startup_work,
-			      msecs_to_jiffies(SPI_HID_STARTUP_FALLBACK_MS));
+	spi_hid_startup_arm(shid);
 
 	dev_err(dev, "%s: d3 -> %s\n", __func__,
 			spi_hid_power_mode_string(shid->power_state));
 
 	return 0;
 
+err_irq:
+	spi_hid_shutdown(shid);
 err1:
 	sysfs_remove_files(&dev->kobj, spi_hid_attributes);
 
@@ -1712,12 +2015,15 @@ static void spi_hid_remove(struct spi_device *spi)
 
 	dev_info(dev, "%s\n", __func__);
 
-	cancel_delayed_work_sync(&shid->startup_work);
-	spi_hid_power_down(shid);
-	free_irq(spi->irq, shid);
-	shid->irq_enabled = false;
+	spi_hid_shutdown(shid);
 	sysfs_remove_files(&dev->kobj, spi_hid_attributes);
-	spi_hid_stop_hid(shid);
+}
+
+static void spi_hid_spi_shutdown(struct spi_device *spi)
+{
+	dev_info(&spi->dev, "SPX: shutdown quiesce begin\n");
+	spi_hid_shutdown(spi_get_drvdata(spi));
+	dev_info(&spi->dev, "SPX: shutdown quiesce complete\n");
 }
 
 static const struct spi_device_id spi_hid_id_table[] = {
@@ -1735,6 +2041,7 @@ static struct spi_driver spi_hid_driver = {
 	},
 	.probe		= spi_hid_probe,
 	.remove		= spi_hid_remove,
+	.shutdown	= spi_hid_spi_shutdown,
 	.id_table	= spi_hid_id_table,
 };
 
