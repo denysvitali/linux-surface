@@ -25,7 +25,11 @@ SoundWire master awake, release pin 1 and require unit 3, then release pin 2 and
 require distinct units 3/4. Each stage gets a five-second polling budget. Always
 attempt to park both amps and verify physical readback before restoring runtime
 PM or previously active audio. The test opens no PCM and captures nothing.
-Power-up has previously emitted static; this run requires explicit authorization.
+Power-up has previously emitted static. The user explicitly authorized this
+initialization-only run with “Yes” on October 4. The generic boot checker will
+consume its one-shot audio request after the startup checks and preserve logs.
+Do not repeat a consumed request without reading its result. No playback or
+microphone capture was authorized.
 The PM hold is `713ae79d5d64`; `07d79076f427` handles systemctl's blank record
 separators in the desktop-audio preflight. The shared build/release is unchanged.
 

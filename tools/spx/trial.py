@@ -378,6 +378,55 @@ def extend_window(args):
     subprocess.run(['systemctl', 'list-timers', unit, '--no-pager'], check=True)
 
 
+def arm_audio(args):
+    """Queue one explicitly requested initialization across the reboot."""
+    require_source_boot()
+    recovery()
+    assert args.allow_amp_power, 'explicit amplifier-power authorization required'
+    prepared = json.loads((OUT / 'prepared.json').read_text())
+    assert prepared.get('audio_mode') == 'parked'
+    assert (OUT / 'installed.json').exists() and not (OUT / 'selected.json').exists()
+    assert not (OUT / 'audio-started.json').exists()
+    account = pwd.getpwnam(args.desktop_user)
+    assert account.pw_uid != 0
+    os.umask(0o077)
+    with (OUT / 'audio-request.json').open('x') as stream:
+        json.dump(dict(attempt=ATTEMPT, release=RELEASE, preboot_id=BOOT_ID,
+                       desktop_user=account.pw_name, action='initialize',
+                       allow_amp_power=True, playback=False, capture=False,
+                       utc=datetime.now(timezone.utc).isoformat()), stream, indent=2)
+        stream.write('\n')
+    print('One amplifier initialization queued for the selected trial boot', flush=True)
+
+
+def requested_audio(args):
+    request = OUT / 'audio-request.json'
+    if not request.exists():
+        return
+    record = json.loads(request.read_text())
+    words = Path('/proc/cmdline').read_text().split()
+    boot_id = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    assert record['attempt'] == ATTEMPT and record['release'] == os.uname().release
+    assert record['preboot_id'] == BOOT_ID and boot_id != BOOT_ID
+    assert 'spx_attempt=' + ATTEMPT in words and 'spx_audio=parked' in words
+    assert record['action'] == 'initialize' and record['allow_amp_power'] is True
+    assert record['playback'] is False and record['capture'] is False
+    started = OUT / 'audio-started.json'
+    assert not started.exists()
+    # Consume before hardware access; restarting the checker cannot repeat it.
+    request.rename(started)
+    args.audio_action = 'initialize'
+    args.allow_amp_power = True
+    args.desktop_user = record['desktop_user']
+    try:
+        audio_check(args)
+    finally:
+        for name, extra in [('kernel.log', ['-k']), ('journal.log', [])]:
+            with (OUT / name).open('wb') as stream:
+                subprocess.run(['journalctl', '-b', '--no-pager', '-o', 'short-monotonic'] + extra,
+                               stdout=stream, check=True, timeout=30)
+
+
 def audio_check(args):
     action = args.audio_action
     command = ['python3', '-B', str(HERE / 'audio.py'), action,
@@ -442,7 +491,7 @@ def audio_check(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend', 'audio'))
+    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend', 'audio', 'arm-audio'))
     parser.add_argument('attempt')
     parser.add_argument('--build', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bg/work-build'))
     parser.add_argument('--parent', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bf'))
@@ -482,9 +531,10 @@ def main():
                 functional_check(args)
             finally:
                 subprocess.run([lock, 'release', 'device', owner], check=True)
+            requested_audio(args)
         else:
             {'install': install, 'boot': boot, 'return': return_to_default,
-             'extend': extend_window, 'audio': audio_check}[args.command](args)
+             'extend': extend_window, 'audio': audio_check, 'arm-audio': arm_audio}[args.command](args)
 
 
 if __name__ == '__main__':
