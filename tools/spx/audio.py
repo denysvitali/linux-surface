@@ -445,9 +445,19 @@ def initialize(args, report):
         parked = initial['state']['GPIO_VAL'] & ~0x06
         need(len(initial['internal_cards']) == 1, 'Cannot identify one internal ALSA card')
         need(initial['state']['GPIO_DIR'] & 0x1e == 0x1e and
-             initial['state']['GPIO_VAL'] & 0x1e == 0x18,
-             'Physical GPIO state is not parked 0x1e/0x18')
+             initial['state']['GPIO_VAL'] & 0x06 == 0,
+             'Physical GPIO direction is wrong or an amplifier is already enabled')
         need(initial['state']['SLV_STATUS'] == 0, 'Amps must be detached before the test')
+        if parked & 0x18 != 0x18:
+            # Cold startup and master reload can clear auxiliary outputs 3/4.
+            # Restore them with both amplifier enables (1/2) held low. Preserve
+            # unrelated GPIO values and verify physical, page-safe readback.
+            parked |= 0x18
+            writer.write_text(f'43 {parked:02x}\n')
+            report['startup_parked_state'] = state()
+            need(report['startup_parked_state']['GPIO_VAL'] & 0x1e == 0x18 and
+                 report['startup_parked_state']['SLV_STATUS'] == 0,
+                 'Could not establish the auxiliary parked GPIO state')
         report['parked'] = True
         for bits, expected in ((0x02, {3}), (0x06, {3, 4})):
             assert_desktop_paused(args.desktop_user)
