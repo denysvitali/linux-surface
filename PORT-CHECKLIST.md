@@ -6,14 +6,15 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-04, BK live on mainline; listening awaits user)
+## Status (2026-10-04, BK live; speaker FIFO recovered, listening pending)
 
 Latest result: [BK](tools/spx/boot-diagnostics/RESULT-20261004bk.md). Kernel
 changes are committed on `spx/next` as one commit per feature.
 New [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
 awaits tested-kernel confirmation; recovery diagnostics are identified separately.
 BK runs `7.3.0-rc2-spx-mainline-20261004bg+`; input/BT user confirmations belong
-to BI. Both amplifiers are parked; the fresh stereo test awaits a requested run.
+to BI. Both amplifiers are parked; two tests stopped before tones, and the
+retained command FIFO has been cleared. A further listening request is pending.
 
 | Area | State | What is missing |
 |---|---|---|
@@ -26,7 +27,7 @@ to BI. Both amplifiers are parked; the fresh stereo test awaits a requested run.
 | RTC (B05) | Readback and warm reboot pass | Cold power-off retention |
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
-| Speakers (A01) | **BJ: both amps initialize; BK live with amps off and test ready** | Fresh PCM/late-init hardware validation and authorized listening |
+| Speakers (A01) | **BK: first fresh silent PCM starts; later FIFO blockage recovered** | Master DP4/late-init and audible stereo remain unverified |
 | Microphones (A02) | Untested on this tree | Capture test |
 | Cameras (C01–C05) | Rear sensor identifies | No frame captured |
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |

@@ -92,3 +92,11 @@ and obtain the person's listening result before deciding on another run.
 The late-init sysfs nodes are per native speaker; reported PA/protection
 values are driver shadows, not physical register readback. The six-second
 tone sequence and successful software checks alone do not pass A01.
+
+If a failed teardown leaves the command FIFO occupied, use
+`trial.py audio ATTEMPT --audio-action recover`. This requires both amplifiers
+already off, desktop audio paused and no PCM/driver streams. The driver checks
+those conditions and flushes only the command FIFO once; it does not reset the
+bus or enable speakers. Read `audio/recover-result.json`. A module reload alone
+does not clear retained FIFO state. Initialization now requires actual codec
+`HW_INIT` completion; SoundWire attachment by itself is insufficient.
