@@ -6,9 +6,10 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-05, BU: default desktop speakers working)
+## Status (2026-10-05, BU: desktop audio, CPU scaling and Wi-Fi upload work)
 
-Latest result: [BU](tools/spx/boot-diagnostics/RESULT-20261005bu.md), running
+Latest results: [quiet hardware checks](tools/spx/boot-diagnostics/RESULT-20261005bu-hardware.md)
+and [audio](tools/spx/boot-diagnostics/RESULT-20261005bu.md), running
 `7.3.0-rc2-spx-mainline-20261004bg+`. Both speakers pass the microphone checks;
 ordinary applications use the default `spx_speakers` output at a digital level
 8.9 dB above the previous setting. The microphone is closed. Two minutes of
@@ -21,11 +22,11 @@ awaits attribution for later observations.
 | Area | State | What is missing |
 |---|---|---|
 | Boot to desktop, NVMe/LUKS root | Works | Cold/warm repeat count (B01) |
-| CPU and memory (B03) | **Passed on AP** | Recheck on final candidate |
+| CPU and memory (B03) | **Passed on AP; BU automatic frequency scaling active** | Recheck on final candidate |
 | Storage (B02) | Passed on AP | Post-resume I/O |
 | GPU FD680 (D02) | **Passed on AW**, 30 min rendering | A person looking at the screen |
 | Internal panel (D01) | User: display and brightness work; boot attribution pending | Blank/unblank and resume |
-| Wi-Fi (N01) | BI: 25 MB download at ~379 Mbit/s on 5 GHz | Upload, reconnect, both bands, resume |
+| Wi-Fi (N01) | 5 GHz: BI download ~379 Mbit/s; BU upload ~189 Mbit/s | Reconnect, 2.4 GHz, sustained use and resume |
 | RTC (B05) | Readback and warm reboot pass | Cold power-off retention |
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
@@ -38,11 +39,11 @@ awaits attribution for later observations.
 | Bluetooth (N02) | **User confirms Bluetooth works on BI** | Device-specific pairing/reconnect and resume |
 | USB data (U01) | Untested | Both ports/orientations, fixtures |
 | USB-C PD, DisplayPort, dock (U02–U04) | BI: WIP DP0 forwarding loaded, monitor disconnected | Dock replug/output, roles/PD, ports/orientations |
-| Battery and charging (P01) | User: USB-C charging works; boot attribution pending | Discharge, transitions and charger coverage |
+| Battery and charging (P01) | BU: AC online, 49%, Not charging; prior user report works | Charge-policy explanation, discharge/transitions and chargers |
 | Suspend/resume (P03) | Kernel exposes s2idle; systemd sleep/suspend targets masked | Intended wake, then controlled sleep |
 | Thermal (P05) | BH: 3 min CPU/GPU load stable, peak 60.1°C | Cooling response |
-| Idle power (P02) | Never tested | Battery discharge measurement |
-| Sensors (S01, S02) | Never tested | Readout, then human |
+| Idle power (P02) | BU: CPU scales down; GPU runtime-suspends | Battery power measurement and remaining forced-on devices |
+| Sensors (S01, S02) | BU: TCS3430 identity confirmed; APDS binding wrong | Correct ALS driver; motion sensor-hub stack |
 | Cellular, GNSS (N03, N04) | Never tested | SIM |
 
 ## Next work, in order
@@ -138,8 +139,10 @@ reconciled. [Inventory](tools/spx/boot-diagnostics/HARDWARE-INVENTORY-20261002.m
   Boot ID and zero taint were stable. A later bounded `userspace` test drove
   both policies min→max twice (0.3→1.7664 and 0.8256→3.1488 GHz). With
   `schedutil`, both rose under load and reached lower rates after load ended.
-  The original `performance` governor was restored. This short test does not
-  establish sustained operation or final-candidate behavior; B03 stays open.
+  The original `performance` governor was restored on AP. BU repeats load/idle
+  scaling with the desktop stream active and retains `schedutil`; see the
+  [BU hardware result](tools/spx/boot-diagnostics/RESULT-20261005bu-hardware.md).
+  Sustained operation and final-candidate regression remain open.
   [Evidence](tools/spx/boot-diagnostics/RESULT-20261002ap.md).
 - [ ] **B04 — Firmware services.** ADSP/CDSP/modem and their required services
   remain stable during combined use and resume. Review the diagnostic QRTR
@@ -839,14 +842,17 @@ firmware ownership, receiver DT/bindings and capture integration remain open. [C
 
 ## Sensors, battery, power and thermal behavior
 
-Current: **enumerated/untested**. APDS9960 and PMIC ADCs enumerate; motion-sensor
-coverage is unresolved. AC online/BAT1 capacity46%, statusNot charging is a single
-snapshot, not proof of charge failure or charge-cycle success. CPU policies use
-performance governor. `s2idle` is exposed; no suspend cycle has been signed off.
-[Inventory](tools/spx/boot-diagnostics/HARDWARE-INVENTORY-20261002.md).
+Current: **partial**. BU identifies the light sensor as TCS3430, currently
+misbound to APDS9960. Motion requires Qualcomm's separate sensor-hub stack.
+BU CPU policies now use schedutil and pass load/idle transitions. AC is online,
+battery49%/14.72Wh, Not charging with no energy change over120s; this does not
+establish a charge fault or successful charging. GPU runtime suspend works.
+[BU hardware result](tools/spx/boot-diagnostics/RESULT-20261005bu-hardware.md).
 
-- [ ] **S01 — Light/proximity.** Establish fitted APDS9960 functions; verify readings
-  change correctly under physical stimulus and drive intended desktop behavior.
+- [ ] **S01 — Light/proximity.** Correct the confirmed TCS3430 ALS binding and
+  verify readings under cover/uncover stimulus and intended desktop brightness
+  behavior. TCS3430 has XYZ/IR light channels, not APDS proximity; do not treat
+  the former driver's proximity zero as evidence of a fitted proximity sensor.
 - [ ] **S02 — Motion/orientation.** Inventory actual accelerometer/gyro/magnetometer
   or sensor-hub interfaces; validate axes, orientation changes and auto-rotation,
   including resume. PMIC ADCs are not evidence of motion-sensor support.
