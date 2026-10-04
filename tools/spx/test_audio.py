@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Offline checks only: generated samples, PCM pipe writes and permission gates."""
 import importlib.util
+import fcntl
 import json
 import os
 from pathlib import Path
 import queue
+import select
 import struct
 import tempfile
 import threading
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -230,6 +233,92 @@ class AudioTests(unittest.TestCase):
                 monitor.process.stdout.close()
                 os.close(writer)
 
+    def test_delayed_monitor_keeps_pcm_fed_and_preserves_received_stereo(self):
+        source_read, source_write = os.pipe()
+        output_read, output_write = os.pipe()
+        fcntl.fcntl(output_write, fcntl.F_SETPIPE_SZ, 4096)
+        os.set_blocking(output_write, False)
+        monitor = audio.DesktopMonitor(SimpleNamespace(
+            stdout=os.fdopen(source_read, 'rb', buffering=0), poll=lambda: None))
+        monitor.forward = True
+        pcm = audio.OwnedPCM.__new__(audio.OwnedPCM)
+        pcm.process = SimpleNamespace(stdin=os.fdopen(output_write, 'wb', buffering=0))
+        pcm.stop, pcm.pending = threading.Event(), queue.Queue()
+        pcm.error, pcm.source = None, monitor
+        pcm.source_lock = threading.Lock()
+        pcm.feed_stats = {'inserted_gap_events': 0, 'inserted_gap_frames': 0}
+        first = struct.pack('<hh', 900, -700) * 240
+        second = struct.pack('<hh', -500, 1100) * 240
+        third = struct.pack('<hh', 100, -1300) * 240
+
+        def produce():
+            os.write(source_write, first)
+            time.sleep(0.35)  # Longer than the actual ALSA 250 ms buffer.
+            os.write(source_write, second + third)
+
+        feeder, producer = threading.Thread(target=pcm.feed), threading.Thread(target=produce)
+        received, chunk_times = bytearray(), []
+        with patch.object(audio.os, 'kill') as abort:
+            monitor.thread.start()
+            feeder.start()
+            producer.start()
+            try:
+                start = time.monotonic()
+                while time.monotonic() - start < 0.6:
+                    block = bytearray()
+                    while len(block) < 960:
+                        self.assertTrue(select.select([output_read], [], [], 0.05)[0],
+                                        'PCM pipe starved during monitor delivery gap')
+                        block.extend(os.read(output_read, 960 - len(block)))
+                    received.extend(block)
+                    chunk_times.append(time.monotonic() - start)
+                    time.sleep(0.005)  # Consume 240 stereo frames at 48 kHz.
+                self.assertGreater(sum(0.05 <= t <= 0.30 for t in chunk_times), 30)
+                nonzero = [frame for frame in struct.iter_unpack('<hh', received) if frame != (0, 0)]
+                self.assertEqual(nonzero, list(struct.iter_unpack('<hh', first + second + third)))
+                self.assertGreater(pcm.feed_stats['inserted_gap_events'], 0)
+                self.assertEqual(pcm.feed_stats['inserted_gap_frames'],
+                                 240 * pcm.feed_stats['inserted_gap_events'])
+                self.assertGreater(monitor.max_interarrival_seconds, 0.25)
+                self.assertIsNone(pcm.error)
+                self.assertIsNone(monitor.error)
+                abort.assert_not_called()
+            finally:
+                pcm.stop.set()
+                monitor.stop.set()
+                producer.join(timeout=2)
+                feeder.join(timeout=2)
+                monitor.thread.join(timeout=2)
+                pcm.process.stdin.close()
+                monitor.process.stdout.close()
+                os.close(source_write)
+                os.close(output_read)
+
+    def test_idle_monitor_drains_more_than_queue_capacity_without_enqueuing(self):
+        reader, writer = os.pipe()
+        monitor = audio.DesktopMonitor(SimpleNamespace(
+            stdout=os.fdopen(reader, 'rb', buffering=0), poll=lambda: None))
+
+        def produce():
+            for _ in range(100):
+                os.write(writer, bytes(960))
+
+        with patch.object(audio.os, 'kill') as abort:
+            monitor.thread.start()
+            producer = threading.Thread(target=produce)
+            producer.start()
+            try:
+                producer.join(timeout=2)
+                self.assertFalse(producer.is_alive(), 'Idle monitor stopped draining its pipe')
+                self.assertTrue(monitor.blocks.empty())
+                self.assertIsNone(monitor.error)
+                abort.assert_not_called()
+            finally:
+                monitor.stop.set()
+                monitor.thread.join(timeout=2)
+                monitor.process.stdout.close()
+                os.close(writer)
+
     def test_recording_close_restores_mixer_before_handoff_and_only_once(self):
         events = []
         capture = Mock()
@@ -278,8 +367,10 @@ class AudioTests(unittest.TestCase):
                   'before': {'boot_id': 'test-boot', 'release': 'test-kernel'}}
         pcm, graph = Mock(), Mock()
         pcm.process.pid = 123
+        pcm.feed_stats = {'inserted_gap_events': 2, 'inserted_gap_frames': 480}
         monitor = graph.monitor
         monitor.input_peak, monitor.peak = 32768, 1433
+        monitor.max_interarrival_seconds = 0.015
         handlers = {}
 
         def handler(signum, callback):
@@ -400,7 +491,8 @@ class AudioTests(unittest.TestCase):
             entered.set()
             release.wait(timeout=2)
 
-        source = SimpleNamespace(healthy=healthy, blocks=queue.Queue())
+        source = SimpleNamespace(healthy=healthy, blocks=queue.Queue(), forward=True)
+        pcm.feed_stats = {'inserted_gap_events': 0, 'inserted_gap_frames': 0}
         source.blocks.put(bytes(960))
         pcm.source = source
         feeder = threading.Thread(target=pcm.feed)

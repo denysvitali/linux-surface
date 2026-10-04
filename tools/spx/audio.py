@@ -411,6 +411,7 @@ class OwnedPCM:
         self.error = None
         self.source = None
         self.source_lock = threading.Lock()
+        self.feed_stats = {'inserted_gap_events': 0, 'inserted_gap_frames': 0}
         self.thread = threading.Thread(target=self.feed, daemon=True)
         self.thread.start()
 
@@ -428,9 +429,24 @@ class OwnedPCM:
                         else:
                             source.healthy()
                             try:
-                                data, done = source.blocks.get(timeout=0.1), None
+                                # Preserve every queued frame even across an
+                                # active-to-idle transition.
+                                data, done = source.blocks.get_nowait(), None
                             except queue.Empty:
-                                continue
+                                if not source.forward:
+                                    data, done = bytes(2400 * 4), None
+                                else:
+                                    try:
+                                        data, done = source.blocks.get(timeout=0.0025), None
+                                    except queue.Empty:
+                                        source.healthy()
+                                        # PipeWire has its own clock. Do not
+                                        # let a brief delivery gap starve ALSA.
+                                        # Wait less than this block's 5 ms so
+                                        # silence can sustain the hardware rate.
+                                        data, done = bytes(240 * 4), None
+                                        self.feed_stats['inserted_gap_events'] += 1
+                                        self.feed_stats['inserted_gap_frames'] += 240
                 remaining = memoryview(data)
                 while remaining and not self.stop.is_set():
                     if not select.select([], [fd], [], 0.1)[1]:
@@ -504,6 +520,7 @@ class DesktopMonitor:
         self.forward = ordinary
         self.peak = 0
         self.input_peak = 0
+        self.max_interarrival_seconds = 0.0
         self.thread = threading.Thread(target=self.consume, daemon=True)
 
     def consume(self):
@@ -516,7 +533,9 @@ class DesktopMonitor:
                     continue
                 block = os.read(self.process.stdout.fileno(), 4096)
                 need(block, 'Desktop monitor ended')
-                last = time.monotonic()
+                now = time.monotonic()
+                self.max_interarrival_seconds = max(self.max_interarrival_seconds, now - last)
+                last = now
                 pending.extend(block)
                 while len(pending) >= 960 and not self.stop.is_set():
                     frame = bytes(pending[:960])
@@ -533,10 +552,13 @@ class DesktopMonitor:
                     self.peak = max(self.peak, peak)
                     need(peak <= 1433, 'Desktop monitor exceeds peak limit 1433')
                     need(self.forward or peak <= 1, 'Unexpected desktop audio outside owned playback')
-                    # Idle input never reaches the amplifiers, including dither.
-                    data = frame if self.forward else bytes(len(frame))
+                    # Idle/scoring must not make ALSA follow PipeWire's clock.
+                    # Consume the monitor continuously, but let OwnedPCM supply
+                    # silence using ALSA backpressure instead of queuing it here.
+                    if not self.forward:
+                        continue
                     try:
-                        self.blocks.put(data, timeout=0.5)
+                        self.blocks.put(frame, timeout=0.5)
                     except queue.Full:
                         raise RuntimeError('Desktop PCM forwarding stalled')
         except (OSError, RuntimeError) as error:
@@ -719,6 +741,7 @@ class DesktopGraph:
         if self.monitor:
             self.report['monitor_peak'] = self.monitor.peak
             self.report['monitor_error'] = self.monitor.error
+            self.report['monitor_max_interarrival_seconds'] = self.monitor.max_interarrival_seconds
             attempt(self.monitor.close)
             self.monitor = None
         for command in reversed(getattr(self, 'public_restore', [])):
@@ -814,6 +837,7 @@ def desktop_playback(args, report, pcm, paths, mapping, capture, holders):
         evidence['acoustic_passed'] = True
         pcm.set_source(None)
         evidence['monitor_peak'] = graph.monitor.peak
+        evidence['monitor_max_interarrival_seconds'] = graph.monitor.max_interarrival_seconds
         graph.monitor.close()
         graph.monitor = None
         pcm.settle(0.8)
@@ -918,6 +942,8 @@ def serve_desktop(args, report, pcm, graph, paths, mapping):
                                                timezone.utc).isoformat()
                          if args.serve_seconds else None),
         'gain': 1433 / 32768, 'peak_limit': 1433, 'pa_gain': 0,
+        'pcm_feed': dict(pcm.feed_stats),
+        'monitor_max_interarrival_seconds': graph.monitor.max_interarrival_seconds,
         'note': 'Conservative fixed attenuation; useful listening volume is not yet validated.'}
     stop = threading.Event()
 
@@ -948,7 +974,9 @@ def serve_desktop(args, report, pcm, graph, paths, mapping):
         graph.monitor.healthy()
         ready.update(stopped=True, stop_reason='SIGTERM' if stop.is_set() else 'deadline',
                      seconds=time.monotonic() - started,
-                     input_peak=graph.monitor.input_peak, output_peak=graph.monitor.peak)
+                     input_peak=graph.monitor.input_peak, output_peak=graph.monitor.peak,
+                     pcm_feed=dict(pcm.feed_stats),
+                     monitor_max_interarrival_seconds=graph.monitor.max_interarrival_seconds)
         # Keep the same PCM running on silence while the monitor is removed.
         pcm.set_source(None)
         graph.monitor.close()
@@ -1009,6 +1037,7 @@ def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder
     pcm = OwnedPCM(card)
     pcm_holder.append(pcm)  # Outer cleanup parks amplifiers before closing PCM.
     report['pcm'] = {'pid': pcm.process.pid, 'card': card, 'format': 'S16_LE/48000/stereo'}
+    report['pcm']['feed'] = pcm.feed_stats
     deadline = time.monotonic() + 8
     while True:
         try:
