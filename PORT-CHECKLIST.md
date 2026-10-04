@@ -6,16 +6,16 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-04, BM live; stereo ports pass, late-init replay needs fixing)
+## Status (2026-10-04, BM collected; corrected speaker replay queued in BN)
 
 Latest result: [BM](tools/spx/boot-diagnostics/RESULT-20261004bm.md). Kernel
 changes are committed on `spx/next` as one commit per feature.
 New [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
 awaits tested-kernel confirmation; recovery diagnostics are identified separately.
-BM runs `7.3.0-rc2-spx-mainline-20261004bg+`; input/BT confirmations belong to BI.
-The automatic mic loop passes simultaneous playback/capture and both stereo-port
-checks. Left amplifier late initialization returns EINVAL before tones. Driver
-fix pending; the microphone loop needs no human listening response.
+BM ran `7.3.0-rc2-spx-mainline-20261004bg+`; input/BT confirmations belong to BI.
+The mic loop passes simultaneous playback/capture and stereo-port checks. The
+replay used the wrong DAPM endpoint; the corrected module and automatic test are
+queued in BN. A second unexplained restart returned to recovery6.18.
 
 | Area | State | What is missing |
 |---|---|---|
