@@ -899,7 +899,7 @@ def verify_public_playback(report, pcm, graph, capture):
 
 
 def serve_desktop(args, report, pcm, graph, paths, mapping):
-    """Bounded ordinary desktop session; no microphone is open in this loop."""
+    """Ordinary desktop session; no microphone is open in this loop."""
     need(report['desktop']['acoustic_passed'] and
          report['public_desktop']['acoustic_passed'] and report.get('recording_closed'),
          'Serve handoff requires acoustic verification and a closed microphone')
@@ -907,15 +907,16 @@ def serve_desktop(args, report, pcm, graph, paths, mapping):
     graph.monitor.healthy()
     check_stereo(mapping, paths, initialized=True)
     started = time.monotonic()
-    deadline = started + args.serve_seconds
+    deadline = started + args.serve_seconds if args.serve_seconds else None
     ready = report['serve'] = {
         'acoustic_passed': True, 'public_acoustic_passed': True,
         'recording_closed': True, 'sink': 'spx_speakers',
         'owner_pid': os.getpid(), 'pcm_pid': pcm.process.pid,
         'boot_id': report['before']['boot_id'], 'release': report['before']['release'],
         'maximum_seconds': args.serve_seconds, 'deadline_monotonic': deadline,
-        'deadline_utc': datetime.fromtimestamp(time.time() + args.serve_seconds,
-                                               timezone.utc).isoformat(),
+        'deadline_utc': (datetime.fromtimestamp(time.time() + args.serve_seconds,
+                                               timezone.utc).isoformat()
+                         if args.serve_seconds else None),
         'gain': 1433 / 32768, 'peak_limit': 1433, 'pa_gain': 0,
         'note': 'Conservative fixed attenuation; useful listening volume is not yet validated.'}
     stop = threading.Event()
@@ -938,7 +939,7 @@ def serve_desktop(args, report, pcm, graph, paths, mapping):
             pcm.healthy()
             graph.monitor.healthy()
             now = time.monotonic()
-            if now >= deadline:
+            if deadline is not None and now >= deadline:
                 break
             if now >= next_hardware_check:
                 check_stereo(mapping, paths, initialized=True)
@@ -1318,8 +1319,8 @@ def initialize(args, report):
 
 def serve_duration(value):
     seconds = int(value)
-    if not 1 <= seconds <= 86400:
-        raise argparse.ArgumentTypeError('serve duration must be between 1 and 86400 seconds')
+    if not 0 <= seconds <= 86400:
+        raise argparse.ArgumentTypeError('serve duration must be between 0 and 86400 seconds')
     return seconds
 
 
@@ -1336,7 +1337,7 @@ def main():
     parser.add_argument('--allow-capture', action='store_true',
                         help='authorize bounded internal microphone recording')
     parser.add_argument('--serve-seconds', type=serve_duration, default=3600,
-                        help='ordinary desktop session duration, 1..86400 (default: 3600)')
+                        help='ordinary desktop session duration, 0 until stopped or 1..86400 seconds (default: 3600)')
     args = parser.parse_args()
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
     report = {'action': args.action, 'utc': stamp, 'playback_ready': False,

@@ -125,11 +125,12 @@ PCM after verification and connects the existing `spx_speakers` output:
 
 ```
 sudo python3 -B tools/spx/trial.py arm-audio ATTEMPT --audio-action serve \
-  --serve-seconds 28800 --return-after-audio-seconds 61 \
+  --serve-seconds 0 --return-after-audio-seconds 61 \
   --allow-amp-power --allow-playback --allow-capture
 ```
 
-This is an eight-hour application session on the selected mainline trial.
+Zero means ordinary playback continues until the service stops. A positive
+duration can still bound a specific application test.
 Startup first verifies the bounded test applications and then the actual public
 output through the microphone. Capture stops and its mixer routes are restored
 before handoff. Read `audio/serve-ready.json` for that boot's readiness; also
@@ -140,9 +141,11 @@ Normal application audio preserves both channels with fixed digital attenuation
 of 1433/32768 and minimum PA gain. This deliberately starts at a low volume;
 the desktop slider starts at 100% within that output limit. It does not use
 the obsolete bridge's 44-times amplification. The microphone
-does not run during the application session. The existing automatic return
-remains scheduled beyond the session; failure or completion brings that return
-forward to the requested delay. A normal stop closes the attached PCM before
+does not run during the application session. **An untimed audio bridge does
+not cancel the boot fallback.** The coordinator must settle that boot policy
+separately after readiness; failure or completion moves an active return timer
+to the requested delay. A timed session extends the return beyond its end.
+A normal stop closes the attached PCM before
 parking, while errors park immediately. This does not change the default boot
 entry or establish daily-use lifecycle reliability.
 

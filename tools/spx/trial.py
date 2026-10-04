@@ -158,12 +158,13 @@ def install(args):
         assert not target.exists() or target.read_text() == text
         target.write_text(text)
         target.chmod(420)
-    check_service = '[Unit]\nDescription=SPX bounded functional checks\nConditionKernelCommandLine=spx_attempt=%i\nAfter=network-online.target bluetooth.service\nRequiresMountsFor=/var/lib/spx-boot-diagnostics\n\n[Service]\nType=oneshot\nExecStart=/usr/bin/python3 -B /usr/local/lib/spx-boot-diagnostics/trial.py check %i\nTimeoutStartSec=90000\nTimeoutStopSec=20\n'
+    check_service = '[Unit]\nDescription=SPX bounded functional checks\nConditionKernelCommandLine=spx_attempt=%i\nAfter=network-online.target bluetooth.service\nRequiresMountsFor=/var/lib/spx-boot-diagnostics\n\n[Service]\nType=oneshot\nExecStart=/usr/bin/python3 -B /usr/local/lib/spx-boot-diagnostics/trial.py check %i\nTimeoutStartSec=infinity\nTimeoutStopSec=20\n'
     check_timer = '[Unit]\nDescription=Run SPX functional checks after startup\nConditionKernelCommandLine=spx_attempt=%i\n\n[Timer]\nOnBootSec=50\nAccuracySec=1\nUnit=spx-trial-check@%i.service\n\n[Install]\nWantedBy=timers.target\n'
     for name, text in [('spx-trial-check@.service', check_service), ('spx-trial-check@.timer', check_timer)]:
         target = unit_dir / name
-        previous = text.replace('TimeoutStartSec=90000\nTimeoutStopSec=20\n', 'TimeoutStartSec=180\n')
-        assert not target.exists() or target.read_text() in (text, previous)
+        previous = text.replace('TimeoutStartSec=infinity\nTimeoutStopSec=20\n', 'TimeoutStartSec=180\n')
+        bounded = text.replace('TimeoutStartSec=infinity\n', 'TimeoutStartSec=90000\n')
+        assert not target.exists() or target.read_text() in (text, previous, bounded)
         target.write_text(text)
         target.chmod(420)
     helper = Path('/usr/local/lib/spx-boot-diagnostics/trial.py')
@@ -404,7 +405,7 @@ def arm_audio(args):
     if action in ('feedback', 'desktop', 'serve'):
         assert args.allow_playback and args.allow_capture, 'feedback needs playback and capture authorization'
     if action == 'serve':
-        assert 1 <= args.serve_seconds <= 82800
+        assert 0 <= args.serve_seconds <= 82800
     if args.return_after_audio_seconds is not None:
         assert 61 <= args.return_after_audio_seconds <= 900
     prepared = json.loads((OUT / 'prepared.json').read_text())
@@ -440,7 +441,7 @@ def requested_audio(args):
     feedback = record['action'] in ('feedback', 'desktop', 'serve')
     assert record['playback'] is feedback and record['capture'] is feedback
     if record['action'] == 'serve':
-        assert type(record.get('serve_seconds')) is int and 1 <= record['serve_seconds'] <= 82800
+        assert type(record.get('serve_seconds')) is int and 0 <= record['serve_seconds'] <= 82800
     started = OUT / 'audio-started.json'
     assert not started.exists()
     # Consume before hardware access; restarting the checker cannot repeat it.
@@ -456,8 +457,11 @@ def requested_audio(args):
             # Keep the automatic return beyond verification and the requested
             # application session. A failed start still uses the short return
             # in finally; no per-attempt service is needed.
-            args.return_seconds = int(float(Path('/proc/uptime').read_text().split()[0])) + args.serve_seconds + 180
-            extend_window(args)
+            if args.serve_seconds:
+                args.return_seconds = int(float(Path('/proc/uptime').read_text().split()[0])) + args.serve_seconds + 180
+                extend_window(args)
+            # An untimed application bridge never changes the boot fallback.
+            # The coordinator settles that policy separately after readiness.
         audio_check(args)
     finally:
         for name, extra in [('kernel.log', ['-k']), ('journal.log', [])]:
@@ -517,11 +521,11 @@ def audio_check(args):
             if action in ('capture', 'feedback', 'desktop', 'serve'):
                 command.append('--allow-capture')
             if action == 'serve':
-                assert 1 <= args.serve_seconds <= 82800
+                assert 0 <= args.serve_seconds <= 82800
                 command += ['--serve-seconds', str(args.serve_seconds)]
         process = subprocess.Popen(command)
         try:
-            status = process.wait(timeout=args.serve_seconds + 120 if action == 'serve' else
+            status = process.wait(timeout=(args.serve_seconds + 120 if args.serve_seconds else None) if action == 'serve' else
                                   120 if action in ('feedback', 'desktop') else 90 if action == 'listen' else 40)
         except subprocess.TimeoutExpired:
             # Allow the initializer's signal handler/finally block to park.
@@ -562,7 +566,7 @@ def main():
     parser.add_argument('--return-seconds', type=int, default=3600)
     parser.add_argument('--audio-action', choices=('plan', 'inspect', 'initialize', 'listen', 'recover', 'capture', 'feedback', 'desktop', 'serve'), default='plan')
     parser.add_argument('--serve-seconds', type=int, default=3600,
-                        help='ordinary desktop playback window after acoustic verification (1..82800)')
+                        help='ordinary desktop playback after acoustic verification (0 until stopped, or 1..82800 seconds)')
     parser.add_argument('--allow-amp-power', action='store_true')
     parser.add_argument('--allow-playback', action='store_true')
     parser.add_argument('--allow-capture', action='store_true')

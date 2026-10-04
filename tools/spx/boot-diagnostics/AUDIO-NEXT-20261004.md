@@ -12,17 +12,21 @@ BQ (`20261004bq`) is installed and queued once with `serve`, using BP's unchange
 mainline kernel/DTB. The new helper first repeats the bounded desktop check,
 then verifies the actual public sink through fixed stereo attenuation
 1433/32768. After the microphone closes and capture routes restore, it retains
-the same PCM for an eight-hour application session. The desktop slider starts
+the same PCM for ordinary applications. After the user questioned the proposed
+eight-hour cutoff, `serve --serve-seconds 0` now supports playback until stopped.
+The desktop slider starts
 at 100% within that low output limit. Successful normal stop closes the attached
 PCM before parking; errors park immediately. The existing return timer remains
-armed beyond the session and moves to 61 seconds after completion/failure.
+armed independently; zero audio duration does not cancel it. The user's concern
+about wait time versus automatic recovery return is awaiting clarification.
 
 **Live BQ verification is pending.** Inspect `audio/serve-ready.json` and
 `audio/serve-result.json` under its functional result directory. A ready file
 must match the current boot and a live owned PCM; it requires both acoustic
 passes and a closed recording. Do not re-arm a consumed request. Implementation
 is `16793526c9f3`, wrapper `7ab2fef9e920`; 25 audio, 13 scorer and 4 queued-request
-tests pass. Persistent boot selection, useful volume and lifecycle reliability
+tests passed before the untimed-session follow-up (now 5 request tests).
+Persistent boot selection, useful volume and lifecycle reliability
 are not established by this prepared session.
 
 BP passed microphone-verified desktop left/right/both tones and a second

@@ -80,7 +80,7 @@ class AudioRequestTests(unittest.TestCase):
         self.assertEqual(self.windows, [])
 
     def test_invalid_session_duration_is_rejected_before_consumption(self):
-        for duration in (0, 82801, True, '3600'):
+        for duration in (-1, 82801, True, '3600'):
             with self.subTest(duration=duration):
                 self.request['serve_seconds'] = duration
                 self.write_request()
@@ -88,6 +88,18 @@ class AudioRequestTests(unittest.TestCase):
                     trial.requested_audio(self.args)
                 self.assertTrue((self.out / 'audio-request.json').exists())
                 self.assertEqual(self.windows, [])
+
+    def test_untimed_audio_does_not_remove_boot_fallback(self):
+        self.request['serve_seconds'] = 0
+        self.write_request()
+
+        def finish(args):
+            self.assertEqual(args.serve_seconds, 0)
+            self.assertEqual(self.windows, [])
+
+        with patch.object(trial, 'audio_check', side_effect=finish):
+            trial.requested_audio(self.args)
+        self.assertEqual(self.windows, [162])
 
     def test_existing_desktop_request_retains_short_test_behavior(self):
         self.request.update(action='desktop', serve_seconds=None, return_after_audio_seconds=61)

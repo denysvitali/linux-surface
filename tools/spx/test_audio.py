@@ -272,7 +272,7 @@ class AudioTests(unittest.TestCase):
             audio.serve_desktop(SimpleNamespace(), report, pcm, graph, {}, {})
         pcm.settle.assert_not_called()
 
-    def test_serve_ready_precedes_signal_stop_and_retains_the_pcm(self):
+    def test_untimed_serve_survives_eight_hours_until_signal_and_retains_pcm(self):
         report = {'action': 'serve', 'desktop': {'acoustic_passed': True},
                   'public_desktop': {'acoustic_passed': True}, 'recording_closed': True,
                   'before': {'boot_id': 'test-boot', 'release': 'test-kernel'}}
@@ -289,12 +289,18 @@ class AudioTests(unittest.TestCase):
 
         class StopAfterReady:
             stopped = False
+            calls = 0
 
             def wait(self, seconds):
                 ready = json.loads((output / 'serve-ready.json').read_text())
                 self_test.assertTrue(ready['recording_closed'])
                 self_test.assertTrue(ready['public_acoustic_passed'])
                 self_test.assertEqual(ready['pcm_pid'], 123)
+                self_test.assertIsNone(ready['deadline_monotonic'])
+                self_test.assertIsNone(ready['deadline_utc'])
+                self.calls += 1
+                if self.calls == 1:
+                    return False  # A nine-hour clock jump must not stop audio.
                 handlers[audio.signal.SIGTERM](audio.signal.SIGTERM, None)
                 return self.stopped
 
@@ -307,9 +313,10 @@ class AudioTests(unittest.TestCase):
         self_test = self
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary)
-            args = SimpleNamespace(output=output, serve_seconds=3600)
+            args = SimpleNamespace(output=output, serve_seconds=0)
             with patch.object(audio.threading, 'Event', StopAfterReady), \
                     patch.object(audio.signal, 'signal', side_effect=handler), \
+                    patch.object(audio.time, 'monotonic', side_effect=[0, 32400, 32401]), \
                     patch.object(audio, 'check_stereo'):
                 audio.serve_desktop(args, report, pcm, graph, {}, {})
         self.assertEqual(report['serve']['stop_reason'], 'SIGTERM')
@@ -371,9 +378,10 @@ class AudioTests(unittest.TestCase):
                 patch.object(audio, 'parameter', side_effect=AssertionError('hardware read')):
             with self.assertRaisesRegex(RuntimeError, 'allow-capture'):
                 audio.initialize(args, {})
+        self.assertEqual(audio.serve_duration('0'), 0)
         self.assertEqual(audio.serve_duration('1'), 1)
         self.assertEqual(audio.serve_duration('86400'), 86400)
-        for value in ('0', '86401'):
+        for value in ('-1', '86401'):
             with self.assertRaises(audio.argparse.ArgumentTypeError):
                 audio.serve_duration(value)
 
