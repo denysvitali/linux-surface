@@ -285,6 +285,34 @@ def boot(args):
     subprocess.run(['systemctl', 'reboot'], check=True)
 
 
+def configure_cpu_scaling():
+    """Apply the mainline fragment's schedutil default to reused trial kernels."""
+    assert os.geteuid() == 0
+    assert 'spx_boot=mainline-functional' in Path('/proc/cmdline').read_text().split()
+    policies = sorted(Path('/sys/devices/system/cpu/cpufreq').glob('policy*'))
+    assert policies, 'No CPU frequency policies available'
+    previous = {}
+    for policy in policies:
+        assert 'schedutil' in (policy / 'scaling_available_governors').read_text().split()
+        previous[policy] = (policy / 'scaling_governor').read_text().strip()
+    changed = []
+    try:
+        for policy, governor in previous.items():
+            # Keep a userspace-selected policy; replace only the old kernel's
+            # performance default. No frequency limits or thermal settings change.
+            if governor == 'performance':
+                (policy / 'scaling_governor').write_text('schedutil\n')
+                changed.append(policy)
+                assert (policy / 'scaling_governor').read_text().strip() == 'schedutil'
+    except BaseException:
+        for policy in reversed(changed):
+            (policy / 'scaling_governor').write_text(previous[policy] + '\n')
+        raise
+    return {policy.name: dict(before=governor,
+                             after=(policy / 'scaling_governor').read_text().strip())
+            for policy, governor in previous.items()}
+
+
 def functional_check(args):
     """Small repeatable checks; observations do not imply feature acceptance."""
     os.umask(0o077)
@@ -309,6 +337,8 @@ def functional_check(args):
             result['checks'][name] = dict(error=str(error))
         save()
 
+    result['checks']['cpu-frequency-policy'] = configure_cpu_scaling()
+    save()
     for pattern in ('class/power_supply/*/uevent', 'class/thermal/thermal_zone*/type',
                     'class/thermal/thermal_zone*/temp', 'class/remoteproc/remoteproc*/name',
                     'class/remoteproc/remoteproc*/state', 'bus/iio/devices/iio:device*/name',
