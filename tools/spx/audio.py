@@ -8,10 +8,13 @@ after power-up. ``listen`` additionally requires explicit playback permission;
 it owns one fresh PCM, checks stereo routing and late initialization on digital
 silence, then plays a bounded left/right/both sequence at minimum PA gain.
 ``recover`` flushes only the command FIFO, requiring amps already off and no
-streams. None of these actions captures a microphone or loads modules.
+streams. ``feedback`` records the internal microphone across quiet and finite
+speaker tones, and scores each channel. ``capture`` checks the microphone with
+the amplifiers parked. Neither loads modules.
 """
 
 import argparse
+from array import array
 from datetime import datetime, timezone
 import fcntl
 import json
@@ -29,6 +32,7 @@ import sys
 import tempfile
 import threading
 import time
+import wave
 
 
 MODULES = Path('/sys/module')
@@ -232,13 +236,160 @@ def tone(channels, seconds=2, amplitude=1433):
     return bytes(samples)
 
 
+def configure_microphone(card, report, saved):
+    """Strict known DMIC1 -> DEC0 -> MM2 route; retain every prior value."""
+    need(parameter('q6asm_dai', 'spx_keep_asm') == 'Y',
+         'Capture requires the known parked ASM lifetime workaround')
+    for path in Path('/proc/asound').glob('card*/pcm*c/sub*/status'):
+        need(read_text(path) == 'closed', f'Capture already open: {path}')
+    base = ['amixer', '-c', str(card)]
+    report['microphone_mixer'] = []
+    for name, value in (
+            ('MultiMedia2 Mixer SLIMBUS_0_TX', '1'),
+            ('AIF1_CAP Mixer SLIM TX0', '1'), ('CDC_IF TX0 MUX', 'DEC0'),
+            ('DEC0 Volume', '84'), ('ADC MUX0', 'DMIC'), ('DMIC MUX0', 'DMIC1')):
+        key = 'name=' + name
+        before = subprocess.run(base + ['cget', key], capture_output=True,
+                                text=True, check=True, timeout=5)
+        match = re.search(r'^\s*: values=(.+)$', before.stdout, re.M)
+        need(match is not None, f'Cannot preserve microphone control {name}')
+        saved.append((base + ['cset', key, match[1]], name))
+        result = subprocess.run(base + ['cset', key, value], capture_output=True,
+                                text=True, timeout=5)
+        report['microphone_mixer'].append({'name': name, 'requested': value,
+            'returncode': result.returncode, 'readback': result.stdout,
+            'stderr': result.stderr})
+        need(result.returncode == 0, f'Microphone route {name}: {result.stderr}')
+
+
+class OwnedCapture:
+    """One finite MM2 capture, consumed continuously without XRUN recovery."""
+
+    def __init__(self, card, report, directory):
+        self.report = report
+        self.directory = directory
+        self.raw = bytearray()
+        self.mutex = threading.Lock()
+        self.stop = threading.Event()
+        self.error = None
+        self.limit = None
+        self.log = tempfile.TemporaryFile()
+        self.process = subprocess.Popen(
+            ['arecord', '--fatal-errors', '-q', '-D', f'plughw:{card},1',
+             '-t', 'raw', '-f', 'S16_LE', '-r', '48000', '-c', '1',
+             '--period-size=1920', '--buffer-size=7680', '-d', '90'],
+            stdout=subprocess.PIPE, stderr=self.log, bufsize=0)
+        self.status = Path(f'/proc/asound/card{card}/pcm1c/sub0/status')
+        report['microphone_capture'] = True
+        report['capture'] = {'pid': self.process.pid, 'device': f'plughw:{card},1',
+                             'source': 'DMIC1', 'rate': 48000, 'channels': 1,
+                             'period_frames': 1920, 'buffer_frames': 7680,
+                             'maximum_seconds': 90, 'phases': []}
+        self.thread = threading.Thread(target=self.consume, daemon=True)
+        self.thread.start()
+
+    def consume(self):
+        last = time.monotonic()
+        monitor = bytearray()
+        try:
+            while not self.stop.is_set():
+                if not select.select([self.process.stdout], [], [], 0.2)[0]:
+                    need(time.monotonic() - last < 8, 'Microphone data stalled')
+                    continue
+                block = os.read(self.process.stdout.fileno(), 16384)
+                need(bool(block), 'Microphone stream ended unexpectedly')
+                last = time.monotonic()
+                with self.mutex:
+                    self.raw.extend(block)
+                    need(len(self.raw) <= 90 * 48000 * 2, 'Capture duration limit exceeded')
+                monitor.extend(block)
+                while len(monitor) >= 9600:
+                    samples = array('h', monitor[:9600])
+                    del monitor[:9600]
+                    peak = max(abs(v) for v in samples)
+                    rms = math.sqrt(sum(v*v for v in samples) / len(samples))
+                    need(peak < 32000, 'Microphone clipping: automatic abort')
+                    if self.limit is not None:
+                        need(rms <= self.limit, 'Microphone noise/level limit exceeded')
+        except (OSError, RuntimeError) as error:
+            if not self.stop.is_set():
+                self.error = str(error)
+                # Interrupt mixer waits as well as the playback loop. The main
+                # thread's existing signal handler performs amplifier parking.
+                os.kill(os.getpid(), signal.SIGTERM)
+
+    def mark(self):
+        self.healthy()
+        with self.mutex:
+            return len(self.raw) // 2
+
+    def samples(self, start=0, end=None):
+        with self.mutex:
+            data = bytes(self.raw[start * 2:None if end is None else end * 2])
+        return array('h', data[:len(data) // 2 * 2])
+
+    def healthy(self):
+        need(self.error is None, self.error or 'Capture failed')
+        need(self.process.poll() is None, 'Capture process exited')
+
+    def wait_frames(self, frames):
+        deadline = time.monotonic() + frames / 48000 + 8
+        while True:
+            self.healthy()
+            with self.mutex:
+                if len(self.raw) >= frames * 2:
+                    return
+            need(time.monotonic() < deadline, 'Capture did not deliver requested frames')
+            time.sleep(0.05)
+
+    def baseline(self):
+        self.wait_frames(3 * 48000)
+        samples = self.samples(48000, 3 * 48000)
+        need(sum(v != 0 for v in samples) > len(samples) // 100,
+             'Microphone returned silence; cannot use it as acoustic feedback')
+        rms = math.sqrt(sum(v*v for v in samples) / len(samples))
+        need(rms < 1000, 'Ambient level too high for bounded speaker test')
+        self.limit = max(300, rms * 12)
+        status = read_text(self.status)
+        need(re.search(r'^state:\s+RUNNING$', status, re.M), 'Capture PCM is not RUNNING')
+        self.report['capture']['baseline'] = {'start_frame': 48000, 'end_frame': 144000,
+            'rms': rms, 'peak': max(abs(v) for v in samples),
+            'abort_rms': self.limit, 'status': status}
+        return samples
+
+    def close(self):
+        self.stop.set()
+        self.report['capture']['stop_requested'] = self.process.poll() is None
+        if self.process.poll() is None:
+            self.process.terminate()
+        try:
+            self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait(timeout=2)
+        self.thread.join(timeout=2)
+        self.process.stdout.close()
+        self.log.seek(0)
+        self.report['capture']['log'] = self.log.read().decode(errors='replace')
+        self.log.close()
+        self.report['capture']['error'] = self.error
+        self.report['capture']['returncode'] = self.process.returncode
+        samples = self.samples()
+        path = self.directory / 'microphone.wav'
+        with wave.open(str(path), 'wb') as output:
+            output.setparams((1, 2, 48000, 0, 'NONE', 'not compressed'))
+            output.writeframes(samples.tobytes())
+        self.report['capture']['recording'] = str(path)
+        self.report['capture']['frames'] = len(samples)
+
+
 class OwnedPCM:
     """One fresh aplay, continuously fed silence unless a finite tone is queued."""
 
     def __init__(self, card):
         self.log = tempfile.TemporaryFile()
         self.process = subprocess.Popen(
-            ['aplay', '-D', f'hw:{card},0', '-t', 'raw', '-f', 'S16_LE',
+            ['aplay', '--fatal-errors', '-D', f'hw:{card},0', '-t', 'raw', '-f', 'S16_LE',
              '-r', '48000', '-c', '2', '--period-size=2400', '--buffer-size=12000'],
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=self.log, bufsize=0)
         os.set_blocking(self.process.stdin.fileno(), False)
@@ -349,7 +500,7 @@ def check_stereo(mapping, paths, initialized=False, observations=None):
     return observation
 
 
-def listen(args, report, pcm_holder):
+def listen(args, report, pcm_holder, capture=None, baseline=None):
     need(args.allow_playback, 'listen requires --allow-playback for this requested run')
     mapping = report['stages'][-1]['physical_units_to_addresses']
     paths = {s['unit']: Path('/sys/bus/soundwire/devices') / s['name'] for s in devices()}
@@ -392,18 +543,34 @@ def listen(args, report, pcm_holder):
         pcm.healthy()
         check_stereo(mapping, paths, initialized=True, observations=checks)
         print(f'Listening test: {name}, two seconds', flush=True)
+        start = capture.mark() if capture else None
         pcm.play(tone(channels))
         report['tones'].append({'channels': name, 'seconds': 2, 'peak_limit': 1433})
+        if capture:
+            from acoustic import score_phase
+            capture.wait_frames(start + 3 * 48000)
+            end = capture.mark()
+            result = score_phase(capture.samples(start, end), baseline,
+                                 [440 if channel == 0 else 660 for channel in sorted(channels)])
+            report['capture']['phases'].append({'name': name, 'start_frame': start,
+                                               'end_frame': end, 'score': result})
+            need(result['passed'], f'Acoustic {name} test failed: {result["reason"]}')
     report['after_playback'] = check_stereo(mapping, paths, initialized=True, observations=checks)
-    report['human_result'] = 'pending; successful software checks do not establish audible output'
+    if capture:
+        report['acoustic_tones_detected'] = True
+        report['remaining_prerequisites'] = ['Uncalibrated internal mic cannot establish physical channel location, SPL, or desktop audio readiness.']
+    else:
+        report['human_result'] = 'pending; successful software checks do not establish audible output'
 
 
 def initialize(args, report):
     need(os.geteuid() == 0, 'initialize requires root')
-    need(args.action == 'recover' or args.allow_amp_power,
+    need(args.action in ('recover', 'capture') or args.allow_amp_power,
          'initialize/listen requires --allow-amp-power for this authorized run')
-    need(args.action != 'listen' or args.allow_playback,
+    need(args.action not in ('listen', 'feedback') or args.allow_playback,
          'listen requires separate explicit --allow-playback authorization')
+    need(args.action not in ('capture', 'feedback') or args.allow_capture,
+         'Microphone recording requires --allow-capture')
     need(args.owner and args.desktop_user, 'initialize requires --owner and --desktop-user')
     need(read_text('/tmp/spx-locks/spx-device.lock/owner') == args.owner,
          'Coordinator must own the device lock')
@@ -434,6 +601,9 @@ def initialize(args, report):
     report['stages'] = []
     parked = None
     pcm_holder = []
+    capture = None
+    saved_mixer = []
+    baseline = None
     signals = {}
 
     def interrupted(signum, frame):
@@ -487,6 +657,16 @@ def initialize(args, report):
                  'Command FIFO readback is not empty after parked recovery')
             report['fifo_recovered'] = True
             return
+        if args.action in ('capture', 'feedback'):
+            need(args.output is not None, 'Capture requires a private result directory')
+            directory = args.output / ('capture-' + report['utc'])
+            directory.mkdir(mode=0o700)
+            configure_microphone(initial['internal_cards'][0], report, saved_mixer)
+            capture = OwnedCapture(initial['internal_cards'][0], report, directory)
+            baseline = capture.baseline()
+            if args.action == 'capture':
+                report['capture_running'] = True
+                return
         for bits, expected in ((0x02, {3}), (0x06, {3, 4})):
             assert_desktop_paused(args.desktop_user)
             assert_pcm_idle()
@@ -517,8 +697,31 @@ def initialize(args, report):
                 raise RuntimeError(f'Native enumeration did not settle: {last_error}')
         report['enumeration_passed'] = True
         report['remaining_prerequisites'].remove(UNMET[0])
-        if args.action == 'listen':
-            listen(args, report, pcm_holder)
+        if args.action in ('listen', 'feedback'):
+            listen(args, report, pcm_holder, capture, baseline)
+        if args.action == 'feedback':
+            # Control for electrical crosstalk: keep the identical capture/PCM
+            # routes, disable the physical amps, then send the same digital tones.
+            from acoustic import score_phase
+            writer.write_text(f'43 {parked:02x}\n')
+            report['control_parked_state'] = state()
+            need(report['control_parked_state']['GPIO_VAL'] & 0x1e == 0x18,
+                 'Cannot verify physical powerdown for acoustic control')
+            capture.wait_frames(capture.mark() + 48000)
+            start = capture.mark()
+            pcm_holder[0].play(tone({0, 1}))
+            capture.wait_frames(start + 3 * 48000)
+            end = capture.mark()
+            controls = [score_phase(capture.samples(start, end), baseline, [hz])
+                        for hz in (440, 660)]
+            report['capture']['amps_off_control'] = {'start_frame': start,
+                'end_frame': end, 'scores': controls}
+            for result in controls:
+                for target in result['targets'].values():
+                    need(target['rms'] < 1 or target['baseline_rise_db'] < 10 or
+                         target['neighbor_rise_db'] < 10,
+                         'Test tone persists with amps off: acoustic result inconclusive')
+            report['acoustic_passed'] = True
     finally:
         for signum in signals:
             signal.signal(signum, signal.SIG_IGN)
@@ -539,6 +742,13 @@ def initialize(args, report):
         finally:
             while pcm_holder:
                 report['pcm']['log'] = pcm_holder.pop().close()
+            if capture:
+                capture.close()
+            report['microphone_mixer_restore'] = []
+            for command, name in reversed(saved_mixer):
+                result = subprocess.run(command, capture_output=True, text=True, timeout=5)
+                report['microphone_mixer_restore'].append({'name': name,
+                    'returncode': result.returncode, 'stderr': result.stderr})
             for signum, handler in signals.items():
                 signal.signal(signum, handler)
     if 'pcm' in report:
@@ -548,7 +758,7 @@ def initialize(args, report):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', nargs='?', choices=('plan', 'inspect', 'initialize', 'listen', 'recover'), default='plan')
+    parser.add_argument('action', nargs='?', choices=('plan', 'inspect', 'initialize', 'listen', 'recover', 'capture', 'feedback'), default='plan')
     parser.add_argument('--output', type=Path, help='directory for result JSON')
     parser.add_argument('--owner', help='coordinator device-lock owner (initialize)')
     parser.add_argument('--desktop-user', help='user whose audio units the caller has paused')
@@ -556,6 +766,8 @@ def main():
                         help='explicitly authorize this bounded initialization run')
     parser.add_argument('--allow-playback', action='store_true',
                         help='explicitly authorize this one bounded listening run')
+    parser.add_argument('--allow-capture', action='store_true',
+                        help='authorize bounded internal microphone recording')
     args = parser.parse_args()
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
     report = {'action': args.action, 'utc': stamp, 'playback_ready': False,
@@ -565,7 +777,7 @@ def main():
     try:
         if args.output:
             args.output.mkdir(parents=True, exist_ok=True)
-            if args.action in ('initialize', 'listen', 'recover'):
+            if args.action in ('initialize', 'listen', 'recover', 'capture', 'feedback'):
                 # A killed run must never leave an earlier "parked" verdict.
                 save_run_result(args.output, report)
         if args.action == 'plan':
@@ -597,6 +809,12 @@ def main():
             with open('/run/spx-audio-initialize.lock', 'w') as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 initialize(args, report)
+            if report['microphone_capture']:
+                need(not report['capture'].get('error'), 'Microphone monitor failed')
+                need(not re.search(r'overrun|underrun|error', report['capture']['log'], re.I),
+                     'Capture reported an ALSA error')
+                need(all(item['returncode'] == 0 for item in report['microphone_mixer_restore']),
+                     'Microphone mixer restoration failed')
         report['success'] = True
     except (OSError, RuntimeError, ValueError, KeyError, subprocess.SubprocessError) as error:
         report['error'] = str(error)
@@ -604,7 +822,7 @@ def main():
     text = json.dumps(report, indent=2) + '\n'
     if args.output:
         (args.output / f'audio-{args.action}-{stamp}.json').write_text(text)
-        if args.action in ('initialize', 'listen', 'recover'):
+        if args.action in ('initialize', 'listen', 'recover', 'capture', 'feedback'):
             save_run_result(args.output, report)
     print(text, end='')
     return result

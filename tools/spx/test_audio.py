@@ -73,6 +73,21 @@ class AudioTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'amp-power'):
                 audio.initialize(args, {})
 
+    def test_feedback_requires_capture_permission_before_hardware(self):
+        args = SimpleNamespace(action='feedback', allow_amp_power=True,
+                               allow_playback=True, allow_capture=False)
+        with patch.object(audio.os, 'geteuid', return_value=0), \
+                patch.object(audio, 'parameter', side_effect=AssertionError('hardware read')):
+            with self.assertRaisesRegex(RuntimeError, 'allow-capture'):
+                audio.initialize(args, {})
+
+    def test_capture_requires_capture_permission_without_amp_permission(self):
+        args = SimpleNamespace(action='capture', allow_amp_power=False, allow_capture=False)
+        with patch.object(audio.os, 'geteuid', return_value=0), \
+                patch.object(audio, 'parameter', side_effect=AssertionError('hardware read')):
+            with self.assertRaisesRegex(RuntimeError, 'allow-capture'):
+                audio.initialize(args, {})
+
     def test_failed_transport_check_retains_both_codec_observations(self):
         snapshot = {'GPIO_VAL': 0x1e, 'MCP_STATUS': 0, 'FRAME_B0': 7,
                     'DP1_B0': 0x01000107, 'DP4_B0': 0}

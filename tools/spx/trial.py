@@ -170,6 +170,8 @@ def install(args):
         from audio import UNITS as audio_units
 
         shutil.copy2(HERE / 'audio.py', helper.parent / 'audio.py')
+        if (HERE / 'acoustic.py').exists():
+            shutil.copy2(HERE / 'acoustic.py', helper.parent / 'acoustic.py')
         account = pwd.getpwuid(REPO.stat().st_uid)
         for name in audio_units:
             guard = Path(account.pw_dir) / '.config/systemd/user' / (name + '.d/40-mainline-audio-trial.conf')
@@ -442,11 +444,12 @@ def audio_check(args):
     subprocess.run([lock, 'acquire', 'device', owner], check=True)
     active = []
     try:
-        if action in ('initialize', 'listen', 'recover'):
+        if action in ('initialize', 'listen', 'recover', 'capture', 'feedback'):
             from audio import UNITS as audio_units
 
-            assert action == 'recover' or args.allow_amp_power, 'this run needs explicit speaker-power authorization'
-            assert action != 'listen' or args.allow_playback, 'this run needs explicit playback authorization'
+            assert action in ('recover', 'capture') or args.allow_amp_power, 'this run needs explicit speaker-power authorization'
+            assert action not in ('listen', 'feedback') or args.allow_playback, 'this run needs explicit playback authorization'
+            assert action not in ('capture', 'feedback') or args.allow_capture, 'this run needs microphone authorization'
             account = pwd.getpwnam(args.desktop_user)
             userctl = ['runuser', '-u', account.pw_name, '--', 'env',
                        'XDG_RUNTIME_DIR=/run/user/' + str(account.pw_uid),
@@ -463,13 +466,15 @@ def audio_check(args):
             if active:
                 subprocess.run(userctl + ['stop'] + active, check=True, timeout=30)
             command += ['--owner', owner, '--desktop-user', account.pw_name]
-            if action in ('initialize', 'listen'):
+            if action in ('initialize', 'listen', 'feedback'):
                 command.append('--allow-amp-power')
-            if action == 'listen':
+            if action in ('listen', 'feedback'):
                 command.append('--allow-playback')
+            if action in ('capture', 'feedback'):
+                command.append('--allow-capture')
         process = subprocess.Popen(command)
         try:
-            status = process.wait(timeout=90 if action == 'listen' else 40)
+            status = process.wait(timeout=120 if action == 'feedback' else 90 if action == 'listen' else 40)
         except subprocess.TimeoutExpired:
             # Allow the initializer's signal handler/finally block to park.
             process.terminate()
@@ -507,9 +512,10 @@ def main():
     parser.add_argument('--replace-module', action='append', default=[],
                         help='changed unloaded/blacklisted module to install while this release runs')
     parser.add_argument('--return-seconds', type=int, default=3600)
-    parser.add_argument('--audio-action', choices=('plan', 'inspect', 'initialize', 'listen', 'recover'), default='plan')
+    parser.add_argument('--audio-action', choices=('plan', 'inspect', 'initialize', 'listen', 'recover', 'capture', 'feedback'), default='plan')
     parser.add_argument('--allow-amp-power', action='store_true')
     parser.add_argument('--allow-playback', action='store_true')
+    parser.add_argument('--allow-capture', action='store_true')
     parser.add_argument('--desktop-user', default='dvitali')
     args = parser.parse_args()
     assert re.fullmatch(r'[0-9]{8}[a-z0-9]+', args.attempt)
