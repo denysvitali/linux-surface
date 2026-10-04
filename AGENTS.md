@@ -48,6 +48,13 @@ half of all tool calls spent on hashing and verification.
 
 ## Harness rules (2026-10-04)
 
+### Nighttime audio preference (2026-10-05)
+
+The user requested low volume for any further audio tests because it is night.
+Keep test signals at the earlier quiet digital peak (1433/32768 or lower) and
+minimum PA gain. Do not run the louder peak4000 public verification at night.
+Proceed with other hardware while audio's retained desktop stream is working.
+
 ### Authorized acoustic feedback loop (2026-10-04)
 
 The user requested: "You need to build a feedback loop. I can't be around to
