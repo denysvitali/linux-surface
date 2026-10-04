@@ -48,6 +48,17 @@ half of all tool calls spent on hashing and verification.
 
 ## Harness rules (2026-10-04)
 
+### Authorized acoustic feedback loop (2026-10-04)
+
+The user requested: "You need to build a feedback loop. I can't be around to
+tell you if it worked or not. Use the microphones!" This authorizes bounded
+speaker playback and microphone captures for automated audio testing, including
+retries informed by the recordings. Announce capture, keep minimum PA gain and
+bounded test levels/durations, and park the amplifiers on completion or failure.
+Do not require a new human listening confirmation for each run within this loop.
+This supersedes the earlier per-run permission workflow for this task; it does
+not authorize unrelated sound or camera capture.
+
 - **Reload modules instead of rebooting.** Venus, spi-hid, the WSA/SoundWire
   codecs and the camera drivers are modules. On a running trial kernel, rebuild
   the one module and `rmmod`/`modprobe` it. Reboot only for built-in code, DTB
