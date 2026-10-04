@@ -23,6 +23,13 @@ selection/reboot; known-good stays the persistent default. Each attempt is
 selected once. Results and short state files go to
 `/var/lib/spx-boot-diagnostics/functional/<attempt>`.
 
+The generic `spx-trial-check@` timer starts bounded functional checks at 50s:
+RFCOMM socket and UHID open, controller state, a 25 MB IPv4 transfer over
+`wlan0`, and battery/thermal/remoteproc/sensor readouts. It takes the device
+lock and records `functional.json` incrementally. These are partial checks;
+pairing, physical input, charging transitions and resume still need their
+own functional tests. No sound or camera/microphone capture runs.
+
 For a module change, commit it, build the driver against this fixed output,
 then reload it on the running mainline kernel. For example, with the changed
 driver directory assigned to `SPX_DRIVER_DIR`:

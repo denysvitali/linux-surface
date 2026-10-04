@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import socket
 import subprocess
 
 REPO = Path('/home/dvitali/Documents/git/linux-surface-next')
@@ -125,6 +126,13 @@ def install(args):
         assert not target.exists() or target.read_text() == text
         target.write_text(text)
         target.chmod(420)
+    check_service = '[Unit]\nDescription=SPX bounded functional checks\nConditionKernelCommandLine=spx_attempt=%i\nAfter=network-online.target bluetooth.service\nRequiresMountsFor=/var/lib/spx-boot-diagnostics\n\n[Service]\nType=oneshot\nExecStart=/usr/bin/python3 -B /usr/local/lib/spx-boot-diagnostics/trial.py check %i\nTimeoutStartSec=180\n'
+    check_timer = '[Unit]\nDescription=Run SPX functional checks after startup\nConditionKernelCommandLine=spx_attempt=%i\n\n[Timer]\nOnBootSec=50\nAccuracySec=1\nUnit=spx-trial-check@%i.service\n\n[Install]\nWantedBy=timers.target\n'
+    for name, text in [('spx-trial-check@.service', check_service), ('spx-trial-check@.timer', check_timer)]:
+        target = unit_dir / name
+        assert not target.exists() or target.read_text() == text
+        target.write_text(text)
+        target.chmod(420)
     helper = Path('/usr/local/lib/spx-boot-diagnostics/trial.py')
     shutil.copy2(__file__, helper)
     helper.chmod(493)
@@ -144,6 +152,8 @@ def install(args):
     shutil.copy2(RECOVERY, OUT / 'working-recovery.json')
     subprocess.run(['systemctl', 'daemon-reload'], check=True)
     subprocess.run(['systemctl', 'enable', 'spx-trial-return@' + ATTEMPT + '.timer'], check=True)
+    subprocess.run(['systemd-analyze', 'verify', str(unit_dir / 'spx-trial-check@.service'), str(unit_dir / 'spx-trial-check@.timer')], check=True, timeout=30)
+    subprocess.run(['systemctl', 'enable', 'spx-trial-check@' + ATTEMPT + '.timer'], check=True)
     assert subprocess.check_output(['systemctl', 'is-enabled', 'spx-trial-return@' + ATTEMPT + '.timer'], text=True).strip() == 'enabled'
     recovery()
     assert Path('/proc/sys/kernel/random/boot_id').read_text().strip() == BOOT_ID
@@ -173,6 +183,66 @@ def boot(args):
     assert Path('/proc/sys/kernel/random/boot_id').read_text().strip() == BOOT_ID
     os.sync()
     subprocess.run(['systemctl', 'reboot'], check=True)
+
+
+def functional_check(args):
+    """Small repeatable checks; observations do not imply feature acceptance."""
+    os.umask(0o077)
+    words = Path('/proc/cmdline').read_text().split()
+    assert 'spx_attempt=' + ATTEMPT in words
+    assert 'spx_boot=mainline-functional' in words and os.uname().release == RELEASE
+    result = dict(boot_id=Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+                  release=os.uname().release, checks={}, observations={})
+    target = OUT / 'functional.json'
+
+    def save():
+        temporary = target.with_suffix('.tmp')
+        temporary.write_text(json.dumps(result, indent=2) + '\n')
+        os.replace(temporary, target)
+
+    def run(name, argv, timeout=15):
+        try:
+            proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+            result['checks'][name] = dict(returncode=proc.returncode,
+                                          stdout=proc.stdout, stderr=proc.stderr)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            result['checks'][name] = dict(error=str(error))
+        save()
+
+    for pattern in ('class/power_supply/*/uevent', 'class/thermal/thermal_zone*/type',
+                    'class/thermal/thermal_zone*/temp', 'class/remoteproc/remoteproc*/name',
+                    'class/remoteproc/remoteproc*/state', 'bus/iio/devices/iio:device*/name',
+                    'bus/iio/devices/iio:device*/in_illuminance_raw',
+                    'bus/iio/devices/iio:device*/in_proximity_raw'):
+        for path in Path('/sys').glob(pattern):
+            try:
+                result['observations'][str(path)] = path.read_text().strip()
+            except OSError as error:
+                result['observations'][str(path)] = str(error)
+    save()
+    for module in ('rfcomm', 'hidp', 'uhid'):
+        run('module-' + module, ['modprobe', module])
+    try:
+        with socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM):
+            result['checks']['rfcomm-socket'] = dict(opened=True)
+    except OSError as error:
+        result['checks']['rfcomm-socket'] = dict(opened=False, error=str(error))
+    try:
+        fd = os.open('/dev/uhid', os.O_RDWR | os.O_CLOEXEC)
+        os.close(fd)
+        result['checks']['uhid-open'] = dict(opened=True)
+    except OSError as error:
+        result['checks']['uhid-open'] = dict(opened=False, error=str(error))
+    save()
+    run('bluetooth-controller', ['bluetoothctl', 'show'])
+    run('wifi-link', ['iw', 'dev', 'wlan0', 'link'])
+    run('wifi-transfer', ['curl', '--interface', 'wlan0', '-4', '--fail', '--silent',
+                         '--show-error', '--max-time', '45', '-o', '/dev/null',
+                         '-w', 'bytes=%{size_download} seconds=%{time_total} bytes_per_second=%{speed_download}\n',
+                         'https://speed.cloudflare.com/__down?bytes=25000000'], timeout=50)
+    run('kernel-log', ['journalctl', '-b', '-k', '--no-pager', '-o', 'short-monotonic'])
+    result['complete'] = True
+    save()
 
 
 def return_to_default(args):
@@ -209,7 +279,7 @@ def return_to_default(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'return'))
+    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return'))
     parser.add_argument('attempt')
     parser.add_argument('--build', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bg/work-build'))
     parser.add_argument('--parent', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bf'))
@@ -234,7 +304,16 @@ def main():
     else:
         record = json.loads((OUT / 'prepared.json').read_text())
         BOOT_ID, RELEASE = record['preboot_id'], record['release']
-        {'install': install, 'boot': boot, 'return': return_to_default}[args.command](args)
+        if args.command == 'check':
+            lock = str(REPO / 'tools/spx/spx-lock')
+            owner = 'functional-' + ATTEMPT
+            subprocess.run([lock, 'acquire', 'device', owner], check=True)
+            try:
+                functional_check(args)
+            finally:
+                subprocess.run([lock, 'release', 'device', owner], check=True)
+        else:
+            {'install': install, 'boot': boot, 'return': return_to_default}[args.command](args)
 
 
 if __name__ == '__main__':
