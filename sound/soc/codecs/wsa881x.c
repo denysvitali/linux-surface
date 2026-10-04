@@ -697,6 +697,11 @@ struct wsa881x_priv {
 	u8 *spx_reg_shadow;
 	struct mutex spx_shadow_lock;
 	struct mutex spx_state_lock;
+	struct snd_soc_component *spx_component;
+	unsigned int spx_late_init_count;
+	int spx_late_init_result;
+	int spx_late_io_error;
+	bool spx_late_initializing;
 };
 
 static int spx_powerdown_gpio = 1;
@@ -908,6 +913,8 @@ static int wsa881x_update_bits(struct wsa881x_priv *wsa881x,
 	ret = regmap_write(rm, reg, cached);
 	if (!ret)
 		wsa881x->spx_reg_shadow[reg] = cached;
+	else if (wsa881x->spx_late_initializing && !wsa881x->spx_late_io_error)
+		wsa881x->spx_late_io_error = ret;
 	mutex_unlock(&wsa881x->spx_shadow_lock);
 
 	return ret;
@@ -1046,7 +1053,9 @@ static int wsa881x_init(struct wsa881x_priv *wsa881x)
 		return 0;
 
 #define WSA881X_INIT_WRITE(_reg, _mask, _val) do { \
-	if (!ret) \
+	if (!ret && !(wsa881x->spx_late_initializing && \
+		      ((_reg) == WSA881X_BOOST_PRESET_OUT1 || \
+		       (_reg) == WSA881X_BOOST_PRESET_OUT2))) \
 		ret = wsa881x_update_bits(wsa881x, (_reg), (_mask), (_val)); \
 } while (0)
 
@@ -1243,6 +1252,183 @@ module_param_cb(spx_rearm_init, &spx_rearm_init_ops, NULL, 0200);
 MODULE_PARM_DESC(spx_rearm_init,
 		 "SPX: write to replay cold amp init while the stream is idle");
 
+static bool wsa881x_spx_late_stream_ready(struct wsa881x_priv *wsa881x)
+{
+	return wsa881x->spx_stream_configured && wsa881x->sruntime &&
+	       wsa881x->sruntime->state == SDW_STREAM_ENABLED &&
+	       wsa881x->port_prepared[WSA881X_PORT_DAC] &&
+	       wsa881x->active_ports == 1 &&
+	       spx_stream_port_mask == BIT(WSA881X_PORT_DAC);
+}
+
+/*
+ * Explicit, per-native-slave replacement for spx_wsa_dapm_cycle's kprobe.
+ * The caller owns a fresh PCM stream and must feed digital silence throughout
+ * this operation and the subsequent settling interval. No probe path calls it.
+ */
+static ssize_t spx_late_init_store(struct device *dev,
+				   struct device_attribute *attr,
+				   const char *buf, size_t count)
+{
+	struct wsa881x_priv *wsa881x = dev_get_drvdata(dev);
+	struct snd_soc_component *comp = wsa881x->spx_component;
+	struct snd_soc_dapm_context *dapm;
+	struct sdw_stream_runtime *stream;
+	u8 *shadow = wsa881x->spx_reg_shadow;
+	unsigned int dev_num;
+	int ret, park_ret;
+
+	if (!sysfs_streq(buf, "1"))
+		return -EINVAL;
+	if (!comp || !snd_soc_card_is_instantiated(comp->card))
+		return -ENODEV;
+
+	dapm = snd_soc_component_to_dapm(comp);
+	snd_soc_dapm_mutex_lock(dapm);
+	mutex_lock(&wsa881x->spx_state_lock);
+	ret = -EINVAL;
+	if (!wsa881x_spx_native_unit(wsa881x) ||
+	    !wsa881x_spx_transport_enabled(wsa881x))
+		goto out;
+	ret = -EBUSY;
+	if (!wsa881x_spx_late_stream_ready(wsa881x))
+		goto out;
+	ret = -EINVAL;
+	if (spx_win_pa_seq != 1 || spx_win_pa_profile ||
+	    spx_win_teardown_reset ||
+	    !wsa881x->port_enable[WSA881X_PORT_DAC] ||
+	    !wsa881x->port_enable[WSA881X_PORT_BOOST] ||
+	    wsa881x->port_enable[WSA881X_PORT_COMP] ||
+	    wsa881x->port_enable[WSA881X_PORT_VISENSE])
+		goto out;
+	mutex_lock(&wsa881x->spx_shadow_lock);
+	if (shadow[WSA881X_SPKR_DRV_GAIN] == 0xc9 &&
+	    shadow[WSA881X_SPKR_OCP_CTL] == 0xb4 &&
+	    shadow[WSA881X_BOOST_EN_CTL] == 0x98)
+		ret = 0;
+	mutex_unlock(&wsa881x->spx_shadow_lock);
+	if (ret)
+		goto out;
+	if (!snd_soc_dapm_get_pin_status(dapm, "SPKR")) {
+		ret = -EBUSY;
+		goto out;
+	}
+
+	dev_num = wsa881x->slave->dev_num;
+	stream = wsa881x->sruntime;
+	wsa881x->spx_late_io_error = 0;
+	wsa881x->spx_late_initializing = true;
+	ret = snd_soc_dapm_disable_pin_unlocked(dapm, "SPKR");
+	if (ret)
+		goto park;
+	ret = snd_soc_dapm_sync_unlocked(dapm);
+	if (ret || wsa881x->spx_late_io_error)
+		goto park;
+	if (!wsa881x_spx_late_stream_ready(wsa881x) ||
+	    wsa881x->sruntime != stream) {
+		ret = -EBUSY;
+		goto park;
+	}
+	/* Preserve the current boost voltage presets throughout the replay. */
+	ret = wsa881x_init(wsa881x);
+	if (ret)
+		goto park;
+	if (!wsa881x_spx_transport_enabled(wsa881x) ||
+	    wsa881x->slave->dev_num != dev_num) {
+		ret = -ENODEV;
+		goto park;
+	}
+	ret = snd_soc_dapm_enable_pin_unlocked(dapm, "SPKR");
+	if (ret)
+		goto park;
+	ret = snd_soc_dapm_sync_unlocked(dapm);
+	if (ret || wsa881x->spx_late_io_error)
+		goto park;
+	if (!wsa881x_spx_late_stream_ready(wsa881x) ||
+	    wsa881x->sruntime != stream ||
+	    !wsa881x_spx_transport_enabled(wsa881x) ||
+	    wsa881x->slave->dev_num != dev_num) {
+		ret = -ENODEV;
+		goto park;
+	}
+	mutex_lock(&wsa881x->spx_shadow_lock);
+	if (shadow[WSA881X_SPKR_DRV_EN] != 0xfd ||
+	    shadow[WSA881X_SPKR_DRV_GAIN] != 0xc9 ||
+	    shadow[WSA881X_SPKR_OCP_CTL] != 0xb4 ||
+	    shadow[WSA881X_BOOST_EN_CTL] != 0x98)
+		ret = -EIO;
+	mutex_unlock(&wsa881x->spx_shadow_lock);
+	if (ret)
+		goto park;
+	wsa881x->spx_late_init_count++;
+	dev_info(dev, "SPX: native late init complete unit=%u device=%u\n",
+		 wsa881x->slave->id.unique_id, dev_num);
+	goto finish;
+
+park:
+	/* DAPM logs widget errors but does not propagate them from sync. */
+	if (!ret)
+		ret = wsa881x->spx_late_io_error;
+	park_ret = snd_soc_dapm_disable_pin_unlocked(dapm, "SPKR");
+	if (!park_ret)
+		park_ret = snd_soc_dapm_sync_unlocked(dapm);
+	if (park_ret)
+		dev_err(dev, "SPX: late-init DAPM park failed: %d\n", park_ret);
+	park_ret = wsa881x_update_bits(wsa881x, WSA881X_SPKR_DRV_EN,
+				       BIT(7), 0);
+	if (park_ret)
+		dev_err(dev, "SPX: late-init PA disable failed: %d\n", park_ret);
+finish:
+	wsa881x->spx_late_initializing = false;
+out:
+	wsa881x->spx_late_init_result = ret;
+	mutex_unlock(&wsa881x->spx_state_lock);
+	snd_soc_dapm_mutex_unlock(dapm);
+	return ret ? ret : count;
+}
+static DEVICE_ATTR_WO(spx_late_init);
+
+static ssize_t spx_playback_state_show(struct device *dev,
+				       struct device_attribute *attr, char *buf)
+{
+	struct wsa881x_priv *wsa881x = dev_get_drvdata(dev);
+	u8 *shadow = wsa881x->spx_reg_shadow;
+	ssize_t len;
+
+	mutex_lock(&wsa881x->spx_state_lock);
+	mutex_lock(&wsa881x->spx_shadow_lock);
+	len = sysfs_emit(buf,
+			 "UNIT=%u\nDEV_NUM=%u\nATTACHED=%u\nSTREAM_CONFIGURED=%u\n"
+			 "STREAM_ENABLED=%u\nDAC_PREPARED=%u\nDAC_MASTER_PORT=%u\n"
+			 "LATE_INIT_COUNT=%u\nLATE_INIT_RESULT=%d\n"
+			 "SHADOW_PA_ENABLE=0x%02x\nSHADOW_PA_GAIN=0x%02x\n"
+			 "SHADOW_OCP=0x%02x\nSHADOW_BOOST=0x%02x\n"
+			 "SHADOW_COMP_ENABLE=%u\nSHADOW_VISENSE_ENABLE=%u\n",
+			 wsa881x->slave->id.unique_id, wsa881x->slave->dev_num,
+			 wsa881x_spx_slave_available(wsa881x),
+			 wsa881x->spx_stream_configured,
+			 wsa881x->spx_stream_configured && wsa881x->sruntime &&
+			 wsa881x->sruntime->state == SDW_STREAM_ENABLED,
+			 wsa881x->port_prepared[WSA881X_PORT_DAC],
+			 wsa881x->slave->m_port_map[WSA881X_PORT_DAC + 1],
+			 wsa881x->spx_late_init_count, wsa881x->spx_late_init_result,
+			 shadow[WSA881X_SPKR_DRV_EN], shadow[WSA881X_SPKR_DRV_GAIN],
+			 shadow[WSA881X_SPKR_OCP_CTL], shadow[WSA881X_BOOST_EN_CTL],
+			 wsa881x->port_enable[WSA881X_PORT_COMP],
+			 wsa881x->port_enable[WSA881X_PORT_VISENSE]);
+	mutex_unlock(&wsa881x->spx_shadow_lock);
+	mutex_unlock(&wsa881x->spx_state_lock);
+	return len;
+}
+static DEVICE_ATTR_RO(spx_playback_state);
+
+static struct attribute *wsa881x_spx_attrs[] = {
+	&dev_attr_spx_late_init.attr,
+	&dev_attr_spx_playback_state.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(wsa881x_spx);
+
 static int wsa881x_component_probe(struct snd_soc_component *comp)
 {
 	struct wsa881x_priv *wsa881x = snd_soc_component_get_drvdata(comp);
@@ -1259,8 +1445,27 @@ static int wsa881x_component_probe(struct snd_soc_component *comp)
 		dev_info(comp->dev,
 			 "SPX: connected SPKR Playback directly to RDAC\n");
 	}
+	if (wsa881x_spx_native_unit(wsa881x)) {
+		wsa881x->spx_component = comp;
+		ret = sysfs_create_groups(&comp->dev->kobj, wsa881x_spx_groups);
+		if (ret) {
+			wsa881x->spx_component = NULL;
+			return ret;
+		}
+	}
 
 	return 0;
+}
+
+static void wsa881x_component_remove(struct snd_soc_component *comp)
+{
+	struct wsa881x_priv *wsa881x = snd_soc_component_get_drvdata(comp);
+
+	if (wsa881x->spx_component) {
+		/* Drain active sysfs operations before the DAPM context is freed. */
+		sysfs_remove_groups(&comp->dev->kobj, wsa881x_spx_groups);
+		wsa881x->spx_component = NULL;
+	}
 }
 
 static int wsa881x_get_pa_gain(struct snd_kcontrol *kc,
@@ -1948,6 +2153,7 @@ static int wsa881x_hw_params(struct snd_pcm_substream *substream,
 			 wsa881x->slave->m_port_map[4]);
 	}
 	wsa881x->active_ports = 0;
+	wsa881x->spx_late_init_result = -EAGAIN;
 	WRITE_ONCE(wsa881x->spx_stream_configured, false);
 	if (!wsa881x_spx_transport_enabled(wsa881x)) {
 		dev_info(wsa881x->dev,
@@ -1997,6 +2203,7 @@ static int wsa881x_hw_free(struct snd_pcm_substream *substream,
 		sdw_stream_remove_slave(wsa881x->slave, wsa881x->sruntime);
 		WRITE_ONCE(wsa881x->spx_stream_configured, false);
 	}
+	wsa881x->spx_late_init_result = -EAGAIN;
 	mutex_unlock(&wsa881x->spx_state_lock);
 
 	return 0;
@@ -2054,6 +2261,7 @@ static struct snd_soc_dai_driver wsa881x_dais[] = {
 static const struct snd_soc_component_driver wsa881x_component_drv = {
 	.name = "WSA881x",
 	.probe = wsa881x_component_probe,
+	.remove = wsa881x_component_remove,
 	.controls = wsa881x_snd_controls,
 	.num_controls = ARRAY_SIZE(wsa881x_snd_controls),
 	.dapm_widgets = wsa881x_dapm_widgets,
@@ -2068,8 +2276,10 @@ static int wsa881x_update_status(struct sdw_slave *slave,
 {
 	struct wsa881x_priv *wsa881x = dev_get_drvdata(&slave->dev);
 
-	if (status == SDW_SLAVE_UNATTACHED)
+	if (status == SDW_SLAVE_UNATTACHED) {
 		wsa881x->hw_init = false;
+		WRITE_ONCE(wsa881x->spx_late_init_result, -EAGAIN);
+	}
 
 	if (status == SDW_SLAVE_ATTACHED && slave->dev_num > 0)
 		return wsa881x_init(wsa881x);
@@ -2137,6 +2347,7 @@ static int wsa881x_probe(struct sdw_slave *pdev,
 		return -ENOMEM;
 	mutex_init(&wsa881x->spx_shadow_lock);
 	mutex_init(&wsa881x->spx_state_lock);
+	wsa881x->spx_late_init_result = -EAGAIN;
 
 	/*
 	 * With native hardware enumeration each Surface amp has a distinct
