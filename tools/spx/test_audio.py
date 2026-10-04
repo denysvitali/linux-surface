@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Offline checks only: generated samples, PCM pipe writes and permission gates."""
 import importlib.util
+import json
 import os
 from pathlib import Path
 import queue
@@ -197,6 +198,184 @@ class AudioTests(unittest.TestCase):
             finally:
                 monitor.process.stdout.close()
                 os.close(writer)
+
+    def test_ordinary_monitor_attenuates_fullscale_stereo_without_channel_loss(self):
+        reader, writer = os.pipe()
+        monitor = audio.DesktopMonitor(SimpleNamespace(
+            stdout=os.fdopen(reader, 'rb', buffering=0), poll=lambda: None), ordinary=True)
+        frames = [(-32768, 32767), (16384, -8192), (0, 24000), (-24000, 0)] * 60
+        payload = b''.join(struct.pack('<hh', *frame) for frame in frames)
+
+        def produce():
+            for offset in range(0, len(payload), 13):
+                os.write(writer, payload[offset:offset + 13])
+
+        with patch.object(audio.os, 'kill') as abort:
+            monitor.thread.start()
+            producer = threading.Thread(target=produce)
+            producer.start()
+            try:
+                received = monitor.blocks.get(timeout=2)
+                expected = [(int(left * 1433 / 32768), int(right * 1433 / 32768))
+                            for left, right in frames]
+                self.assertEqual(list(struct.iter_unpack('<hh', received)), expected)
+                self.assertEqual(monitor.input_peak, 32768)
+                self.assertEqual(monitor.peak, 1433)
+                self.assertIsNone(monitor.error)
+                abort.assert_not_called()
+            finally:
+                monitor.stop.set()
+                producer.join(timeout=2)
+                monitor.thread.join(timeout=2)
+                monitor.process.stdout.close()
+                os.close(writer)
+
+    def test_recording_close_restores_mixer_before_handoff_and_only_once(self):
+        events = []
+        capture = Mock()
+        capture.close.side_effect = lambda: events.append('capture closed')
+        capture.process.poll.return_value = 0
+        saved = [(['amixer', 'restore', 'first'], 'first'),
+                 (['amixer', 'restore', 'second'], 'second')]
+        report = {'capture': {'log': '', 'error': None}}
+
+        def restore(command, **kwargs):
+            events.append(command[-1])
+            return SimpleNamespace(returncode=0, stderr='')
+
+        with patch.object(audio, 'read_text', return_value='closed'), \
+                patch.object(audio.subprocess, 'run', side_effect=restore):
+            audio.finish_recording(capture, report, saved)
+            audio.restore_microphone_mixer(report, saved)
+        self.assertEqual(events, ['capture closed', 'second', 'first'])
+        self.assertTrue(report['recording_closed'])
+        self.assertEqual(saved, [])
+        self.assertEqual(len(report['microphone_mixer_restore']), 2)
+
+    def test_failed_capture_close_still_restores_route_and_blocks_handoff(self):
+        capture = Mock()
+        capture.close.side_effect = RuntimeError('capture close failed')
+        saved = [(['amixer', 'restore'], 'route')]
+        report = {}
+        with patch.object(audio.subprocess, 'run', return_value=SimpleNamespace(returncode=0, stderr='')) as restore:
+            with self.assertRaisesRegex(RuntimeError, 'capture close failed'):
+                audio.finish_recording(capture, report, saved)
+        restore.assert_called_once()
+        self.assertNotIn('recording_closed', report)
+        self.assertEqual(saved, [])
+
+    def test_serve_refuses_handoff_while_microphone_is_open(self):
+        report = {'desktop': {'acoustic_passed': True},
+                  'public_desktop': {'acoustic_passed': True}}
+        pcm, graph = Mock(), Mock()
+        with self.assertRaisesRegex(RuntimeError, 'closed microphone'):
+            audio.serve_desktop(SimpleNamespace(), report, pcm, graph, {}, {})
+        pcm.settle.assert_not_called()
+
+    def test_serve_ready_precedes_signal_stop_and_retains_the_pcm(self):
+        report = {'action': 'serve', 'desktop': {'acoustic_passed': True},
+                  'public_desktop': {'acoustic_passed': True}, 'recording_closed': True,
+                  'before': {'boot_id': 'test-boot', 'release': 'test-kernel'}}
+        pcm, graph = Mock(), Mock()
+        pcm.process.pid = 123
+        monitor = graph.monitor
+        monitor.input_peak, monitor.peak = 32768, 1433
+        handlers = {}
+
+        def handler(signum, callback):
+            previous = handlers.get(signum)
+            handlers[signum] = callback
+            return previous
+
+        class StopAfterReady:
+            stopped = False
+
+            def wait(self, seconds):
+                ready = json.loads((output / 'serve-ready.json').read_text())
+                self_test.assertTrue(ready['recording_closed'])
+                self_test.assertTrue(ready['public_acoustic_passed'])
+                self_test.assertEqual(ready['pcm_pid'], 123)
+                handlers[audio.signal.SIGTERM](audio.signal.SIGTERM, None)
+                return self.stopped
+
+            def set(self):
+                self.stopped = True
+
+            def is_set(self):
+                return self.stopped
+
+        self_test = self
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            args = SimpleNamespace(output=output, serve_seconds=3600)
+            with patch.object(audio.threading, 'Event', StopAfterReady), \
+                    patch.object(audio.signal, 'signal', side_effect=handler), \
+                    patch.object(audio, 'check_stereo'):
+                audio.serve_desktop(args, report, pcm, graph, {}, {})
+        self.assertEqual(report['serve']['stop_reason'], 'SIGTERM')
+        self.assertEqual(report['serve']['output_peak'], 1433)
+        pcm.close.assert_not_called()  # Caller performs attached-amplifier close.
+        pcm.set_source.assert_called_once_with(None)
+        monitor.close.assert_called_once()
+
+    def test_serve_monitor_fault_does_not_take_normal_close_path(self):
+        report = {'desktop': {'acoustic_passed': True},
+                  'public_desktop': {'acoustic_passed': True}, 'recording_closed': True}
+        pcm, graph = Mock(), Mock()
+        graph.monitor.healthy.side_effect = RuntimeError('monitor failed')
+        with self.assertRaisesRegex(RuntimeError, 'monitor failed'):
+            audio.serve_desktop(SimpleNamespace(), report, pcm, graph, {}, {})
+        # The initializer now receives the exception and parks before cleanup.
+        pcm.set_source.assert_not_called()
+        pcm.close.assert_not_called()
+        graph.monitor.close.assert_not_called()
+
+    def test_public_route_scores_fresh_quiet_and_fullscale_input_before_handoff(self):
+        import acoustic
+
+        counter = [150000]
+        capture, pcm, graph = Mock(), Mock(), Mock()
+        capture.mark.side_effect = lambda: counter[0]
+        capture.wait_frames.side_effect = lambda frame: counter.__setitem__(0, max(frame, counter[0]))
+        capture.samples.side_effect = lambda begin, end: (begin, end)
+        pcm.settle.side_effect = lambda seconds: counter.__setitem__(0, counter[0] + round(seconds * 48000))
+        graph.public_restore = [('pactl', 'set-sink-volume', 'spx_speakers', '25559', '25559')]
+        graph.monitor.peak = 1433
+        starts = []
+
+        def play(payload, name):
+            starts.append(counter[0])
+            graph.monitor.input_peak = 32767
+            counter[0] += 96000
+
+        graph.play.side_effect = play
+        report = {}
+        with patch.object(audio.threading, 'Timer'), \
+                patch.object(audio, 'tone', return_value=b'full-scale input') as tone, \
+                patch.object(acoustic, 'score_phase', return_value={'passed': True, 'reason': 'detected'}) as score:
+            audio.verify_public_playback(report, pcm, graph, capture)
+        tone.assert_called_once_with({0, 1}, amplitude=32767)
+        graph.connect_public.assert_called_once_with(pcm)
+        self.assertEqual(score.call_args.args[1], (starts[0] - 96000, starts[0]))
+        self.assertEqual(score.call_args.args[2], [440, 660])
+        self.assertEqual(graph.require_public_idle.call_count, 3)
+        self.assertTrue(report['public_desktop']['acoustic_passed'])
+        self.assertEqual(report['public_desktop']['public_volume']['current'], [65536, 65536])
+        self.assertEqual(report['public_desktop']['public_volume']['prior'], ['25559', '25559'])
+        capture.close.assert_not_called()  # Caller closes only after this score succeeds.
+
+    def test_serve_permission_and_duration_bounds(self):
+        args = SimpleNamespace(action='serve', allow_amp_power=True,
+                               allow_playback=True, allow_capture=False)
+        with patch.object(audio.os, 'geteuid', return_value=0), \
+                patch.object(audio, 'parameter', side_effect=AssertionError('hardware read')):
+            with self.assertRaisesRegex(RuntimeError, 'allow-capture'):
+                audio.initialize(args, {})
+        self.assertEqual(audio.serve_duration('1'), 1)
+        self.assertEqual(audio.serve_duration('86400'), 86400)
+        for value in ('0', '86401'):
+            with self.assertRaises(audio.argparse.ArgumentTypeError):
+                audio.serve_duration(value)
 
     def test_source_detach_waits_for_inflight_monitor_use(self):
         reader, writer = os.pipe()
