@@ -323,13 +323,20 @@ MODULE_PARM_DESC(spx_diag_count, "SPX: how many times the diag reads (default 24
 #define SWRM_MCP_SLV_STATUS_MASK				GENMASK(1, 0)
 #define SWRM_MCP_SLV_STATUS_SZ					2
 
-#define SWRM_DPn_PORT_CTRL_BANK(offset, n, m)	(offset + 0x100 * (n - 1) + 0x40 * m)
-#define SWRM_DPn_PORT_CTRL_2_BANK(offset, n, m)	(offset + 0x100 * (n - 1) + 0x40 * m)
-#define SWRM_DPn_BLOCK_CTRL_1(offset, n)	(offset + 0x100 * (n - 1))
-#define SWRM_DPn_BLOCK_CTRL2_BANK(offset, n, m)	(offset + 0x100 * (n - 1) + 0x40 * m)
-#define SWRM_DPn_PORT_HCTRL_BANK(offset,  n, m)	(offset + 0x100 * (n - 1) + 0x40 * m)
-#define SWRM_DPn_BLOCK_CTRL3_BANK(offset, n, m)	(offset + 0x100 * (n - 1) + 0x40 * m)
-#define SWRM_DPn_SAMPLECTRL2_BANK(offset, n, m)	(offset + 0x100 * (n - 1) + 0x40 * m)
+#define SWRM_DPn_PORT_CTRL_BANK(offset, n, m) \
+	((offset) + 0x100 * ((n) - 1) + 0x40 * (m))
+#define SWRM_DPn_PORT_CTRL_2_BANK(offset, n, m) \
+	((offset) + 0x100 * ((n) - 1) + 0x40 * (m))
+#define SWRM_DPn_BLOCK_CTRL_1(offset, n) \
+	((offset) + 0x100 * ((n) - 1))
+#define SWRM_DPn_BLOCK_CTRL2_BANK(offset, n, m) \
+	((offset) + 0x100 * ((n) - 1) + 0x40 * (m))
+#define SWRM_DPn_PORT_HCTRL_BANK(offset, n, m) \
+	((offset) + 0x100 * ((n) - 1) + 0x40 * (m))
+#define SWRM_DPn_BLOCK_CTRL3_BANK(offset, n, m) \
+	((offset) + 0x100 * ((n) - 1) + 0x40 * (m))
+#define SWRM_DPn_SAMPLECTRL2_BANK(offset, n, m) \
+	((offset) + 0x100 * ((n) - 1) + 0x40 * (m))
 
 #define SWR_V1_3_MSTR_MAX_REG_ADDR				0x1740
 #define SWR_V2_0_MSTR_MAX_REG_ADDR				0x50ac
