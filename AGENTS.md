@@ -46,6 +46,26 @@ half of all tool calls spent on hashing and verification.
 8. **Do not play sound or power the speaker amplifiers** unless the user asked
    for that run. Do not capture camera or microphone data without saying so.
 
+## Harness rules (2026-10-04)
+
+- **Reload modules instead of rebooting.** Venus, spi-hid, the WSA/SoundWire
+  codecs and the camera drivers are modules. On a running trial kernel, rebuild
+  the one module and `rmmod`/`modprobe` it. Reboot only for built-in code, DTB
+  or initramfs changes. Never unload MSM display modules.
+- **Keep one kernel release name** (`LOCALVERSION`) and one build directory for
+  the whole port, and build incrementally. A per-attempt release name forces a
+  full rebuild and stops modules loading across attempts. Do not copy, tar or
+  rehash the source tree for a build; the commit ID identifies the source.
+- **One parameterised trial tool.** Do not write new `build-XX`, `prepare-XX`,
+  `assemble-XX`, `deploy-XX` or `archive-XX` scripts or new systemd units per
+  attempt. Use one script and one set of units that take the attempt ID.
+- **Clean up after a trial:** remove its `/boot/spx-trial-*` directory, module
+  tree and units once the result is collected, keeping only the current
+  candidate and known-good.
+- **Known findings** from the 6.18 work are indexed in
+  `~/.claude/projects/-home-dvitali-Documents-git-linux-surface-kernel/memory/MEMORY.md`.
+  Read the entries for a feature before working on it.
+
 ## Authorized SPX reboot loop (2026-09-22)
 
 The user explicitly authorized repeated experimental boots to complete the

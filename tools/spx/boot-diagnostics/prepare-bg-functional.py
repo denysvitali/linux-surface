@@ -26,7 +26,7 @@ def sha(path):
     return h.hexdigest()
 
 
-def recovery():
+def recovery(pending=''):
     r = json.loads((OLD / 'working-recovery.json').read_text())
     for path, digest in r['payload_sha256'].items():
         assert sha(path) == digest, path
@@ -34,7 +34,7 @@ def recovery():
     assert r['entry'] in cfg and 'set default="spx-known-good"' in cfg
     env = dict(line.split('=', 1) for line in subprocess.check_output(
         ['grub-editenv', '/boot/grub/grubenv', 'list'], text=True).splitlines())
-    assert env['saved_entry'] == 'spx-known-good' and not env.get('next_entry')
+    assert env['saved_entry'] == 'spx-known-good' and env.get('next_entry', '') == pending
     assert 'BootNext:' not in subprocess.check_output(['efibootmgr'], text=True)
     return r
 
