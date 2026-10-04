@@ -107,12 +107,14 @@ def prepare(args):
         cmdline = [word for word in cmdline if not word.startswith((
             'wcd934x.spx_wsa_en_pin=', 'wcd934x.spx_wsa_gpio_',
             'soundwire_qcom.spx_force_attach=', 'snd_soc_wsa881x.spx_enumerated_mode=',
-            'snd_soc_wsa881x.spx_write_only=', 'snd_soc_wcd934x.spx_persist_stream='))]
+            'snd_soc_wsa881x.spx_write_only=', 'snd_soc_wcd934x.spx_persist_stream=',
+            'q6asm_dai.spx_force_timer_pacing='))]
         cmdline += ['spx_audio=parked', 'wcd934x.spx_wsa_en_pin=-1',
                     'wcd934x.spx_wsa_gpio_mask=0x1e', 'wcd934x.spx_wsa_gpio_dir=0x1e',
                     'wcd934x.spx_wsa_gpio_val=0x18', 'soundwire_qcom.spx_force_attach=0',
                     'snd_soc_wsa881x.spx_enumerated_mode=1', 'snd_soc_wsa881x.spx_write_only=0',
-                    'snd_soc_wcd934x.spx_persist_stream=1']
+                    'snd_soc_wcd934x.spx_persist_stream=1',
+                    'q6asm_dai.spx_force_timer_pacing=0']
     else:
         cmdline.append('module_blacklist=wcd934x,soundwire_qcom,snd_soc_wsa881x,snd_soc_wcd934x')
     cmdline = ' '.join(cmdline)
