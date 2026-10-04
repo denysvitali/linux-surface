@@ -442,10 +442,10 @@ def audio_check(args):
     subprocess.run([lock, 'acquire', 'device', owner], check=True)
     active = []
     try:
-        if action in ('initialize', 'listen'):
+        if action in ('initialize', 'listen', 'recover'):
             from audio import UNITS as audio_units
 
-            assert args.allow_amp_power, 'this run needs explicit speaker-power authorization'
+            assert action == 'recover' or args.allow_amp_power, 'this run needs explicit speaker-power authorization'
             assert action != 'listen' or args.allow_playback, 'this run needs explicit playback authorization'
             account = pwd.getpwnam(args.desktop_user)
             userctl = ['runuser', '-u', account.pw_name, '--', 'env',
@@ -462,7 +462,9 @@ def audio_check(args):
             (OUT / 'audio' / (action + '-result.json')).unlink(missing_ok=True)
             if active:
                 subprocess.run(userctl + ['stop'] + active, check=True, timeout=30)
-            command += ['--owner', owner, '--desktop-user', account.pw_name, '--allow-amp-power']
+            command += ['--owner', owner, '--desktop-user', account.pw_name]
+            if action in ('initialize', 'listen'):
+                command.append('--allow-amp-power')
             if action == 'listen':
                 command.append('--allow-playback')
         process = subprocess.Popen(command)
@@ -505,7 +507,7 @@ def main():
     parser.add_argument('--replace-module', action='append', default=[],
                         help='changed unloaded/blacklisted module to install while this release runs')
     parser.add_argument('--return-seconds', type=int, default=3600)
-    parser.add_argument('--audio-action', choices=('plan', 'inspect', 'initialize', 'listen'), default='plan')
+    parser.add_argument('--audio-action', choices=('plan', 'inspect', 'initialize', 'listen', 'recover'), default='plan')
     parser.add_argument('--allow-amp-power', action='store_true')
     parser.add_argument('--allow-playback', action='store_true')
     parser.add_argument('--desktop-user', default='dvitali')

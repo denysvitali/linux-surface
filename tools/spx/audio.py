@@ -7,7 +7,8 @@ the native SoundWire devices, and attempts to park both amps on every exit
 after power-up. ``listen`` additionally requires explicit playback permission;
 it owns one fresh PCM, checks stereo routing and late initialization on digital
 silence, then plays a bounded left/right/both sequence at minimum PA gain.
-Neither action captures a microphone or loads modules.
+``recover`` flushes only the command FIFO, requiring amps already off and no
+streams. None of these actions captures a microphone or loads modules.
 """
 
 import argparse
@@ -399,7 +400,8 @@ def listen(args, report, pcm_holder):
 
 def initialize(args, report):
     need(os.geteuid() == 0, 'initialize requires root')
-    need(args.allow_amp_power, 'initialize requires --allow-amp-power for this authorized run')
+    need(args.action == 'recover' or args.allow_amp_power,
+         'initialize/listen requires --allow-amp-power for this authorized run')
     need(args.action != 'listen' or args.allow_playback,
          'listen requires separate explicit --allow-playback authorization')
     need(args.owner and args.desktop_user, 'initialize requires --owner and --desktop-user')
@@ -460,8 +462,9 @@ def initialize(args, report):
              initial['state']['GPIO_VAL'] & 0x06 == 0,
              'Physical GPIO direction is wrong or an amplifier is already enabled')
         need(initial['state']['SLV_STATUS'] == 0, 'Amps must be detached before the test')
-        need((initial['state']['FIFO_STATUS'] >> 8) & 0x1f == 0,
-             'SoundWire write FIFO is not empty; perform parked recovery before powering amps')
+        if args.action != 'recover':
+            need((initial['state']['FIFO_STATUS'] >> 8) & 0x1f == 0,
+                 'SoundWire write FIFO is not empty; perform parked recovery before powering amps')
         if parked & 0x18 != 0x18:
             # Cold startup and master reload can clear auxiliary outputs 3/4.
             # Restore them with both amplifier enables (1/2) held low. Preserve
@@ -473,6 +476,17 @@ def initialize(args, report):
                  report['startup_parked_state']['SLV_STATUS'] == 0,
                  'Could not establish the auxiliary parked GPIO state')
         report['parked'] = True
+        if args.action == 'recover':
+            # The driver independently requires physical amps-off, no stream,
+            # an active master and coherent readback. This never enables amps.
+            try:
+                (MODULES / 'soundwire_qcom/parameters/spx_audio_flush').write_text('1\n')
+            finally:
+                report['recovery_after'] = state()
+            need(report['recovery_after']['FIFO_STATUS'] & 0x1f1f00 == 0,
+                 'Command FIFO readback is not empty after parked recovery')
+            report['fifo_recovered'] = True
+            return
         for bits, expected in ((0x02, {3}), (0x06, {3, 4})):
             assert_desktop_paused(args.desktop_user)
             assert_pcm_idle()
@@ -534,7 +548,7 @@ def initialize(args, report):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', nargs='?', choices=('plan', 'inspect', 'initialize', 'listen'), default='plan')
+    parser.add_argument('action', nargs='?', choices=('plan', 'inspect', 'initialize', 'listen', 'recover'), default='plan')
     parser.add_argument('--output', type=Path, help='directory for result JSON')
     parser.add_argument('--owner', help='coordinator device-lock owner (initialize)')
     parser.add_argument('--desktop-user', help='user whose audio units the caller has paused')
@@ -551,7 +565,7 @@ def main():
     try:
         if args.output:
             args.output.mkdir(parents=True, exist_ok=True)
-            if args.action in ('initialize', 'listen'):
+            if args.action in ('initialize', 'listen', 'recover'):
                 # A killed run must never leave an earlier "parked" verdict.
                 save_run_result(args.output, report)
         if args.action == 'plan':
@@ -572,6 +586,11 @@ def main():
                 'Verify shadows and settle on silence for one second. Play two seconds '
                 'left, right, then both (peak <=1433/32768); return to silence and park '
                 'both amplifiers before closing PCM. No microphone capture.')
+            report['recovery'] = (
+                'With amplifiers already off, desktop audio stopped and all PCM closed, '
+                'hold the master active and invoke the driver-owned guarded FIFO flush '
+                'once. Require empty read/write counts, confirm parked GPIO and restore '
+                'runtime PM. This does not power amplifiers or open a PCM.')
         elif args.action == 'inspect':
             report['inventory'] = inventory()
         else:
@@ -585,7 +604,7 @@ def main():
     text = json.dumps(report, indent=2) + '\n'
     if args.output:
         (args.output / f'audio-{args.action}-{stamp}.json').write_text(text)
-        if args.action in ('initialize', 'listen'):
+        if args.action in ('initialize', 'listen', 'recover'):
             save_run_result(args.output, report)
     print(text, end='')
     return result
