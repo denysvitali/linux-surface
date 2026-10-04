@@ -6,18 +6,18 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-05, BQ: desktop handoff failed; feeder repair ready)
+## Status (2026-10-05, BR: timing error; desktop handoff still fails)
 
-Latest result: [BQ](tools/spx/boot-diagnostics/RESULT-20261004bq.md). Kernel
+Latest result: [BR](tools/spx/boot-diagnostics/RESULT-20261005br.md). Kernel
 changes are committed on `spx/next` as one commit per feature.
 New [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
 awaits tested-kernel confirmation; recovery diagnostics are identified separately.
 BP ran `7.3.0-rc2-spx-mainline-20261004bg+`; input/BT confirmations belong to BI.
 The microphone verified all desktop test phases, including another application
 after idle. SoundWire shutdown left an empty FIFO; BP returned on schedule.
-BQ's ordinary desktop handoff failed after an underrun; the user heard quiet,
-interrupted sound. The feeder repair awaits a fresh startup. Reopen remains
-broken; persistent integration, useful volume and WCD/ADM lifecycle remain open.
+BQ's ordinary desktop handoff failed after an underrun. BR has no underrun,
+but its tone is near 436 rather than 440 Hz and reopened playback is silent.
+A01a/A03a are reopened; completion pacing is the next single-variable test.
 
 | Area | State | What is missing |
 |---|---|---|
@@ -30,7 +30,7 @@ broken; persistent integration, useful volume and WCD/ADM lifecycle remain open.
 | RTC (B05) | Readback and warm reboot pass | Cold power-off retention |
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
-| Speakers (A01) | **BP: desktop left/right/both and repeat after idle verified by mic** | Persistent integration, mapping, balance, volume and WCD/ADM lifecycle |
+| Speakers (A01) | BP passed; **BR regressed: tone timing and desktop handoff fail** | Persistent integration, mapping, balance, volume and WCD/ADM lifecycle |
 | Microphones (A02) | **BN: DMIC1 records known speaker tones** | Other fitted mics, quality and full lifecycle |
 | Cameras (C01–C05) | Rear sensor identifies | No frame captured |
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
@@ -567,7 +567,9 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
   `7.3.0-rc2-spx-mainline-20261004bg+`, followed by verified amps-off readback.
   No PCM or acoustic test ran. [BJ result](tools/spx/boot-diagnostics/RESULT-20261004bj.md).
 
-  - [x] **A01a — Microphone-verified channel test signals.** BN passed left,
+  - [ ] **A01a — Microphone-verified channel test signals.** Reopened on BR:
+    the first tone has a timing error and fails the unchanged acoustic check.
+    [BR result](tools/spx/boot-diagnostics/RESULT-20261005br.md). BN passed left,
     right and simultaneous tones plus an amps-off negative control on boot
     `b6ebb51f-0d63-4946-a631-e2ab3f424569`, kernel
     `7.3.0-rc2-spx-mainline-20261004bg+`.
@@ -590,7 +592,9 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
   after reboot/resume without manual mixer setup or ad-hoc repair. Resolve or
   explicitly validate the parked-session workaround and its resource lifetime.
 
-  - [x] **A03a — Bounded desktop applications and SoundWire shutdown.** BP
+  - [ ] **A03a — Bounded desktop applications and SoundWire shutdown.** Reopened:
+    BQ underruns and BR fails the first acoustic phase before desktop handoff.
+    [BR result](tools/spx/boot-diagnostics/RESULT-20261005br.md). BP
     passed microphone-verified left/right/both playback and another application
     after five seconds idle through a public Pulse sink and the same ALSA owner.
     Stream close while amps remained attached left both speaker paths disabled

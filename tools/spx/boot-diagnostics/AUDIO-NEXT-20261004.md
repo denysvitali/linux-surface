@@ -1,37 +1,36 @@
-# Audio: corrected desktop bridge queued for BR
+# Audio: completion-paced startup queued for BS
 
-BR (`20261005br`) is installed with one consumed-once `serve` request:
-`--serve-seconds 0 --desktop-peak 4000`. It retains the fixed mainline
-`7.3.0-rc2-spx-mainline-20261004bg+` release, kernel and DTB. The SoundWire
-shutdown helper now clears stale stream references (`c780c6f61362`).
+BS (`20261005bs`) changes only startup pacing from BR:
+`q6asm_dai.spx_force_timer_pacing=0`. The same mainline kernel, DTB, fixed
+release and module tree are retained. Its consumed-once request is
+`serve --serve-seconds 0 --desktop-peak 4000`; PA remains minimum and scoring
+thresholds/temporary test levels stay unchanged. Persistent default is
+`spx-known-good`; automatic return remains independently armed at uptime900.
 
-The user heard low, interrupted sound on BQ. Its first startup suffered a
-real ALSA underrun before public/default-sink handoff. Feeder `0b1778dbdce8`
-now supplies silence during monitor gaps and preserves received stereo frames.
-The ordinary digital limit is raised from 1433 to 4000 (+8.9 dB), using the
-prior 6.18 clean-stereo findings. PA stays at minimum, WCD at 0 dB; temporary
-test tones and acoustic/noise thresholds are unchanged. Volume implementation
-is `326a4552df67`, queued-request forwarding `f91da6e7c677`.
+BR's fresh startup had no ALSA underrun, but its 440 Hz stimulus arrived near
+435.9 Hz. The nominal-frequency scorer failed before the higher-volume public
+route. Both amplifiers initialized correctly. Two live reopen tests remained
+silent, including completion pacing with211 submitted/211 completed buffers
+and zero fallback. Do not infer that ALSA RUNNING or WRITE_DONE proves sound.
+See [BR](RESULT-20261005br.md). All captures stopped and amplifiers parked.
 
-On the next boot, inspect `audio/serve-ready.json` and `audio/serve-result.json`
-under `/var/lib/spx-boot-diagnostics/functional/20261005br/`. Readiness requires
-both the temporary desktop sequence and actual `spx_speakers` public-route
-acoustic tests, a matching live PCM/boot ID, and a closed microphone. No
-continuous recording runs during ordinary playback. A consumed request must
-not be re-armed. Automatic return remains at uptime 900 independently of the
-untimed audio bridge; persistent default remains `spx-known-good`.
+The known 6.18 findings already functionally validated completion pacing
+(PROGRESS.md section24, V17). Current q6asm filters immediate write ACKs;
+WRITE_DONE counters are real completion events. BR's forced timer mode ignored
+those events and rescheduled relative delayed work, allowing timing drift.
+BS will test completion pacing from the working first-open path; no new
+kernel build or provider reload is needed.
 
-BQ live reloads did not produce usable sound. Card reload reset WCD channel
-lists while retaining mux selections; idle AIF2_PB -> ZERO -> AIF1_PB repaired
-the two DAPM routes. ZERO alone (`ecdb75c19f02`) was insufficient. The last
-retry initialized both amplifiers without underrun but detected no left tone.
-Do not unload the WCD clock provider to bypass parked DSP ownership. Reopen,
-WCD RX overflows and ADM capture-close timeout remain unresolved. See
-[the BQ result](RESULT-20261004bq.md).
+After reboot inspect `/var/lib/spx-boot-diagnostics/functional/20261005bs/audio/`:
+`serve-ready.json` must match the current boot/live PCM and establish temporary
+and actual-public acoustic passes plus `recording_closed`. Keep the retained
+PCM for ordinary playback; no continuous microphone recording is intended.
+Collect failure evidence before another action; never re-arm consumed requests.
+Retire BR boot/staging/instance links once its result is collected and BS is
+current. BQ has already been retired; its evidence remains.
 
-BP's bounded desktop and SoundWire-close check remains passed (A03a); BN
-supplies the amps-off acoustic control (A01a/A02a). Full A01/A02/A03 remain
-open. Useful listening volume, physical mapping/balance, repeated startup and
-resume are not established by an installed candidate. Offline validation:
-28 audio tests and 7 queued-request tests pass; the unchanged scorer's 13 tests
-passed previously. No new acceptance box has closed.
+A01a/A03a are reopened after the regression; A02a's known-stimulus microphone
+capture remains established. FullA01/A02/A03, hardware reopen, WCD RX overflow,
+ADM capture-close timeout, useful volume and persistent integration remain
+open. This is the third boot after BP without a usable desktop handoff: if
+BS fails, park this approach and record the blocker per AGENTS.md.
