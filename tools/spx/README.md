@@ -67,3 +67,28 @@ running kernel. Venus remains parked.
 After collecting a result, retire its boot directory, old module tree and
 enabled timer instance, keeping the current candidate and known-good. Keep
 the journals and one-page result. [Physical checks](boot-diagnostics/PHYSICAL-TESTS.md).
+
+For speaker work, add `--audio` to preparation. This starts the native codecs
+with amplifier enables low (`GPIO 0x1e/0x18`) and suppresses desktop audio and
+old speaker bridges for that boot. `audio.py plan` is entirely offline.
+
+After the user requests that specific listening run, use the existing trial
+tool on the running candidate (substitute its attempt ID):
+
+```
+sudo python3 -B tools/spx/trial.py audio ATTEMPT --audio-action listen \
+  --allow-amp-power --allow-playback
+```
+
+The test takes the device lock, checks native enumeration, sets minimum PA
+gain, and opens one owned 48 kHz stereo PCM on digital silence. It verifies
+physical left/right port mapping, bypassed companders and each codec's explicit
+late initialization before playing two seconds left, right, then both. It
+attempts to park both amplifiers before closing that PCM on every exit. No
+microphone is captured. Amplifier startup can still produce static; minimum
+gain does not establish that startup will be quiet. Read `audio/listen-result.json`
+and obtain the person's listening result before deciding on another run.
+
+The late-init sysfs nodes are per native speaker; reported PA/protection
+values are driver shadows, not physical register readback. The six-second
+tone sequence and successful software checks alone do not pass A01.
