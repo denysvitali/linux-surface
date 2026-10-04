@@ -89,6 +89,28 @@ microphone is captured. Amplifier startup can still produce static; minimum
 gain does not establish that startup will be quiet. Read `audio/listen-result.json`
 and obtain the person's listening result before deciding on another run.
 
+The user's October 4 instruction authorizes an automated speaker/microphone
+feedback loop and bounded retries without a human listening response. Use:
+
+```
+sudo python3 -B tools/spx/trial.py audio ATTEMPT --audio-action feedback \
+  --allow-amp-power --allow-playback --allow-capture
+```
+
+This holds one internal DMIC1 capture on MM2 across quiet, amplifier startup,
+and the left/right/both sequence. It aborts on clipping, a large level increase,
+capture stalls or ALSA failures; each requested tone must sustain for 0.4 seconds
+above the same recording's quiet floor and neighboring frequencies. Residual
+noise is checked separately. An amps-off playback control must remove the tones.
+The thresholds are uncalibrated: a pass proves detected output, not physical
+speaker placement, useful listening volume or desktop audio integration.
+`capture` with `--allow-capture` runs only the quiet microphone check.
+Private WAV files and sample-indexed phase scores accompany
+`audio/feedback-result.json`. The capture process is finite, uses fixed PCM
+geometry and disables ALSA's unsafe automatic XRUN recovery. Capture routes are
+restored and amplifier powerdown is verified on exit. Do not run a second test
+after an ASM mapping/close failure without resolving that DSP lifetime problem.
+
 The late-init sysfs nodes are per native speaker; reported PA/protection
 values are driver shadows, not physical register readback. The six-second
 tone sequence and successful software checks alone do not pass A01.

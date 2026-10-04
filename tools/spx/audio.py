@@ -670,9 +670,11 @@ def initialize(args, report):
         for bits, expected in ((0x02, {3}), (0x06, {3, 4})):
             assert_desktop_paused(args.desktop_user)
             assert_pcm_idle()
+            capture_frame = capture.mark() if capture else None
             report['parked'] = False
             writer.write_text(f'43 {parked | bits:02x}\n')
-            stage = {'powered_pins': bits, 'samples': []}
+            stage = {'powered_pins': bits, 'samples': [],
+                     'capture_frame_before_power': capture_frame}
             report['stages'].append(stage)
             deadline = time.monotonic() + 5
             last_error = 'No identity sample'
@@ -690,6 +692,7 @@ def initialize(args, report):
                 else:
                     if mapping == stable:
                         stage['physical_units_to_addresses'] = mapping
+                        stage['capture_frame_initialized'] = capture.mark() if capture else None
                         break
                     stable = mapping
                 time.sleep(0.25)
