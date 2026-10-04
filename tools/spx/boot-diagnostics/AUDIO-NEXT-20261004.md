@@ -1,31 +1,30 @@
-# Audio: scoring fix queued for BT
+# Audio: exact-waveform fix queued for BU
 
-BT (`20261005bt`) changes only the public quiet/scoring interval from BS.
-Commit882a287e9c6a keeps local silence feeding during CPU-bound analysis and
-microphone teardown, then resumes monitor forwarding before handoff. The
-independent-clock regression reproduces22 underruns without this fix and zero
-with it;29 audio tests pass. Kernel/DTB, completion pacing, geometry, levels
-and thresholds remain unchanged. Request: `serve --serve-seconds 0
---desktop-peak 4000`. Persistent default is `spx-known-good`; fallback900 is
-independently armed and is not canceled by audio duration0.
+BU (`20261005bu`) changes only active forwarding from BT. Commit
+`804b067ef187` waits for actual source frames instead of inserting five-ms
+silence blocks. Idle and scoring retain local silence. The independent-clock
+regression preserves the full contiguous stereo waveform and has zero
+underruns with 95/145 ms producer bursts and a 250 ms hardware ring. The old
+implementation fails the same test by adding 1,920 frames; 28 tests pass.
 
-BS restored correct440/660 timing and all four temporary desktop phases.
-The actual public spx_speakers route also passed at cap4000, approximately9dB
-above the prior digital limit, with unchanged PA gain and no detected excess
-noise/clipping. ALSA then underrran during public scoring, so no handoff
-occurred. See [BS](RESULT-20261005bs.md). The live scoring-fix retry was silent
-after hardware reopen; it never reached public scoring. First startup remains
-the working path. Do not reload WCD/ADSP providers to bypass parked ownership.
+BT's shifted 436.9 Hz tone was reproduced by those silence insertions despite
+zero DSP timer fallback. Its live retry remained silent after hardware reopen;
+see [BT](RESULT-20261005bt.md). No gain or scoring thresholds changed. The
+previously verified completion pacing and public-scoring quiet fix remain.
 
-After boot inspect `/var/lib/spx-boot-diagnostics/functional/20261005bt/audio/`.
-A valid `serve-ready.json` must match the current boot/live PCM, both acoustic
-passes and `recording_closed`. Confirm the PCM continues running before normal
-desktop handoff. No continuous microphone recording is intended. On failure,
-collect evidence before another action and never re-arm a consumed request.
-Retire BS boot/staging/instance links after BT becomes current; BQ/BR are
-already retired with evidence retained.
+BU uses the same mainline kernel/DTB/module tree and fixed release. Its single
+queued request is `serve --serve-seconds 0 --desktop-peak 4000`. Known-good
+remains persistent default; automatic return is independently armed at uptime
+900. Audio duration zero does not cancel it.
 
-A01a is restored by BS; A02a remains established. A03a, hardware reopen,
-WCD RX overflow, ADM capture-close timeout, persistent integration and useful
-listening volume remain open. BS made functional gain in timing and public
-output; it did not make ordinary desktop playback reliable yet.
+After boot inspect `/var/lib/spx-boot-diagnostics/functional/20261005bu/audio/`.
+Readiness requires all temporary and actual-public acoustic checks, a closed
+microphone and matching live PCM/boot ID. Verify continuing playback before
+calling ordinary desktop audio ready. No continuous recording is intended.
+Never re-arm a consumed request; collect failures before selecting another
+experiment. Retire BT payload/staging/instance links once BU becomes current.
+
+A01a/A03a are open after regressions; BS had verified the louder public path
+but did not reach a stable handoff. Hardware reopen, WCD RX overflow, ADM
+capture-close timeout, persistence and listening-volume acceptance remain open.
+Do not reload WCD/ADSP providers around parked ownership.
