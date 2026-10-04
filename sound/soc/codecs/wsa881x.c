@@ -1275,9 +1275,12 @@ static ssize_t spx_late_init_store(struct device *dev,
 	struct wsa881x_priv *wsa881x = dev_get_drvdata(dev);
 	struct snd_soc_component *comp = wsa881x->spx_component;
 	struct snd_soc_dapm_context *dapm;
+	struct snd_soc_dapm_widget *w, *speaker = NULL, *pa = NULL;
+	struct snd_soc_dapm_path *path;
 	struct sdw_stream_runtime *stream;
+	const char *pin, *stage = "native-device";
 	u8 *shadow = wsa881x->spx_reg_shadow;
-	unsigned int dev_num;
+	unsigned int dev_num, unit;
 	int ret, park_ret;
 
 	if (!sysfs_streq(buf, "1"))
@@ -1285,16 +1288,18 @@ static ssize_t spx_late_init_store(struct device *dev,
 	if (!comp || !snd_soc_card_is_instantiated(comp->card))
 		return -ENODEV;
 
-	dapm = snd_soc_component_to_dapm(comp);
+	dapm = snd_soc_card_to_dapm(comp->card);
 	snd_soc_dapm_mutex_lock(dapm);
 	mutex_lock(&wsa881x->spx_state_lock);
 	ret = -EINVAL;
-	if (!wsa881x_spx_native_unit(wsa881x) ||
-	    !wsa881x_spx_transport_enabled(wsa881x))
+	unit = wsa881x_spx_native_unit(wsa881x);
+	if (!unit || !wsa881x_spx_transport_enabled(wsa881x))
 		goto out;
+	stage = "stream";
 	ret = -EBUSY;
 	if (!wsa881x_spx_late_stream_ready(wsa881x))
 		goto out;
+	stage = "profile";
 	ret = -EINVAL;
 	if (spx_win_pa_seq != 1 || spx_win_pa_profile ||
 	    spx_win_teardown_reset ||
@@ -1303,6 +1308,7 @@ static ssize_t spx_late_init_store(struct device *dev,
 	    wsa881x->port_enable[WSA881X_PORT_COMP] ||
 	    wsa881x->port_enable[WSA881X_PORT_VISENSE])
 		goto out;
+	stage = "minimum-gain";
 	mutex_lock(&wsa881x->spx_shadow_lock);
 	if (shadow[WSA881X_SPKR_DRV_GAIN] == 0xc9 &&
 	    shadow[WSA881X_SPKR_OCP_CTL] == 0xb4 &&
@@ -1311,7 +1317,33 @@ static ssize_t spx_late_init_store(struct device *dev,
 	mutex_unlock(&wsa881x->spx_shadow_lock);
 	if (ret)
 		goto out;
-	if (!snd_soc_dapm_get_pin_status(dapm, "SPKR")) {
+	/*
+	 * SPKR is an intermediate codec output once routed to a machine
+	 * speaker, so its connected flag does not gate DAPM endpoint walks.
+	 * Match the known card endpoint cycle, and require its direct route
+	 * from this component before changing either speaker's state.
+	 */
+	stage = "endpoint";
+	pin = unit == 3 ? "Left Spk" : "Right Spk";
+	for_each_card_widgets(comp->card, w) {
+		if (w->dapm == snd_soc_component_to_dapm(comp) &&
+		    !snd_soc_dapm_widget_name_cmp(w, "SPKR PGA"))
+			pa = w;
+		if (w->dapm != dapm || w->id != snd_soc_dapm_spk ||
+		    strcmp(w->name, pin))
+			continue;
+		snd_soc_dapm_widget_for_each_source_path(w, path) {
+			if (path->connect &&
+			    path->source->dapm == snd_soc_component_to_dapm(comp) &&
+			    !snd_soc_dapm_widget_name_cmp(path->source, "SPKR"))
+				speaker = w;
+		}
+	}
+	if (!speaker || !pa) {
+		ret = -EINVAL;
+		goto out;
+	}
+	if (!speaker->connected || !speaker->power || !pa->power) {
 		ret = -EBUSY;
 		goto out;
 	}
@@ -1320,39 +1352,55 @@ static ssize_t spx_late_init_store(struct device *dev,
 	stream = wsa881x->sruntime;
 	wsa881x->spx_late_io_error = 0;
 	wsa881x->spx_late_initializing = true;
-	ret = snd_soc_dapm_disable_pin_unlocked(dapm, "SPKR");
+	stage = "disable-endpoint";
+	ret = snd_soc_dapm_disable_pin_unlocked(dapm, pin);
 	if (ret)
 		goto park;
+	stage = "sync-down";
 	ret = snd_soc_dapm_sync_unlocked(dapm);
 	if (ret || wsa881x->spx_late_io_error)
 		goto park;
-	if (!wsa881x_spx_late_stream_ready(wsa881x) ||
+	stage = "verify-down";
+	if (pa->power || speaker->power ||
+	    !wsa881x_spx_late_stream_ready(wsa881x) ||
 	    wsa881x->sruntime != stream) {
 		ret = -EBUSY;
 		goto park;
 	}
+	/* POST_PMD parks OCP; explicitly keep the PA off during cold replay. */
+	stage = "disable-pa";
+	ret = wsa881x_update_bits(wsa881x, WSA881X_SPKR_DRV_EN, BIT(7), 0);
+	if (ret)
+		goto park;
 	/* Preserve the current boost voltage presets throughout the replay. */
+	stage = "initialize";
 	ret = wsa881x_init(wsa881x);
 	if (ret)
 		goto park;
+	stage = "identity";
 	if (!wsa881x_spx_transport_enabled(wsa881x) ||
 	    wsa881x->slave->dev_num != dev_num) {
 		ret = -ENODEV;
 		goto park;
 	}
-	ret = snd_soc_dapm_enable_pin_unlocked(dapm, "SPKR");
+	stage = "enable-endpoint";
+	ret = snd_soc_dapm_enable_pin_unlocked(dapm, pin);
 	if (ret)
 		goto park;
+	stage = "sync-up";
 	ret = snd_soc_dapm_sync_unlocked(dapm);
 	if (ret || wsa881x->spx_late_io_error)
 		goto park;
-	if (!wsa881x_spx_late_stream_ready(wsa881x) ||
+	stage = "verify-up";
+	if (!pa->power || !speaker->power ||
+	    !wsa881x_spx_late_stream_ready(wsa881x) ||
 	    wsa881x->sruntime != stream ||
 	    !wsa881x_spx_transport_enabled(wsa881x) ||
 	    wsa881x->slave->dev_num != dev_num) {
 		ret = -ENODEV;
 		goto park;
 	}
+	stage = "final-registers";
 	mutex_lock(&wsa881x->spx_shadow_lock);
 	if (shadow[WSA881X_SPKR_DRV_EN] != 0xfd ||
 	    shadow[WSA881X_SPKR_DRV_GAIN] != 0xc9 ||
@@ -1371,7 +1419,7 @@ park:
 	/* DAPM logs widget errors but does not propagate them from sync. */
 	if (!ret)
 		ret = wsa881x->spx_late_io_error;
-	park_ret = snd_soc_dapm_disable_pin_unlocked(dapm, "SPKR");
+	park_ret = snd_soc_dapm_disable_pin_unlocked(dapm, pin);
 	if (!park_ret)
 		park_ret = snd_soc_dapm_sync_unlocked(dapm);
 	if (park_ret)
@@ -1383,6 +1431,8 @@ park:
 finish:
 	wsa881x->spx_late_initializing = false;
 out:
+	if (ret)
+		dev_err(dev, "SPX: late init failed at %s: %d\n", stage, ret);
 	wsa881x->spx_late_init_result = ret;
 	mutex_unlock(&wsa881x->spx_state_lock);
 	snd_soc_dapm_mutex_unlock(dapm);
