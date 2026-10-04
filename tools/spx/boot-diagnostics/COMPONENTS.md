@@ -1,6 +1,17 @@
 # Surface Pro X mainline validation
 
-The latest [Q result](RESULT-20260927q.md) records a completed stage-7 PIO
+**Current acceptance tracking is in [PORT-CHECKLIST.md](../../../PORT-CHECKLIST.md).**
+Read it before choosing port work and update its feature IDs after testing.
+The [AO result](RESULT-20261002ao.md) passed the bounded baseline, including
+native right-codec initialization and touch readiness after an automatic retry.
+Full hardware functionality is incomplete. The [current inventory](HARDWARE-INVENTORY-20261002.md)
+is metadata only. This document retains historical evidence; its older soundcard,
+microphone and recovery statements are not current status. In particular, read
+the [microphone correction](AUDIO-ORACLE-RESTORED-20260928.md).
+
+## Historical component evidence (through Q)
+
+The historical [Q result](RESULT-20260927q.md) records a completed stage-7 PIO
 capability waiter and 620.48-second automatic archive. Its first-pass fault
 filter misread `ramoops` as an oops; an independent archived check found no
 actual selected fault and stopped the fallback after verification. SLIM

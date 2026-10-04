@@ -1,0 +1,3 @@
+$ tar --null -T /var/tmp/spx-camera-config-20260922-6x_9qvel/tracked-files.nul -cf - | tar -xf - -C /var/tmp/spx-camera-config-20260922-6x_9qvel/source
+
+Exit status: 0, 0; seconds: 101.39

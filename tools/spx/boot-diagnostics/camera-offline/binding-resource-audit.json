@@ -1,0 +1,131 @@
+{
+  "clock-names": {
+    "count": 40,
+    "names": [
+      "camnoc_axi",
+      "cpas_ahb",
+      "csiphy0",
+      "csiphy0_timer",
+      "csiphy1",
+      "csiphy1_timer",
+      "csiphy2",
+      "csiphy2_timer",
+      "csiphy3",
+      "csiphy3_timer",
+      "vfe0_axi",
+      "vfe0",
+      "vfe0_cphy_rx",
+      "vfe0_csid",
+      "vfe1_axi",
+      "vfe1",
+      "vfe1_cphy_rx",
+      "vfe1_csid",
+      "vfe2_axi",
+      "vfe2",
+      "vfe2_cphy_rx",
+      "vfe2_csid",
+      "vfe3_axi",
+      "vfe3",
+      "vfe3_cphy_rx",
+      "vfe3_csid",
+      "vfe_lite0",
+      "vfe_lite0_cphy_rx",
+      "vfe_lite0_csid",
+      "vfe_lite1",
+      "vfe_lite1_cphy_rx",
+      "vfe_lite1_csid",
+      "vfe_lite2",
+      "vfe_lite2_cphy_rx",
+      "vfe_lite2_csid",
+      "vfe_lite3",
+      "vfe_lite3_cphy_rx",
+      "vfe_lite3_csid",
+      "gcc_axi_hf",
+      "gcc_axi_sf"
+    ],
+    "driver_names_match": true
+  },
+  "reg-names": {
+    "count": 20,
+    "names": [
+      "csiphy0",
+      "csiphy1",
+      "csiphy2",
+      "csiphy3",
+      "vfe0",
+      "csid0",
+      "vfe1",
+      "csid1",
+      "vfe2",
+      "csid2",
+      "vfe_lite0",
+      "csid0_lite",
+      "vfe_lite1",
+      "csid1_lite",
+      "vfe_lite2",
+      "csid2_lite",
+      "vfe_lite3",
+      "csid3_lite",
+      "vfe3",
+      "csid3"
+    ],
+    "driver_names_match": true
+  },
+  "interrupt-names": {
+    "count": 20,
+    "names": [
+      "csid1_lite",
+      "vfe_lite1",
+      "csiphy3",
+      "csid0",
+      "vfe0",
+      "csid1",
+      "vfe1",
+      "csid0_lite",
+      "vfe_lite0",
+      "csiphy0",
+      "csiphy1",
+      "csiphy2",
+      "csid2",
+      "vfe2",
+      "csid3_lite",
+      "csid2_lite",
+      "vfe_lite3",
+      "vfe_lite2",
+      "csid3",
+      "vfe3"
+    ],
+    "driver_names_match": true
+  },
+  "interconnect-names": {
+    "count": 4,
+    "names": [
+      "cam_ahb",
+      "cam_hf_mnoc",
+      "cam_sf_mnoc",
+      "cam_sf_icp_mnoc"
+    ],
+    "driver_names_match": true
+  },
+  "power-domain-names": {
+    "count": 5,
+    "names": [
+      "ife0",
+      "ife1",
+      "ife2",
+      "ife3",
+      "top"
+    ],
+    "driver_names_match": true
+  },
+  "camss_required_supplies": [
+    "vdda-phy",
+    "vdda-pll"
+  ],
+  "basis": {
+    "csiphy": "SC8180X-specific resource table",
+    "csid_vfe_icc": "tables selected explicitly by sc8180x_resources",
+    "iommu": "one historical SID/mask entry; no independent complete SID inventory",
+    "ports": "four PHY IDs 0..3"
+  }
+}

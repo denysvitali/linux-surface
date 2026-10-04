@@ -1,0 +1,38 @@
+{
+  "reference": "/home/dvitali/Documents/git/linux-surface-kernel/docs/camdtb/v23.dts",
+  "reference_sha256": "e69f2637abc57ec2eca28925ce9b3e5c984e1d0085f06c0f45d6148fb92899d7",
+  "reference_dtb": "/var/tmp/spx-camera-offline-20260922/reference-v23.dtb",
+  "source": "/home/dvitali/Documents/git/linux-surface-next/tools/spx/boot-diagnostics/camera-offline/spx-camera-v23-disabled.dtsi",
+  "excluded_supply_properties": {
+    "/soc@0/cci@ac4a000/i2c-bus@0/camera@10": [
+      "dovdd-supply",
+      "avdd-supply",
+      "dvdd-supply"
+    ],
+    "/soc@0/cci@ac4a000/i2c-bus@0/camera@60": [
+      "vdddo-supply",
+      "vdda-supply",
+      "vddd-supply"
+    ],
+    "/soc@0/cci@ac4a000/i2c-bus@1/camera@36": [
+      "dovdd-supply",
+      "avdd-supply",
+      "dvdd-supply"
+    ]
+  },
+  "included_roots": [
+    "/soc@0/cci@ac4a000",
+    "/soc@0/camss@ac65000",
+    "/soc@0/pinctrl@3100000/spx-cam-mclk0-pins",
+    "/soc@0/pinctrl@3100000/spx-cam-rear-reset-pins",
+    "/soc@0/pinctrl@3100000/spx-cam-mclk2-pins",
+    "/soc@0/pinctrl@3100000/spx-cam-mclk3-pins",
+    "/soc@0/pinctrl@3100000/spx-cam-ir-reset-pins"
+  ],
+  "intended_status": "disabled",
+  "unused_cci_controllers_excluded": [
+    1,
+    2,
+    3
+  ]
+}

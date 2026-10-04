@@ -1,0 +1,5 @@
+2619309ad5c1b2bd405d620a485e25a30aebd552309b386b4987c5d177a4e483  /var/tmp/spx-camera-config-20260922-6x_9qvel/build/drivers/i2c/busses/i2c-qcom-cci.o
+8c3ee87ad6b33ccee01dac8099eec32b4a153fb783eaf4e7ec4d3e44e1909432  /var/tmp/spx-camera-config-20260922-6x_9qvel/build/drivers/media/i2c/ov13858.o
+c3ec2202499f0ce5dbcc422bd96aca2fd1ec1d662d698849300ceefc3b3d8073  /var/tmp/spx-camera-config-20260922-6x_9qvel/build/drivers/media/i2c/ov5693.o
+335dfa8d749bff382cd6faffa5fc71fa7dcf57c45bfae8956c83de33e1f9523c  /var/tmp/spx-camera-config-20260922-6x_9qvel/build/drivers/media/i2c/ov7251.o
+6520cdc9bfe6fa2f97ac4260b682dddbf3686acbd69091e505c36d4a022490af  /var/tmp/spx-camera-config-20260922-6x_9qvel/build/drivers/media/platform/qcom/camss/qcom-camss.o

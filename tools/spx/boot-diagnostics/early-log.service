@@ -1,0 +1,16 @@
+[Unit]
+Description=Preserve SPX kernel logs before the host services start
+DefaultDependencies=no
+ConditionKernelCommandLine=spx_diag=20260913
+RequiresMountsFor=/var/lib/spx-boot-diagnostics
+After=systemd-remount-fs.service
+Before=sysinit.target shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/lib/spx-boot-diagnostics/early-log.sh
+TimeoutStopSec=5
+
+[Install]
+WantedBy=sysinit.target

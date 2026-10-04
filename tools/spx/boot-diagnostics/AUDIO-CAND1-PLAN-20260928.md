@@ -1,5 +1,9 @@
 # Candidate 1: drive SD_N high — the prepared one-shot trial (2026-09-28)
 
+> Superseded by AUDIO-CONTINUATION-20260930.md: this was a proposal, not
+> executable preparation. Y already has the MFD boot selector. Cached GPIO
+> values do not establish physical pad level, and playback is a separate gate.
+
 Prepared, **not deployed, not armed, not rebooted**. Written while Y is live so
 the trial is one command away.
 

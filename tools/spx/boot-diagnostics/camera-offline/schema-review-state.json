@@ -1,0 +1,14 @@
+{
+  "returncode": null,
+  "timed_out": true,
+  "command": [
+    "/var/tmp/spx-dtschema-venv-20260915/bin/dt-validate",
+    "-s",
+    "Documentation/devicetree/bindings",
+    "-l",
+    "qcom,i2c-cci:ovti,ov13858:ovti,ov5693:ovti,ov7251:qcom,sc8280xp-camss",
+    "/var/tmp/spx-camera-offline-20260922/review.dtb"
+  ],
+  "duration_seconds": 60.008,
+  "note": "Validator exit code may be zero despite printed schema diagnostics. SC8180X CAMSS has no matching binding."
+}

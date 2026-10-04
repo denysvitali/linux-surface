@@ -1,0 +1,2 @@
+$ git apply --check tools/spx/boot-diagnostics/camera-offline/camss-dma-contig-kconfig.patch
+Exit status: 0

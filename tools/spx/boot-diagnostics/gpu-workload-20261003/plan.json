@@ -1,0 +1,16 @@
+{
+  "attempt": "20261003au",
+  "candidate_release": "7.3.0-rc2-spx-mainline-20261003au+",
+  "upstream_commit": "42e3d8fe3aa88743ef90348138f643f7b04a9237",
+  "render_node": "/dev/dri/renderD128",
+  "renderer": "FD680",
+  "size": "800x600",
+  "scene_seconds": 60,
+  "idle_seconds": 30,
+  "apis": ["glmark2-gbm", "glmark2-es2-gbm"],
+  "phases": [
+    ["build:use-vbo=false", "build:use-vbo=true", "texture:texture-filter=nearest", "texture:texture-filter=linear", "texture:texture-filter=mipmap"],
+    ["shading:shading=gouraud", "shading:shading=blinn-phong-inf", "shading:shading=phong", "conditionals:vertex-steps=0:fragment-steps=5:fragment-precision=default,high,default,default", "bump:bump-render=high-poly"],
+    ["bump:bump-render=normals", "bump:bump-render=height", "desktop:windows=4:effect=blur:blur-radius=5:passes=1:separable=true", "desktop:windows=4:effect=shadow", "buffer:update-fraction=0.5:update-dispersion=0.9:columns=200:update-method=map:interleave=false"]
+  ]
+}

@@ -1,0 +1,5 @@
+/var/tmp/spx-camera-bindings-20260922/schema-subset/media/video-interface-devices.yaml: leds: missing type definition
+/var/tmp/spx-camera-offline-20260922/review.dtb: camera@60 (ovti,ov7251): port:endpoint:clock-lanes: 7 is greater than the maximum of 1
+	from schema $id: http://devicetree.org/schemas/media/i2c/ovti,ov7251.yaml
+/var/tmp/spx-camera-offline-20260922/review.dtb: camera@60 (ovti,ov7251): 'orientation', 'power-domains', 'rotation' do not match any of the regexes: '^pinctrl-[0-9]+$'
+	from schema $id: http://devicetree.org/schemas/media/i2c/ovti,ov7251.yaml

@@ -11,14 +11,13 @@ band that is otherwise near-empty, which makes the test unambiguous.
 MEASUREMENT, and why it is trustworthy: band power is computed with an
 UNWINDOWED (rectangular) zero-padded DFT, because Parseval then gives
 
-    band mean square = sum(|X[k]|^2 for k in band) / (m * N)
+    band mean square = sum(w[k] * |X[k]|^2 for k in band) / (m * N)
 
-with NO calibration constant and no bias -- it is exact for a pure tone and
-for noise alike. (A Hann window was tried first and rejected: its ENBW makes a
-full-scale sine's band read about +6 dBFS above full scale, so band levels are
-not comparable between a tone and the noise floor, which is exactly the
-comparison this tool exists to make.) The cost is leakage, which is harmless
-here because the bands are contiguous and the floor has no tone in them.
+where w is 2 for interior one-sided bins and 1 for DC/Nyquist. The sum over
+all bins equals the time-domain mean square after DC removal. A full-scale
+sine therefore measures -3.01 dBFS RMS. Rectangular-window leakage can move
+energy across band boundaries; a high-band rise alone does not prove that a
+speaker produced the requested tone.
 Peak frequency and level come from a separate Hann-windowed spectrum, where the
 familiar 2/(N*CG) scale is correct.
 
@@ -26,7 +25,8 @@ WHAT IT PRINTS: overall RMS/peak/DC, exact per-band RMS in real dBFS, the top
 spectral peaks, and -- the decision -- the level of the HIGH band (>= 8 kHz),
 the band to watch when judging a >8 kHz playback tone. A high-band rise of
 more than ~20 dB over the same channel's own quiet reference is the positive
-result; with a 61 dB headroom budget that threshold is not marginal.
+result to inspect for the requested tone. Acoustic sensitivity has not yet
+been calibrated against a speaker known to work on this boot.
 
 Usage:
   spx-mic-judge.py FILE.wav [FILE2.wav ...]     judge one or more captures
@@ -57,8 +57,10 @@ def load(path):
     if sw != 2:
         raise SystemExit(f"{path}: expected 16-bit, got {sw * 8}-bit")
     v = struct.unpack("<%dh" % (len(raw) // 2), raw)
-    if nch > 1:                                        # average to mono
-        v = [sum(v[i:i + nch]) / nch for i in range(0, len(v), nch)]
+    if nch != 1:
+        raise SystemExit(f"{path}: expected mono capture, got {nch} channels")
+    if len(raw) != nf * nch * sw:
+        raise SystemExit(f"{path}: truncated WAV samples")
     return list(v), fr, nch, nf
 
 
@@ -90,7 +92,7 @@ def fft(a):
 
 
 def dbfs(amp):
-    return 20 * math.log10(max(amp, 1e-12) / 32768.0)
+    return 20 * math.log10(amp / 32768.0) if amp > 0 else float("-inf")
 
 
 def db_delta(a, b):
@@ -115,23 +117,36 @@ def analyse(path):
     # --- exact band power: unwindowed zero-padded DFT + exact Parseval -----
     buf = [complex(x[i] - mean, 0.0) for i in range(n)] + [0j] * (m - n)
     sp = fft(buf)
-    p = [abs(sp[i]) ** 2 for i in range(m // 2 + 1)]   # one-sided power bins
+    p = [abs(sp[i]) ** 2 * (1 if i == 0 or 2 * i == m else 2)
+         for i in range(m // 2 + 1)]
+
+    def band_power(lo, hi):
+        # Include only bins whose centres lie in [lo, hi). Include Nyquist
+        # when hi reaches it, so a full-band sum retains the endpoint power.
+        i0 = math.ceil(lo * m / fr)
+        i1 = (len(p) if hi >= fr / 2 else math.ceil(hi * m / fr))
+        return sum(p[i0:i1]) / (m * n)
+
     bands = []
     for lo, hi in zip(EDGES, EDGES[1:]):
         if lo >= fr / 2:
             break
         hi = min(hi, fr / 2)
-        i0, i1 = int(lo * m / fr), max(int(hi * m / fr), int(lo * m / fr) + 1)
-        tot = sum(p[i0:min(i1, len(p))])
-        bands.append((lo, hi, dbfs(math.sqrt(tot / (m * n)))))
-    hi_db = max([b[2] for b in bands if b[0] >= HIGHz], default=float("-inf"))
+        bands.append((lo, hi, dbfs(math.sqrt(band_power(lo, hi)))))
+    hi_db = (dbfs(math.sqrt(band_power(HIGHz, fr / 2)))
+             if HIGHz < fr / 2 else float("-inf"))
+    ac_rms = dbfs(math.sqrt(sum(p) / (m * n)))
 
     # --- peak frequency/level: Hann window, familiar 2/(N*CG) amplitude ----
-    hb = [complex((x[i] - mean) * (0.5 - 0.5 * math.cos(2.0 * math.pi * i / (n - 1))), 0.0)
+    window = ([1.0] * n if n < 3 else
+              [0.5 - 0.5 * math.cos(2.0 * math.pi * i / (n - 1))
+               for i in range(n)])
+    hb = [complex((x[i] - mean) * window[i], 0.0)
           for i in range(n)] + [0j] * (m - n)
     hs = fft(hb)
-    k = 2.0 / (n * 0.5)                                # CG(Hann) = 0.5
-    spec = [(i * fr / m, abs(hs[i]) * k) for i in range(1, m // 2 + 1)]
+    window_sum = sum(window)
+    spec = [(i * fr / m, abs(hs[i]) * (1 if 2 * i == m else 2) / window_sum)
+            for i in range(1, m // 2 + 1)] or [(0.0, 0.0)]
     order = sorted(spec, key=lambda t: -t[1])
     dom, used = [], []
     for f, a in order:
@@ -146,7 +161,8 @@ def analyse(path):
                 rms=dbfs(math.sqrt(sum(s * s for s in x) / n)),
                 peak=max(abs(s) for s in x), dc=mean,
                 nz=100.0 * sum(1 for s in x if s) / n,
-                bands=bands, hi=hi_db, dom=dom, peakf=pk_f, peakdb=dbfs(pk_a))
+                ac_rms=ac_rms, bands=bands, hi=hi_db, dom=dom,
+                peakf=pk_f, peakdb=dbfs(pk_a))
 
 
 def main():
@@ -178,12 +194,14 @@ def main():
         print(f"  HIGH(>={HIGHz:.0f} Hz) = {a['hi']:.1f} dBFS")
 
         if fl:
+            if a['fr'] != fl['fr']:
+                raise SystemExit("Capture and floor must have the same sample rate")
             dh = db_delta(a["hi"], fl["hi"])
             dr = db_delta(a["rms"], fl["rms"])
-            ds = "inf" if dh == float("-inf") else f"{dh:+.1f}"
+            ds = f"{dh:+.1f}"
             print(f"  vs floor: high {ds} dB, total rms {dr:+.1f} dB")
-            print("  ==> HIGH-BAND SIGNAL PRESENT" if dh > 20
-                  else "  ==> consistent with silence / floor")
+            print("  ==> HIGH-BAND RISE >20 dB; verify the requested tone" if dh > 20
+                  else "  ==> no high-band rise >20 dB; acoustic output unproven")
         else:
             key = next((k for k in ARCHIVED_RMS if k in name), None)
             if key:

@@ -1,0 +1,27 @@
+{
+  "au_camera_core.py": {
+    "origin": "at_camera_core.py",
+    "origin_sha256": "5503cda37f7e8cd53f46e78ec230149f0f2118a36499cb1bd5c212c8cd7ead76",
+    "generated_sha256": "245f529d2efad50e40d06fad9646901f229e4d4ee5e0643d71f2aebf334b4044"
+  },
+  "au-camera-provider.py": {
+    "origin": "at-camera-provider.py",
+    "origin_sha256": "27e7d6d675daa027b29aa674960b9db20110e91452f1523b46feb6483e54145c",
+    "generated_sha256": "4d474d541aa21d78aad5133e8c78069e9babe502a45d93425998806bf612302b"
+  },
+  "au-camera-control.py": {
+    "origin": "at-camera-control.py",
+    "origin_sha256": "886a682ff8d6611c52aad35b3de3678b3df5e54895d0f12d0fa06fa61ab132e5",
+    "generated_sha256": "8b8b57d9457d0ae71560d88a230133e83fd6f8fc7654eb9b5516b4746277c2d5"
+  },
+  "au-baseline.py": {
+    "origin": "at-finalize.py",
+    "origin_sha256": "9cd0c27490c1ae504f1881e75fda98a8c6d5410227f9f6c3adaa8fb93f2cb564",
+    "generated_sha256": "9ae761735e3d0cb218774a007a9bd6deb4a513b9ddcf578e40a3eec02176a73e"
+  },
+  "review-au-baseline.py": {
+    "origin": "review-at-result.py",
+    "origin_sha256": "e5efab2869e9df6d9499244ae6ebc65a9efe58f32716530b7142fb0418c001ff",
+    "generated_sha256": "3a40a27b4b6c7e0ed1741f09e7767022f3729d16ed1675d665b05fd5ea0d52d3"
+  }
+}

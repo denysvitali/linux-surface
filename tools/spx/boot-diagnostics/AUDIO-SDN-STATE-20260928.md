@@ -1,5 +1,9 @@
 # SD_N / WCD GPIO live state: candidate 1 refuted (2026-09-28)
 
+> Corrections in AUDIO-CONTINUATION-20260930.md: cached GPIO registers do not
+> prove physical voltage, the WSA runtime callbacks have descriptor branches,
+> and the existing MFD selector provides the boot-time single-pin experiment.
+
 ## Measurement
 
 Read-only, on the live Y boot `b5f0a540-3e81-4415-b08c-f869e01349a2`, no

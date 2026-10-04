@@ -1,0 +1,21 @@
+{
+  "returncode": 0,
+  "timed_out": false,
+  "command": [
+    "/var/tmp/spx-dtschema-venv-20260915/bin/dt-validate",
+    "-s",
+    "/var/tmp/spx-camera-offline-20260922/schema-subset",
+    "-l",
+    "qcom,i2c-cci:ovti,ov5693:ovti,ov7251:qcom,sc8280xp-camss",
+    "/var/tmp/spx-camera-offline-20260922/review.dtb"
+  ],
+  "duration_seconds": 1.425,
+  "schemas": [
+    "media/qcom,sc8280xp-camss.yaml",
+    "media/i2c/ovti,ov7251.yaml",
+    "media/video-interfaces.yaml",
+    "media/i2c/ovti,ov5693.yaml",
+    "media/video-interface-devices.yaml",
+    "i2c/qcom,i2c-cci.yaml"
+  ]
+}

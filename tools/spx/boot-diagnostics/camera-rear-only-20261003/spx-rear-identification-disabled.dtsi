@@ -1,0 +1,93 @@
+// SPDX-License-Identifier: GPL-2.0-only
+/* Offline rear-only control path. CCI and sensor remain disabled. */
+#include <dt-bindings/clock/qcom,sc8180x-camcc.h>
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+
+&tlmm {
+	spx_rear_cci0_default: spx-rear-cci0-default-state {
+		pins = "gpio17", "gpio18";
+		function = "cci_i2c";
+		drive-strength = <2>;
+		bias-pull-up;
+	};
+
+	spx_rear_cci0_sleep: spx-rear-cci0-sleep-state {
+		pins = "gpio17", "gpio18";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-pull-down;
+		output-disable;
+	};
+
+	spx_rear_mclk0: spx-rear-mclk0-state {
+		pins = "gpio13";
+		function = "cam_mclk";
+		drive-strength = <2>;
+		bias-disable;
+	};
+
+	spx_rear_reset: spx-rear-reset-state {
+		pins = "gpio22";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+		output-low;
+	};
+};
+
+&{/soc@0} {
+	spx_rear_cci0: cci@ac4a000 {
+		compatible = "qcom,sc8180x-cci", "qcom,msm8996-cci";
+		reg = <0 0x0ac4a000 0 0x1000>;
+		interrupts = <GIC_SPI 460 IRQ_TYPE_EDGE_RISING>;
+		clocks = <&camcc CAM_CC_CAMNOC_AXI_CLK>,
+			 <&camcc CAM_CC_SLOW_AHB_CLK_SRC>,
+			 <&camcc CAM_CC_CPAS_AHB_CLK>,
+			 <&camcc CAM_CC_CCI_0_CLK>,
+			 <&camcc CAM_CC_CCI_0_CLK_SRC>;
+		clock-names = "camnoc_axi", "slow_ahb_src", "cpas_ahb",
+			      "cci", "cci_src";
+		assigned-clocks = <&camcc CAM_CC_CCI_0_CLK_SRC>;
+		assigned-clock-rates = <37500000>;
+		power-domains = <&camcc TITAN_TOP_GDSC>;
+		pinctrl-names = "default", "sleep";
+		pinctrl-0 = <&spx_rear_cci0_default>;
+		pinctrl-1 = <&spx_rear_cci0_sleep>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "disabled";
+
+		i2c-bus@0 {
+			reg = <0>;
+			clock-frequency = <100000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			spx_rear_sensor: camera@10 {
+				compatible = "ovti,ov13858";
+				reg = <0x10>;
+				clocks = <&camcc CAM_CC_MCLK0_CLK>;
+				assigned-clocks = <&camcc CAM_CC_MCLK0_CLK>;
+				assigned-clock-rates = <19200000>;
+				power-domains = <&camcc TITAN_TOP_GDSC>;
+				pinctrl-names = "default";
+				pinctrl-0 = <&spx_rear_mclk0 &spx_rear_reset>;
+				reset-gpios = <&tlmm 22 GPIO_ACTIVE_LOW>;
+				dovdd-supply = <&spx_camera_dovdd>;
+				avdd-supply = <&spx_camera_avdd>;
+				dvdd-supply = <&spx_camera_dvdd>;
+				orientation = <1>;
+				rotation = <0>;
+				status = "disabled";
+
+				port {
+					endpoint {
+						data-lanes = <1 2 3 4>;
+						link-frequencies = /bits/ 64 <540000000 270000000>;
+					};
+				};
+			};
+		};
+	};
+};

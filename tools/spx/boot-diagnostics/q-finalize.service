@@ -1,0 +1,10 @@
+[Unit]
+Description=Archive Q capability and graphical result at 620 seconds
+ConditionKernelCommandLine=spx_attempt=20260927q
+After=local-fs.target
+RequiresMountsFor=/var/lib/spx-boot-diagnostics /boot
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/spx-boot-diagnostics/q-finalize.py
+TimeoutStartSec=180

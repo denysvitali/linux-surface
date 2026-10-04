@@ -1,5 +1,10 @@
 # Spectral judge for the restored mic oracle (2026-09-28)
 
+> Numerical conclusions superseded by AUDIO-CONTINUATION-20260930.md. Interior
+> one-sided bins require weight 2; a full-scale sine is -3.01 dBFS RMS, and
+> DMIC0's combined high-band floor is -87.6 dBFS. Acoustic sensitivity and
+> the claimed digital-to-acoustic headroom have not been established.
+
 Adds `tools/spx/boot-diagnostics/spx-mic-judge.py` so a capture is judged by
 **band energy**, not by raw RMS, and the measurement is defensible. It closes
 the method gap in `AUDIO-ORACLE-RESTORED-20260928.md`, which established that

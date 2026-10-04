@@ -1,0 +1,13 @@
+[Unit]
+Description=Record the SPX trial Wayland EGL renderer
+ConditionKernelCommandLine=spx_boot=mainline-trial
+ConditionKernelCommandLine=spx_diag=20260913
+
+[Service]
+Type=oneshot
+ExecStartPre=/usr/bin/sleep 90
+ExecStart=/usr/bin/eglinfo -B -p wayland
+TimeoutStartSec=150
+
+[Install]
+WantedBy=default.target

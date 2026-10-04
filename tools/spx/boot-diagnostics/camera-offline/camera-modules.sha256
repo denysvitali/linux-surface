@@ -1,0 +1,16 @@
+c3dd06c6882522d353ebf913843591b0b4c57bf2cf0166ec11019ef99433c080  /var/tmp/spx-camera-config-20260922-6x_9qvel/build/drivers/i2c/busses/i2c-qcom-cci.ko
+4867868a72a8dbcff0b908fd60a02781b5f6b7760b6a008494681f92ff77eede  /var/tmp/spx-camera-config-20260922-6x_9qvel/build/drivers/media/i2c/ov13858.ko
+6875485416da3f009904685982ef71fe0bbdee245dfa62ae177a1bfd3fa23844  /var/tmp/spx-camera-config-20260922-6x_9qvel/build/drivers/media/i2c/ov5693.ko
+6b10c8e6a06fb1c9eda0470adfed85dc4dca70699c584fbe7f083bc336f54d4c  /var/tmp/spx-camera-config-20260922-6x_9qvel/build/drivers/media/i2c/ov7251.ko
+baee4c1f8536b68b7b26f96d5935ba335cfa4cd9dfdc81507c564eab57e24f4d  /var/tmp/spx-camera-config-20260922-6x_9qvel/build/drivers/media/platform/qcom/camss/qcom-camss.ko
+d2e586f842a4774fbe92cbba96f3996ddaf692dca9188b4e6c37d035a0bcd813  /var/tmp/spx-camera-config-20260922-6x_9qvel/build/drivers/media/mc/mc.ko
+3c1ac7ec8a12af95db17b35882653ef6936932f4a550104bc0d87b228e04ddd9  /var/tmp/spx-camera-config-20260922-6x_9qvel/build/drivers/media/v4l2-core/videodev.ko
+e9022bc50653483002a7a879cfaa62c55e6b733ca38388a4b5fed5d687667b5f  /var/tmp/spx-camera-config-20260922-6x_9qvel/build/drivers/media/v4l2-core/v4l2-dv-timings.ko
+0bf9f4ed28ca3f6fa4edcce2ebab1d1e30a715c0ac5d73882bac318d848f3e61  /var/tmp/spx-camera-config-20260922-6x_9qvel/build/drivers/media/v4l2-core/v4l2-async.ko
+ff1a0ff3d7ddc29d274a38673fde2beb32bf30d458d1df834f86031d2dcbd95f  /var/tmp/spx-camera-config-20260922-6x_9qvel/build/drivers/media/v4l2-core/v4l2-fwnode.ko
+d0b160c2c3a434006fab85c45ed4623718ef57ed8cb20fbe1f09a39183be50e8  /var/tmp/spx-camera-config-20260922-6x_9qvel/build/drivers/media/v4l2-core/v4l2-cci.ko
+0e7cdc088596b8fe158ac3cc000e4d9731daed0ad475c0506aff834eec0c1fc1  /var/tmp/spx-camera-config-20260922-6x_9qvel/build/drivers/media/common/videobuf2/videobuf2-common.ko
+5ec7d3ec5e61fd51e31b7e55c58c78199f01c995de10bf4a0adc2c5a53eb87f6  /var/tmp/spx-camera-config-20260922-6x_9qvel/build/drivers/media/common/videobuf2/videobuf2-memops.ko
+b111cb7017745f4b2de980860b504c725d95d6b2b4e69db230786dfa259ea81e  /var/tmp/spx-camera-config-20260922-6x_9qvel/build/drivers/media/common/videobuf2/videobuf2-dma-sg.ko
+7c88ea583e1bfb3cbdb27e1a2557be54d07711dbeeecc8fbe57509b134ddf3c8  /var/tmp/spx-camera-config-20260922-6x_9qvel/build/drivers/media/common/videobuf2/videobuf2-v4l2.ko
+84f52f4535acd251eb8d8b181ae701487ab2743a41c048375488e5222d18f391  /var/tmp/spx-camera-config-20260922-6x_9qvel/build/drivers/media/common/videobuf2/videobuf2-dma-contig.ko

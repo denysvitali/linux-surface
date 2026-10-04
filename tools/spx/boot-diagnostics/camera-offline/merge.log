@@ -1,0 +1,16 @@
+$ sh scripts/kconfig/merge_config.sh -m -O /var/tmp/spx-camera-config-20260922-6x_9qvel/build /var/tmp/spx-camera-config-20260922-6x_9qvel/base.config tools/spx/boot-diagnostics/camera-offline/camera-review.config
+Using /var/tmp/spx-camera-config-20260922-6x_9qvel/base.config as base
+Merging tools/spx/boot-diagnostics/camera-offline/camera-review.config
+Value of CONFIG_I2C_QCOM_CCI is redefined by fragment tools/spx/boot-diagnostics/camera-offline/camera-review.config:
+Previous value: # CONFIG_I2C_QCOM_CCI is not set
+New value: CONFIG_I2C_QCOM_CCI=m
+
+Value of CONFIG_VIDEO_DEV is redefined by fragment tools/spx/boot-diagnostics/camera-offline/camera-review.config:
+Previous value: # CONFIG_VIDEO_DEV is not set
+New value: CONFIG_VIDEO_DEV=m
+
+#
+# merged configuration written to /var/tmp/spx-camera-config-20260922-6x_9qvel/build/.config (needs make)
+#
+
+Exit status: 0

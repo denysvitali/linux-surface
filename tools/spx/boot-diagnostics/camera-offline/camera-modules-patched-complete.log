@@ -1,0 +1,47 @@
+The initial corrected Kconfig pass used the old 15-target list, which omitted the newly selected module. This pass includes videobuf2-dma-contig.ko, 16 explicit targets total.
+$ make -C /var/tmp/spx-camera-config-20260922-6x_9qvel/source O=/var/tmp/spx-camera-config-20260922-6x_9qvel/build ARCH=arm64 -j4 drivers/i2c/busses/i2c-qcom-cci.ko drivers/media/i2c/ov13858.ko drivers/media/i2c/ov5693.ko drivers/media/i2c/ov7251.ko drivers/media/platform/qcom/camss/qcom-camss.ko drivers/media/mc/mc.ko drivers/media/v4l2-core/videodev.ko drivers/media/v4l2-core/v4l2-dv-timings.ko drivers/media/v4l2-core/v4l2-async.ko drivers/media/v4l2-core/v4l2-fwnode.ko drivers/media/v4l2-core/v4l2-cci.ko drivers/media/common/videobuf2/videobuf2-common.ko drivers/media/common/videobuf2/videobuf2-memops.ko drivers/media/common/videobuf2/videobuf2-dma-sg.ko drivers/media/common/videobuf2/videobuf2-v4l2.ko drivers/media/common/videobuf2/videobuf2-dma-contig.ko
+make: Entering directory '/var/tmp/spx-camera-config-20260922-6x_9qvel/source'
+make[1]: Entering directory '/var/tmp/spx-camera-config-20260922-6x_9qvel/build'
+make[6]: 'drivers/media/mc/mc.mod' is up to date.
+make[7]: 'drivers/media/common/videobuf2/videobuf2-common.mod' is up to date.
+  CC [M]  drivers/media/common/videobuf2/videobuf2-dma-contig.o
+make[6]: 'drivers/media/v4l2-core/videodev.mod' is up to date.
+make[8]: 'drivers/media/platform/qcom/camss/qcom-camss.mod' is up to date.
+  MODPOST Module.symvers
+  CC [M]  drivers/i2c/busses/i2c-qcom-cci.mod.o
+  CC [M]  .module-common.o
+  CC [M]  drivers/media/common/videobuf2/videobuf2-common.mod.o
+  CC [M]  drivers/media/common/videobuf2/videobuf2-dma-contig.mod.o
+  CC [M]  drivers/media/common/videobuf2/videobuf2-dma-sg.mod.o
+  CC [M]  drivers/media/common/videobuf2/videobuf2-memops.mod.o
+  CC [M]  drivers/media/common/videobuf2/videobuf2-v4l2.mod.o
+  CC [M]  drivers/media/i2c/ov13858.mod.o
+  CC [M]  drivers/media/i2c/ov5693.mod.o
+  CC [M]  drivers/media/i2c/ov7251.mod.o
+  CC [M]  drivers/media/mc/mc.mod.o
+  CC [M]  drivers/media/platform/qcom/camss/qcom-camss.mod.o
+  CC [M]  drivers/media/v4l2-core/v4l2-async.mod.o
+  CC [M]  drivers/media/v4l2-core/v4l2-cci.mod.o
+  CC [M]  drivers/media/v4l2-core/v4l2-dv-timings.mod.o
+  CC [M]  drivers/media/v4l2-core/v4l2-fwnode.mod.o
+  CC [M]  drivers/media/v4l2-core/videodev.mod.o
+  LD [M]  drivers/i2c/busses/i2c-qcom-cci.ko
+  LD [M]  drivers/media/common/videobuf2/videobuf2-common.ko
+  LD [M]  drivers/media/common/videobuf2/videobuf2-dma-contig.ko
+  LD [M]  drivers/media/common/videobuf2/videobuf2-dma-sg.ko
+  LD [M]  drivers/media/common/videobuf2/videobuf2-memops.ko
+  LD [M]  drivers/media/common/videobuf2/videobuf2-v4l2.ko
+  LD [M]  drivers/media/i2c/ov13858.ko
+  LD [M]  drivers/media/i2c/ov5693.ko
+  LD [M]  drivers/media/i2c/ov7251.ko
+  LD [M]  drivers/media/mc/mc.ko
+  LD [M]  drivers/media/platform/qcom/camss/qcom-camss.ko
+  LD [M]  drivers/media/v4l2-core/v4l2-async.ko
+  LD [M]  drivers/media/v4l2-core/v4l2-cci.ko
+  LD [M]  drivers/media/v4l2-core/v4l2-dv-timings.ko
+  LD [M]  drivers/media/v4l2-core/v4l2-fwnode.ko
+  LD [M]  drivers/media/v4l2-core/videodev.ko
+make[1]: Leaving directory '/var/tmp/spx-camera-config-20260922-6x_9qvel/build'
+make: Leaving directory '/var/tmp/spx-camera-config-20260922-6x_9qvel/source'
+
+Exit status: 0; seconds: 12.44

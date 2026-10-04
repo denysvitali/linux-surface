@@ -1,0 +1,9 @@
+/var/tmp/spx-camera-bindings-20260922/schema-subset/media/video-interface-devices.yaml: leds: missing type definition
+/var/tmp/spx-camera-bindings-20260922/missing-supplies.dtb: camera@60 (ovti,ov7251): port:endpoint:clock-lanes: 7 is greater than the maximum of 1
+	from schema $id: http://devicetree.org/schemas/media/i2c/ovti,ov7251.yaml
+/var/tmp/spx-camera-bindings-20260922/missing-supplies.dtb: camera@60 (ovti,ov7251): 'orientation', 'power-domains', 'rotation' do not match any of the regexes: '^pinctrl-[0-9]+$'
+	from schema $id: http://devicetree.org/schemas/media/i2c/ovti,ov7251.yaml
+/var/tmp/spx-camera-bindings-20260922/missing-supplies.dtb: camss@ac65000 (qcom,sc8180x-camss): 'vdda-phy-supply' is a required property
+	from schema $id: http://devicetree.org/schemas/media/qcom,sc8180x-camss.yaml
+/var/tmp/spx-camera-bindings-20260922/missing-supplies.dtb: camss@ac65000 (qcom,sc8180x-camss): 'vdda-pll-supply' is a required property
+	from schema $id: http://devicetree.org/schemas/media/qcom,sc8180x-camss.yaml

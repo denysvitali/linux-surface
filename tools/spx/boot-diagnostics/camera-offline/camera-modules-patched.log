@@ -1,0 +1,31 @@
+$ git apply /home/dvitali/Documents/git/linux-surface-next/tools/spx/boot-diagnostics/camera-offline/camss-dma-contig-kconfig.patch
+
+Exit status: 0; seconds: 0.01
+$ make -C /var/tmp/spx-camera-config-20260922-6x_9qvel/source O=/var/tmp/spx-camera-config-20260922-6x_9qvel/build ARCH=arm64 olddefconfig
+make: Entering directory '/var/tmp/spx-camera-config-20260922-6x_9qvel/source'
+make[1]: Entering directory '/var/tmp/spx-camera-config-20260922-6x_9qvel/build'
+#
+# configuration written to .config
+#
+make[1]: Leaving directory '/var/tmp/spx-camera-config-20260922-6x_9qvel/build'
+make: Leaving directory '/var/tmp/spx-camera-config-20260922-6x_9qvel/source'
+
+Exit status: 0; seconds: 8.91
+$ make -C /var/tmp/spx-camera-config-20260922-6x_9qvel/source O=/var/tmp/spx-camera-config-20260922-6x_9qvel/build ARCH=arm64 -j4 drivers/i2c/busses/i2c-qcom-cci.ko drivers/media/i2c/ov13858.ko drivers/media/i2c/ov5693.ko drivers/media/i2c/ov7251.ko drivers/media/platform/qcom/camss/qcom-camss.ko drivers/media/mc/mc.ko drivers/media/v4l2-core/videodev.ko drivers/media/v4l2-core/v4l2-dv-timings.ko drivers/media/v4l2-core/v4l2-async.ko drivers/media/v4l2-core/v4l2-fwnode.ko drivers/media/v4l2-core/v4l2-cci.ko drivers/media/common/videobuf2/videobuf2-common.ko drivers/media/common/videobuf2/videobuf2-memops.ko drivers/media/common/videobuf2/videobuf2-dma-sg.ko drivers/media/common/videobuf2/videobuf2-v4l2.ko
+make: Entering directory '/var/tmp/spx-camera-config-20260922-6x_9qvel/source'
+make[1]: Entering directory '/var/tmp/spx-camera-config-20260922-6x_9qvel/build'
+  SYNC    include/config/auto.conf
+make[6]: 'drivers/media/mc/mc.mod' is up to date.
+make[7]: 'drivers/media/common/videobuf2/videobuf2-common.mod' is up to date.
+make[6]: 'drivers/media/v4l2-core/videodev.mod' is up to date.
+make[8]: 'drivers/media/platform/qcom/camss/qcom-camss.mod' is up to date.
+  MODPOST Module.symvers
+ERROR: modpost: drivers/media/platform/qcom/camss/qcom-camss.ko: symbol 'vb2_dma_contig_memops' undefined!
+make[3]: *** [/var/tmp/spx-camera-config-20260922-6x_9qvel/source/scripts/Makefile.modpost:147: Module.symvers] Error 1
+make[2]: *** [/var/tmp/spx-camera-config-20260922-6x_9qvel/source/Makefile:2209: single_modules] Error 2
+make[1]: *** [/var/tmp/spx-camera-config-20260922-6x_9qvel/source/Makefile:248: __sub-make] Error 2
+make[1]: Leaving directory '/var/tmp/spx-camera-config-20260922-6x_9qvel/build'
+make: *** [Makefile:248: __sub-make] Error 2
+make: Leaving directory '/var/tmp/spx-camera-config-20260922-6x_9qvel/source'
+
+Exit status: 2; seconds: 17.46

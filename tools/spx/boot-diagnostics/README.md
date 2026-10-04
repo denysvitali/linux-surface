@@ -1,5 +1,29 @@
 # Surface Pro X boot diagnostics
 
+The port goal and current feature acceptance tests are in
+[PORT-CHECKLIST.md](../../../PORT-CHECKLIST.md). Consult and update that checklist
+for each relevant experiment; a passing boot diagnostic does not mean all hardware
+works. The latest actual boot result is [terminal AX](RESULT-20261003ax.md), with a
+[read-only hardware inventory](HARDWARE-INVENTORY-20261002.md). For the actual
+current handoff, also read [LOCAL-PROGRESS.md](../../../LOCAL-PROGRESS.md).
+
+The [SQ2 video inventory](video-integration-20261003/README.md) identifies a
+retained Iris1 video engine, distinct IORT mappings/firmware and missing mainline
+codec configuration/DT/driver integration. The guarded current system has no
+codec nodes. [Original native startup constructors](video-startup-20261003/README.md)
+now confirm the queue subset and expose SYS_INIT architecture2 versus Linux1,
+with retained SMMU evidence for candidate2300/mask60. The
+[Iris1 IRQ source candidate](video-iris1-20261003/README.md) now adds mask/source
+handling, passes996 native cases and builds Venus aggregate AArch64 objects.
+Original UC reserve-at/page backing is traced. The
+[Iris1 power/memory candidate](video-power-20261003/README.md) now adds all-domain
+power, paired resets and clock ordering, passing118/110 native PM cases and
+33 actual MDT relocation checks; Venus aggregates compile privately. The old
+image-loader area is reserved in the guarded RAM map. A dynamic no-map firmware
+allocation is proposed; dedicated resource/DT integration and secure startup
+remain open. These checks do not establish decoding,
+encoding or supported formats; D03 and all47 feature acceptance boxes stay open.
+
 **The user authorized experimental boot/verify iterations on 2026-09-22,
 including the possibility of manual power cycling.** This supersedes the old
 mandatory recovery gate for the current port work; see `AGENTS.md`. Keep
@@ -11,12 +35,12 @@ remains unvalidated despite this authorization.
 The historical build/preflight passes below did not establish that protection.
 The same document now carries a prepared, unvalidated pre-kernel watchdog
 candidate (the SoC's APSS watchdog, armed from GRUB) and its staged validation.
-The latest [Q result](RESULT-20260927q.md) completed the staged reactive PIO
+The historical [Q result](RESULT-20260927q.md) completed the staged reactive PIO
 capability waiter and an automatic 620-second archive. Its initial result had
 a `ramoops` fault-filter false positive; an independent review corrected that
 classification and the fallback was stopped after archive verification.
 The [next audio boundary](AUDIO-AFTER-Q-20260927.md) requires source review
-before a new boot. No soundcard or playback is established.
+before a new boot. No soundcard or playback was established at that stage.
 The preceding trial [P](RESULT-20260922p.md) ran beyond 600 seconds at audio PIO
 stage 7 step 6. It observed a reactive capability worker and first FIFO write,
 then returned on its replacement fallback at 1315 seconds because the live
@@ -81,6 +105,13 @@ PARTUUID. They must not be installed unchanged on other systems.
 Camera reconstruction is currently an [offline review](camera-offline/README.md)
 of the later, working 6.18 v23 topology. Proper regulator integration remains
 unresolved; these artifacts are not deployed.
+
+The [dedicated Iris1 integration candidate](video-power-20261003/INTEGRATION.md)
+now connects the offline IRQ/PM work to a SC8180X codec resource, binding,
+relocatable firmware reservation and fresh AY build. It records38 native cases,
+four invalid DTs, three deliberately broken native candidates and exact scope
+against AX's camera/privacy boot tree. Read actual build/archive and startup
+results before treating any of this as video functionality.
 
 ## Evidence requirements
 
