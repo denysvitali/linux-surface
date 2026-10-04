@@ -88,6 +88,30 @@ class AudioTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'allow-capture'):
                 audio.initialize(args, {})
 
+    def test_capture_monitor_retains_clipped_chunk_and_requests_abort(self):
+        # Exercise the actual pipe-consumption path without an ALSA device or
+        # delivering a real signal to the test runner.
+        reader, writer = os.pipe()
+        block = struct.pack('<4800h', *([32767] * 4800))
+        capture = audio.OwnedCapture.__new__(audio.OwnedCapture)
+        capture.process = SimpleNamespace(stdout=os.fdopen(reader, 'rb', buffering=0))
+        capture.stop = threading.Event()
+        capture.mutex = threading.Lock()
+        capture.raw = bytearray()
+        capture.error = None
+        capture.limit = None
+        feeder = threading.Thread(target=lambda: (os.write(writer, block), os.close(writer)))
+        with patch.object(audio.os, 'kill') as abort:
+            feeder.start()
+            try:
+                capture.consume()
+                self.assertIn('clipping', capture.error)
+                abort.assert_called_once_with(os.getpid(), audio.signal.SIGTERM)
+                self.assertEqual(capture.raw, block)
+            finally:
+                capture.process.stdout.close()
+                feeder.join(timeout=2)
+
     def test_failed_transport_check_retains_both_codec_observations(self):
         snapshot = {'GPIO_VAL': 0x1e, 'MCP_STATUS': 0, 'FRAME_B0': 7,
                     'DP1_B0': 0x01000107, 'DP4_B0': 0}
