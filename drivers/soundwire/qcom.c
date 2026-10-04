@@ -2057,12 +2057,20 @@ static int spx_audio_state_get(char *buffer, const struct kernel_param *kp)
 			goto unlock_controller;
 		}
 	}
-	ret = regmap_read_bypassed(ctrl->regmap, WCD934X_GPIO_DIR_CTL,
-				   &gpio_dir);
+	/*
+	 * Bypassing this paged regmap also bypasses caching the page-selector
+	 * write. Reading GPIO page 0 would leave the cached selector at page
+	 * 0x0c, so the next bridge transaction would access the wrong page.
+	 * Refresh only the GPIO values and preserve normal selector tracking.
+	 */
+	ret = regcache_drop_region(ctrl->regmap, WCD934X_GPIO_DIR_CTL,
+				   WCD934X_GPIO_VAL_CTL);
 	if (ret)
 		goto unlock_controller;
-	ret = regmap_read_bypassed(ctrl->regmap, WCD934X_GPIO_VAL_CTL,
-				   &gpio_val);
+	ret = regmap_read(ctrl->regmap, WCD934X_GPIO_DIR_CTL, &gpio_dir);
+	if (ret)
+		goto unlock_controller;
+	ret = regmap_read(ctrl->regmap, WCD934X_GPIO_VAL_CTL, &gpio_val);
 	if (ret)
 		goto unlock_controller;
 	ret = ctrl->reg_read(ctrl, SWRM_COMP_PARAMS, &canary);
