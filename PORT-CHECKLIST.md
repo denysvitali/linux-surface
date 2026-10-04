@@ -6,17 +6,18 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-04, BP: desktop playback and SoundWire shutdown pass)
+## Status (2026-10-05, BQ: desktop handoff failed; feeder repair ready)
 
-Latest result: [BP](tools/spx/boot-diagnostics/RESULT-20261004bp.md). Kernel
+Latest result: [BQ](tools/spx/boot-diagnostics/RESULT-20261004bq.md). Kernel
 changes are committed on `spx/next` as one commit per feature.
 New [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
 awaits tested-kernel confirmation; recovery diagnostics are identified separately.
 BP ran `7.3.0-rc2-spx-mainline-20261004bg+`; input/BT confirmations belong to BI.
 The microphone verified all desktop test phases, including another application
 after idle. SoundWire shutdown left an empty FIFO; BP returned on schedule.
-Persistent desktop integration, WCD/ADM lifecycle faults and unexplained stops
-on earlier longer trials remain open. BO's interrupted Git writes are repaired.
+BQ's ordinary desktop handoff failed after an underrun; the user heard quiet,
+interrupted sound. The feeder repair awaits a fresh startup. Reopen remains
+broken; persistent integration, useful volume and WCD/ADM lifecycle remain open.
 
 | Area | State | What is missing |
 |---|---|---|
