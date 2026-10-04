@@ -41,6 +41,9 @@ The coordinator inspected recovery boot
   existing three-start/120-second service policy handle failed opens. It passed
   `udevadm verify` and is installed/reloaded without another device trigger.
   Automatic startup with this rule remains untested.
+  The user subsequently confirms touch works on recovery f309dbfa/6.18.3,
+  though sensitivity seems low and is acceptable for now. Pen operation was
+  not confirmed. This observation must be repeated on mainline.
 
 Offline comparison finds the mainline primary DP controller already enabled,
 but no Surface USC-to-HPD forwarding module. The 6.18 `spx_hpd_inject` source

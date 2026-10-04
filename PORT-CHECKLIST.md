@@ -24,7 +24,7 @@ awaits tested-kernel confirmation; recovery diagnostics are identified separatel
 | Wi-Fi (N01) | BH: 25 MB download at ~242 Mbit/s on 5 GHz | Upload, reconnect, both bands, resume |
 | RTC (B05) | Readback and warm reboot pass | Cold power-off retention |
 | Touch startup (I01) | Intermittent; one udev retrigger restored recovery IPTSD after `-22` | Startup reliability; udev retry gap |
-| Touch, pen (I02, I03) | User: neither works; boot attribution pending | Locate runtime input-delivery failure |
+| Touch, pen (I02, I03) | Recovery touch works after retrigger; sensitivity low; pen unconfirmed | Mainline physical touch/pen test |
 | Speakers (A01) | Card registers, one amp initialises | No sound verified on this tree |
 | Microphones (A02) | Untested on this tree | Capture test |
 | Cameras (C01–C05) | Rear sensor identifies | No frame captured |
