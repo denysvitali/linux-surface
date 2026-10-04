@@ -6,16 +6,16 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-04, BK collected; autonomous acoustic retry BL prepared)
+## Status (2026-10-04, BL live; microphone loop isolates missing right-speaker port)
 
-Latest result: [BK](tools/spx/boot-diagnostics/RESULT-20261004bk.md). Kernel
+Latest result: [BL](tools/spx/boot-diagnostics/RESULT-20261004bl.md). Kernel
 changes are committed on `spx/next` as one commit per feature.
 New [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
 awaits tested-kernel confirmation; recovery diagnostics are identified separately.
-BK runs `7.3.0-rc2-spx-mainline-20261004bg+`; input/BT user confirmations belong
-to BI. Internal DMIC1 capture works; automatic feedback found a SlimBus playback
-restart failure before tones. BL enables the known stream-persistence setting
-and queues one microphone-scored test. No human listening response is needed.
+BL runs `7.3.0-rc2-spx-mainline-20261004bg+`; input/BT user confirmations belong
+to BI. Automatic microphone feedback ran across speaker startup; simultaneous
+playback/capture started, but missing master DP4 stopped tones. Driver fix pending.
+No human listening response is needed for this authorized acoustic loop.
 
 | Area | State | What is missing |
 |---|---|---|
@@ -28,8 +28,8 @@ and queues one microphone-scored test. No human listening response is needed.
 | RTC (B05) | Readback and warm reboot pass | Cold power-off retention |
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
-| Speakers (A01) | BK automatic test stops at SlimBus playback restart | BL queued with known stream persistence; acoustic stereo unverified |
-| Microphones (A02) | BK: internal DMIC1 delivers data on two opens | Known acoustic stimulus, both mics, quality and full lifecycle |
+| Speakers (A01) | BL: simultaneous PCM/capture starts; DP4 missing | Master right-port programming, then microphone-verified output |
+| Microphones (A02) | BK/BL: internal DMIC1 capture and reopen work | Known acoustic stimulus, both mics, quality and full lifecycle |
 | Cameras (C01–C05) | Rear sensor identifies | No frame captured |
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
 | Keyboard, touchpad (I04, I05) | **BI keyboard works**; BH touchpad basic use | Full keys/gestures and resume |
