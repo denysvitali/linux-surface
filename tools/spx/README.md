@@ -149,6 +149,32 @@ A normal stop closes the attached PCM before
 parking, while errors park immediately. This does not change the default boot
 entry or establish daily-use lifecycle reliability.
 
+After a successful live handoff, opt this candidate into startup through the
+existing check timer, without restarting the working stream:
+
+```
+sudo python3 -B tools/spx/trial.py enable-desktop-audio ATTEMPT \
+  --desktop-user dvitali --desktop-peak 4000
+```
+
+The peak must match the currently verified stream. Enabling requires current
+boot acoustic readiness, its live owner and RUNNING playback PCM, closed capture
+PCMs and completed functional checks. A root-owned `desktop-audio.json` records
+the candidate, release, user and cap. Future checks dispatch at most once per
+boot; a queued one-shot request takes precedence. Startup announces bounded
+speaker tones and microphone feedback, closes capture before readiness, and
+keeps the same PCM and device lock for ordinary applications. Legacy audio
+guards and disabled ALSA probing remain in force.
+
+A failed automatic stream quarantines the opt-in, preventing retries on later
+boots. An interrupted startup without matching acoustic readiness is also
+quarantined at the next check. Previous ready/result JSON files are retained in
+`audio/boots/<boot-id>/` before output is reused; WAVs are not copied. Remove the
+opt-in file to disable future dispatch without stopping the current stream.
+This path does not change the known-good default, select a boot, or extend or
+cancel the automatic return. Startup on another boot and hardware reopen still
+require validation; enabling alone does not establish either.
+
 The `feedback` action holds one internal DMIC1 capture on MM2 across quiet, amplifier startup,
 and the left/right/both sequence. It aborts on clipping, a large level increase,
 capture stalls or ALSA failures; each requested tone must sustain for 0.4 seconds

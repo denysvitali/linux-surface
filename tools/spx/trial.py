@@ -12,6 +12,7 @@ import pwd
 import re
 import shutil
 import socket
+import stat
 import subprocess
 
 REPO = Path('/home/dvitali/Documents/git/linux-surface-next')
@@ -431,6 +432,173 @@ def arm_audio(args):
     print('One audio ' + action + ' test queued for the selected trial boot', flush=True)
 
 
+def audio_boot():
+    """Require this candidate's completed checks in the current boot."""
+    assert os.geteuid() == 0 and os.uname().release == RELEASE
+    words = Path('/proc/cmdline').read_text().split()
+    assert [w for w in words if w.startswith('spx_attempt=')] == ['spx_attempt=' + ATTEMPT]
+    assert 'spx_audio=parked' in words and 'spx_boot=mainline-functional' in words
+    boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    checked = json.loads((OUT / 'functional.json').read_text())
+    assert checked.get('complete') is True and checked['boot_id'] == boot
+    assert checked['release'] == RELEASE
+    return boot
+
+
+def claim_audio_boot(boot, source):
+    """Consume before hardware access, including failed starts and checker restarts."""
+    directory = OUT / 'audio-started-boots'
+    directory.mkdir(mode=0o700, exist_ok=True)
+    try:
+        with (directory / (boot + '.json')).open('x') as stream:
+            json.dump(dict(boot_id=boot, source=source, release=RELEASE), stream)
+            stream.write('\n')
+    except FileExistsError:
+        return False
+    return True
+
+
+def write_desktop_policy(record):
+    target = OUT / 'desktop-audio.json'
+    temporary = target.with_name('.desktop-audio-' + str(os.getpid()) + '.json')
+    try:
+        with temporary.open('x') as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            json.dump(record, stream, indent=2)
+            stream.write('\n')
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def desktop_ready(ready, boot):
+    return (ready.get('boot_id') == boot and ready.get('release') == RELEASE and
+            all(ready.get(key) is True for key in
+                ('acoustic_passed', 'public_acoustic_passed', 'recording_closed')))
+
+
+def quarantine_desktop_audio(boot):
+    (OUT / 'desktop-audio.json').rename(OUT / ('desktop-audio-failed-' + boot + '.json'))
+    print('Desktop opt-in quarantined after an unsuccessful or interrupted run; '
+          'no automatic retry on this or a later boot.', flush=True)
+
+
+def archive_audio_result(boot):
+    """Retain small prior-boot evidence before the shared output is reused."""
+    for name in ('serve-ready.json', 'serve-result.json'):
+        source = OUT / 'audio' / name
+        if not source.exists():
+            continue
+        record = json.loads(source.read_text())
+        previous = (record.get('boot_id') or (record.get('serve') or {}).get('boot_id') or
+                    (record.get('before') or {}).get('boot_id'))
+        if previous and previous != boot:
+            assert re.fullmatch(r'[A-Za-z0-9-]+', previous)
+            directory = OUT / 'audio/boots' / previous
+            directory.mkdir(parents=True, mode=0o700, exist_ok=True)
+            target = directory / name
+            if not target.exists():
+                shutil.copy2(source, target)
+
+
+def enable_desktop_audio(args):
+    """Opt in only from the same verified, still-running desktop stream."""
+    os.umask(0o077)
+    boot = audio_boot()
+    ready = json.loads((OUT / 'audio/serve-ready.json').read_text())
+    assert desktop_ready(ready, boot)
+    assert not ready.get('stopped') and ready['sink'] == 'spx_speakers'
+    assert type(args.desktop_peak) is int and 1433 <= args.desktop_peak <= 12000
+    assert ready['peak_limit'] == args.desktop_peak and ready['pa_gain'] == 0
+    assert pwd.getpwnam(args.desktop_user).pw_uid != 0
+    owner, pcm = ready['owner_pid'], ready['pcm_pid']
+    assert all(type(pid) is int and pid > 1 for pid in (owner, pcm))
+    command_path = Path(f'/proc/{owner}/cmdline')
+    command = command_path.read_bytes().decode().rstrip('\0').split('\0')
+    assert any(path in command for path in (str(HERE / 'audio.py'),
+               '/usr/local/lib/spx-boot-diagnostics/audio.py')) and 'serve' in command
+    for option, value in (('--owner', 'audio-' + ATTEMPT),
+                          ('--desktop-user', args.desktop_user),
+                          ('--desktop-peak', str(args.desktop_peak)),
+                          ('--output', str(OUT / 'audio'))):
+        assert command.count(option) == 1 and command[command.index(option) + 1] == value
+    assert re.search(r'^Uid:\s+0\s+0\s+0\s+0\s*$',
+                     Path(f'/proc/{owner}/status').read_text(), re.M)
+    assert Path('/tmp/spx-locks/spx-device.lock/owner').read_text().strip() == 'audio-' + ATTEMPT
+    assert Path(f'/proc/{pcm}/comm').read_text().strip() == 'aplay'
+    assert re.search(r'^PPid:\s*' + str(owner) + r'\s*$',
+                     Path(f'/proc/{pcm}/status').read_text(), re.M)
+    playback = list(Path('/proc/asound').glob('card*/pcm*p/sub*/status'))
+    opened = [value for path in playback if (value := path.read_text().strip()) != 'closed']
+    assert len(opened) == 1 and re.search(r'^state:\s+RUNNING$', opened[0], re.M)
+    assert re.search(r'^owner_pid\s*:\s*' + str(pcm) + r'\s*$', opened[0], re.M)
+    capture = list(Path('/proc/asound').glob('card*/pcm*c/sub*/status'))
+    assert capture and all(path.read_text().strip() == 'closed' for path in capture)
+    assert command_path.read_bytes().decode().rstrip('\0').split('\0') == command
+    assert Path('/proc/sys/kernel/random/boot_id').read_text().strip() == boot
+    # Enabling while the old checker owns a live stream must not allow a restart
+    # in this boot, even if that checker predates the common consumed marker.
+    claim_audio_boot(boot, 'enabled-existing-serve')
+    policy = dict(attempt=ATTEMPT, release=RELEASE, desktop_user=args.desktop_user,
+                  desktop_peak=args.desktop_peak, verified_boot_id=boot)
+    write_desktop_policy(policy)
+    print('Desktop audio opted in for this candidate: bounded microphone verification '
+          'at startup, then serve until stopped. Boot selection and return timer unchanged.', flush=True)
+
+
+def dispatch_audio(args):
+    # A queued experiment always wins; it must never fall through to another
+    # initialization after its stream closes or fails.
+    if (OUT / 'audio-request.json').exists():
+        requested_audio(args)
+        return
+    policy_path = OUT / 'desktop-audio.json'
+    if not policy_path.exists():
+        return
+    metadata = policy_path.lstat()
+    assert stat.S_ISREG(metadata.st_mode) and metadata.st_uid == 0
+    assert metadata.st_mode & 0o022 == 0, 'Desktop opt-in must be root-owned and not writable by others'
+    record = json.loads(policy_path.read_text())
+    boot = audio_boot()
+    assert record['attempt'] == ATTEMPT and record['release'] == RELEASE
+    peak = record['desktop_peak']
+    assert type(peak) is int and 1433 <= peak <= 12000
+    assert pwd.getpwnam(record['desktop_user']).pw_uid != 0
+    previous = record.get('last_start_boot_id')
+    if previous and previous != boot:
+        # If the wrapper was killed during startup it could not quarantine its
+        # policy. Missing/mismatched readiness still prevents a blind next boot.
+        try:
+            ready = json.loads((OUT / 'audio/serve-ready.json').read_text())
+            result = json.loads((OUT / 'audio/serve-result.json').read_text())
+            passed = desktop_ready(ready, previous) and not result.get('error')
+        except (OSError, ValueError):
+            passed = False
+        if not passed:
+            quarantine_desktop_audio(previous)
+            return
+    if not claim_audio_boot(boot, 'desktop-opt-in'):
+        return
+    archive_audio_result(boot)
+    record['last_start_boot_id'] = boot
+    write_desktop_policy(record)
+    # Remove the previous boot's readiness even if lock acquisition or startup
+    # fails before audio.py can write its own fresh report.
+    (OUT / 'audio/serve-ready.json').unlink(missing_ok=True)
+    args.audio_action = 'serve'
+    args.serve_seconds = 0
+    args.desktop_peak = peak
+    args.desktop_user = record['desktop_user']
+    args.allow_amp_power = args.allow_playback = args.allow_capture = True
+    print('Starting bounded speaker tones and microphone verification; recording '
+          'closes before desktop readiness. No continuous microphone capture.', flush=True)
+    try:
+        audio_check(args)  # Holds the device lock; no return-timer changes or retries.
+    except BaseException:
+        quarantine_desktop_audio(boot)
+        raise
+
+
 def requested_audio(args):
     request = OUT / 'audio-request.json'
     if not request.exists():
@@ -450,8 +618,12 @@ def requested_audio(args):
         assert type(peak) is int and 1433 <= peak <= 12000
     started = OUT / 'audio-started.json'
     assert not started.exists()
+    if not claim_audio_boot(boot_id, 'one-shot-request'):
+        return
     # Consume before hardware access; restarting the checker cannot repeat it.
     request.rename(started)
+    archive_audio_result(boot_id)
+    (OUT / 'audio/serve-ready.json').unlink(missing_ok=True)
     args.audio_action = record['action']
     args.allow_amp_power = True
     args.allow_playback = feedback
@@ -562,7 +734,7 @@ def audio_check(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend', 'audio', 'arm-audio'))
+    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend', 'audio', 'arm-audio', 'enable-desktop-audio'))
     parser.add_argument('attempt')
     parser.add_argument('--build', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bg/work-build'))
     parser.add_argument('--parent', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bf'))
@@ -612,10 +784,11 @@ def main():
                 functional_check(args)
             finally:
                 subprocess.run([lock, 'release', 'device', owner], check=True)
-            requested_audio(args)
+            dispatch_audio(args)
         else:
             {'install': install, 'boot': boot, 'return': return_to_default,
-             'extend': extend_window, 'audio': audio_check, 'arm-audio': arm_audio}[args.command](args)
+             'extend': extend_window, 'audio': audio_check, 'arm-audio': arm_audio,
+             'enable-desktop-audio': enable_desktop_audio}[args.command](args)
 
 
 if __name__ == '__main__':
