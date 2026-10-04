@@ -13,7 +13,8 @@ speaker tones, and scores each channel. ``capture`` checks the microphone with
 the amplifiers parked. ``desktop`` checks finite applications through a temporary
 public PipeWire sink and verifies attached-amplifier PCM teardown. ``serve`` first
 runs that acoustic test, closes the microphone, then retains the same PCM for
-ordinary applications, attenuated by 1433/32768 at minimum PA gain. None loads modules.
+ordinary applications at minimum PA gain. ``--desktop-peak`` selects their fixed
+attenuation (default 1433/32768, at most 12000/32768). None loads modules.
 """
 
 import argparse
@@ -515,12 +516,17 @@ class OwnedPCM:
 class DesktopMonitor:
     """Frame-aligned, level-checked monitor data; never amplify or reopen PCM."""
 
-    def __init__(self, process, ordinary=False):
+    def __init__(self, process, ordinary=False, desktop_peak=1433):
+        need(isinstance(desktop_peak, int) and 1433 <= desktop_peak <= 12000,
+             'Desktop peak must be between 1433 and 12000')
+        need(ordinary or desktop_peak == 1433,
+             'Only the ordinary desktop path may change its peak limit')
         self.process = process
         self.blocks = queue.Queue(maxsize=40)  # At most 200 ms, never unbounded.
         self.stop = threading.Event()
         self.error = None
         self.ordinary = ordinary
+        self.peak_limit = desktop_peak
         self.forward = ordinary
         self.peak = 0
         self.input_peak = 0
@@ -548,13 +554,14 @@ class DesktopMonitor:
                     self.input_peak = max(self.input_peak, peak)
                     if self.ordinary:
                         # Fixed attenuation preserves channels and dynamics.
-                        # Even -32768 maps to -1433; ordinary full-scale audio
+                        # Even -32768 stays within the selected limit; full-scale audio
                         # is allowed without exposing the legacy 44x gain.
-                        frame = struct.pack('<480h', *(int(value * 1433 / 32768)
+                        frame = struct.pack('<480h', *(int(value * self.peak_limit / 32768)
                             for value, in struct.iter_unpack('<h', frame)))
                         peak = max(abs(v[0]) for v in struct.iter_unpack('<h', frame))
                     self.peak = max(self.peak, peak)
-                    need(peak <= 1433, 'Desktop monitor exceeds peak limit 1433')
+                    need(peak <= self.peak_limit,
+                         f'Desktop monitor exceeds peak limit {self.peak_limit}')
                     need(self.forward or peak <= 1, 'Unexpected desktop audio outside owned playback')
                     # Idle/scoring must not make ALSA follow PipeWire's clock.
                     # Consume the monitor continuously, but let OwnedPCM supply
@@ -691,7 +698,7 @@ class DesktopGraph:
         self.report['applications'].append(entry)
         need(process.returncode == 0, f'Desktop application failed: {entry}')
 
-    def connect_public(self, pcm):
+    def connect_public(self, pcm, desktop_peak=1433):
         """Transfer the already initialized PCM to the existing desktop sink."""
         need(self.monitor is None, 'Acoustic monitor must be detached before handoff')
         sinks = json.loads(self.run('pactl', '--format=json', 'list', 'sinks'))
@@ -720,7 +727,7 @@ class DesktopGraph:
             '--rate=48000', '--channels=2', '--latency-msec=5', '--process-time-msec=5'],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0,
             start_new_session=True)
-        self.monitor = DesktopMonitor(process, ordinary=True)
+        self.monitor = DesktopMonitor(process, ordinary=True, desktop_peak=desktop_peak)
         self.monitor.thread.start()
         pcm.set_source(self.monitor)
         self.report['ordinary_sink'] = 'spx_speakers'
@@ -881,17 +888,17 @@ def finish_recording(capture, report, saved):
          'Microphone mixer restoration failed')
 
 
-def verify_public_playback(report, pcm, graph, capture):
+def verify_public_playback(report, pcm, graph, capture, desktop_peak=1433):
     """Score the actual attenuated public route before ending microphone capture."""
     from acoustic import score_phase
 
     evidence = report['public_desktop'] = {'acoustic_passed': False,
-        'sink': 'spx_speakers', 'input_peak_limit': 32767, 'output_peak_limit': 1433,
-        'gain': 1433 / 32768, 'maximum_seconds': 15}
+        'sink': 'spx_speakers', 'input_peak_limit': 32767, 'output_peak_limit': desktop_peak,
+        'gain': desktop_peak / 32768, 'maximum_seconds': 15}
     deadline = threading.Timer(15, lambda: os.kill(os.getpid(), signal.SIGTERM))
     deadline.start()
     try:
-        graph.connect_public(pcm)
+        graph.connect_public(pcm, desktop_peak=desktop_peak)
         pcm.settle(0.5)
         graph.require_public_idle()
         graph.monitor.input_peak = 0
@@ -945,7 +952,7 @@ def serve_desktop(args, report, pcm, graph, paths, mapping):
         'deadline_utc': (datetime.fromtimestamp(time.time() + args.serve_seconds,
                                                timezone.utc).isoformat()
                          if args.serve_seconds else None),
-        'gain': 1433 / 32768, 'peak_limit': 1433, 'pa_gain': 0,
+        'gain': args.desktop_peak / 32768, 'peak_limit': args.desktop_peak, 'pa_gain': 0,
         'pcm_feed': dict(pcm.feed_stats),
         'monitor_max_interarrival_seconds': graph.monitor.max_interarrival_seconds,
         'note': 'Conservative fixed attenuation; useful listening volume is not yet validated.'}
@@ -1080,7 +1087,7 @@ def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder
     if args.action in ('desktop', 'serve'):
         desktop_playback(args, report, pcm, paths, mapping, capture, desktop_holder)
         if args.action == 'serve':
-            verify_public_playback(report, pcm, desktop_holder[-1], capture)
+            verify_public_playback(report, pcm, desktop_holder[-1], capture, args.desktop_peak)
             before_serve()
             serve_desktop(args, report, pcm, desktop_holder[-1], paths, mapping)
         # Orderly close while the native slaves can still receive mute and
@@ -1357,6 +1364,13 @@ def serve_duration(value):
     return seconds
 
 
+def desktop_peak_limit(value):
+    peak = int(value)
+    if not 1433 <= peak <= 12000:
+        raise argparse.ArgumentTypeError('desktop peak must be between 1433 and 12000')
+    return peak
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', nargs='?', choices=('plan', 'inspect', 'initialize', 'listen', 'recover', 'capture', 'feedback', 'desktop', 'serve'), default='plan')
@@ -1371,7 +1385,13 @@ def main():
                         help='authorize bounded internal microphone recording')
     parser.add_argument('--serve-seconds', type=serve_duration, default=3600,
                         help='ordinary desktop session duration, 0 until stopped or 1..86400 seconds (default: 3600)')
+    parser.add_argument('--desktop-peak', type=desktop_peak_limit,
+                        help='serve-only ordinary PCM peak, 1433..12000 (default: 1433)')
     args = parser.parse_args()
+    if args.desktop_peak is not None and args.action != 'serve':
+        parser.error('--desktop-peak is only valid with serve')
+    if args.desktop_peak is None:
+        args.desktop_peak = 1433
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
     report = {'action': args.action, 'utc': stamp, 'playback_ready': False,
               'microphone_capture': False, 'success': False, 'parked': False,

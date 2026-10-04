@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Offline checks only: generated samples, PCM pipe writes and permission gates."""
 import importlib.util
+import io
 import fcntl
 import json
 import os
@@ -203,35 +204,37 @@ class AudioTests(unittest.TestCase):
                 os.close(writer)
 
     def test_ordinary_monitor_attenuates_fullscale_stereo_without_channel_loss(self):
-        reader, writer = os.pipe()
-        monitor = audio.DesktopMonitor(SimpleNamespace(
-            stdout=os.fdopen(reader, 'rb', buffering=0), poll=lambda: None), ordinary=True)
-        frames = [(-32768, 32767), (16384, -8192), (0, 24000), (-24000, 0)] * 60
-        payload = b''.join(struct.pack('<hh', *frame) for frame in frames)
+        for limit in (1433, 4000):
+            with self.subTest(limit=limit):
+                reader, writer = os.pipe()
+                monitor = audio.DesktopMonitor(SimpleNamespace(
+                    stdout=os.fdopen(reader, 'rb', buffering=0), poll=lambda: None), ordinary=True, desktop_peak=limit)
+                frames = [(-32768, 32767), (16384, -8192), (0, 24000), (-24000, 0)] * 60
+                payload = b''.join(struct.pack('<hh', *frame) for frame in frames)
 
-        def produce():
-            for offset in range(0, len(payload), 13):
-                os.write(writer, payload[offset:offset + 13])
+                def produce():
+                    for offset in range(0, len(payload), 13):
+                        os.write(writer, payload[offset:offset + 13])
 
-        with patch.object(audio.os, 'kill') as abort:
-            monitor.thread.start()
-            producer = threading.Thread(target=produce)
-            producer.start()
-            try:
-                received = monitor.blocks.get(timeout=2)
-                expected = [(int(left * 1433 / 32768), int(right * 1433 / 32768))
-                            for left, right in frames]
-                self.assertEqual(list(struct.iter_unpack('<hh', received)), expected)
-                self.assertEqual(monitor.input_peak, 32768)
-                self.assertEqual(monitor.peak, 1433)
-                self.assertIsNone(monitor.error)
-                abort.assert_not_called()
-            finally:
-                monitor.stop.set()
-                producer.join(timeout=2)
-                monitor.thread.join(timeout=2)
-                monitor.process.stdout.close()
-                os.close(writer)
+                with patch.object(audio.os, 'kill') as abort:
+                    monitor.thread.start()
+                    producer = threading.Thread(target=produce)
+                    producer.start()
+                    try:
+                        received = monitor.blocks.get(timeout=2)
+                        expected = [(int(left * limit / 32768), int(right * limit / 32768))
+                                    for left, right in frames]
+                        self.assertEqual(list(struct.iter_unpack('<hh', received)), expected)
+                        self.assertEqual(monitor.input_peak, 32768)
+                        self.assertEqual(monitor.peak, limit)
+                        self.assertIsNone(monitor.error)
+                        abort.assert_not_called()
+                    finally:
+                        monitor.stop.set()
+                        producer.join(timeout=2)
+                        monitor.thread.join(timeout=2)
+                        monitor.process.stdout.close()
+                        os.close(writer)
 
     def test_delayed_monitor_keeps_pcm_fed_and_preserves_received_stereo(self):
         source_read, source_write = os.pipe()
@@ -404,7 +407,7 @@ class AudioTests(unittest.TestCase):
         self_test = self
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary)
-            args = SimpleNamespace(output=output, serve_seconds=0)
+            args = SimpleNamespace(output=output, serve_seconds=0, desktop_peak=1433)
             with patch.object(audio.threading, 'Event', StopAfterReady), \
                     patch.object(audio.signal, 'signal', side_effect=handler), \
                     patch.object(audio.time, 'monotonic', side_effect=[0, 32400, 32401]), \
@@ -438,7 +441,7 @@ class AudioTests(unittest.TestCase):
         capture.samples.side_effect = lambda begin, end: (begin, end)
         pcm.settle.side_effect = lambda seconds: counter.__setitem__(0, counter[0] + round(seconds * 48000))
         graph.public_restore = [('pactl', 'set-sink-volume', 'spx_speakers', '25559', '25559')]
-        graph.monitor.peak = 1433
+        graph.monitor.peak = 4000
         starts = []
 
         def play(payload, name):
@@ -451,13 +454,15 @@ class AudioTests(unittest.TestCase):
         with patch.object(audio.threading, 'Timer'), \
                 patch.object(audio, 'tone', return_value=b'full-scale input') as tone, \
                 patch.object(acoustic, 'score_phase', return_value={'passed': True, 'reason': 'detected'}) as score:
-            audio.verify_public_playback(report, pcm, graph, capture)
+            audio.verify_public_playback(report, pcm, graph, capture, desktop_peak=4000)
         tone.assert_called_once_with({0, 1}, amplitude=32767)
-        graph.connect_public.assert_called_once_with(pcm)
+        graph.connect_public.assert_called_once_with(pcm, desktop_peak=4000)
         self.assertEqual(score.call_args.args[1], (starts[0] - 96000, starts[0]))
         self.assertEqual(score.call_args.args[2], [440, 660])
         self.assertEqual(graph.require_public_idle.call_count, 3)
         self.assertTrue(report['public_desktop']['acoustic_passed'])
+        self.assertEqual(report['public_desktop']['gain'], 4000 / 32768)
+        self.assertEqual(report['public_desktop']['output_peak_limit'], 4000)
         self.assertEqual(report['public_desktop']['public_volume']['current'], [65536, 65536])
         self.assertEqual(report['public_desktop']['public_volume']['prior'], ['25559', '25559'])
         capture.close.assert_not_called()  # Caller closes only after this score succeeds.
@@ -475,6 +480,24 @@ class AudioTests(unittest.TestCase):
         for value in ('-1', '86401'):
             with self.assertRaises(audio.argparse.ArgumentTypeError):
                 audio.serve_duration(value)
+
+    def test_desktop_peak_rejects_out_of_range_and_nonserve_use(self):
+        for value in ('1432', '12001'):
+            with self.assertRaises(audio.argparse.ArgumentTypeError):
+                audio.desktop_peak_limit(value)
+            with self.assertRaisesRegex(RuntimeError, 'between 1433 and 12000'):
+                audio.DesktopMonitor(None, ordinary=True, desktop_peak=int(value))
+        self.assertEqual(audio.desktop_peak_limit('1433'), 1433)
+        self.assertEqual(audio.desktop_peak_limit('12000'), 12000)
+        with self.assertRaisesRegex(RuntimeError, 'Only the ordinary'):
+            audio.DesktopMonitor(None, desktop_peak=4000)
+        with patch.object(audio.sys, 'argv', ['audio.py', 'desktop', '--desktop-peak', '4000']), \
+                patch.object(audio.sys, 'stderr', io.StringIO()), \
+                patch.object(audio, 'initialize') as initialize:
+            with self.assertRaises(SystemExit) as stopped:
+                audio.main()
+        self.assertEqual(stopped.exception.code, 2)
+        initialize.assert_not_called()
 
     def test_source_detach_waits_for_inflight_monitor_use(self):
         reader, writer = os.pipe()
