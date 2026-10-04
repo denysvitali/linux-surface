@@ -22,6 +22,7 @@ U03/U04 remain open: no external monitor output was demonstrated.
   records error 517 (`EPROBE_DEFER`); SSAM was unavailable until its subsequent
   live repair. Even loaded now, the module could not capture an external DP
   bridge while those controllers remain disabled.
+  Its module initialization does not automatically retry after SSAM registers.
 
 ## Module experiment
 
@@ -42,6 +43,13 @@ was deferred because the active audio coordinator held the device lock. No
 load result or functional improvement is claimed. A generic alt-mode driver
 binds to existing Type-C devices; it does not create the absent port or display
 controller. See the [kernel Type-C API](https://docs.kernel.org/driver-api/usb/typec.html).
+
+Follow-up on the same boot at 23:31–23:41: every required symbol of the compiled
+DP module is present in the running kernel. The legacy forwarder's two MSM
+probe symbols are also present, and its hook signatures/struct prefix match the
+inspected 6.18 sources. A device tester waited 180 seconds for exclusive access;
+`codex-coordinator` retained the lock throughout. **No modules were loaded**, no
+runtime test log was created, and retrying the Surface forwarder remains untested.
 
 ## Meaning and next step
 
