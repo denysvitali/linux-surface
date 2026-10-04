@@ -711,8 +711,10 @@ static int __qcom_swrm_ahb_reg_write(struct qcom_swrm_ctrl *ctrl,
 	 * qcauddev8180!0x14009a0a8 submits WR_DATA and WR_ADDR as one
 	 * contiguous eight-byte SLIMbus transaction. Splitting this into two
 	 * regmap writes lets a slow bridge observe an incomplete command.
+	 * The known stereo port writer uses this same transaction and settle
+	 * interval; native enumeration does not change the bridge transport.
 	 */
-	if (ctrl->spx_windows_init) {
+	if (ctrl->spx_paged_bridge || ctrl->spx_windows_init) {
 		ret = regmap_bulk_write(wcd_regmap,
 					SWRM_AHB_BRIDGE_WR_DATA_0,
 					request, sizeof(request));
@@ -721,6 +723,8 @@ static int __qcom_swrm_ahb_reg_write(struct qcom_swrm_ctrl *ctrl,
 
 		/* Let the bridge consume the complete WR_DATA+WR_ADDR tuple. */
 		usleep_range(500, 550);
+		if (!ctrl->spx_windows_init)
+			return SDW_CMD_OK;
 
 		/*
 		 * Windows performs at most six immediate one-byte status reads
@@ -3657,15 +3661,18 @@ static int qcom_swrm_stream_alloc_ports(struct qcom_swrm_ctrl *ctrl,
 				set_bit(pn, port_mask);
 				pconfig[nports].num = pn;
 				pconfig[nports].ch_mask = p_rt->ch_mask;
+				if (ctrl->spx_paged_bridge)
+					dev_info(ctrl->dev,
+						 "SPX: stream unit=%u device=%u slave DP%u -> master DP%d mask=%#x\n",
+						 slave->id.unique_id, slave->dev_num,
+						 p_rt->num, pn, p_rt->ch_mask);
 				nports++;
 			}
 		}
 	}
 
-	sdw_stream_add_master(&ctrl->bus, &sconfig, pconfig,
-			      nports, stream);
-
-	return 0;
+	return sdw_stream_add_master(&ctrl->bus, &sconfig, pconfig,
+				     nports, stream);
 }
 
 static int qcom_swrm_hw_params(struct snd_pcm_substream *substream,
