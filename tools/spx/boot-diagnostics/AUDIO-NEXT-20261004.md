@@ -1,63 +1,37 @@
-# Audio: ordinary desktop bridge prepared for BQ
+# Audio: corrected desktop bridge queued for BR
 
-The user reports normal applications are silent on recovery boot
-`ab15d0b8-0e5b-404b-a380-246b9878f4ca`, `6.18.3-1-surface+`. The default
-`spx_speakers` sink has no hardware PCM owner: a stale September armed marker
-skips the legacy bridge, while its orphan PA gate still starts. Those legacy
-services are stopped and their bridge autostart disabled. Do not start the old
-bridge: it applies 44-times amplification. Recovery lacks the native interfaces
-used by the successful mainline path.
+BR (`20261005br`) is installed with one consumed-once `serve` request:
+`--serve-seconds 0 --desktop-peak 4000`. It retains the fixed mainline
+`7.3.0-rc2-spx-mainline-20261004bg+` release, kernel and DTB. The SoundWire
+shutdown helper now clears stale stream references (`c780c6f61362`).
 
-BQ (`20261004bq`) is installed and queued once with `serve`, using BP's unchanged
-mainline kernel/DTB. The new helper first repeats the bounded desktop check,
-then verifies the actual public sink through fixed stereo attenuation
-1433/32768. After the microphone closes and capture routes restore, it retains
-the same PCM for ordinary applications. After the user questioned the proposed
-eight-hour cutoff, `serve --serve-seconds 0` now supports playback until stopped.
-The desktop slider starts
-at 100% within that low output limit. Successful normal stop closes the attached
-PCM before parking; errors park immediately. The existing return timer remains
-armed independently; zero audio duration does not cancel it. The user's concern
-about wait time versus automatic recovery return is awaiting clarification.
+The user heard low, interrupted sound on BQ. Its first startup suffered a
+real ALSA underrun before public/default-sink handoff. Feeder `0b1778dbdce8`
+now supplies silence during monitor gaps and preserves received stereo frames.
+The ordinary digital limit is raised from 1433 to 4000 (+8.9 dB), using the
+prior 6.18 clean-stereo findings. PA stays at minimum, WCD at 0 dB; temporary
+test tones and acoustic/noise thresholds are unchanged. Volume implementation
+is `326a4552df67`, queued-request forwarding `f91da6e7c677`.
 
-**Live BQ verification is pending.** Inspect `audio/serve-ready.json` and
-`audio/serve-result.json` under its functional result directory. A ready file
-must match the current boot and a live owned PCM; it requires both acoustic
-passes and a closed recording. Do not re-arm a consumed request. Implementation
-is `16793526c9f3`, wrapper `7ab2fef9e920`; 25 audio, 13 scorer and 4 queued-request
-tests passed before the untimed-session follow-up (now 5 request tests).
-Persistent boot selection, useful volume and lifecycle reliability
-are not established by this prepared session.
+On the next boot, inspect `audio/serve-ready.json` and `audio/serve-result.json`
+under `/var/lib/spx-boot-diagnostics/functional/20261005br/`. Readiness requires
+both the temporary desktop sequence and actual `spx_speakers` public-route
+acoustic tests, a matching live PCM/boot ID, and a closed microphone. No
+continuous recording runs during ordinary playback. A consumed request must
+not be re-armed. Automatic return remains at uptime 900 independently of the
+untimed audio bridge; persistent default remains `spx-known-good`.
 
-BP passed microphone-verified desktop left/right/both tones and a second
-application after five seconds idle, through a temporary public Pulse sink and
-one initialized native ALSA PCM. Closing playback while amps remained attached
-left both speaker paths disabled and an empty SoundWire FIFO. Physical parking
-then kept the FIFO empty. See [BP](RESULT-20261004bp.md). A03a is closed;
-full A01/A02/A03 remain open. BN supplies the amps-off acoustic control.
+BQ live reloads did not produce usable sound. Card reload reset WCD channel
+lists while retaining mux selections; idle AIF2_PB -> ZERO -> AIF1_PB repaired
+the two DAPM routes. ZERO alone (`ecdb75c19f02`) was insufficient. The last
+retry initialized both amplifiers without underrun but detected no left tone.
+Do not unload the WCD clock provider to bypass parked DSP ownership. Reopen,
+WCD RX overflows and ADM capture-close timeout remain unresolved. See
+[the BQ result](RESULT-20261004bq.md).
 
-The working recipe is `audio.py desktop`: native sequential enumeration,
-minimum PA gain, post-RUNNING late initialization, S16_LE/48 kHz/stereo,
-period 2400/buffer 12000, unity-gain monitor forwarding. Keep WCD/ASM persistence
-and fixed geometry. Each phase scores against two fixed seconds of quiet taken
-before playback; thresholds and signal levels remain unchanged. Do not repeat
-the earlier global startup-reference mistake or increase gain to hide noise.
-
-BP removed its temporary sink/graph. BQ tests the missing ordinary-application
-producer. Keep legacy 44x amplification and channel dropping excluded. Generic
-sdm845 UCM uses SLIMBUS_0_RX instead of working SLIMBUS_2_RX and cannot itself
-perform late initialization.
-
-Before claiming lifecycle reliability, resolve the remaining WCD RX-port
-overflow and ADM capture-COPP close timeout (-110), then test same-geometry
-hardware reopen and repeated boot/resume. A second desktop application on the
-same retained PCM is not a hardware reopen. Never reload the WCD clock provider
-as a shortcut around parked ownership. Preserve immediate amp parking on
-failures and the verified close-before-powerdown sequence on normal completion.
-
-BN and BP returned on schedule. BL/BM/BO stopped unexpectedly before their
-returns; the cause remains unknown. BO's incomplete Git/helper writes were
-recovered exactly and connectivity verification passed. Keep changes committed
-and synced before boots. BP's short successful run does not prove longer-term
-stability. Useful volume, physical channel mapping/balance and other fitted
-microphones still need coverage.
+BP's bounded desktop and SoundWire-close check remains passed (A03a); BN
+supplies the amps-off acoustic control (A01a/A02a). Full A01/A02/A03 remain
+open. Useful listening volume, physical mapping/balance, repeated startup and
+resume are not established by an installed candidate. Offline validation:
+28 audio tests and 7 queued-request tests pass; the unchanged scorer's 13 tests
+passed previously. No new acceptance box has closed.
