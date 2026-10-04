@@ -51,8 +51,9 @@ MODULE_PARM_DESC(spx_wsa_en_pin,
  * SPX: raw boot-time control of the wcd934x GPIO block, applied before the
  * SoundWire master child is added.
  *
- * The two WSA881x amps are gated by pins 1 and 2. Only those managed bits are
- * changed; unrelated WCD GPIO state is preserved.
+ * The two WSA881x amps are gated by pins 1 and 2. The default mask preserves
+ * every other pin. The September 8 live stereo repair also drove pins 3 and 4
+ * high; reproducing that state requires an explicit 0x1e mask on the SPX.
  *
  *   wcd934x.spx_wsa_gpio_dir=0x06 wcd934x.spx_wsa_gpio_val=0x06
  */
@@ -66,10 +67,37 @@ module_param(spx_wsa_gpio_val, int, 0444);
 MODULE_PARM_DESC(spx_wsa_gpio_val,
 	"SPX: raw wcd934x GPIO value reg 0x43 value at bring-up (-1=off)");
 
+static uint spx_wsa_gpio_mask = 0x06;
+module_param(spx_wsa_gpio_mask, uint, 0444);
+MODULE_PARM_DESC(spx_wsa_gpio_mask,
+		 "SPX: managed GPIO bits (0x06 default, 0x1e opt-in stereo experiment)");
+
 /* wcd934x GPIO block (see drivers/gpio/gpio-wcd934x.c): dir/value at 0x42/0x43 */
 #define WCD934X_GPIO_DIR_CTL	0x42
 #define WCD934X_GPIO_VAL_CTL	0x43
-#define SPX_WSA_GPIO_MASK	0x06
+
+static int wcd934x_spx_gpio_validate(struct device *dev)
+{
+	if (spx_wsa_gpio_mask != 0x06 && spx_wsa_gpio_mask != 0x1e)
+		return dev_err_probe(dev, -EINVAL, "SPX: invalid GPIO mask\n");
+	if (spx_wsa_gpio_mask == 0x1e && spx_wsa_en_pin != -1)
+		return dev_err_probe(dev, -EINVAL,
+				     "SPX: extended mask requires legacy override off\n");
+	if (spx_wsa_en_pin < -1 || spx_wsa_en_pin > 4 ||
+	    spx_wsa_gpio_dir < -1 || spx_wsa_gpio_val < -1 ||
+	    (spx_wsa_gpio_dir >= 0 &&
+	     (spx_wsa_gpio_dir & ~spx_wsa_gpio_mask)) ||
+	    (spx_wsa_gpio_val >= 0 &&
+	     (spx_wsa_gpio_val & ~spx_wsa_gpio_mask)))
+		return dev_err_probe(dev, -EINVAL, "SPX: invalid GPIO override\n");
+
+	if ((spx_wsa_gpio_mask != 0x06 || spx_wsa_en_pin != -1 ||
+	     spx_wsa_gpio_dir != -1 || spx_wsa_gpio_val != -1) &&
+	    !of_machine_is_compatible("microsoft,surface-pro-x"))
+		return dev_err_probe(dev, -EINVAL, "SPX: GPIO override requires Surface Pro X\n");
+
+	return 0;
+}
 
 static const struct mfd_cell wcd934x_devices[] = {
 	{
@@ -246,6 +274,10 @@ static int wcd934x_slim_status_up(struct slim_device *sdev)
 
 	ddata = dev_get_drvdata(dev);
 
+	ret = wcd934x_spx_gpio_validate(dev);
+	if (ret)
+		return ret;
+
 	ddata->regmap = regmap_init_slimbus(sdev, &wcd934x_regmap_config);
 	if (IS_ERR(ddata->regmap)) {
 		dev_err(dev, "Error allocating slim regmap\n");
@@ -264,24 +296,42 @@ static int wcd934x_slim_status_up(struct slim_device *sdev)
 	if (spx_wsa_en_pin >= 0 && spx_wsa_en_pin < 5) {
 		u32 m = BIT(spx_wsa_en_pin);
 
-		regmap_update_bits(ddata->regmap, WCD934X_GPIO_DIR_CTL, m, m);
-		regmap_update_bits(ddata->regmap, WCD934X_GPIO_VAL_CTL, m, m);
+		ret = regmap_update_bits(ddata->regmap, WCD934X_GPIO_DIR_CTL, m, m);
+		if (ret)
+			return ret;
+		ret = regmap_update_bits(ddata->regmap, WCD934X_GPIO_VAL_CTL, m, m);
+		if (ret)
+			return ret;
 		dev_info(dev, "SPX: forced wcd-gpio pin %d output-high to power one WSA amp\n",
 			 spx_wsa_en_pin);
 	}
 
-	/* Managed two-pin override, applied after the single-pin helper above. */
-	if (spx_wsa_gpio_dir >= 0)
-		regmap_update_bits(ddata->regmap, WCD934X_GPIO_DIR_CTL,
-				   SPX_WSA_GPIO_MASK, spx_wsa_gpio_dir);
-	if (spx_wsa_gpio_val >= 0)
-		regmap_update_bits(ddata->regmap, WCD934X_GPIO_VAL_CTL,
-				   SPX_WSA_GPIO_MASK, spx_wsa_gpio_val);
+	/* Apply only the explicitly managed pins after the legacy override. */
+	if (spx_wsa_gpio_mask == 0x1e && spx_wsa_gpio_val >= 0) {
+		/* Establish the parked output level before enabling new outputs. */
+		ret = regmap_update_bits(ddata->regmap, WCD934X_GPIO_VAL_CTL,
+					 spx_wsa_gpio_mask, spx_wsa_gpio_val);
+		if (ret)
+			return ret;
+	}
+	if (spx_wsa_gpio_dir >= 0) {
+		ret = regmap_update_bits(ddata->regmap, WCD934X_GPIO_DIR_CTL,
+					 spx_wsa_gpio_mask, spx_wsa_gpio_dir);
+		if (ret)
+			return ret;
+	}
+	if (spx_wsa_gpio_mask == 0x06 && spx_wsa_gpio_val >= 0) {
+		ret = regmap_update_bits(ddata->regmap, WCD934X_GPIO_VAL_CTL,
+					 spx_wsa_gpio_mask, spx_wsa_gpio_val);
+		if (ret)
+			return ret;
+	}
 	if (spx_wsa_gpio_dir >= 0 || spx_wsa_gpio_val >= 0)
 		dev_info(dev,
-			 "SPX: wcd-gpio managed bits 0x06 dir=0x%02x val=0x%02x\n",
-			 spx_wsa_gpio_dir & SPX_WSA_GPIO_MASK,
-			 spx_wsa_gpio_val & SPX_WSA_GPIO_MASK);
+			 "SPX: wcd-gpio managed bits 0x%02x dir=0x%02x val=0x%02x\n",
+			 spx_wsa_gpio_mask,
+			 spx_wsa_gpio_dir & spx_wsa_gpio_mask,
+			 spx_wsa_gpio_val & spx_wsa_gpio_mask);
 
 	/* SPX: skip the regmap IRQ chip when no codec IRQ is wired. */
 	if (ddata->irq > 0) {
