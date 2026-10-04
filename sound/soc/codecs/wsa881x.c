@@ -1049,8 +1049,10 @@ static int wsa881x_init(struct wsa881x_priv *wsa881x)
 	unsigned int val = 0;
 	int i, ret = 0;
 
-	if (wsa881x->hw_init && !wsa881x_spx_windows_pa(wsa881x))
+	if (READ_ONCE(wsa881x->hw_init) && !wsa881x_spx_windows_pa(wsa881x))
 		return 0;
+	/* A failed replay must not retain an earlier successful init result. */
+	WRITE_ONCE(wsa881x->hw_init, false);
 
 #define WSA881X_INIT_WRITE(_reg, _mask, _val) do { \
 	if (!ret && !(wsa881x->spx_late_initializing && \
@@ -1195,7 +1197,7 @@ static int wsa881x_init(struct wsa881x_priv *wsa881x)
 
 #undef WSA881X_INIT_WRITE
 	if (!ret)
-		wsa881x->hw_init = true;
+		WRITE_ONCE(wsa881x->hw_init, true);
 	return ret;
 }
 
@@ -1400,7 +1402,7 @@ static ssize_t spx_playback_state_show(struct device *dev,
 	len = sysfs_emit(buf,
 			 "UNIT=%u\nDEV_NUM=%u\nATTACHED=%u\nSTREAM_CONFIGURED=%u\n"
 			 "STREAM_ENABLED=%u\nDAC_PREPARED=%u\nDAC_MASTER_PORT=%u\n"
-			 "LATE_INIT_COUNT=%u\nLATE_INIT_RESULT=%d\n"
+			 "HW_INIT=%u\nLATE_INIT_COUNT=%u\nLATE_INIT_RESULT=%d\n"
 			 "SHADOW_PA_ENABLE=0x%02x\nSHADOW_PA_GAIN=0x%02x\n"
 			 "SHADOW_OCP=0x%02x\nSHADOW_BOOST=0x%02x\n"
 			 "SHADOW_COMP_ENABLE=%u\nSHADOW_VISENSE_ENABLE=%u\n",
@@ -1411,6 +1413,7 @@ static ssize_t spx_playback_state_show(struct device *dev,
 			 wsa881x->sruntime->state == SDW_STREAM_ENABLED,
 			 wsa881x->port_prepared[WSA881X_PORT_DAC],
 			 wsa881x->slave->m_port_map[WSA881X_PORT_DAC + 1],
+			 READ_ONCE(wsa881x->hw_init),
 			 wsa881x->spx_late_init_count, wsa881x->spx_late_init_result,
 			 shadow[WSA881X_SPKR_DRV_EN], shadow[WSA881X_SPKR_DRV_GAIN],
 			 shadow[WSA881X_SPKR_OCP_CTL], shadow[WSA881X_BOOST_EN_CTL],
@@ -1529,15 +1532,19 @@ static int wsa881x_put_pa_gain(struct snd_kcontrol *kc,
 		ret = wsa881x_update_bits(wsa881x, WSA881X_SPKR_DRV_GAIN,
 					    WSA881X_SPKR_PAG_GAIN_MASK,
 					    val << 4);
-		if (ret < 0)
-			dev_err(comp->dev, "Failed to change PA gain");
+		if (ret < 0) {
+			dev_err(comp->dev, "Failed to change PA gain: %d\n", ret);
+			goto out;
+		}
 
 		usleep_range(1000, 1010);
 	}
+	ret = 1;
 
+out:
 	pm_runtime_put_autosuspend(comp->dev);
 
-	return 1;
+	return ret;
 }
 
 static int wsa881x_get_port(struct snd_kcontrol *kcontrol,
@@ -1558,19 +1565,17 @@ static int wsa881x_get_port(struct snd_kcontrol *kcontrol,
 static int wsa881x_boost_ctrl(struct snd_soc_component *comp, bool enable)
 {
 	struct wsa881x_priv *wsa881x = snd_soc_component_get_drvdata(comp);
+	int ret;
 
-	if (enable)
-		wsa881x_update_bits(wsa881x, WSA881X_BOOST_EN_CTL,
-				     WSA881X_BOOST_EN_MASK, WSA881X_BOOST_EN);
-	else
-		wsa881x_update_bits(wsa881x, WSA881X_BOOST_EN_CTL,
-				     WSA881X_BOOST_EN_MASK, 0);
+	ret = wsa881x_update_bits(wsa881x, WSA881X_BOOST_EN_CTL,
+				  WSA881X_BOOST_EN_MASK,
+				  enable ? WSA881X_BOOST_EN : 0);
 	/*
 	 * 1.5ms sleep is needed after boost enable/disable as per
 	 * HW requirement
 	 */
 	usleep_range(1500, 1510);
-	return 0;
+	return ret;
 }
 
 static int wsa881x_set_port(struct snd_kcontrol *kcontrol,
@@ -1581,22 +1586,15 @@ static int wsa881x_set_port(struct snd_kcontrol *kcontrol,
 	struct soc_mixer_control *mixer =
 		(struct soc_mixer_control *)kcontrol->private_value;
 	int portidx = mixer->reg;
+	bool enable = !!ucontrol->value.integer.value[0];
+	int ret;
 
 	if (portidx == WSA881X_PORT_BOOST &&
 	    !wsa881x_spx_slave_available(data))
 		return -ENODEV;
 
-	if (ucontrol->value.integer.value[0]) {
-		if (data->port_enable[portidx])
-			return 0;
-
-		data->port_enable[portidx] = true;
-	} else {
-		if (!data->port_enable[portidx])
-			return 0;
-
-		data->port_enable[portidx] = false;
-	}
+	if (data->port_enable[portidx] == enable)
+		return 0;
 
 	/*
 	 * SPX: do NOT let the COMP switch rewrite PA_GAIN_SEL (upstream's
@@ -1604,8 +1602,12 @@ static int wsa881x_set_port(struct snd_kcontrol *kcontrol,
 	 * compander also flipped the analog gain source, so the only way to get
 	 * register-controlled gain was to drop the COMP data port entirely.
 	 */
-	if (portidx == WSA881X_PORT_BOOST) /* Boost Switch */
-		wsa881x_boost_ctrl(comp, data->port_enable[portidx]);
+	if (portidx == WSA881X_PORT_BOOST) {
+		ret = wsa881x_boost_ctrl(comp, enable);
+		if (ret < 0)
+			return ret;
+	}
+	data->port_enable[portidx] = enable;
 
 	return 1;
 }
@@ -2277,7 +2279,7 @@ static int wsa881x_update_status(struct sdw_slave *slave,
 	struct wsa881x_priv *wsa881x = dev_get_drvdata(&slave->dev);
 
 	if (status == SDW_SLAVE_UNATTACHED) {
-		wsa881x->hw_init = false;
+		WRITE_ONCE(wsa881x->hw_init, false);
 		WRITE_ONCE(wsa881x->spx_late_init_result, -EAGAIN);
 	}
 
