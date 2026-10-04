@@ -163,6 +163,8 @@ int msm_fbdev_driver_fbdev_probe(struct drm_fb_helper *helper,
 		ret = PTR_ERR(fbi->screen_buffer);
 		goto err_msm_gem_unpin;
 	}
+	/* msm_gem_get_vaddr() supplies system memory to the sysmem fb ops. */
+	fbi->flags |= FBINFO_VIRTFB;
 	fbi->screen_size = bo->size;
 	fbi->fix.smem_start = paddr;
 	fbi->fix.smem_len = bo->size;
