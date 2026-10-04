@@ -6,18 +6,18 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-05, BS: timing restored, louder public output verified)
+## Status (2026-10-05, BT: waveform-timing fix awaits live verification)
 
-Latest result: [BS](tools/spx/boot-diagnostics/RESULT-20261005bs.md). Kernel
+Latest result: [BT](tools/spx/boot-diagnostics/RESULT-20261005bt.md). Kernel
 changes are committed on `spx/next` as one commit per feature.
 New [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
 awaits tested-kernel confirmation; recovery diagnostics are identified separately.
 BP ran `7.3.0-rc2-spx-mainline-20261004bg+`; input/BT confirmations belong to BI.
 The microphone verified all desktop test phases, including another application
 after idle. SoundWire shutdown left an empty FIFO; BP returned on schedule.
-BS completion pacing restores tone timing (A01a) and verifies louder public
-output. A scorer-induced underrun still prevents ordinary desktop handoff;
-the reproduced scoring fix is being tested live. A03a and hardware reopen stay open.
+BS verified louder public output. BT exposed timing corruption from inserted
+silence during active forwarding; its replacement preserves the exact waveform
+in independent-clock testing. A01a, A03a, handoff and hardware reopen remain open.
 
 | Area | State | What is missing |
 |---|---|---|
@@ -30,7 +30,7 @@ the reproduced scoring fix is being tested live. A03a and hardware reopen stay o
 | RTC (B05) | Readback and warm reboot pass | Cold power-off retention |
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
-| Speakers (A01) | **BS: both channels and louder actual public output verified by mic** | Handoff continuity, persistence, mapping, balance and WCD/ADM lifecycle |
+| Speakers (A01) | BS public output passed; **BT timing regressed, fix under test** | Handoff continuity, persistence, mapping, balance and WCD/ADM lifecycle |
 | Microphones (A02) | **BN: DMIC1 records known speaker tones** | Other fitted mics, quality and full lifecycle |
 | Cameras (C01–C05) | Rear sensor identifies | No frame captured |
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
@@ -567,7 +567,9 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
   `7.3.0-rc2-spx-mainline-20261004bg+`, followed by verified amps-off readback.
   No PCM or acoustic test ran. [BJ result](tools/spx/boot-diagnostics/RESULT-20261004bj.md).
 
-  - [x] **A01a — Microphone-verified channel test signals.** Restored on BS
+  - [ ] **A01a — Microphone-verified channel test signals.** Reopened on BT:
+    active silence insertion corrupts timing. [BT result](tools/spx/boot-diagnostics/RESULT-20261005bt.md).
+    Previously restored on BS
     boot `e022be67-c6e5-46d5-9ea3-79ef0503a755`, kernel
     `7.3.0-rc2-spx-mainline-20261004bg+`: completion pacing passes left/right/both
     and repeat after idle with unchanged thresholds.
