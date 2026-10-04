@@ -93,7 +93,7 @@ def prepare(args):
     entry = entry.replace('bounded Venus core startup and Iris1 startup trial', 'Bluetooth address and functional hardware tests')
     (OUT / 'entry.cfg').write_text(entry)
     run('grub-syntax', ['grub-script-check', str(OUT / 'entry.cfg')])
-    prepared = dict(utc=datetime.now(timezone.utc).isoformat(), preboot_id=BOOT_ID, release=RELEASE, attempt=ATTEMPT, entry='spx-trial-' + ATTEMPT, cmdline=cmdline, source_commit=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=REPO, text=True).strip(), build_directory=str(BUILD), private_config=str(OUT / 'kernel.config'), bluetooth_address=args.address, address_is_per_installation=True, venus_trial=False, speaker_drivers_blocked=True, hardware_acceptance_closed=False, installed=False, boot_selected=False, boot_payloads=dict(vmlinuz=sha(OUT / 'vmlinuz'), initramfs=sha(OUT / 'initramfs.img'), dtb=sha(OUT / 'spx.dtb')))
+    prepared = dict(utc=datetime.now(timezone.utc).isoformat(), preboot_id=BOOT_ID, release=RELEASE, attempt=ATTEMPT, entry='spx-trial-' + ATTEMPT, cmdline=cmdline, source_commit=subprocess.check_output(['git', '-c', 'safe.directory=' + str(REPO), 'rev-parse', 'HEAD'], cwd=REPO, text=True).strip(), build_directory=str(BUILD), private_config=str(OUT / 'kernel.config'), bluetooth_address=args.address, address_is_per_installation=True, venus_trial=False, speaker_drivers_blocked=True, hardware_acceptance_closed=False, installed=False, boot_selected=False, boot_payloads=dict(vmlinuz=sha(OUT / 'vmlinuz'), initramfs=sha(OUT / 'initramfs.img'), dtb=sha(OUT / 'spx.dtb')))
     recovery()
     assert Path('/proc/sys/kernel/random/boot_id').read_text().strip() == BOOT_ID
     (OUT / 'prepared.json').write_text(json.dumps(prepared, indent=2) + '\n')
@@ -147,7 +147,7 @@ def install(args):
     assert subprocess.check_output(['systemctl', 'is-enabled', 'spx-trial-return@' + ATTEMPT + '.timer'], text=True).strip() == 'enabled'
     recovery()
     assert Path('/proc/sys/kernel/random/boot_id').read_text().strip() == BOOT_ID
-    installed = dict(utc=datetime.now(timezone.utc).isoformat(), boot_id=BOOT_ID, release=RELEASE, source_commit=subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=REPO, text=True).strip(), boot_payloads=expected, persistent_default='spx-known-good', next_entry_empty=True, return_timer_seconds=900, installed=True, boot_selected=False)
+    installed = dict(utc=datetime.now(timezone.utc).isoformat(), boot_id=BOOT_ID, release=RELEASE, source_commit=subprocess.check_output(['git', '-c', 'safe.directory=' + str(REPO), 'rev-parse', 'HEAD'], cwd=REPO, text=True).strip(), boot_payloads=expected, persistent_default='spx-known-good', next_entry_empty=True, return_timer_seconds=900, installed=True, boot_selected=False)
     (OUT / 'installed.json').write_text(json.dumps(installed, indent=2) + '\n')
     os.sync()
     print(ATTEMPT + ' installed with900s return; known-good default retained, no selection', flush=True)
@@ -166,7 +166,7 @@ def boot(args):
         assert sha(Path('/boot/spx-trial-{ATTEMPT}'.format(ATTEMPT=ATTEMPT)) / name) == digest
     assert Path('/boot/grub/custom.cfg').read_bytes() == (OUT / 'entry.cfg').read_bytes()
     assert subprocess.check_output(['systemctl', 'is-enabled', 'spx-trial-return@' + ATTEMPT + '.timer'], text=True).strip() == 'enabled'
-    assert subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=no'], cwd=REPO, text=True).strip() == ''
+    assert subprocess.check_output(['git', '-c', 'safe.directory=' + str(REPO), 'status', '--porcelain', '--untracked-files=no'], cwd=REPO, text=True).strip() == ''
     selected.write_text(json.dumps(dict(utc=datetime.now(timezone.utc).isoformat(), preboot_id=BOOT_ID, entry=prepared['entry'], source_commit=installed['source_commit'], select_once=True), indent=2) + '\n')
     subprocess.run(['grub-reboot', prepared['entry']], check=True)
     recovery(pending=prepared['entry'])
