@@ -710,7 +710,7 @@ def check_desktop_teardown(paths, report):
         time.sleep(0.1)
 
 
-def desktop_playback(args, report, pcm, paths, mapping, capture, baseline, holders):
+def desktop_playback(args, report, pcm, paths, mapping, capture, holders):
     from acoustic import score_phase
 
     evidence = report['desktop'] = {'acoustic_passed': False, 'applications': [],
@@ -726,23 +726,33 @@ def desktop_playback(args, report, pcm, paths, mapping, capture, baseline, holde
         pcm.settle(0.5)
         for name, channels in (('left', {0}), ('right', {1}), ('both', {0, 1}),
                                ('second-app', {0, 1})):
+            # Measure the current room/amp background before each stimulus.
+            # Always use the last contiguous two seconds, chosen before any
+            # tone plays; never search the recording for a quieter reference.
+            graph.monitor.forward = False
+            quiet_begin = capture.mark()
+            quiet_seconds = 5 if name == 'second-app' else 2
+            pcm.settle(quiet_seconds)
+            capture.wait_frames(quiet_begin + quiet_seconds * 48000)
+            quiet_end = capture.mark()
+            quiet_start = quiet_end - 2 * 48000
+            reference = capture.samples(quiet_start, quiet_end)
             if name == 'second-app':
-                graph.monitor.forward = False
-                pcm.settle(5)
-                capture.healthy()
                 evidence['idle_seconds'] = 5
             check_stereo(mapping, paths, initialized=True)
             begin = capture.mark()
+            phase = {'name': name, 'reference_start_frame': quiet_start,
+                     'reference_end_frame': quiet_end, 'start_frame': begin}
+            evidence['phases'].append(phase)
             graph.play(tone(channels), name)
             pcm.settle(0.8)
             graph.monitor.forward = False
             graph.monitor.healthy()
             capture.wait_frames(begin + 3 * 48000)
             end = capture.mark()
-            scored = score_phase(capture.samples(begin, end), baseline,
+            scored = score_phase(capture.samples(begin, end), reference,
                                  [440 if channel == 0 else 660 for channel in sorted(channels)])
-            evidence['phases'].append({'name': name, 'start_frame': begin,
-                                       'end_frame': end, 'score': scored})
+            phase.update(end_frame=end, score=scored)
             need(scored['passed'], f'Desktop {name} acoustic test failed: {scored["reason"]}')
             pcm.healthy()
         evidence['acoustic_passed'] = True
@@ -842,7 +852,7 @@ def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder
     report['remaining_prerequisites'] = [UNMET[-1]]
     report['playback_ready'] = True
     if args.action == 'desktop':
-        desktop_playback(args, report, pcm, paths, mapping, capture, baseline, desktop_holder)
+        desktop_playback(args, report, pcm, paths, mapping, capture, desktop_holder)
         # Orderly close while the native slaves can still receive mute and
         # disable/deprepare writes. Failures retain the outer park-first path.
         report['pcm']['log'] = pcm.close()

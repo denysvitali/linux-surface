@@ -109,7 +109,9 @@ The `desktop` audio action is the next bounded test, using the same three
 authorization flags. It initializes one native PCM, then forwards a temporary,
 explicitly selected PulseAudio sink at unity gain into that PCM. Finite desktop
 application tones and a repeat after idle are measured through the internal
-microphone. Legacy speaker bridges remain stopped. The temporary graph is
+microphone. Each phase uses the fixed two seconds of quiet immediately before
+its application; detection thresholds and tone levels are unchanged. Legacy
+speaker bridges remain stopped. The temporary graph is
 removed afterwards; this test does not install a persistent desktop bridge.
 Unlike `feedback`'s amps-off control, normal desktop-test completion closes the
 PCM while amps are still attached, verifies teardown, then powers them down.

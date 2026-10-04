@@ -285,6 +285,44 @@ class AudioTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'did not close cleanly'):
                 audio.check_desktop_teardown({3: 'left', 4: 'right'}, {})
 
+    def test_desktop_uses_current_quiet_before_every_application(self):
+        import acoustic
+
+        # Model a continuous capture whose frame counter advances during both
+        # silence and applications. A startup reference cannot satisfy this:
+        # every scored reference must precede its own app by exactly two seconds.
+        capture = Mock()
+        counter = [150000]
+        capture.mark.side_effect = lambda: counter[0]
+        capture.wait_frames.side_effect = lambda frame: counter.__setitem__(0, max(frame, counter[0]))
+        capture.samples.side_effect = lambda begin, end: (begin, end)
+        pcm = Mock()
+        pcm.settle.side_effect = lambda seconds: counter.__setitem__(0, counter[0] + round(seconds * 48000))
+        graph = Mock()
+        graph.monitor.peak = 1433
+        starts = []
+
+        def play(data, name):
+            starts.append(counter[0])
+            counter[0] += 96000
+
+        graph.play.side_effect = play
+        report = {}
+        with patch.object(audio, 'DesktopGraph', return_value=graph), \
+                patch.object(audio, 'check_stereo'), \
+                patch.object(audio.threading, 'Timer'), \
+                patch.object(audio, 'tone', return_value=b'finite audio'), \
+                patch.object(acoustic, 'score_phase', return_value={'passed': True, 'reason': 'tones detected'}) as score:
+            audio.desktop_playback(SimpleNamespace(desktop_user='test'), report,
+                                   pcm, {}, {}, capture, [])
+        self.assertEqual(len(starts), 4)
+        self.assertEqual(report['desktop']['idle_seconds'], 5)
+        for call, start, phase in zip(score.call_args_list, starts, report['desktop']['phases']):
+            self.assertEqual(call.args[1], (start - 96000, start))
+            self.assertEqual(phase['reference_end_frame'], phase['start_frame'])
+            self.assertGreaterEqual(phase['reference_start_frame'], 150000)
+        self.assertTrue(report['desktop']['acoustic_passed'])
+
 
 if __name__ == '__main__':
     unittest.main()
