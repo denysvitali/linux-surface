@@ -537,9 +537,20 @@ def listen(args, report, pcm_holder, capture=None, baseline=None):
     report['pcm']['hw_params'] = hw_params
     checks = report.setdefault('playback_checks', [])
     report['before_late_init'] = check_stereo(mapping, paths, observations=checks)
+    report['late_initialization'] = []
     for unit, path in paths.items():
         before = playback_state(path)['LATE_INIT_COUNT']
-        (path / 'spx_late_init').write_text('1\n')
+        operation = {'unit': unit, 'before_count': before}
+        report['late_initialization'].append(operation)
+        try:
+            (path / 'spx_late_init').write_text('1\n')
+        except OSError as error:
+            operation['error'] = str(error)
+            raise RuntimeError(f'Unit {unit}: late initialization failed: {error}') from error
+        finally:
+            # Detachment clears the late-init verdict. Retain it before the
+            # outer cleanup powers the amps down, including a rejected replay.
+            operation['after'] = playback_state(path)
         need(playback_state(path)['LATE_INIT_COUNT'] == before + 1,
              f'Unit {unit}: late initialization did not advance')
     report['after_late_init'] = check_stereo(mapping, paths, initialized=True, observations=checks)
