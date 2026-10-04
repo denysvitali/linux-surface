@@ -475,6 +475,7 @@ struct qcom_swrm_ctrl {
 	u32 slave_status;
 	u32 wr_fifo_depth;
 	bool clock_stop_not_supported;
+	bool spx_paged_bridge;
 	bool spx_windows_init;
 	bool spx_runtime_handoff_pending;
 	bool spx_runtime_mirror_pending;
@@ -638,9 +639,10 @@ static int __qcom_swrm_ahb_reg_read(struct qcom_swrm_ctrl *ctrl, int reg,
 	 * The WCD9340 paged bridge completes more slowly under Linux than under
 	 * qcauddev's synchronous byte primitive.  Immediate status polling gave
 	 * torn enumerator words.  A settle interval plus one discarded RD_DATA
-	 * sample produced stable, complete IDs for both Surface amplifiers.
+	 * sample produced stable, complete IDs for both Surface amplifiers. This
+	 * is a bridge property, independent of the chosen enumeration sequence.
 	 */
-	if (ctrl->spx_windows_init) {
+	if (ctrl->spx_paged_bridge) {
 		usleep_range(500, 550);
 		ret = regmap_bulk_read(wcd_regmap, SWRM_AHB_BRIDGE_RD_DATA_0,
 				       &discard, sizeof(discard));
@@ -3957,6 +3959,8 @@ static int qcom_swrm_probe(struct platform_device *pdev)
 		ctrl->regmap = dev_get_regmap(dev->parent, NULL);
 		if (!ctrl->regmap)
 			return -EINVAL;
+		ctrl->spx_paged_bridge =
+			of_machine_is_compatible("microsoft,surface-pro-x");
 	} else {
 		ctrl->reg_read = qcom_swrm_cpu_reg_read;
 		ctrl->reg_write = qcom_swrm_cpu_reg_write;
@@ -3993,8 +3997,9 @@ static int qcom_swrm_probe(struct platform_device *pdev)
 	 * (WCD 0xd43 = 1), then ACCESS_CFG = 0x0f, then the first AHB bridge
 	 * transaction.  Do not leave this to the documented reset default:
 	 * Windows deliberately restores it on every controller construction.
+	 * Native enumeration uses the same bridge and needs the same setup.
 	 */
-	if (ctrl->spx_windows_init) {
+	if (ctrl->spx_paged_bridge) {
 		ret = regmap_write(ctrl->regmap, SWRM_AHB_BRIDGE_ACCESS_CFG,
 				   0x0f);
 		if (ret) {
