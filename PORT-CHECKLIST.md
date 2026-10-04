@@ -6,16 +6,17 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-04, BN: speaker tones verified by the internal microphone)
+## Status (2026-10-04, BO desktop test stopped; BN acoustic pass retained)
 
-Latest result: [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md). Kernel
+Latest result: [BO](tools/spx/boot-diagnostics/RESULT-20261004bo.md). Kernel
 changes are committed on `spx/next` as one commit per feature.
 New [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
 awaits tested-kernel confirmation; recovery diagnostics are identified separately.
 BN ran `7.3.0-rc2-spx-mainline-20261004bg+`; input/BT confirmations belong to BI.
-The automatic mic loop detected left, right and simultaneous speaker tones;
-the same digital tones disappeared with both amps off. BN returned to recovery
-on schedule. Desktop audio and clean stream teardown remain unfinished.
+BN's mic loop detected both speaker channels and passed the amps-off control.
+BO reached a desktop left-tone test but stopped on insufficient contrast against
+startup noise. Another unexplained restart followed; interrupted Git writes are
+repaired. Fresh per-phase quiet references are prepared for the next test.
 
 | Area | State | What is missing |
 |---|---|---|
@@ -543,7 +544,11 @@ Both codecs passed late initialization at minimum PA gain. No capture clipping
 or ALSA capture error occurred. Desktop integration, physical speaker mapping,
 quality and clean teardown/reopen remain open: powering amps down before PCM
 close still causes SoundWire FIFO errors.
-Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md).
+BO's first desktop application produced a recorded left tone, but the unchanged
+contrast gate stopped the sequence. Right/both, repeat after idle and normal
+teardown remain untested through the desktop graph.
+Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
+[BO](tools/spx/boot-diagnostics/RESULT-20261004bo.md).
 
 - [ ] **A01 — Both physical speakers.** Correct independent left/right acoustic
   output, channel mapping, balance, useful volume range and mute; no static,
