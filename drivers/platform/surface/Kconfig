@@ -149,6 +149,18 @@ config SURFACE_AGGREGATOR_TABLET_SWITCH
 	  Select M or Y here, if you want to provide tablet-mode switch input
 	  events on the Surface Pro 8, Surface Pro X, and Surface Laptop Studio.
 
+config SURFACE_AGGREGATOR_USBC
+	tristate "Experimental Surface Pro X USB-C DP hotplug forwarding"
+	depends on SURFACE_AGGREGATOR && DRM_MSM && DRM_MSM_DP && OF
+	depends on m
+	help
+	  Forward Surface Pro X USC port-zero notifications to the primary
+	  DisplayPort bridge. Load surface_aggregator_usbc manually after the
+	  desktop starts, then replug the dock. Requires MSM DisplayPort.
+	  Orientation switching, the second port and suspend are not validated.
+	  Unload this experimental driver before testing suspend; never unbind
+	  or reload live MSM display components.
+
 config SURFACE_DTX
 	tristate "Surface DTX (Detachment System) Driver"
 	depends on SURFACE_AGGREGATOR
