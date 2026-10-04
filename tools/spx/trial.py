@@ -343,6 +343,8 @@ def functional_check(args):
                     'class/thermal/thermal_zone*/temp', 'class/remoteproc/remoteproc*/name',
                     'class/remoteproc/remoteproc*/state', 'bus/iio/devices/iio:device*/name',
                     'bus/iio/devices/iio:device*/in_illuminance_raw',
+                    'bus/iio/devices/iio:device*/in_intensity_[xyz]_raw',
+                    'bus/iio/devices/iio:device*/in_intensity_ir_raw',
                     'bus/iio/devices/iio:device*/in_proximity_raw'):
         for path in Path('/sys').glob(pattern):
             try:
