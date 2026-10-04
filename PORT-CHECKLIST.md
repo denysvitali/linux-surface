@@ -6,9 +6,9 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-04, after boot BG)
+## Status (2026-10-04, BH running)
 
-Latest result: [BG](tools/spx/boot-diagnostics/RESULT-20261004bg.md). Kernel
+Latest result: [BH](tools/spx/boot-diagnostics/RESULT-20261004bh.md). Kernel
 changes are committed on `spx/next` as one commit per feature.
 
 | Area | State | What is missing |
@@ -25,8 +25,9 @@ changes are committed on `spx/next` as one commit per feature.
 | Microphones (A02) | Untested on this tree | Capture test |
 | Cameras (C01–C05) | Rear sensor identifies | No frame captured |
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
-| Keyboard, touchpad, buttons (I04–I06) | Never tested | Human session |
-| Bluetooth (N02) | Mainline firmware setup completes; RFCOMM/HID config missing | Pairing, peripheral use, resume |
+| Keyboard, touchpad (I04, I05) | User confirms typing/clicking/pointer on BH | Full gestures, detach/reattach, resume |
+| Buttons (I06) | Never tested | Human session |
+| Bluetooth (N02) | RFCOMM/UHID opens pass on BH | Discovery, pairing, peripheral use, resume |
 | USB, USB-C PD, DisplayPort, dock (U01–U04) | Never tested | Human session, fixtures |
 | Battery and charging (P01) | Mainline AC/capacity readout plausible | Charging/discharging, plug/unplug |
 | Suspend/resume (P03) | Never tested | Wake source |
@@ -484,8 +485,14 @@ this does not explain AO's failure. Physical input has not been signed off.
   post-resume behavior. Map advertised capabilities to those actually fitted.
 - [ ] **I04 — Keyboard.** Typing, modifiers, Fn/media keys, indicators and backlight
   where fitted; detach/reattach and resume recover without stuck keys.
+  **Partial, BH:** user confirms typing works on boot `c89ea4ed-9363-4727-a786-4a2231817165`,
+  kernel `7.3.0-rc2-spx-mainline-20261004bg+`. Remaining keys/lifecycle untested.
+  [Result](tools/spx/boot-diagnostics/RESULT-20261004bh.md).
 - [ ] **I05 — Touchpad.** Pointer, click, scrolling, multi-finger gestures and palm
   rejection work across detach/reattach and resume.
+  **Partial, BH:** user confirms clicking and trackpad use on the same boot;
+  gestures, palm rejection and lifecycle remain unconfirmed.
+  [Result](tools/spx/boot-diagnostics/RESULT-20261004bh.md).
 - [ ] **I06 — Buttons and posture switches.** Power/volume buttons, cover/lid/tablet
   state and appropriate desktop policy respond to real changes without duplicate
   events or lost wakeups. Establish which switches actually exist.
