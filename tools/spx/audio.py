@@ -117,7 +117,8 @@ def assert_desktop_paused(username):
                f'DBUS_SESSION_BUS_ADDRESS=unix:path={runtime}/bus', 'systemctl',
                '--user', 'show', '--property=ActiveState', '--value', '--', *UNITS]
     result = subprocess.run(command, text=True, capture_output=True, timeout=5, check=True)
-    states = result.stdout.splitlines()
+    # systemctl separates multiple unit records with blank lines.
+    states = [line for line in result.stdout.splitlines() if line]
     need(len(states) == len(UNITS) and all(s in ('inactive', 'failed') for s in states),
          'Caller must pause desktop audio services and sockets before initialization')
     for comm in Path('/proc').glob('[0-9]*/comm'):
