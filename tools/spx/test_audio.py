@@ -322,6 +322,110 @@ class AudioTests(unittest.TestCase):
                 monitor.process.stdout.close()
                 os.close(writer)
 
+    def test_idle_scoring_keeps_independent_48khz_sink_fed_with_bursty_monitor(self):
+        import acoustic
+
+        # Source and sink run in different processes: slowing the test's GIL
+        # must not slow our simulated hardware clock and hide an underrun.
+        source_read, source_write = os.pipe()
+        output_read, output_write = os.pipe()
+        result_read, result_write = os.pipe()
+        fcntl.fcntl(output_write, fcntl.F_SETPIPE_SZ, 4096)
+        producer = os.fork()
+        if producer == 0:
+            for fd in (source_read, output_read, output_write, result_read, result_write):
+                os.close(fd)
+            try:
+                for _ in range(60):
+                    started = time.monotonic()
+                    data = memoryview(bytes(19 * 960))
+                    while data:
+                        data = data[os.write(source_write, data):]
+                    time.sleep(max(0, 0.095 - (time.monotonic() - started)))
+            except BrokenPipeError:
+                pass
+            os._exit(0)
+        consumer = os.fork()
+        if consumer == 0:
+            for fd in (source_read, source_write, output_write, result_read):
+                os.close(fd)
+            buffered = bytearray()
+            started = None
+            levels = []
+            underruns = 0
+            # Match actual PCM geometry: 2400-frame periods, 12000-frame ring.
+            while started is None or time.monotonic() - started < 4:
+                if started is None:
+                    buffered.extend(os.read(output_read, min(4096, 48000 - len(buffered))))
+                    if len(buffered) == 48000:
+                        started = time.monotonic()
+                        deadline = started + 0.05
+                    continue
+                now = time.monotonic()
+                while now >= deadline:
+                    levels.append(len(buffered))
+                    underruns += len(buffered) < 9600
+                    del buffered[:9600]
+                    deadline += 0.05
+                if len(buffered) < 48000 and select.select(
+                        [output_read], [], [], max(0, deadline - time.monotonic()))[0]:
+                    data = os.read(output_read, min(4096, 48000 - len(buffered)))
+                    if not data:
+                        break
+                    buffered.extend(data)
+                else:
+                    time.sleep(max(0, min(0.001, deadline - time.monotonic())))
+            os.write(result_write, json.dumps({'underruns': underruns,
+                'minimum_frames': min(levels) // 4, 'periods': len(levels)}).encode())
+            os._exit(0)
+        os.close(source_write)
+        os.close(output_read)
+        os.close(result_write)
+        os.set_blocking(output_write, False)
+        monitor = audio.DesktopMonitor(SimpleNamespace(
+            stdout=os.fdopen(source_read, 'rb', buffering=0), poll=lambda: None),
+            ordinary=True, desktop_peak=4000)
+        monitor.forward = False  # Required public verification scoring state.
+        pcm = audio.OwnedPCM.__new__(audio.OwnedPCM)
+        pcm.process = SimpleNamespace(stdin=os.fdopen(output_write, 'wb', buffering=0))
+        pcm.stop, pcm.pending = threading.Event(), queue.Queue()
+        pcm.error, pcm.source = None, monitor
+        pcm.source_lock = threading.Lock()
+        pcm.feed_stats = {'inserted_gap_events': 0, 'inserted_gap_frames': 0}
+        feeder = threading.Thread(target=pcm.feed)
+        terminate_child = os.kill
+        with patch.object(audio.os, 'kill') as abort:
+            monitor.thread.start()
+            feeder.start()
+            try:
+                # Exercise the actual pure-Python scorer while it contends for
+                # the GIL. Quiet input still makes it inspect all phase windows.
+                for _ in range(3):
+                    acoustic.score_phase([0] * 150000, [0] * 96000, [440, 660])
+                self.assertTrue(select.select([result_read], [], [], 6)[0])
+                result = json.loads(os.read(result_read, 4096))
+                self.assertEqual(result['underruns'], 0, result)
+                self.assertGreaterEqual(result['minimum_frames'], 2400, result)
+                self.assertGreaterEqual(result['periods'], 75)
+                self.assertEqual(pcm.feed_stats['inserted_gap_frames'], 0)
+                self.assertIsNone(monitor.error)
+                self.assertIsNone(pcm.error)
+                abort.assert_not_called()
+            finally:
+                pcm.stop.set()
+                monitor.stop.set()
+                feeder.join(timeout=2)
+                monitor.thread.join(timeout=2)
+                pcm.process.stdin.close()
+                monitor.process.stdout.close()
+                os.close(result_read)
+                for pid in (producer, consumer):
+                    try:
+                        terminate_child(pid, audio.signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                    os.waitpid(pid, 0)
+
     def test_recording_close_restores_mixer_before_handoff_and_only_once(self):
         events = []
         capture = Mock()
@@ -415,6 +519,7 @@ class AudioTests(unittest.TestCase):
                 audio.serve_desktop(args, report, pcm, graph, {}, {})
         self.assertEqual(report['serve']['stop_reason'], 'SIGTERM')
         self.assertEqual(report['serve']['output_peak'], 1433)
+        self.assertTrue(monitor.forward)
         pcm.close.assert_not_called()  # Caller performs attached-amplifier close.
         pcm.set_source.assert_called_once_with(None)
         monitor.close.assert_called_once()
@@ -446,20 +551,26 @@ class AudioTests(unittest.TestCase):
 
         def play(payload, name):
             starts.append(counter[0])
+            graph.monitor.forward = True
             graph.monitor.input_peak = 32767
             counter[0] += 96000
 
         graph.play.side_effect = play
         report = {}
+        def score_public(*unused):
+            self.assertFalse(graph.monitor.forward)
+            return {'passed': True, 'reason': 'detected'}
+
         with patch.object(audio.threading, 'Timer'), \
                 patch.object(audio, 'tone', return_value=b'full-scale input') as tone, \
-                patch.object(acoustic, 'score_phase', return_value={'passed': True, 'reason': 'detected'}) as score:
+                patch.object(acoustic, 'score_phase', side_effect=score_public) as score:
             audio.verify_public_playback(report, pcm, graph, capture, desktop_peak=4000)
         tone.assert_called_once_with({0, 1}, amplitude=32767)
         graph.connect_public.assert_called_once_with(pcm, desktop_peak=4000)
         self.assertEqual(score.call_args.args[1], (starts[0] - 96000, starts[0]))
         self.assertEqual(score.call_args.args[2], [440, 660])
-        self.assertEqual(graph.require_public_idle.call_count, 3)
+        self.assertEqual(graph.require_public_idle.call_count, 4)
+        self.assertFalse(graph.monitor.forward)  # Remains quiet through mic teardown.
         self.assertTrue(report['public_desktop']['acoustic_passed'])
         self.assertEqual(report['public_desktop']['gain'], 4000 / 32768)
         self.assertEqual(report['public_desktop']['output_peak_limit'], 4000)

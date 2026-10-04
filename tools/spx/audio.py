@@ -901,6 +901,7 @@ def verify_public_playback(report, pcm, graph, capture, desktop_peak=1433):
         graph.connect_public(pcm, desktop_peak=desktop_peak)
         pcm.settle(0.5)
         graph.require_public_idle()
+        graph.monitor.forward = False
         graph.monitor.input_peak = 0
         quiet_begin = capture.mark()
         pcm.settle(2)
@@ -915,6 +916,12 @@ def verify_public_playback(report, pcm, graph, capture, desktop_peak=1433):
         pcm.settle(0.8)
         capture.wait_frames(begin + 3 * 48000)
         end = capture.mark()
+        graph.require_public_idle()
+        # As in the temporary desktop test, score only after playback has
+        # drained, using ALSA-paced local silence. A CPU-bound Python scorer
+        # can starve the 5 ms monitor/feeder handoff even with queued samples.
+        # Leave this mode in place through microphone close and mixer restore.
+        graph.monitor.forward = False
         scored = score_phase(capture.samples(begin, end), reference, [440, 660])
         evidence.update(reference_start_frame=quiet_end - 2 * 48000,
                         reference_end_frame=quiet_end, start_frame=begin,
@@ -938,6 +945,7 @@ def serve_desktop(args, report, pcm, graph, paths, mapping):
     need(report['desktop']['acoustic_passed'] and
          report['public_desktop']['acoustic_passed'] and report.get('recording_closed'),
          'Serve handoff requires acoustic verification and a closed microphone')
+    graph.monitor.forward = True
     pcm.settle(0.5)
     graph.monitor.healthy()
     check_stereo(mapping, paths, initialized=True)
