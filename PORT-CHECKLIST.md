@@ -33,7 +33,7 @@ on earlier longer trials remain open. BO's interrupted Git writes are repaired.
 | Microphones (A02) | **BN: DMIC1 records known speaker tones** | Other fitted mics, quality and full lifecycle |
 | Cameras (C01–C05) | Rear sensor identifies | No frame captured |
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
-| Keyboard, touchpad (I04, I05) | **BI keyboard works**; BH touchpad basic use | Full keys/gestures and resume |
+| Keyboard, touchpad (I04, I05) | **BI keyboard works**; recovery keyboard restored after SSAM timeout | Startup reliability, full keys/gestures and resume |
 | Buttons (I06) | User: short power press opens shutdown prompt, boot pending | Volume/posture and intended wake |
 | Bluetooth (N02) | **User confirms Bluetooth works on BI** | Device-specific pairing/reconnect and resume |
 | USB data (U01) | Untested | Both ports/orientations, fixtures |
@@ -520,6 +520,11 @@ this does not explain AO's failure. Physical input has not been signed off.
   **BI:** user again confirms keyboard works, on boot
   `84e729fc-a68c-4720-a6f0-042acf60f604`, same kernel release.
   [BI result](tools/spx/boot-diagnostics/RESULT-20261004bi.md).
+  **Recovery only, October 4:** boot `ab15d0b8-0e5b-404b-a380-246b9878f4ca`,
+  `6.18.3-1-surface+`, lost keyboard and battery devices after an SSAM firmware
+  request timed out. One late bind restored them; the user confirms keyboard
+  function. Startup reliability remains open.
+  [Recovery result](tools/spx/boot-diagnostics/RECOVERY-KEYBOARD-20261004.md).
 - [ ] **I05 — Touchpad.** Pointer, click, scrolling, multi-finger gestures and palm
   rejection work across detach/reattach and resume.
   **Partial, BH:** user confirms clicking and trackpad use on the same boot;
