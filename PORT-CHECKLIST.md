@@ -569,7 +569,7 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
   - [x] **A01a — Microphone-verified channel test signals.** Restored on BU,
     boot `48d25b6b-14bf-488f-97bd-916f0ded7ee4`, kernel
     `7.3.0-rc2-spx-mainline-20261004bg+`: left/right/both, another application
-    after idle, and actual public output at peak4000 pass unchanged acoustic
+    after idle, and actual public output at peak 4000 pass unchanged acoustic
     thresholds. The timing fix removes active silence insertion; no gaps were
     inserted. [BU result](tools/spx/boot-diagnostics/RESULT-20261005bu.md).
     This establishes output from both digital channels, not physical mapping,
