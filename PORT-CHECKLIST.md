@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-04, BJ collected; preparing fresh stereo playback)
+## Status (2026-10-04, BJ collected; BK stereo candidate installed)
 
 Latest result: [BJ](tools/spx/boot-diagnostics/RESULT-20261004bj.md). Kernel
 changes are committed on `spx/next` as one commit per feature.
@@ -14,6 +14,8 @@ New [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
 awaits tested-kernel confirmation; recovery diagnostics are identified separately.
 BJ ran `7.3.0-rc2-spx-mainline-20261004bg+` and returned to recovery at 18:59 CEST;
 input/BT user confirmations belong to BI.
+[BK preparation](tools/spx/boot-diagnostics/PREPARED-20261004bk.md) adds a fresh
+stereo test; startup stays parked and listening needs a separately requested run.
 
 | Area | State | What is missing |
 |---|---|---|
@@ -26,7 +28,7 @@ input/BT user confirmations belong to BI.
 | RTC (B05) | Readback and warm reboot pass | Cold power-off retention |
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
-| Speakers (A01) | **BJ: both amplifiers identify and initialize natively; now off** | Fresh PCM/late initialization, then authorized listening |
+| Speakers (A01) | **BJ: both amplifiers initialize natively; BK stereo test prepared** | Fresh PCM/late-init hardware validation and authorized listening |
 | Microphones (A02) | Untested on this tree | Capture test |
 | Cameras (C01–C05) | Rear sensor identifies | No frame captured |
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |

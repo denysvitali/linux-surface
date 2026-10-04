@@ -14,16 +14,18 @@ The known baseline is the sibling tree's
 cold-boot setup. Mainline already contains the audio primitives and the board's
 LDO14E 1.8 V always-on vote. Do not return to single-amp experiments.
 
-The retained GPIO/late-init recipe needs these adaptations:
+The retained GPIO/late-init recipe has these adaptations:
 
 - `5f0155537be2` adds an explicit SPX GPIO mask, retaining the default `0x06`.
   BJ opts into `0x1e` with direction/output `0x1e/0x18`: pins 3/4 high, both
   amplifier enables low. `spx_wsa_en_pin=-1` disables the legacy one-pin override.
 - WSA's `spx_rearm_init` rejects active/prepared streams and targets one debug
-  amp. It cannot replace the known stereo late replay. The retained
-  `/var/tmp/spx-stereo-resume-20260908/b8-fullclock-ldo14e-status.sh` uses
-  `spx_wsa_dapm_cycle.ko cold_init=1` with temporary broadcast writes after the
-  runtime-clock switch. Its source is already in `drivers/spx_extras/`.
+  amp. `94d48470830e` adds per-native-slave `spx_late_init`, requiring a prepared
+  DAC-only stream and minimum PA gain; it cycles that codec's DAPM pin and
+  propagates codec write failures. Reported PA/protection values are shadows.
+- `432b8793466f` maps physical unit3/left to DP1 and unit4/right to DP4,
+  independently of the assigned bus address. `7469b5f09155` extends the master
+  snapshot with both port banks and fresh WCD compander/volume register reads.
 
 BJ uses the reusable trial tool's parked audio mode. Automatic desktop audio and
 legacy bridges are disabled for that boot. A separate, explicitly authorized
@@ -34,16 +36,17 @@ per stage and attempts amplifier powerdown on every exit. This opens no PCM.
 BJ passed this sequence after live module reloads and restoring parked output.
 An unattended cold boot remains unverified; this does not close A01.
 
-Next, adapt the retained sequence to current device names and a fresh silent
-PCM stream: frame 7, stereo DP1/DP4 offsets 1/6, late
-init after the runtime clock switch, both companders bypassed, minimum PA gain
-`0xc9`, then settling on digital silence. The old scripts hardcode dead 6.18 PIDs
+`audio.py listen` now owns a fresh silent PCM stream and verifies frame7/bank0,
+stereo DP1/DP4 offsets1/6, late init after the runtime clock switch, both
+companders bypassed, minimum PA gain `0xc9`, then one second of digital-silence
+settling. This chosen delay has not been validated as sufficient on a fresh boot.
+The old scripts hardcode dead 6.18 PIDs
 and automatically capture a microphone: do not execute them unchanged. Their
 helper also copies a stale private controller layout. `spx-speakers-up.sh`
 retains the obsolete one-pin configuration.
 
-Once playback preparation is ready, ask for one bounded listening run: left tone,
-right tone, then both, followed by parking both PAs. No microphone capture is
+After the parked candidate starts, ask for one bounded listening run: two seconds
+left tone, right tone, then both, followed by parking both PAs. No microphone capture is
 needed. Amplifier bring-up has previously emitted loud static independently of
 volume settings; the user must explicitly authorize that run before power-up.
 Unattended cold-start setup and the required settling delay remain unproven.
