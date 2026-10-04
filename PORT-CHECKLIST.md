@@ -17,7 +17,7 @@ changes are committed on `spx/next` as one commit per feature.
 | CPU and memory (B03) | **Passed on AP** | Recheck on final candidate |
 | Storage (B02) | Passed on AP | Post-resume I/O |
 | GPU FD680 (D02) | **Passed on AW**, 30 min rendering | A person looking at the screen |
-| Wi-Fi (N01) | Connects | Throughput, reconnect, both bands |
+| Wi-Fi (N01) | BH: 25 MB download at ~242 Mbit/s on 5 GHz | Upload, reconnect, both bands, resume |
 | RTC (B05) | Readback and warm reboot pass | Cold power-off retention |
 | Touch startup (I01) | Intermittent; known-good kernel now also fails with `-22` | Root cause |
 | Touch, pen (I02, I03) | Enumerates | Never physically tested |
@@ -27,11 +27,12 @@ changes are committed on `spx/next` as one commit per feature.
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
 | Keyboard, touchpad (I04, I05) | User confirms typing/clicking/pointer on BH | Full gestures, detach/reattach, resume |
 | Buttons (I06) | Never tested | Human session |
-| Bluetooth (N02) | RFCOMM/UHID opens pass on BH | Discovery, pairing, peripheral use, resume |
+| Bluetooth (N02) | BH: RFCOMM/UHID opens and discovery pass | Pairing, peripheral use, resume |
 | USB, USB-C PD, DisplayPort, dock (U01–U04) | Never tested | Human session, fixtures |
 | Battery and charging (P01) | Mainline AC/capacity readout plausible | Charging/discharging, plug/unplug |
 | Suspend/resume (P03) | Never tested | Wake source |
-| Thermal, idle power (P02, P05) | Never tested | Agent can do alone |
+| Thermal (P05) | BH: 3 min CPU/GPU load stable, peak 60.1°C | Cooling response |
+| Idle power (P02) | Never tested | Battery discharge measurement |
 | Sensors (S01, S02) | Never tested | Readout, then human |
 | Cellular, GNSS (N03, N04) | Never tested | SIM |
 
