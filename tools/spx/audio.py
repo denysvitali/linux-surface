@@ -311,8 +311,12 @@ def playback_state(path):
             (line.split('=', 1) for line in read_text(path / 'spx_playback_state').splitlines())}
 
 
-def check_stereo(mapping, paths, initialized=False):
+def check_stereo(mapping, paths, initialized=False, observations=None):
     snapshot = state()
+    codecs = {unit: playback_state(path) for unit, path in paths.items()}
+    observation = {'master': snapshot, 'codec_shadows': codecs, 'passed': False}
+    if observations is not None:
+        observations.append(observation)
     need(identity_map(snapshot, devices(), {3, 4}) == mapping, 'Amplifier identity changed')
     need(snapshot['GPIO_VAL'] & 0x1e == 0x1e, 'Amplifier power state changed')
     need(snapshot['MCP_STATUS'] & 1 == 0 and snapshot['FRAME_B0'] == 7,
@@ -321,9 +325,7 @@ def check_stereo(mapping, paths, initialized=False):
                           ('RX7_PATH_CFG0', 0), ('RX8_PATH_CFG0', 0),
                           ('RX7_VOLUME', 0), ('RX8_VOLUME', 0)):
         need(snapshot[key] == expected, f'{key}={snapshot[key]:#x}, expected {expected:#x}')
-    codecs = {}
-    for unit, path in paths.items():
-        codec = playback_state(path)
+    for unit, codec in codecs.items():
         for key, expected in (('UNIT', unit), ('DEV_NUM', mapping[unit]), ('ATTACHED', 1),
                               ('STREAM_CONFIGURED', 1), ('STREAM_ENABLED', 1),
                               ('DAC_PREPARED', 1), ('DAC_MASTER_PORT', 1 if unit == 3 else 4),
@@ -336,8 +338,8 @@ def check_stereo(mapping, paths, initialized=False):
             need(codec['SHADOW_PA_ENABLE'] & 0x80, f'Unit {unit}: PA enable absent from shadow')
             need(codec['SHADOW_OCP'] == 0xb4 and codec['SHADOW_BOOST'] == 0x98,
                  f'Unit {unit}: unexpected protection/boost shadow')
-        codecs[unit] = codec
-    return {'master': snapshot, 'codec_shadows': codecs}
+    observation['passed'] = True
+    return observation
 
 
 def listen(args, report, pcm_holder):
@@ -367,24 +369,25 @@ def listen(args, report, pcm_holder):
     for expression in (r'^format: S16_LE$', r'^channels: 2$', r'^rate: 48000(?: |$)'):
         need(re.search(expression, hw_params, re.M), 'Unexpected PCM hardware parameters')
     report['pcm']['hw_params'] = hw_params
-    report['before_late_init'] = check_stereo(mapping, paths)
+    checks = report.setdefault('playback_checks', [])
+    report['before_late_init'] = check_stereo(mapping, paths, observations=checks)
     for unit, path in paths.items():
         before = playback_state(path)['LATE_INIT_COUNT']
         (path / 'spx_late_init').write_text('1\n')
         need(playback_state(path)['LATE_INIT_COUNT'] == before + 1,
              f'Unit {unit}: late initialization did not advance')
-    report['after_late_init'] = check_stereo(mapping, paths, initialized=True)
+    report['after_late_init'] = check_stereo(mapping, paths, initialized=True, observations=checks)
     pcm.settle(1.0)  # Conservative settling margin; minimum has not been measured.
     report['remaining_prerequisites'] = [UNMET[-1]]
     report['playback_ready'] = True
     report['tones'] = []
     for name, channels in (('left', {0}), ('right', {1}), ('both', {0, 1})):
         pcm.healthy()
-        check_stereo(mapping, paths, initialized=True)
+        check_stereo(mapping, paths, initialized=True, observations=checks)
         print(f'Listening test: {name}, two seconds', flush=True)
         pcm.play(tone(channels))
         report['tones'].append({'channels': name, 'seconds': 2, 'peak_limit': 1433})
-    report['after_playback'] = check_stereo(mapping, paths, initialized=True)
+    report['after_playback'] = check_stereo(mapping, paths, initialized=True, observations=checks)
     report['human_result'] = 'pending; successful software checks do not establish audible output'
 
 

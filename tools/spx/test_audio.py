@@ -73,6 +73,22 @@ class AudioTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'amp-power'):
                 audio.initialize(args, {})
 
+    def test_failed_transport_check_retains_both_codec_observations(self):
+        snapshot = {'GPIO_VAL': 0x1e, 'MCP_STATUS': 0, 'FRAME_B0': 7,
+                    'DP1_B0': 0x01000107, 'DP4_B0': 0}
+        observations = []
+        with patch.object(audio, 'state', return_value=snapshot), \
+                patch.object(audio, 'devices', return_value=[]), \
+                patch.object(audio, 'identity_map', return_value={3: 1, 4: 2}), \
+                patch.object(audio, 'playback_state', side_effect=[{'UNIT': 3}, {'UNIT': 4}]):
+            with self.assertRaisesRegex(RuntimeError, 'DP4_B0'):
+                audio.check_stereo({3: 1, 4: 2}, {3: 'left', 4: 'right'},
+                                   observations=observations)
+        self.assertEqual(len(observations), 1)
+        self.assertEqual(set(observations[0]['codec_shadows']), {3, 4})
+        self.assertEqual(observations[0]['master']['DP4_B0'], 0)
+        self.assertFalse(observations[0]['passed'])
+
 
 if __name__ == '__main__':
     unittest.main()
