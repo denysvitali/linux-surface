@@ -23,12 +23,30 @@ available during a network or sleep check.
 5. **Bluetooth:** put one owned mouse/keyboard/headset in pairing mode; identify
    it so the agent pairs only that device. Check input with an HID device.
    Headset sound needs a separate explicit request. (N02)
-6. **Sensors:** shade then illuminate the ambient-light sensor, bring a hand
-   near it, and rotate the tablet clockwise and back. Report whether desktop
-   brightness/rotation responds; the agent records sensor channels. (S01, S02)
+6. **Light sensor, once the corrected TCS3430 driver is ready:** cover the
+   sensor near the front camera with your hand for five seconds, uncover for
+   five seconds, then repeat. No lamp is needed. The agent records raw XYZ/IR
+   channels; automatic brightness is a separate integration test. The chip has
+   no proximity channel. Rotation waits for the missing sensor-hub stack. (S01)
 7. **Sleep, when the agent is ready:** press power to sleep, wait30s and press
    power once to wake. Confirm the panel, input and network return. Do not
    repeat if it hangs; the agent records the result first. (P03)
+
+## Next quiet batch (2026-10-05)
+
+Wait until the agent confirms the corrected light driver is running and starts
+sampling. Then perform only these two actions:
+
+1. Cover the light sensor near the front camera for five seconds, uncover for
+   five seconds, and repeat once. Say if the sensor area is uncertain.
+2. Unplug the charger for60 seconds, reconnect it and wait60 seconds. Report
+   whether the charger is USB-C or Surface Connect and whether the desktop
+   charging indicator changes. No sleep or audio test is part of this batch.
+
+The raw readings establish light response; they do not establish automatic
+brightness or calibrated lux. Charger transitions and actual energy/current
+changes determine the power result; a stable49% on AC alone proves neither
+charge success nor failure.
 
 For the next session, first isolate the current blockers:
 

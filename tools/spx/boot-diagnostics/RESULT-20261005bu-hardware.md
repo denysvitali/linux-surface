@@ -23,8 +23,10 @@ long transfers and resume remain open.
 **Light-sensor identity corrected:** only ID0x92 and revision0x91 were read at
 the existing I2C0/0x39 client: **0xdc/0x41**, identifying TCS3430. The DT comment
 was correct; its APDS9960 binding was not. That driver's integration timing
-and channel labels do not describe this chip. A dedicated driver/DT fix is
-being prepared. Motion sensors require the separate Qualcomm sensor-hub stack;
+and channel labels do not describe this chip. The dedicated driver/DT fix
+`a1228bb5a11e` builds and loads as a module, with its binding and corrected DTB
+passing focused schema checks. BV will select that compatible; current BU
+still binds APDS. Raw light response remains untested. Motion sensors require the separate Qualcomm sensor-hub stack;
 the known camera receiver analog-supply dependency remains unresolved.
 
 **Power observation:** nine samples over120s report AC online,49%,7.670–7.671V,
