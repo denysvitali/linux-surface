@@ -12,7 +12,7 @@ Latest result: [BI](tools/spx/boot-diagnostics/RESULT-20261004bi.md). Kernel
 changes are committed on `spx/next` as one commit per feature.
 New [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
 awaits tested-kernel confirmation; recovery diagnostics are identified separately.
-BI runs `7.3.0-rc2-spx-mainline-20261004bg+`; physical tests are requested.
+BI runs `7.3.0-rc2-spx-mainline-20261004bg+`; user confirms touch, pen, keyboard and BT.
 
 | Area | State | What is missing |
 |---|---|---|
@@ -24,14 +24,14 @@ BI runs `7.3.0-rc2-spx-mainline-20261004bg+`; physical tests are requested.
 | Wi-Fi (N01) | BI: 25 MB download at ~379 Mbit/s on 5 GHz | Upload, reconnect, both bands, resume |
 | RTC (B05) | Readback and warm reboot pass | Cold power-off retention |
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
-| Touch, pen (I02, I03) | Recovery touch works after retrigger; sensitivity low; pen unconfirmed | Mainline physical touch/pen test |
-| Speakers (A01) | Card registers, one amp initialises | No sound verified on this tree |
+| Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
+| Speakers (A01) | User: silent on BI; internal audio drivers deliberately blocked | Audio-enabled stereo bring-up and listening test |
 | Microphones (A02) | Untested on this tree | Capture test |
 | Cameras (C01–C05) | Rear sensor identifies | No frame captured |
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
-| Keyboard, touchpad (I04, I05) | BH basic use; user: detach/reattach works slowly, boot pending | Full keys/gestures and resume |
+| Keyboard, touchpad (I04, I05) | **BI keyboard works**; BH touchpad basic use | Full keys/gestures and resume |
 | Buttons (I06) | User: short power press opens shutdown prompt, boot pending | Volume/posture and intended wake |
-| Bluetooth (N02) | BI: controller powered, profiles available; BH discovery works | Mainline GNOME toggle, pairing, peripheral use, resume |
+| Bluetooth (N02) | **User confirms Bluetooth works on BI** | Device-specific pairing/reconnect and resume |
 | USB data (U01) | Untested | Both ports/orientations, fixtures |
 | USB-C PD, DisplayPort, dock (U02–U04) | BI: WIP DP0 forwarding loaded, monitor disconnected | Dock replug/output, roles/PD, ports/orientations |
 | Battery and charging (P01) | User: USB-C charging works; boot attribution pending | Discharge, transitions and charger coverage |
@@ -54,7 +54,7 @@ BI runs `7.3.0-rc2-spx-mainline-20261004bg+`; physical tests are requested.
    (N02); rotate the device (S02); press power to wake from suspend (P03).
 3. **Touch startup reliability (I01):** recovery's failed udev identification
    left no IPTSD instance to retry. One targeted add event restored the service;
-   verify physical input and address the automatic startup gap.
+   BI now starts automatically and physical touch/pen work. Verify reliability.
 4. **Audio (A01–A03):** port the working 6.18 findings; the listening test
    needs the user's go-ahead for that run.
 5. **Camera frames (C02–C04).**
@@ -490,13 +490,18 @@ this does not explain AO's failure. Physical input has not been signed off.
 - [ ] **I02 — Touchscreen.** Real taps, drags, edge coverage and multi-touch gestures
   produce correct desktop actions, without stuck/missing contacts; repeat after
   display blanking and suspend. Do not mistake synthetic events for physical input.
-  **User report, October 4:** touch does not work; boot attribution pending.
-  BH startup/publication alone is insufficient.
-  [Follow-up](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md).
+  **Working basic function, BI:** user confirms touch works on boot
+  `84e729fc-a68c-4720-a6f0-042acf60f604`, kernel
+  `7.3.0-rc2-spx-mainline-20261004bg+`, after the finger-drag test request.
+  Edge coverage, multi-touch and blank/resume behavior were not individually
+  reported. [BI result](tools/spx/boot-diagnostics/RESULT-20261004bi.md).
 - [ ] **I03 — Pen.** Verify position, pressure, tilt where supported, hover,
   buttons/eraser and palm rejection with the actual compatible pen, including
   post-resume behavior. Map advertised capabilities to those actually fitted.
-  **User report, October 4:** pen does not work; boot attribution pending.
+  **Working basic function, BI:** user confirms pen works on the same identified
+  BI boot after the hover/draw test request. Pressure, tilt, buttons/eraser,
+  palm rejection and resume remain unverified.
+  [BI result](tools/spx/boot-diagnostics/RESULT-20261004bi.md).
 - [ ] **I04 — Keyboard.** Typing, modifiers, Fn/media keys, indicators and backlight
   where fitted; detach/reattach and resume recover without stuck keys.
   **Partial, BH:** user confirms typing works on boot `c89ea4ed-9363-4727-a786-4a2231817165`,
@@ -504,6 +509,9 @@ this does not explain AO's failure. Physical input has not been signed off.
   detach/reattach, with a delay, but its tested kernel is pending. Remaining
   keys and resume are untested.
   [Result](tools/spx/boot-diagnostics/RESULT-20261004bh.md).
+  **BI:** user again confirms keyboard works, on boot
+  `84e729fc-a68c-4720-a6f0-042acf60f604`, same kernel release.
+  [BI result](tools/spx/boot-diagnostics/RESULT-20261004bi.md).
 - [ ] **I05 — Touchpad.** Pointer, click, scrolling, multi-finger gestures and palm
   rejection work across detach/reattach and resume.
   **Partial, BH:** user confirms clicking and trackpad use on the same boot;
@@ -533,6 +541,10 @@ Read [AO](tools/spx/boot-diagnostics/RESULT-20261002ao.md),
   output, channel mapping, balance, useful volume range and mute; no static,
   clipping, excessive pops or persistent bus errors. Use bounded appropriate
   signals and measured/listened output, respecting recorded sound preferences.
+  **BI:** user reports speakers do not work. This trial intentionally blacklists
+  the internal codecs/SoundWire controller; only the dock USB audio card is
+  present. This does not test an enabled internal playback path. The known 6.18
+  stereo sequence still needs adaptation; see [audio next step](tools/spx/boot-diagnostics/AUDIO-NEXT-20261004.md).
 - [ ] **A02 — Internal microphones.** Real known stimulus/voice recorded on each
   fitted microphone, correct routing/channel assignment and usable gain/noise;
   repeated capture/open/close without leaks or hangs. Noise-floor samples alone
@@ -570,8 +582,10 @@ host datapath; that is not current cellular service verification.
   enable Bluetooth, with boot attribution pending. Current recovery controller
   restored by runtime address configuration. User confirms “BT works now” on
   recovery boot `f309dbfa-4e99-4bdd-9059-efc12f21b817`, `6.18.3-1-surface+`.
-  Mainline GNOME toggle, pairing, peripheral use, persistence and resume remain
-  unverified. [BH result](tools/spx/boot-diagnostics/RESULT-20261004bh.md).
+  **BI:** user confirms Bluetooth works on mainline boot
+  `84e729fc-a68c-4720-a6f0-042acf60f604`, same kernel release. Specific peripheral,
+  pairing/reconnect and resume details were not reported.
+  [BI result](tools/spx/boot-diagnostics/RESULT-20261004bi.md).
   [Follow-up](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md).
 - [ ] **N03 — Cellular control/data.** Stable modem startup and discovery, correct
   SIM/eSIM applicability, network registration and actual bidirectional data with

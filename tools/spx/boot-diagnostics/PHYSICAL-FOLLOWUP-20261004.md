@@ -1,5 +1,13 @@
 # Physical follow-up: useful functions and desktop blockers
 
+On mainline BI, boot `84e729fc-a68c-4720-a6f0-042acf60f604`, kernel
+`7.3.0-rc2-spx-mainline-20261004bg+`, the user now confirms **touch, pen, keyboard
+and Bluetooth work**. Speakers do not work; BI intentionally blocks their
+drivers. Dock monitor confirmation was requested separately. See the
+[BI result](RESULT-20261004bi.md) for current evidence.
+
+## Earlier report, kernel attribution unresolved
+
 The user reports cover detach/reattach works but is slow; display and brightness
 work; touch and pen do not work; GNOME cannot enable Bluetooth; USB-C charging
 works but the dock monitor is blank; no suspend option appears, and a short power
