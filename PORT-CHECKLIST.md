@@ -25,7 +25,7 @@ BI runs `7.3.0-rc2-spx-mainline-20261004bg+`; user confirms touch, pen, keyboard
 | RTC (B05) | Readback and warm reboot pass | Cold power-off retention |
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
-| Speakers (A01) | User: silent on BI; internal audio drivers deliberately blocked | Audio-enabled stereo bring-up and listening test |
+| Speakers (A01) | Silent on BI: drivers blocked; BJ parked audio trial prepared | Authorized dual-amp startup, then playback bring-up/listening |
 | Microphones (A02) | Untested on this tree | Capture test |
 | Cameras (C01–C05) | Rear sensor identifies | No frame captured |
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
