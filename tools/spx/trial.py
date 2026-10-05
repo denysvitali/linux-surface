@@ -3,6 +3,7 @@
 """One reusable SPX functional trial: fixed kernel build, prepare/install/boot/return."""
 import argparse
 from datetime import datetime, timezone
+import fcntl
 import hashlib
 import gzip
 import json
@@ -13,7 +14,9 @@ import re
 import shutil
 import socket
 import stat
+import struct
 import subprocess
+import time
 
 REPO = Path('/home/dvitali/Documents/git/linux-surface-next')
 HERE = Path(__file__).resolve().parent
@@ -383,6 +386,117 @@ def functional_check(args):
     run('kernel-log', ['journalctl', '-b', '-k', '--no-pager', '-o', 'short-monotonic'])
     result['complete'] = True
     save()
+
+
+def usbc_reload(args):
+    """Restart only the USC subscriber; observe the attached display path."""
+    assert os.geteuid() == 0 and os.uname().release == RELEASE
+    assert 'spx_attempt=' + ATTEMPT in Path('/proc/cmdline').read_text().split()
+    assert 'spx_boot=mainline-functional' in Path('/proc/cmdline').read_text().split()
+    assert 90 <= float(Path('/proc/uptime').read_text().split()[0]) <= 750
+    assert subprocess.check_output(['systemctl', 'is-active',
+                                   'spx-trial-return@' + ATTEMPT + '.timer'],
+                                   text=True).strip() == 'active'
+    output = OUT / 'usb-c'
+    output.mkdir(mode=0o700, exist_ok=True)
+    target = output / 'reload.json'
+    assert not target.exists(), 'one subscriber restart per trial'
+    lock = str(REPO / 'tools/spx/spx-lock')
+    owner = 'usbc-' + ATTEMPT
+    subprocess.run([lock, 'acquire', 'device', owner], check=True)
+    result = dict(boot_id=Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
+                  release=RELEASE, steps={}, snapshots={}, complete=False)
+    module = Path('/sys/module/surface_aggregator_usbc')
+    removed = False
+
+    def save():
+        target.write_text(json.dumps(result, indent=2) + '\n')
+
+    def run(name, argv):
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=15)
+        result['steps'][name] = dict(returncode=proc.returncode,
+                                    stdout=proc.stdout, stderr=proc.stderr)
+        save()
+        return proc.returncode == 0
+
+    def snapshot(name):
+        dp = list(Path('/sys/class/drm').glob('card*-DP-1'))
+        assert len(dp) == 1, 'expected one primary external connector'
+        card = dp[0].name.split('-', 1)[0]
+        edp = dp[0].with_name(card + '-eDP-1')
+        state = (Path('/sys/kernel/debug/dri') / card[4:] / 'state').read_text()
+        (output / (name + '-drm-state.txt')).write_text(state)
+        match = re.search(r'connector\[\d+\]: DP-1\n\s+crtc=crtc-(\d+)', state)
+        assert match, 'external connector has no CRTC'
+        values = dict(forwarder_bound=Path(
+            '/sys/bus/platform/devices/surface_aggregator_usbc/driver').exists(),
+            dp_status=(dp[0] / 'status').read_text().strip(),
+            dp_enabled=(dp[0] / 'enabled').read_text().strip(),
+            edp_status=(edp / 'status').read_text().strip(),
+            edp_enabled=(edp / 'enabled').read_text().strip())
+        edid = (dp[0] / 'edid').read_bytes()
+        values['edid_valid'] = (len(edid) >= 128 and len(edid) % 128 == 0 and
+                               edid[:8] == bytes.fromhex('00ffffffffffff00') and
+                               all(sum(edid[i:i + 128]) % 256 == 0
+                                   for i in range(0, len(edid), 128)))
+        fd = os.open('/dev/dri/' + card, os.O_RDWR | os.O_CLOEXEC)
+        try:
+            replies = []
+            # Standard WAIT_VBLANK: relative sequence, selected CRTC index.
+            # DRM bounds the blocking wait; no modeset or framebuffer change.
+            for delta in (0, 1):
+                buf = bytearray(struct.pack('=IIQQ', 1 | (int(match[1]) << 1), delta, 0, 0))
+                fcntl.ioctl(fd, 0xc018643a, buf, True)
+                _, sequence, seconds, useconds = struct.unpack('=IIqq', buf)
+                replies.append(dict(sequence=sequence, timestamp=seconds + useconds / 1e6))
+            values['vblank'] = replies
+            values['advancing'] = ((replies[1]['sequence'] - replies[0]['sequence']) &
+                                   0xffffffff) > 0
+        finally:
+            os.close(fd)
+        result['snapshots'][name] = values
+        save()
+        assert values['dp_status'] == values['edp_status'] == 'connected'
+        assert values['dp_enabled'] == values['edp_enabled'] == 'enabled'
+        assert values['edid_valid'] and values['advancing']
+
+    try:
+        save()
+        assert module.exists()
+        snapshot('before')
+        assert result['snapshots']['before']['forwarder_bound']
+        result['restart_uptime'] = float(Path('/proc/uptime').read_text().split()[0])
+        # rmmod names exactly one module; modprobe -r could remove suppliers.
+        assert run('remove', ['rmmod', 'surface_aggregator_usbc'])
+        removed = True
+        assert not module.exists()
+        snapshot('unloaded')
+        assert run('load', ['modprobe', 'surface_aggregator_usbc'])
+        time.sleep(30)
+        snapshot('after')
+        assert result['snapshots']['after']['forwarder_bound']
+        result['scanout_preserved'] = True
+        result['complete'] = True
+    except Exception as error:
+        result['error'] = str(error)
+    finally:
+        try:
+            if removed and not module.exists():
+                run('restore', ['modprobe', 'surface_aggregator_usbc'])
+            result['forwarder_loaded_at_exit'] = module.exists()
+            proc = subprocess.run(['journalctl', '-b', '-k', '--no-pager', '-o',
+                                   'short-monotonic'], capture_output=True, text=True, timeout=15)
+            (output / 'reload-kernel.log').write_text(proc.stdout + proc.stderr)
+            result['kernel_log_exit'] = proc.returncode
+            result['usc_events_after_restart'] = [line for line in proc.stdout.splitlines()
+                if 'USC DP port 0' in line and
+                (stamp := re.match(r'\[\s*([0-9.]+)\]', line)) and
+                float(stamp[1]) >= result.get('restart_uptime', float('inf'))]
+            # Preserved scanout and delivered events do not prove GET/replay semantics.
+            save()
+        finally:
+            subprocess.run([lock, 'release', 'device', owner], check=True)
+    print(json.dumps(result), flush=True)
 
 
 def return_to_default(args):
@@ -778,7 +892,7 @@ def audio_check(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend', 'audio', 'arm-audio', 'enable-desktop-audio'))
+    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend', 'audio', 'arm-audio', 'enable-desktop-audio', 'usbc-reload'))
     parser.add_argument('attempt')
     parser.add_argument('--build', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bg/work-build'))
     parser.add_argument('--parent', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bf'))
@@ -834,6 +948,7 @@ def main():
         else:
             {'install': install, 'boot': boot, 'return': return_to_default,
              'extend': extend_window, 'audio': audio_check, 'arm-audio': arm_audio,
+             'usbc-reload': usbc_reload,
              'enable-desktop-audio': enable_desktop_audio}[args.command](args)
 
 

@@ -28,6 +28,17 @@ from the initramfs and exercise its deferred startup. This provides no initial
 dock-state query; actual hotplug and monitor output still need a dock replug.
 PHY orientation switching and second-port routing remain unimplemented.
 
+On a running `--usbc` trial after90seconds, `trial.py usbc-reload ATTEMPT`
+performs one bounded restart of only `surface_aggregator_usbc`. It requires
+active external/internal scanout and an armed return timer, uses `rmmod` for
+that single module, reloads it, then observes for30seconds. DRM state, valid
+external EDID, advancing external vblank and real USC events are recorded in
+`usb-c/reload.json`. MSM and PHY drivers remain bound. Continued scanout does
+not prove state replay; a fresh event only proves notification delivery after
+re-subscription. If none arrives, the new subscriber's local connected state
+remains unset until a connected event, so its physical-disconnect fallback
+remains untested. Do not repeat a negative result on further unchanged boots.
+
 The generic `spx-trial-check@` timer starts bounded functional checks at 50s:
 RFCOMM socket and UHID open, controller state, a 25 MB IPv4 transfer over
 `wlan0`, and battery/thermal/remoteproc/sensor readouts. It takes the device

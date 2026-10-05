@@ -6,14 +6,15 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-05, BZ live: automatic external DP scanout)
+## Status (2026-10-05, BZ collected: automatic external DP scanout)
 
-Latest result: [BZ](tools/spx/boot-diagnostics/RESULT-20261005bz.md), running
-`7.3.0-rc2-spx-mainline-20261004bg+`. Early USB-C forwarding receives real dock
+Latest result: [BZ](tools/spx/boot-diagnostics/RESULT-20261005bz.md), returned
+after901seconds to known-good `6.18.3-1-surface+`. On the fixed7.3 trial,
+early USB-C forwarding receives real dock
 events; GNOME extends to Samsung S34J55x at3440×1440/50Hz with active scanout.
 Visible output/replug/orientations/resume remain unverified. B05a early RTC and
 N01a IPv6 VPN retain their prior passes. BY quiet desktop audio passed until
-shutdown; lifecycle remains open. BZ runs without audio/capture. Light response
+shutdown; lifecycle remains open. BZ ran without audio/capture. Light response
 still needs a physical stimulus.
 Input/BT confirmations belong to BI; the
 [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
@@ -50,7 +51,9 @@ awaits attribution for later observations.
 
 The user has no physical access (October5). Hands-on checks remain **unverified**;
 do not wait for them or start unattended stimulus-dependent sampling. Current
-work is USB-C Alt Mode/DisplayPort integration that can advance remotely.
+work is one bounded forwarder restart to check attached-display preservation
+and real notification delivery after re-subscription. No speculative state GET
+or PHY change is planned; physical USB-C coverage remains deferred.
 
 1. **Deferred three-minute quiet physical batch:** on mainline, type on the
    keyboard; cover/uncover the front light sensor for5seconds each, twice;
