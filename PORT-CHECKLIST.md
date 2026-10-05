@@ -616,6 +616,12 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
     `7.3.0-rc2-spx-mainline-20261004bg+`.
     [BN result](tools/spx/boot-diagnostics/RESULT-20261004bn.md).
 
+  - [ ] **A02b — DMIC0 records a known acoustic stimulus.** The second fitted
+    input, paired with DMIC1 in the Windows two-microphone array, must record
+    recognized quiet speaker tones above its own reference and lose those tones
+    with amplifiers off. Use one fresh MM2 capture; leave quality, simultaneous
+    channel mapping and capture teardown/reopen under A02/A03 open.
+
 - [ ] **A03 — Audio lifecycle/userspace.** Normal PipeWire/ALSA/UCM playback and
   capture, simultaneous use, volume/mute controls and repeated open/close work
   after reboot/resume without manual mixer setup or ad-hoc repair. Resolve or
