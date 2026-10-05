@@ -1,5 +1,23 @@
 # SPX IPv6 MARK configuration follow-up — 2026-09-22
 
+## 2026-10-05 implementation
+
+BX boot `85aa4bf6-2169-41d5-9d62-ed797b570132` repeats this exact failure on
+`7.3.0-rc2-spx-mainline-20261004bg+`: the read-only rule check exits2 and
+Tailscale reports the MARK router error. Commit `0bc334d2aded` applies the
+single option below to the functional fragment. Incremental Image/modules
+build passes with the fixed release; only `IP6_NF_IPTABLES: n -> m` changes
+effectively in Kconfig. The affected configured modules are xt_mark/xt_connmark.
+Legacy tables stay disabled. Runtime verification is still pending.
+
+The running firewall holds xt_mark in use, so its active modules/rules/backend
+are preserved. Install the next candidate from recovery, then require normal
+Tailscale startup to install the IPv6 rule and clear its router-health error.
+Use current fixed-build/trial rules; historical manifests/distinct-release
+instructions below are superseded by AGENTS.md.
+
+## Original investigation
+
 Trial F's Tailscale router configuration fails because its kernel omits the
 IPv6 MARK target. The smallest proposed configuration correction is
 `CONFIG_IP6_NF_IPTABLES=m`, followed by rebuilding and deploying the matching
