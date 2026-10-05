@@ -11,11 +11,12 @@ history that used to live here is in
 Latest result: [CB](tools/spx/boot-diagnostics/RESULT-20261005cb.md), kernel
 `7.3.0-rc2-spx-mainline-20261004bg+`. First quiet playback passes and closes
 cleanly while attached; reopened playback receives DSP completions but its left
-tone fails microphone verification. A03b remains open. Amplifiers are parked;
+tone fails microphone verification. A03b remains open. The test parked the amps;
 final microphone COPP close times out. Keep the working continuous desktop path.
 CA established DP0 automatic startup and subscriber-reload recovery; physical
 USB-C/display tests remain unverified. B05a early RTC and N01a IPv6 VPN retain
-prior passes. Light response still needs a physical stimulus. Input/BT confirmations
+prior passes. CB returned to known-good at608.08s; the full shutdown log is saved.
+Light response still needs a physical stimulus. Input/BT confirmations
 belong to BI; the [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
 awaits attribution for later observations.
 
@@ -68,9 +69,12 @@ change is planned; repeating the same remote test would add no functional gain.
 3. **Touch startup reliability (I01):** recovery's failed udev identification
    left no IPTSD instance to retry. One targeted add event restored the service;
    BI now starts automatically and physical touch/pen work. Verify reliability.
-4. **Audio (A01–A03):** retain BY's quiet default desktop setup, resolve
-   WCD/ADM close faults and test hardware reopen and persistence. The user authorized bounded automated
-   speaker/microphone testing; announce capture and park the amps afterwards.
+4. **Audio (A01–A03):** preserve BY's working continuous quiet desktop setup.
+   CB's acoustic reopen fails despite a clean first close and real DSP completions;
+   localize the post-close route before another changed test. No validated causal
+   fix is available; avoid unchanged retries or destroying parked DSP sessions.
+   The user authorized bounded speaker/microphone testing; announce capture and
+   park the amps afterwards. WCD/ADM lifecycle and persistence remain open.
 5. **Camera frames (C02–C04):** the working6.18 v23 rear capture is preserved in
    sibling commit `005adbc494a5` and `docs/spx-camera-recon.md`, section7. Receiver
    SID/mask is resolved; real `vdda-phy`/`vdda-pll` ownership remains missing.

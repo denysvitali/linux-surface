@@ -296,6 +296,14 @@ class AudioTests(unittest.TestCase):
                         data = data[os.write(source_write, data):]
                     deadline += frames / 48000
                     time.sleep(max(0, deadline - time.monotonic()))
+                # The measured stimulus is finite; its monitor remains alive
+                # during scoring, like the actual desktop application stream.
+                while True:
+                    data = memoryview(bytes(4560 * 4))
+                    while data:
+                        data = data[os.write(source_write, data):]
+                    deadline += 4560 / 48000
+                    time.sleep(max(0, deadline - time.monotonic()))
             except BrokenPipeError:
                 pass
             os._exit(0)
@@ -345,6 +353,11 @@ class AudioTests(unittest.TestCase):
                 'waveform_matches': active == reference,
                 'active_frames': len(active) // 4,
                 'expected_frames': len(reference) // 4}).encode())
+            # Keep the PCM pipe readable until parent cleanup. The fixed
+            # 6.5-second measurement above is unchanged; slow scoring must
+            # not manufacture a BrokenPipe failure after measurement ends.
+            while os.read(output_read, 16384):
+                pass
             os._exit(0)
         os.close(source_write)
         os.close(output_read)
@@ -798,6 +811,31 @@ class AudioTests(unittest.TestCase):
 
 
 class PlaybackReopenTests(unittest.TestCase):
+    def test_failed_acoustic_cycle_keeps_its_own_pcm_and_phase(self):
+        capture = Mock()
+        capture.process.pid = 77
+        capture.mark.return_value = 48000
+        report = {'capture': {'phases': []}, 'after_playback': {'stale': True}}
+
+        def fail(*args):
+            report['pcm'] = {'pid': 88}
+            report['capture']['phases'].append({'name': 'cycle-1-left', 'passed': False})
+            raise RuntimeError('acoustic failure')
+
+        with patch.object(audio, 'devices', return_value=[]), \
+                patch.object(audio, 'listen', side_effect=fail), \
+                patch.object(audio, 'check_desktop_teardown') as teardown:
+            with self.assertRaisesRegex(RuntimeError, 'acoustic failure'):
+                audio.playback_reopen(SimpleNamespace(action='reopen'), report, [], capture, [])
+        cycle = report['reopen']['cycles'][0]
+        self.assertEqual(cycle['pcm']['pid'], 88)
+        self.assertEqual(cycle['acoustic_phases'][0]['name'], 'cycle-1-left')
+        self.assertNotIn('after_playback', cycle)
+        self.assertNotIn('after_playback', report)
+        self.assertFalse(cycle['passed'])
+        teardown.assert_not_called()
+        capture.close.assert_not_called()
+
     def test_failed_attached_teardown_stops_before_second_pcm(self):
         # A failed hardware close must leave the microphone open for outer
         # park-first cleanup, and must never open another playback session.
