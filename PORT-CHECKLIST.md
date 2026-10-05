@@ -8,11 +8,11 @@ history that used to live here is in
 
 ## Status (2026-10-05, BX: early RTC time passes; quiet desktop audio retained)
 
-Latest result: [BX](tools/spx/boot-diagnostics/RESULT-20261005bx.md), running
-`7.3.0-rc2-spx-mainline-20261004bg+`. B05a passes: RTC sets the correct time
-before root startup/networking. Quiet desktop playback passes, capture is
-closed and CPU scaling is automatic. The SSAM retry guard skips this healthy
-startup. Light response still needs a physical stimulus; audio lifecycle stays open.
+Latest result: [BX](tools/spx/boot-diagnostics/RESULT-20261005bx.md), mainline
+`7.3.0-rc2-spx-mainline-20261004bg+`; now in recovery to install IPv6 support.
+B05a passes: RTC sets correct time before root startup/networking. Quiet desktop
+playback passes until shutdown; audio lifecycle remains open. The SSAM guard
+skips healthy startup. Light response still needs a physical stimulus.
 Input/BT confirmations belong to BI; the
 [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
 awaits attribution for later observations.
