@@ -15,6 +15,7 @@
 #include <drm/display/drm_dp_aux_bus.h>
 #include <drm/display/drm_hdmi_audio_helper.h>
 #include <drm/drm_edid.h>
+#include <drm/msm_dp_bridge.h>
 
 #include "msm_drv.h"
 #include "msm_kms.h"
@@ -1555,3 +1556,64 @@ void msm_dp_bridge_hpd_notify(struct drm_bridge *bridge,
 
 	pm_runtime_put_sync(&msm_dp_display->pdev->dev);
 }
+
+/**
+ * msm_dp_bridge_hpd_irq - Deliver an externally reported DisplayPort HPD IRQ
+ * @bridge: referenced MSM DisplayPort bridge
+ *
+ * Firmware HPD IRQs need not update the native AUX HPD pulse counter. Process
+ * the sink request directly, without synthesizing a level change. The caller
+ * must hold a bridge reference and call from a sleepable context, without
+ * holding the bridge HPD mutexes. Serialize with normal bridge notifications
+ * and detection, and reject disabled HPD or a disconnected sink.
+ *
+ * Return: zero on success, or a negative error from lifecycle checks, runtime
+ * PM, or sink request processing.
+ */
+int msm_dp_bridge_hpd_irq(struct drm_bridge *bridge)
+{
+	struct msm_dp_display_private *dp;
+	struct msm_dp *display;
+	int idx, ret;
+
+	if (!bridge || !drm_bridge_enter(bridge, &idx))
+		return -ENODEV;
+
+	if (bridge->type != DRM_MODE_CONNECTOR_DisplayPort ||
+	    !bridge->funcs || bridge->funcs->hpd_notify != msm_dp_bridge_hpd_notify) {
+		ret = -EOPNOTSUPP;
+		goto exit;
+	}
+
+	mutex_lock(&bridge->hpd_state_mutex);
+	mutex_lock(&bridge->hpd_mutex);
+	if (!bridge->hpd_cb) {
+		ret = -EAGAIN;
+		goto unlock_hpd;
+	}
+
+	display = to_dp_bridge(bridge)->msm_dp_display;
+	dp = container_of(display, struct msm_dp_display_private, msm_dp_display);
+	mutex_lock(&dp->plugged_lock);
+	if (!dp->plugged) {
+		ret = -ENOTCONN;
+		goto unlock_plugged;
+	}
+
+	ret = pm_runtime_resume_and_get(&display->pdev->dev);
+	if (ret < 0)
+		goto unlock_plugged;
+
+	ret = msm_dp_irq_hpd_handle(dp);
+	pm_runtime_put_sync(&display->pdev->dev);
+
+unlock_plugged:
+	mutex_unlock(&dp->plugged_lock);
+unlock_hpd:
+	mutex_unlock(&bridge->hpd_mutex);
+	mutex_unlock(&bridge->hpd_state_mutex);
+exit:
+	drm_bridge_exit(idx);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(msm_dp_bridge_hpd_irq);

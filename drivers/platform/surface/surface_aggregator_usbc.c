@@ -20,6 +20,7 @@
 #include <drm/drm_bridge.h>
 #include <drm/drm_connector.h>
 #include <drm/drm_device.h>
+#include <drm/msm_dp_bridge.h>
 
 #define SPX_USBC0_PATH "/usb-c-connector0"
 
@@ -168,7 +169,7 @@ static void spx_usbc_event_work(struct work_struct *work)
 		}
 		if (spx_usbc_dp_event(event)) {
 			connected = event->hpd_level == 1;
-			/* A repeated level does not deliver a firmware HPD IRQ. */
+			/* IRQ delivery is separate from a real level transition. */
 			notify = !event->hpd_irq || connected != usbc->connected;
 		} else if (event->mux_mode == 0 && event->cc_state == 2) {
 			notify = true;
@@ -178,7 +179,7 @@ static void spx_usbc_event_work(struct work_struct *work)
 	if (notify) {
 		if (spx_usbc_hpd(usbc, connected)) {
 			usbc->connected = connected;
-			/* Level forwarding alone cannot acknowledge an HPD IRQ. */
+			/* A firmware IRQ still needs explicit sink request handling. */
 			if (!event->hpd_irq)
 				event->ack.handled = cpu_to_le32(1);
 			dev_info(usbc->dev,
@@ -191,8 +192,15 @@ static void spx_usbc_event_work(struct work_struct *work)
 		}
 	}
 	if (le32_to_cpu(event->ack.port) == 0 && spx_usbc_dp_event(event) &&
-	    event->hpd_irq)
-		dev_dbg(usbc->dev, "USC DP HPD IRQ remains unhandled\n");
+	    event->hpd_irq && event->hpd_level == 1 && usbc->connected) {
+		ret = msm_dp_bridge_hpd_irq(usbc->bridge);
+		if (!ret) {
+			event->ack.handled = cpu_to_le32(1);
+			dev_dbg(usbc->dev, "USC DP HPD IRQ processed\n");
+		} else {
+			dev_warn_ratelimited(usbc->dev, "USC DP HPD IRQ failed: %d\n", ret);
+		}
+	}
 
 ack:
 	/* Sequenced ACK without a response, including unhandled port events. */
