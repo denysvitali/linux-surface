@@ -47,8 +47,8 @@ awaits attribution for later observations.
 | Battery and charging (P01) | **CF: P01a actual charging passes, +1.26Wh/120s** | Charge-policy explanation, discharge/transitions and charger coverage |
 | Suspend/resume (P03) | Kernel exposes s2idle; systemd sleep/suspend targets masked | Intended wake, then controlled sleep |
 | Thermal (P05) | BH: 3 min CPU/GPU load stable, peak 60.1°C | Cooling response |
-| Idle power (P02) | BU: CPU scales down; GPU runtime-suspends | Battery power measurement and remaining forced-on devices |
-| Sensors (S01, S02) | BW: TCS3430 runtime-PM/readout passes, counts zero | Physical light response; auto-brightness; motion sensor-hub stack |
+| Idle power (P02) | BU: CPU scales down; GPU runtime-suspends | **Battery tests deferred by user**; remaining forced-on devices |
+| Sensors (S01, S02) | BW: TCS3430 runtime-PM/readout passes; **SLPI driver match fixed, WIP** | Physical light response; auto-brightness; SLPI board wiring/boot/transport |
 | Cellular, GNSS (N03, N04) | Recovery: GNSS starts/stops but no fix; modem rejects online mode | Real modem provisioning, IPA datapath, SIM; actual GNSS fix |
 
 ## Next work, in order
@@ -61,14 +61,14 @@ change is planned; repeating the same remote test would add no functional gain.
 
 1. **Deferred three-minute quiet physical batch:** on mainline, type on the
    keyboard; cover/uncover the front light sensor for5seconds each, twice;
-   unplug the charger for60seconds and reconnect for60seconds. Obtain readiness
-   before starting sampling, plus charger type and room-light context. Repeating
-   zero-only light or unchanged AC samples without these actions adds no result.
+   obtain readiness before starting sampling, plus room-light context. Battery
+   tests are deferred at the user's request (October5); omit charger actions.
+   Repeating zero-only light samples without these actions adds no result.
 2. **One human session (about 20 minutes),** prepared in advance so each step
    is one action: type on the keyboard and use the touchpad (I04, I05); tap,
    drag and use the pen (I02, I03); press power and volume buttons, close the
-   cover (I06); plug a USB stick into each port (U01); plug and unplug the
-   charger (P01, U02); look at the panel (D01, D02); pair one Bluetooth device
+   cover (I06); plug a USB stick into each port (U01);
+   look at the panel (D01, D02); pair one Bluetooth device
    (N02); rotate the device (S02); press power to wake from suspend (P03).
 3. **Touch startup reliability (I01):** recovery's failed udev identification
    left no IPTSD instance to retry. One targeted add event restored the service;
@@ -87,12 +87,9 @@ change is planned; repeating the same remote test would add no functional gain.
 6. External display and dock (U03, U04). Cellular/GNSS (N03/N04) require real
    modem provisioning before further online/reception retries; preserve the
    working WLAN dummy-file setup. Video (D03) remains parked.
-7. **Battery power (P02):** the prepared bounded mainline
-   `trial.py power-measure` idle/load/recovery test requires mains disconnected
-   and battery≥20%. CF's charging pass does not measure battery discharge;
-   the uncontrolled recovery reference is not a mainline idle pass.
-   [Power result](tools/spx/boot-diagnostics/RESULT-20261005power.md).
-8. Final candidate and regression (F01–F04).
+7. Final candidate and regression (F01–F04). Battery tests (P01/P02) are
+   deferred at the user's request; retain CF's charging pass and do not request
+   charger unplug/replug or run battery load/endurance tests.
 
 ## How to use this checklist
 
@@ -973,6 +970,11 @@ GPU runtime suspend works.
 - [ ] **S02 — Motion/orientation.** Inventory actual accelerometer/gyro/magnetometer
   or sensor-hub interfaces; validate axes, orientation changes and auto-rotation,
   including resume. PMIC ADCs are not evidence of motion-sensor support.
+  **October5 WIP:** SQ2 sensors use the separate SLPI/SDSP, not audio ADSP.
+  The missing schema-supported SC8180X PAS match is fixed and compiled, but no
+  board node/firmware boot/SSC transport or sensor stream is established.
+  Next needs evidenced MMIO, memory ownership and IRQ/GLINK/FastRPC wiring.
+  [SLPI result](tools/spx/boot-diagnostics/RESULT-20261005slpi.md).
 - [ ] **P01 — Battery and charging.** Plausible voltage/current/capacity/status,
   observed discharge and charging, AC transitions, charge limits where supported
   and low-battery behavior. Test applicable USB-C and Surface Connect chargers;
