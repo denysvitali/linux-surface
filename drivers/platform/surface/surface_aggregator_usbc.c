@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Experimental Surface Pro X USC-to-DP0 hotplug forwarding.
- * Probe waits for SSAM and MSM startup, then a dock replug is still required.
- * No initial-state query, PHY orientation switching or second-port routing is
- * implemented yet. Pre-connected docks and visible output remain unverified.
+ * Probe waits for SSAM and MSM startup. A pre-connected dock has supplied
+ * startup events, but there is no initial-state query or guaranteed replay.
+ * PHY orientation/lane switching and second-port routing are unimplemented;
+ * DP-only mux forwarding and visible output remain unverified.
  * Never unbind/reload live MSM components when testing this driver.
  */
 #include <linux/module.h>
@@ -40,10 +41,12 @@ struct spx_usbc_event {
 	struct work_struct work;
 	struct spx_usbc *usbc;
 	struct spx_usbc_ack ack;
-	u8 orientation;
-	u8 type;
-	u8 link;
-	u8 connected;
+	u8 cc_state;
+	u8 mux_mode;
+	u8 high_speed;
+	u8 dp_pin;
+	u8 hpd_level;
+	u8 hpd_irq;
 };
 
 static bool spx_usbc_hpd(struct spx_usbc *usbc, bool connected)
@@ -69,6 +72,24 @@ static bool spx_usbc_hpd(struct spx_usbc *usbc, bool connected)
 	return ready;
 }
 
+/* Firmware's DP pin codes include the reversed assignments at code + 6. */
+static bool spx_usbc_dp_event(const struct spx_usbc_event *event)
+{
+	if (event->cc_state > 1 || event->hpd_level > 1 || event->hpd_irq > 1)
+		return false;
+
+	switch (event->mux_mode) {
+	case 2:
+		return event->dp_pin == 3 || event->dp_pin == 5 ||
+		       event->dp_pin == 9 || event->dp_pin == 11;
+	case 3:
+		return event->dp_pin == 2 || event->dp_pin == 4 ||
+		       event->dp_pin == 8 || event->dp_pin == 10;
+	default:
+		return false;
+	}
+}
+
 static void spx_usbc_event_work(struct work_struct *work)
 {
 	struct spx_usbc_event *event = container_of(work, struct spx_usbc_event, work);
@@ -87,25 +108,33 @@ static void spx_usbc_event_work(struct work_struct *work)
 
 	/* Only USC port zero is known to route to the primary DP controller. */
 	if (le32_to_cpu(event->ack.port) == 0) {
-		if (event->type == 3) {
-			notify = true;
-			connected = event->connected == 1;
-		} else if (event->type == 0 && event->orientation == 2 && usbc->connected) {
+		if (spx_usbc_dp_event(event)) {
+			connected = event->hpd_level == 1;
+			/* A repeated level does not deliver a firmware HPD IRQ. */
+			notify = !event->hpd_irq || connected != usbc->connected;
+		} else if (event->mux_mode == 0 && event->cc_state == 2) {
 			notify = true;
 		}
 	}
 
 	if (notify) {
-		usbc->connected = connected;
 		if (spx_usbc_hpd(usbc, connected)) {
-			event->ack.handled = cpu_to_le32(1);
-			dev_info(usbc->dev, "USC DP port 0 %s (orientation=%u, link=%u)\n",
+			usbc->connected = connected;
+			/* Level forwarding alone cannot acknowledge an HPD IRQ. */
+			if (!event->hpd_irq)
+				event->ack.handled = cpu_to_le32(1);
+			dev_info(usbc->dev,
+				 "USC DP port 0 %s (cc=%u, mux=%u, high-speed=%u, pin=%u, irq=%u)\n",
 				 connected ? "connected" : "disconnected",
-				 event->orientation, event->link);
+				 event->cc_state, event->mux_mode, event->high_speed,
+				 event->dp_pin, event->hpd_irq);
 		} else {
 			dev_warn_ratelimited(usbc->dev, "DP HPD unavailable; replug after display startup\n");
 		}
 	}
+	if (le32_to_cpu(event->ack.port) == 0 && spx_usbc_dp_event(event) &&
+	    event->hpd_irq)
+		dev_dbg(usbc->dev, "USC DP HPD IRQ remains unhandled\n");
 
 	/* Sequenced ACK without a response, including unhandled port events. */
 	ret = ssam_request_do_sync(usbc->ctrl, &request, NULL);
@@ -132,10 +161,12 @@ static u32 spx_usbc_notify(struct ssam_event_notifier *nf,
 	work->usbc = usbc;
 	work->ack.sequence = cpu_to_le32(get_unaligned_le32(event->data));
 	work->ack.port = cpu_to_le32(event->data[4]);
-	work->orientation = event->data[5];
-	work->type = event->data[6];
-	work->link = event->data[8];
-	work->connected = event->data[9];
+	work->cc_state = event->data[5];
+	work->mux_mode = event->data[6];
+	work->high_speed = event->data[7];
+	work->dp_pin = event->data[8];
+	work->hpd_level = event->data[9];
+	work->hpd_irq = event->data[10];
 	queue_work(usbc->wq, &work->work);
 
 	return SSAM_NOTIF_HANDLED;
