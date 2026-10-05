@@ -6,14 +6,13 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-05, BV: ALS binds; quiet desktop audio handoff failed)
+## Status (2026-10-05, BW: quiet desktop audio restored; ALS response pending)
 
-Latest result: [BV](tools/spx/boot-diagnostics/RESULT-20261005bv.md), mainline
-`7.3.0-rc2-spx-mainline-20261004bg+`; automatic return now runs recovery6.18.
-Quiet speaker tones passed, but public handoff timed out; amps/capture closed.
-BU's [desktop continuity](tools/spx/boot-diagnostics/RESULT-20261005bu.md) and
-[CPU scaling/Wi-Fi upload](tools/spx/boot-diagnostics/RESULT-20261005bu-hardware.md)
-remain demonstrated. A01a passes; audio lifecycle/persistence remain open.
+Latest result: [BW](tools/spx/boot-diagnostics/RESULT-20261005bw.md), running
+`7.3.0-rc2-spx-mainline-20261004bg+`. Quiet default desktop output passes
+microphone checks; capture is closed and the original playback stream stays
+open. CPU scaling is automatic. TCS3430 power/readout lifecycle passes, but
+zero raw counts need a physical light test. Audio lifecycle/resume stay open.
 Input/BT confirmations belong to BI; the
 [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
 awaits attribution for later observations.
@@ -25,11 +24,11 @@ awaits attribution for later observations.
 | Storage (B02) | Passed on AP | Post-resume I/O |
 | GPU FD680 (D02) | **Passed on AW**, 30 min rendering | A person looking at the screen |
 | Internal panel (D01) | User: display and brightness work; boot attribution pending | Blank/unblank and resume |
-| Wi-Fi (N01) | 5 GHz: BI download ~379 Mbit/s; BU upload ~189 Mbit/s | Reconnect, 2.4 GHz, sustained use and resume |
+| Wi-Fi (N01) | 5 GHz: BW download ~419 Mbit/s and reconnect pass; BU upload ~189 Mbit/s | 2.4 GHz, roaming, sustained use and resume |
 | RTC (B05) | Readback and warm reboot pass | Cold power-off retention |
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
-| Speakers (A01) | BU desktop passed; BV quiet tones pass, desktop handoff fails | Persistence, volume/mapping/balance, reopen and lifecycle |
+| Speakers (A01) | **BW: quiet default desktop playback passes** | Persistence, volume/mapping/balance, reopen and lifecycle |
 | Microphones (A02) | **BN: DMIC1 records known speaker tones** | Other fitted mics, quality and full lifecycle |
 | Cameras (C01–C05) | Rear sensor identifies | No frame captured |
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
@@ -42,7 +41,7 @@ awaits attribution for later observations.
 | Suspend/resume (P03) | Kernel exposes s2idle; systemd sleep/suspend targets masked | Intended wake, then controlled sleep |
 | Thermal (P05) | BH: 3 min CPU/GPU load stable, peak 60.1°C | Cooling response |
 | Idle power (P02) | BU: CPU scales down; GPU runtime-suspends | Battery power measurement and remaining forced-on devices |
-| Sensors (S01, S02) | BV: correct TCS3430 driver binds, raw reads zero | Physical light response; auto-brightness; motion sensor-hub stack |
+| Sensors (S01, S02) | BW: TCS3430 runtime-PM/readout passes, counts zero | Physical light response; auto-brightness; motion sensor-hub stack |
 | Cellular, GNSS (N03, N04) | Never tested | SIM |
 
 ## Next work, in order
@@ -59,7 +58,7 @@ awaits attribution for later observations.
 3. **Touch startup reliability (I01):** recovery's failed udev identification
    left no IPTSD instance to retry. One targeted add event restored the service;
    BI now starts automatically and physical touch/pen work. Verify reliability.
-4. **Audio (A01–A03):** preserve BU's working default desktop path, resolve
+4. **Audio (A01–A03):** preserve BW's quiet default desktop path, resolve
    WCD/ADM close faults and test hardware reopen and persistence. The user authorized bounded automated
    speaker/microphone testing; announce capture and park the amps afterwards.
 5. **Camera frames (C02–C04).**
@@ -576,6 +575,8 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
     inserted. [BU result](tools/spx/boot-diagnostics/RESULT-20261005bu.md).
     This establishes output from both digital channels, not physical mapping,
     balance or the full useful listening-volume range.
+    BW repeats all phases and default-output handoff at quiet1433/minimum PA;
+    [BW result](tools/spx/boot-diagnostics/RESULT-20261005bw.md).
 
 - [ ] **A02 — Internal microphones.** Real known stimulus/voice recorded on each
   fitted microphone, correct routing/channel assignment and usable gain/noise;
@@ -598,7 +599,8 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
     default desktop sink passes acoustically. A two-minute ordinary desktop
     stream completes with the same PCM owner and capture closed.
     [BU result](tools/spx/boot-diagnostics/RESULT-20261005bu.md). Clean shutdown
-    on this implementation remains untested: keep its working stream open.
+    failed with a shutdown XRUN on BU after reboot/session stop began. BW
+    restores quiet desktop handoff; keep its working stream open.
     BP previously verified empty SoundWire FIFO after stream close on boot
     `a208387a-004a-4e7b-98f4-8c8a7945cde6`, same kernel release.
     [BP result](tools/spx/boot-diagnostics/RESULT-20261004bp.md). Hardware reopen,
@@ -623,6 +625,10 @@ host datapath; that is not current cellular service verification.
   after signal loss, radio toggle and suspend. Resolve overlapping supplicant
   ownership; verify relevant networking configuration, including the recorded
   IPv6 netfilter gap, without changing firewall policy merely to get a pass.
+  **BW partial:** existing5GHz profile disconnect/reconnect succeeds in9.04s;
+  verified-HTTPS download succeeds afterward. Startup25MB download ~419Mbit/s.
+  BU upload ~189Mbit/s remains demonstrated; other bands, roaming and resume
+  stay open. [BW result](tools/spx/boot-diagnostics/RESULT-20261005bw.md).
 - [ ] **N02 — Bluetooth.** Real pairing, reconnect and peripheral use (HID and
   audio as available), radio toggle and resume; Wi-Fi coexistence under load.
   Preserve the active remote connection while planning radio tests.
@@ -841,8 +847,9 @@ firmware ownership, receiver DT/bindings and capture integration remain open. [C
 
 ## Sensors, battery, power and thermal behavior
 
-Current: **partial**. BU identifies the light sensor as TCS3430, currently
-misbound to APDS9960. Motion requires Qualcomm's separate sensor-hub stack.
+Current: **partial**. BW binds the correct TCS3430 driver and passes runtime
+suspend/read cycles, but light channels stay zero without a known stimulus.
+Motion requires Qualcomm's separate sensor-hub stack.
 BU CPU policies now use schedutil and pass load/idle transitions. AC is online,
 battery49%/14.72Wh, Not charging with no energy change over120s; this does not
 establish a charge fault or successful charging. GPU runtime suspend works.
@@ -852,6 +859,8 @@ establish a charge fault or successful charging. GPU runtime suspend works.
   verify readings under cover/uncover stimulus and intended desktop brightness
   behavior. TCS3430 has XYZ/IR light channels, not APDS proximity; do not treat
   the former driver's proximity zero as evidence of a fitted proximity sensor.
+  BW restores gain/timing settings and passes three runtime-PM cycles; physical
+  response and auto-brightness remain unverified. [BW](tools/spx/boot-diagnostics/RESULT-20261005bw.md).
 - [ ] **S02 — Motion/orientation.** Inventory actual accelerometer/gyro/magnetometer
   or sensor-hub interfaces; validate axes, orientation changes and auto-rotation,
   including resume. PMIC ADCs are not evidence of motion-sensor support.
