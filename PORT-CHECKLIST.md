@@ -43,13 +43,15 @@ awaits attribution for later observations.
 | Thermal (P05) | BH: 3 min CPU/GPU load stable, peak 60.1°C | Cooling response |
 | Idle power (P02) | BU: CPU scales down; GPU runtime-suspends | Battery power measurement and remaining forced-on devices |
 | Sensors (S01, S02) | BW: TCS3430 runtime-PM/readout passes, counts zero | Physical light response; auto-brightness; motion sensor-hub stack |
-| Cellular, GNSS (N03, N04) | Modem control responds; GNSS LOC service exists | Cellular mode and IPA datapath, SIM; actual GNSS fix |
+| Cellular, GNSS (N03, N04) | Recovery: GNSS starts/stops but no fix; modem rejects online mode | Real modem provisioning, IPA datapath, SIM; actual GNSS fix |
 
 ## Next work, in order
 
-1. **Agent alone, no new kernel needed:** P01 battery readout, P05 thermal
-   under load, P02 idle power, N01 Wi-Fi transfer and reconnect, N02 Bluetooth
-   controller and scan, S01/S02 sensor readout, B04 remoteproc stability.
+1. **Pending three-minute quiet physical batch:** on mainline, type on the
+   keyboard; cover/uncover the front light sensor for5seconds each, twice;
+   unplug the charger for60seconds and reconnect for60seconds. Obtain readiness
+   before starting sampling, plus charger type and room-light context. Repeating
+   zero-only light or unchanged AC samples without these actions adds no result.
 2. **One human session (about 20 minutes),** prepared in advance so each step
    is one action: type on the keyboard and use the touchpad (I04, I05); tap,
    drag and use the pen (I02, I03); press power and volume buttons, close the
@@ -63,7 +65,9 @@ awaits attribution for later observations.
    WCD/ADM close faults and test hardware reopen and persistence. The user authorized bounded automated
    speaker/microphone testing; announce capture and park the amps afterwards.
 5. **Camera frames (C02–C04).**
-6. External display and dock (U03, U04), cellular (N03), then video (D03).
+6. External display and dock (U03, U04). Cellular/GNSS (N03/N04) require real
+   modem provisioning before further online/reception retries; preserve the
+   working WLAN dummy-file setup. Video (D03) remains parked.
 7. Final candidate and regression (F01–F04).
 
 ## How to use this checklist
@@ -668,6 +672,12 @@ host datapath; that is not current cellular service verification.
 - [ ] **N04 — GNSS/location.** Establish fitted capability and its modem/interface
   path; if applicable obtain a real fix with plausible time/location and reacquire.
   A missing `/sys/class/gnss` entry does not alone decide support.
+  **Recovery prerequisite test, October5:** LOC standalone/unlocked control and
+  explicit START/STOP work, but60seconds produces no fix or satellite list.
+  Modem online transition fails `DeviceNotReady`; it remains factory-test.
+  Installed rmtfs-dummy supplies zero-filled placeholders for WLAN bootstrap.
+  Resolve actual modem provisioning before repeating reception tests; no mainline
+  acceptance follows. [Result](tools/spx/boot-diagnostics/RESULT-20261005-recovery-gnss.md).
 - [ ] **U01 — USB data on each physical port.** Test both USB-C ports and plug
   orientations with actual USB2/USB3 devices, checksum-verified transfers and
   repeated hotplug/resume; verify negotiated speeds and no controller/IOMMU faults.
