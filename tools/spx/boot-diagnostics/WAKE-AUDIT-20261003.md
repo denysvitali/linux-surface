@@ -82,3 +82,23 @@ was released. See [SRTC result](RESULT-20261005srtc1.md).
 This verifies a bounded firmware countdown and cleanup on recovery only. It
 does not show expiry delivery, wake IRQ handling, mainline behavior, or suspend
 resume. Do not close P03 or advertise RTC alarms from this result.
+
+## Expiry delivery path remains unimplemented (2026-10-05)
+
+Read-only review found the blocker in the current SSAM controller. Its
+`ssam_irq_handle()` only logs and returns `IRQ_HANDLED`; the source TODO says it
+must issue the GPIO callback repeatedly, release queued events, dispatch them
+to subsystem drivers, and decide whether any event should resume the full
+system. No callback drain or wake-reason filter is implemented. Controller
+wake permission therefore remains disabled by default to avoid unrelated EC
+events causing spurious resumes.
+
+SQ2 AML confirms `_WAK` notifies SRTC with `Device Wake` only after the machine
+has resumed. `_STP` is a no-op and `_TIP` returns all ones. The DT boot does not
+instantiate the AML `ACPI000E` SRTC device, so its ACPI notification path cannot
+provide the missing event handling on this boot. Timer expiry and GPIO180
+delivery are still unobserved.
+
+Next implementation research must identify the callback request and event
+payload contract, then route only intended wake events before permitting the
+SSAM IRQ to wake the system. Until then, do not attempt unattended s2idle.

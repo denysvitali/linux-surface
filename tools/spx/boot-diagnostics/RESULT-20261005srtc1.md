@@ -20,6 +20,8 @@ recovery kernel. Expiry routing, GPIO180 wake delivery, mainline availability
 and suspend/resume remain unknown. P03 stays open; this does not establish an
 RTC alarm device.
 
-**Next:** identify a supported expiry event/wake path from firmware or existing
-SSAM code before any controlled suspend. Preserve the current known-good boot
-policy. No audio, microphone or camera capture was performed.
+**Next:** the existing SSAM GPIO IRQ handler has no event drain or per-event
+wake filter, and controller wake permission is disabled. SQ2 `_WAK` notification
+is post-resume; `_STP` is a no-op. Identify the callback and event payload
+contract before implementing selective wake handling. Do not attempt unattended
+s2idle yet. No audio, microphone or camera capture was performed.
