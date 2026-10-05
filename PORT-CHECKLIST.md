@@ -6,15 +6,16 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-05, CF: actual battery charging passes)
+## Status (2026-10-06, CG: external display power cycles pass)
 
-Latest result: [CF](tools/spx/boot-diagnostics/RESULT-20261005cf.md), kernel
-`7.3.0-rc2-spx-mainline-20261004bg+`. **P01a passes:** connected charger adds
-1.26Wh in120s, battery27→31%; charger type/transition coverage remains open.
+Latest result: [CG](tools/spx/boot-diagnostics/RESULT-20261006cg.md), kernel
+`7.3.0-rc2-spx-mainline-20261004bg+`. **U03a passes:** two GNOME off/on cycles
+restore3440×1440/50Hz external scanout. CC0 normal Type-C callback succeeds;
+reverse plugs, visible output and hotplug remain unverified.
+CF retains P01a actual charging pass; further battery tests are deferred.
 **D01a passes on CE:** two GNOME off/on cycles
 restore native2880×1920/60Hz scanout with fresh vblank and no new display faults.
-Visual quality and suspend remain open. CE exposes only USB root hubs and no
-active external display, so external power cycling is not covered. CA's earlier
+Visual quality and suspend remain open. CG extends CE's power-cycle coverage to the attached dock. CA's earlier
 DP0 startup/reload result remains scoped to its attached dock.
 CC closes A02b: both fitted microphone inputs record known stimuli; quality,
 simultaneous mapping and lifecycle remain open. CB playback reopen still fails.
@@ -43,7 +44,7 @@ awaits attribution for later observations.
 | Buttons (I06) | User: short power press opens shutdown prompt, boot pending | Volume/posture and intended wake |
 | Bluetooth (N02) | **User confirms Bluetooth works on BI** | Device-specific pairing/reconnect and resume |
 | USB data (U01) | Untested | Both ports/orientations, fixtures |
-| USB-C PD, DisplayPort, dock (U02–U04) | **CA: DP0 automatic startup and subscriber-reload recovery,3440×1440/50Hz** | Visible output, physical replug, roles/PD, ports/orientations/resume |
+| USB-C PD, DisplayPort, dock (U02–U04) | **CG: external off/on scanout restoration passes; normal orientation API works** | Visible output, physical replug, roles/PD, ports/orientations/resume |
 | Battery and charging (P01) | **CF: P01a actual charging passes, +1.26Wh/120s** | Charge-policy explanation, discharge/transitions and charger coverage |
 | Suspend/resume (P03) | Kernel exposes s2idle; systemd sleep/suspend targets masked | Intended wake, then controlled sleep |
 | Thermal (P05) | BH: 3 min CPU/GPU load stable, peak 60.1°C | Cooling response |
@@ -772,6 +773,12 @@ host datapath; that is not current cellular service verification.
   release. [Result](tools/spx/boot-diagnostics/RESULT-20261005ca.md). Continuous
   visible output and guaranteed firmware state replay are not established.
   [Follow-up](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md).
+  - [x] **U03a — Desktop external display off/on restores scanout.** CG,
+    boot `e9748c2e-ca89-4ea7-b40d-f3c046eef12f`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: two Mutter power cycles disable and
+    restore both CRTCs, matching3440×1440/50Hz external mode, GNOME framebuffer
+    and fresh vblank. No new display faults. Visible output remains unverified.
+    [Result](tools/spx/boot-diagnostics/RESULT-20261006cg.md).
 - [ ] **U04 — Dock and Surface Connect.** Inventory actual Surface Connect/dock
   capabilities; validate supported charging, USB, Ethernet, display and audio
   concurrently with the relevant accessories. Identify USB vs Thunderbolt mode
