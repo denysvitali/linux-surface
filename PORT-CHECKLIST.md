@@ -6,15 +6,14 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-05, BU: desktop audio, CPU scaling and Wi-Fi upload work)
+## Status (2026-10-05, BV: ALS binds; quiet desktop audio handoff failed)
 
-Latest results: [quiet hardware checks](tools/spx/boot-diagnostics/RESULT-20261005bu-hardware.md)
-and [audio](tools/spx/boot-diagnostics/RESULT-20261005bu.md), running
-`7.3.0-rc2-spx-mainline-20261004bg+`. Both speakers pass the microphone checks;
-ordinary applications use the default `spx_speakers` output at a digital level
-8.9 dB above the previous setting. The microphone is closed. Two minutes of
-continuous desktop forwarding passed, with the same hardware stream retained.
-A01a is restored; hardware reopen, reboot persistence and resume remain open.
+Latest result: [BV](tools/spx/boot-diagnostics/RESULT-20261005bv.md), mainline
+`7.3.0-rc2-spx-mainline-20261004bg+`; automatic return now runs recovery6.18.
+Quiet speaker tones passed, but public handoff timed out; amps/capture closed.
+BU's [desktop continuity](tools/spx/boot-diagnostics/RESULT-20261005bu.md) and
+[CPU scaling/Wi-Fi upload](tools/spx/boot-diagnostics/RESULT-20261005bu-hardware.md)
+remain demonstrated. A01a passes; audio lifecycle/persistence remain open.
 Input/BT confirmations belong to BI; the
 [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
 awaits attribution for later observations.
@@ -30,7 +29,7 @@ awaits attribution for later observations.
 | RTC (B05) | Readback and warm reboot pass | Cold power-off retention |
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
-| Speakers (A01) | **BU: default desktop playback and louder output verified** | Persistence, useful volume/mapping/balance, reopen and WCD/ADM lifecycle |
+| Speakers (A01) | BU desktop passed; BV quiet tones pass, desktop handoff fails | Persistence, volume/mapping/balance, reopen and lifecycle |
 | Microphones (A02) | **BN: DMIC1 records known speaker tones** | Other fitted mics, quality and full lifecycle |
 | Cameras (C01–C05) | Rear sensor identifies | No frame captured |
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
@@ -43,7 +42,7 @@ awaits attribution for later observations.
 | Suspend/resume (P03) | Kernel exposes s2idle; systemd sleep/suspend targets masked | Intended wake, then controlled sleep |
 | Thermal (P05) | BH: 3 min CPU/GPU load stable, peak 60.1°C | Cooling response |
 | Idle power (P02) | BU: CPU scales down; GPU runtime-suspends | Battery power measurement and remaining forced-on devices |
-| Sensors (S01, S02) | BU: TCS3430 identity confirmed; APDS binding wrong | Correct ALS driver; motion sensor-hub stack |
+| Sensors (S01, S02) | BV: correct TCS3430 driver binds, raw reads zero | Physical light response; auto-brightness; motion sensor-hub stack |
 | Cellular, GNSS (N03, N04) | Never tested | SIM |
 
 ## Next work, in order
