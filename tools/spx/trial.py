@@ -12,6 +12,7 @@ from pathlib import Path
 import pwd
 import re
 import shutil
+import signal
 import socket
 import stat
 import struct
@@ -386,6 +387,167 @@ def functional_check(args):
     run('kernel-log', ['journalctl', '-b', '-k', '--no-pager', '-o', 'short-monotonic'])
     result['complete'] = True
     save()
+
+
+def wifi_band_gate():
+    """Reject recovery, unfinished boots and expiring return timers before mutation."""
+    assert os.geteuid() == 0 and os.uname().release == RELEASE
+    assert RELEASE == '7.3.0-rc2-spx-mainline-20261004bg+'
+    words = Path('/proc/cmdline').read_text().split()
+    assert [w for w in words if w.startswith('spx_attempt=')] == ['spx_attempt=' + ATTEMPT]
+    assert 'spx_boot=mainline-functional' in words
+    boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    checked = json.loads((OUT / 'functional.json').read_text())
+    assert checked.get('complete') and checked['boot_id'] == boot
+    uptime = float(Path('/proc/uptime').read_text().split()[0])
+    assert 90 <= uptime <= 600
+    unit = 'spx-trial-return@' + ATTEMPT + '.timer'
+    assert subprocess.check_output(['systemctl', 'is-active', unit], text=True, timeout=5).strip() == 'active'
+    value = subprocess.check_output(['systemctl', 'show', unit, '-p',
+                                    'NextElapseUSecMonotonic', '--value'], text=True, timeout=5).strip()
+    units = {'us': 1e-6, 'ms': .001, 's': 1, 'min': 60, 'h': 3600, 'd': 86400}
+    parts = re.findall(r'([0-9]+(?:\.[0-9]+)?)(us|ms|min|s|h|d)', value)
+    assert parts and re.sub(r'([0-9]+(?:\.[0-9]+)?)(us|ms|min|s|h|d)|\s+', '', value) == '', value
+    expires = sum(float(n) * units[u] for n, u in parts)
+    assert expires - time.clock_gettime(time.CLOCK_MONOTONIC) >= 180, 'return timer too close'
+    return boot
+
+
+def wifi_band(args):
+    """Two bounded 2.4 GHz downloads using an owned temporary saved-profile clone."""
+    os.umask(0o077)
+    boot = wifi_band_gate()
+    assert args.wifi_profile, '--wifi-profile requires an existing saved profile ID'
+    output = OUT / 'wifi-band'
+    owner = 'wifi-' + ATTEMPT
+    lock = str(REPO / 'tools/spx/spx-lock')
+    subprocess.run([lock, 'acquire', 'device', owner], check=True, timeout=5)
+    result = dict(boot_id=boot, release=RELEASE, source_profile=args.wifi_profile,
+                  links=[], transfers=[], restoration={}, complete=False)
+    target = output / 'result.json'
+    original = None
+    clone_name = 'spx-wifi-band-' + ATTEMPT
+    clone_uuid = None
+    clone_attempted = False
+    claimed = False
+    handlers = {}
+    start = float(Path('/proc/uptime').read_text().split()[0])
+    deadline = time.monotonic() + 135
+
+    def save():
+        target.write_text(json.dumps(result, indent=2) + '\n')
+
+    def command(argv, timeout=10, cleanup=False):
+        if not cleanup:
+            timeout = min(timeout, deadline - time.monotonic())
+            assert timeout > 0, 'Wi-Fi test deadline expired'
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+
+    def nm(*argv, timeout=10, cleanup=False):
+        proc = command(['nmcli', '--wait', str(min(30, int(timeout))), *argv], timeout + 2, cleanup)
+        assert proc.returncode == 0, 'nmcli failed: ' + proc.stderr.strip()
+        return proc.stdout.strip()
+
+    def link(phase):
+        proc = command(['iw', 'dev', 'wlan0', 'link'])
+        entry = dict(phase=phase, returncode=proc.returncode, link=proc.stdout.strip())
+        result['links'].append(entry)
+        save()
+        match = re.search(r'^\s*freq:\s*(\d+)\s*$', proc.stdout, re.M)
+        assert proc.returncode == 0 and match and 2400 <= int(match[1]) <= 2500, 'not associated on 2.4 GHz'
+        entry['frequency_mhz'] = int(match[1])
+
+    def interrupted(signum, frame):
+        raise RuntimeError('Wi-Fi test interrupted by signal ' + str(signum))
+
+    try:
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            handlers[signum] = signal.signal(signum, interrupted)
+        # Recheck after acquiring exclusive access; all gates precede any NM change.
+        assert wifi_band_gate() == boot
+        fields = nm('--escape', 'no', '-g', 'connection.uuid,connection.type,802-11-wireless.ssid',
+                    'connection', 'show', 'id', args.wifi_profile).splitlines()
+        assert len(fields) == 3 and fields[1] == '802-11-wireless'
+        source_uuid, _, ssid = fields
+        original = nm('-g', 'GENERAL.CON-UUID', 'device', 'show', 'wlan0')
+        assert re.fullmatch(r'[0-9a-fA-F-]{36}', original), 'wlan0 has no saved active UUID'
+        result.update(source_uuid=source_uuid, ssid=ssid, original_uuid=original)
+        scan = nm('--escape', 'no', '-t', '-f', 'SSID,FREQ', 'device', 'wifi', 'list',
+                  'ifname', 'wlan0', '--rescan', 'no')
+        visible = [line.rsplit(':', 1) for line in scan.splitlines() if ':' in line]
+        assert any(name == ssid and re.fullmatch(r'\d+(?: MHz)?', freq) and
+                   2400 <= int(freq.split()[0]) <= 2500 for name, freq in visible), 'saved SSID not visible on 2.4 GHz'
+        assert not nm('-g', 'NAME', 'connection', 'show').splitlines().count(clone_name), 'clone ID already exists'
+        output.mkdir(mode=0o700, exist_ok=True)
+        # Exclusive creation consumes the attempt before cloning or association.
+        with target.open('x') as stream:
+            stream.write(json.dumps(result) + '\n')
+        claimed = True
+        clone_attempted = True
+        nm('connection', 'clone', '--temporary', 'uuid', source_uuid, clone_name)
+        clone_uuid = nm('-g', 'connection.uuid', 'connection', 'show', 'id', clone_name)
+        result['clone_uuid'] = clone_uuid
+        nm('connection', 'modify', '--temporary', 'uuid', clone_uuid,
+           '802-11-wireless.band', 'bg', 'connection.autoconnect', 'no',
+           'connection.interface-name', 'wlan0')
+        nm('connection', 'up', 'uuid', clone_uuid, 'ifname', 'wlan0', timeout=30)
+        for index in (1, 2):
+            link('before-' + str(index))
+            proc = command(['curl', '--interface', 'wlan0', '-4', '--fail', '--silent',
+                            '--show-error', '--max-time', '45', '-o', '/dev/null', '-w',
+                            '%{size_download} %{time_total} %{speed_download}',
+                            'https://speed.cloudflare.com/__down?bytes=25000000'], timeout=47)
+            transfer = dict(index=index, returncode=proc.returncode,
+                            summary=proc.stdout.strip(), error=proc.stderr.strip())
+            result['transfers'].append(transfer)
+            save()
+            link('after-' + str(index))
+            stats = proc.stdout.split()
+            assert proc.returncode == 0 and len(stats) == 3 and float(stats[0]) == 25000000, 'incomplete HTTPS transfer'
+            transfer.update(bytes=int(float(stats[0])), seconds=float(stats[1]), bytes_per_second=float(stats[2]))
+        result['data_passed'] = True
+    except Exception as error:
+        result['error'] = str(error)
+    finally:
+        try:
+            for signum in handlers:
+                signal.signal(signum, signal.SIG_IGN)
+            if clone_attempted:
+                try:
+                    nm('connection', 'up', 'uuid', original, 'ifname', 'wlan0', timeout=30, cleanup=True)
+                    active = nm('-g', 'GENERAL.CON-UUID', 'device', 'show', 'wlan0', timeout=3, cleanup=True)
+                    result['restoration']['original_active'] = active == original
+                    assert active == original, 'original UUID was not restored'
+                except Exception as error:
+                    result['restoration']['error'] = str(error)
+                try:
+                    # ID is owned by this invocation even if clone UUID lookup failed.
+                    nm('connection', 'delete', 'id', clone_name, timeout=3, cleanup=True)
+                    result['restoration']['clone_deleted'] = True
+                except Exception as error:
+                    result['restoration']['delete_error'] = str(error)
+            if claimed:
+                try:
+                    proc = command(['journalctl', '-b', '-k', '--no-pager', '-o', 'short-monotonic'], timeout=5, cleanup=True)
+                    lines = [line for line in proc.stdout.splitlines()
+                             if (stamp := re.match(r'\[\s*([0-9.]+)\]', line)) and float(stamp[1]) >= start]
+                    (output / 'kernel.log').write_text('\n'.join(lines) + '\n')
+                    result['new_kernel_faults'] = [line for line in lines if re.search(
+                        r'(?i)(ath10k.*(?:fail|error|crash|timeout)|firmware crashed|BUG:|Oops:|Call trace:)', line)]
+                    result['kernel_log_exit'] = proc.returncode
+                except Exception as error:
+                    result['kernel_log_error'] = str(error)
+                result['complete'] = bool(result.get('data_passed') and
+                    result['restoration'].get('original_active') and result['restoration'].get('clone_deleted') and
+                    result.get('kernel_log_exit') == 0 and not result.get('new_kernel_faults'))
+                save()
+        finally:
+            try:
+                subprocess.run([lock, 'release', 'device', owner], check=True, timeout=5)
+            finally:
+                for signum, handler in handlers.items():
+                    signal.signal(signum, handler)
+    print(json.dumps(result), flush=True)
 
 
 def usbc_reload(args):
@@ -908,13 +1070,14 @@ def audio_check(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend', 'audio', 'arm-audio', 'enable-desktop-audio', 'usbc-reload'))
+    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend', 'audio', 'arm-audio', 'enable-desktop-audio', 'usbc-reload', 'wifi-band'))
     parser.add_argument('attempt')
     parser.add_argument('--build', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bg/work-build'))
     parser.add_argument('--parent', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bf'))
     parser.add_argument('--recovery', type=Path, default=Path('/var/lib/spx-boot-diagnostics/attempts/20261004bf/working-recovery.json'))
     parser.add_argument('--dtb', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bg/spx.dtb'))
     parser.add_argument('--address')
+    parser.add_argument('--wifi-profile', help='saved Wi-Fi profile ID to clone for the 2.4 GHz test')
     parser.add_argument('--audio', action='store_true', help='enable codecs with both amplifiers parked; no playback')
     parser.add_argument('--usbc', action='store_true',
                         help='load experimental USC-to-DP0 forwarding in the initramfs')
@@ -969,7 +1132,7 @@ def main():
         else:
             {'install': install, 'boot': boot, 'return': return_to_default,
              'extend': extend_window, 'audio': audio_check, 'arm-audio': arm_audio,
-             'usbc-reload': usbc_reload,
+             'usbc-reload': usbc_reload, 'wifi-band': wifi_band,
              'enable-desktop-audio': enable_desktop_audio}[args.command](args)
 
 
