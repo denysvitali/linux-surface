@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 """One reusable SPX functional trial: fixed kernel build, prepare/install/boot/return."""
 import argparse
+import ctypes
 from datetime import datetime, timezone
 import fcntl
 import hashlib
@@ -696,6 +697,119 @@ def display_power(args):
     print(json.dumps(result), flush=True)
 
 
+def srtc_timer(args):
+    """Verify the documented SQ2 AC/DC timer countdown without suspending."""
+    os.umask(0o077)
+    assert os.geteuid() == 0
+    assert os.uname().release == '6.18.3-1-surface+', 'run from the known-good recovery kernel'
+    boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    recovery()
+
+    output = Path('/var/lib/spx-boot-diagnostics/attempts') / ATTEMPT / 'srtc-timer'
+    output.mkdir(parents=True, mode=0o700)
+    target = output / 'result.json'
+    owner, lock = 'srtc-' + ATTEMPT, str(REPO / 'tools/spx/spx-lock')
+    subprocess.run([lock, 'acquire', 'device', owner], check=True, timeout=5)
+    result = dict(boot_id=boot, release=os.uname().release, command='srtc-timer',
+                  controller='/dev/surface/aggregator', before={}, after={},
+                  complete=False, suspended=False)
+    armed = False
+    loaded_here = False
+
+    def save():
+        target.write_text(json.dumps(result, indent=2) + '\n')
+
+    def request(fd, command, payload):
+        payload_buf = ctypes.create_string_buffer(payload) if payload else None
+        response_buf = ctypes.create_string_buffer(4)
+        payload_ptr = ctypes.addressof(payload_buf) if payload_buf else 0
+        response_ptr = ctypes.addressof(response_buf)
+        header = bytearray(struct.pack('=BBBBHhQH6xQH6x', 1, 1, command, 0, 1, 0,
+                                       payload_ptr, len(payload), response_ptr, 4))
+        assert len(header) == 40
+        ioctl = (3 << 30) | (len(header) << 16) | (0xA5 << 8) | 1
+        fcntl.ioctl(fd, ioctl, header, True)
+        fields = struct.unpack('=BBBBHhQH6xQH6x', header)
+        assert fields[5] == 0, 'SSAM transport status: ' + str(fields[5])
+        assert fields[9] == 4, 'expected a four-byte SSAM response'
+        return struct.unpack('<I', response_buf.raw)[0]
+
+    def timer_read(fd, timer_id):
+        return request(fd, 0x1D, struct.pack('<I', timer_id))
+
+    def timer_set(fd, timer_id, seconds):
+        status = request(fd, 0x1A, struct.pack('<II', timer_id, seconds))
+        assert status == 0, 'firmware rejected timer update with status ' + hex(status)
+
+    try:
+        if not Path('/sys/module/surface_aggregator_cdev').exists():
+            subprocess.run(['modprobe', 'surface_aggregator_cdev'], check=True, timeout=10)
+            loaded_here = True
+        device = Path('/dev/surface/aggregator')
+        assert device.exists(), 'SSAM cdev device was not created'
+
+        mains = [p for p in Path('/sys/class/power_supply').glob('*')
+                 if (p / 'type').exists() and (p / 'type').read_text().strip() == 'Mains']
+        assert mains, 'could not identify AC/DC power source'
+        online = any((p / 'online').exists() and (p / 'online').read_text().strip() == '1'
+                     for p in mains)
+        selected = 0 if online else 1
+        result.update(power_source='AC' if online else 'DC', selected_timer=selected,
+                      duration_seconds=30, cdev_loaded_here=loaded_here)
+
+        with device.open('rb', buffering=0) as stream:
+            fd = stream.fileno()
+            values = {timer_id: timer_read(fd, timer_id) for timer_id in (0, 1)}
+            result['before'] = {str(k): v for k, v in values.items()}
+            save()
+            assert values[selected] == 0xFFFFFFFF, (
+                'selected timer is already active; left both firmware timers untouched')
+
+            armed = True  # Set before the request so cleanup also covers an uncertain reply.
+            timer_set(fd, selected, 30)
+            first = timer_read(fd, selected)
+            result['armed_remaining_seconds'] = first
+            assert 1 <= first <= 30, 'firmware did not report the requested countdown'
+            time.sleep(4)
+            second = timer_read(fd, selected)
+            result['later_remaining_seconds'] = second
+            result['elapsed_seconds'] = 4
+            assert 0 <= second < first, 'firmware countdown did not decrease'
+            result['countdown_passed'] = True
+    except Exception as error:
+        result['error'] = repr(error)
+    finally:
+        try:
+            if armed:
+                try:
+                    device = Path('/dev/surface/aggregator')
+                    with device.open('rb', buffering=0) as stream:
+                        timer_set(stream.fileno(), selected, 0xFFFFFFFF)
+                        restored = timer_read(stream.fileno(), selected)
+                        final_values = {timer_id: timer_read(stream.fileno(), timer_id)
+                                        for timer_id in (0, 1)}
+                    result['cleanup_disabled_value'] = restored
+                    result['after'] = {str(k): v for k, v in final_values.items()}
+                    result['cleanup_passed'] = restored == 0xFFFFFFFF
+                    if not result['cleanup_passed']:
+                        result['cleanup_error'] = 'timer remained active after disable'
+                except Exception as error:
+                    result['cleanup_error'] = repr(error)
+            if loaded_here:
+                subprocess.run(['modprobe', '-r', 'surface_aggregator_cdev'],
+                               check=True, timeout=10)
+                result['cdev_unloaded'] = True
+        except Exception as error:
+            result['cleanup_error'] = repr(error)
+        result['complete'] = bool(result.get('countdown_passed') and
+                                  result.get('cleanup_passed') and not result.get('error') and
+                                  not result.get('cleanup_error') and
+                                  (not loaded_here or result.get('cdev_unloaded')))
+        save()
+        subprocess.run([lock, 'release', 'device', owner], check=True, timeout=5)
+    print(json.dumps(result), flush=True)
+
+
 def usbc_reload(args):
     """Restart only the USC subscriber; observe the attached display path."""
     assert os.geteuid() == 0 and os.uname().release == RELEASE
@@ -1216,7 +1330,7 @@ def audio_check(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend', 'audio', 'arm-audio', 'enable-desktop-audio', 'usbc-reload', 'wifi-band', 'display-power'))
+    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend', 'audio', 'arm-audio', 'enable-desktop-audio', 'usbc-reload', 'wifi-band', 'display-power', 'srtc-timer'))
     parser.add_argument('attempt')
     parser.add_argument('--build', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bg/work-build'))
     parser.add_argument('--parent', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bf'))
@@ -1263,6 +1377,10 @@ def main():
         BOOT_ID = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
         RELEASE = (args.build / 'include/config/kernel.release').read_text().strip()
         prepare(args)
+    elif args.command == 'srtc-timer':
+        BOOT_ID = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        RELEASE = os.uname().release
+        srtc_timer(args)
     else:
         record = json.loads((OUT / 'prepared.json').read_text())
         BOOT_ID, RELEASE = record['preboot_id'], record['release']

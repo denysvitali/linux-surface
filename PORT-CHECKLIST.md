@@ -985,9 +985,10 @@ establish a charge fault or successful charging. GPU runtime suspend works.
   sleep; no suspend was attempted during the RTC/GPU trial.
   [Wake audit](tools/spx/boot-diagnostics/WAKE-AUDIT-20261003.md).
   **October5 lead:** fitted SQ2 firmware defines SSAM AC/DC relative timers
-  (commands0x1a/0x1d); bounded countdown verification is now supported research.
-  Expiry routing/filtering remains unvalidated, so this does not provide a
-  guaranteed unattended wake path. Details in the wake audit above.
+  (commands0x1a/0x1d); a30-second DC countdown and disable/readback pass on the
+  6.18 recovery kernel. Expiry routing/filtering, mainline behavior and suspend
+  resume remain unvalidated; this does not provide a guaranteed unattended wake
+  path. Details in the [wake audit](tools/spx/boot-diagnostics/WAKE-AUDIT-20261003.md).
   **User report, October 4:** no suspend option; short power press opens shutdown
   prompt. Current recovery exposes s2idle, but shared systemd sleep/suspend
   targets are masked and `CanSuspend` is `no`. No sleep was attempted.

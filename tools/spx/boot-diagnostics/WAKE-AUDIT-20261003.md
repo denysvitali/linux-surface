@@ -69,3 +69,16 @@ until the actual wake path works. No timer command or sleep was run here.
 The actual SPX DTS manually defines PMCs without an RTC node; it does not
 include the generic `sc8180x-pmics.dtsi` RTC. SQ2 firmware disables PRTC while
 enabling SRTC. There is no validated PMIC RTC ownership/IRQ alternative.
+
+## Countdown contract verified (2026-10-05; recovery kernel only)
+
+On recovery boot `403ca502-ca68-47b8-88be-926a175708e5` (`6.18.3-1-surface+`),
+the documented SAM commands read both AC and DC timers as disabled (`U32_MAX`).
+While on DC, timer1 accepted 30 seconds, reported 26 after four seconds, and
+returned to disabled after the documented disable value. Both timers read
+disabled afterward. The temporary SSAM cdev module unloaded and the device lock
+was released. See [SRTC result](RESULT-20261005srtc1.md).
+
+This verifies a bounded firmware countdown and cleanup on recovery only. It
+does not show expiry delivery, wake IRQ handling, mainline behavior, or suspend
+resume. Do not close P03 or advertise RTC alarms from this result.
