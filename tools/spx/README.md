@@ -47,6 +47,25 @@ lock and records `functional.json` incrementally. These are partial checks;
 pairing, physical input, charging transitions and resume still need their
 own functional tests. No sound or camera/microphone capture runs.
 
+Motion sensors use SLPI/SDSP, with firmware `qcslpi8180.mbn` and SSC400 over
+GLINK/QRTR. CJ starts this firmware but libssc waits for a missing registry.
+Enable `CONFIG_QCOM_FASTRPC=m` from `functional.config` for the SensorsPD
+reverse tunnel. The current SDSP DT session uses physical DMA (SID0); this
+remains a trial until attach and live samples succeed.
+
+The retained Surface sensor package supplies the JSON configuration and six
+socinfo files. They are staged as `sensors/config/`, `sensors/registry/` and
+`socinfo/` under `/var/tmp/spx-sensors-config`. Upstream
+[hexagonrpcd](https://github.com/linux-msm/hexagonrpc) is built at
+`/var/tmp/spx-hexagonrpc/build/hexagonrpcd/hexagonrpcd`. On the running trial,
+attach with `-s -d sdsp -f /dev/fastrpc-sdsp-secure -R /var/tmp/spx-sensors-config`
+under an outer90s timeout. Confirm the actual device name first. While it runs,
+use outer15s timeouts for `ssccli --debug --sensor accelerometer --timeout 5`
+and `ssccli --debug --sensor gyroscope --timeout 5`. Save daemon/file requests,
+client output and kernel faults, then stop the daemon. QMI connectivity alone
+does not establish motion support; require sample values and separate physical
+axes/rotation/resume coverage.
+
 For a module change, commit it, build the driver against this fixed output,
 then reload it on the running mainline kernel. For example, with the changed
 driver directory assigned to `SPX_DRIVER_DIR`:
