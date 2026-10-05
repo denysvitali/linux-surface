@@ -94,6 +94,9 @@ def prepare(args):
     # clock is initialized before root userspace, without waiting for NTP.
     assert 'MODULES=(' in text
     text = text.replace('MODULES=(', 'MODULES=(rtc_surface ', 1)
+    if args.usbc:
+        # Exercise deferred SSAM/DRM startup during the existing early load.
+        text = text.replace('MODULES=(', 'MODULES=(surface_aggregator_usbc ', 1)
     for module in ('wcd934x', 'soundwire_qcom', 'snd_soc_wsa881x', 'snd_soc_wcd934x'):
         text = re.sub(r'\b' + module + r'\b', '', text)
     config.write_text(text)
@@ -131,6 +134,7 @@ def prepare(args):
     run('grub-syntax', ['grub-script-check', str(OUT / 'entry.cfg')])
     prepared = dict(utc=datetime.now(timezone.utc).isoformat(), preboot_id=BOOT_ID, release=RELEASE, attempt=ATTEMPT, entry='spx-trial-' + ATTEMPT, cmdline=cmdline, source_commit=subprocess.check_output(['git', '-c', 'safe.directory=' + str(REPO), 'rev-parse', 'HEAD'], cwd=REPO, text=True).strip(), build_directory=str(BUILD), private_config=str(OUT / 'kernel.config'), bluetooth_address=args.address, address_is_per_installation=True, venus_trial=False, speaker_drivers_blocked=True, hardware_acceptance_closed=False, installed=False, boot_selected=False, boot_payloads=dict(vmlinuz=sha(OUT / 'vmlinuz'), initramfs=sha(OUT / 'initramfs.img'), dtb=sha(OUT / 'spx.dtb')))
     prepared.update(audio_mode='parked' if args.audio else 'blocked',
+                    usbc_early_load=args.usbc,
                     speaker_drivers_blocked=not args.audio,
                     reuse_installed_modules=args.reuse_installed_modules,
                     replace_modules=args.replace_module)
@@ -782,6 +786,8 @@ def main():
     parser.add_argument('--dtb', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bg/spx.dtb'))
     parser.add_argument('--address')
     parser.add_argument('--audio', action='store_true', help='enable codecs with both amplifiers parked; no playback')
+    parser.add_argument('--usbc', action='store_true',
+                        help='load experimental USC-to-DP0 forwarding in the initramfs')
     parser.add_argument('--replace-module', action='append', default=[],
                         help='changed unloaded/blacklisted module to install while this release runs')
     parser.add_argument('--return-seconds', type=int, default=3600)

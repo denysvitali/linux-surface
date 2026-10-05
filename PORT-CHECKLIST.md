@@ -47,7 +47,11 @@ awaits attribution for later observations.
 
 ## Next work, in order
 
-1. **Pending three-minute quiet physical batch:** on mainline, type on the
+The user has no physical access (October5). Hands-on checks remain **unverified**;
+do not wait for them or start unattended stimulus-dependent sampling. Current
+work is USB-C Alt Mode/DisplayPort integration that can advance remotely.
+
+1. **Deferred three-minute quiet physical batch:** on mainline, type on the
    keyboard; cover/uncover the front light sensor for5seconds each, twice;
    unplug the charger for60seconds and reconnect for60seconds. Obtain readiness
    before starting sampling, plus charger type and room-light context. Repeating

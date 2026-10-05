@@ -23,6 +23,11 @@ selection/reboot; known-good stays the persistent default. Each attempt is
 selected once. Results and short state files go to
 `/var/lib/spx-boot-diagnostics/functional/<attempt>`.
 
+Add `--usbc` to preparation to load the experimental USC-to-DP0 forwarder
+from the initramfs and exercise its deferred startup. This provides no initial
+dock-state query; actual hotplug and monitor output still need a dock replug.
+PHY orientation switching and second-port routing remain unimplemented.
+
 The generic `spx-trial-check@` timer starts bounded functional checks at 50s:
 RFCOMM socket and UHID open, controller state, a 25 MB IPv4 transfer over
 `wlan0`, and battery/thermal/remoteproc/sensor readouts. It takes the device
