@@ -102,3 +102,10 @@ delivery are still unobserved.
 Next implementation research must identify the callback request and event
 payload contract, then route only intended wake events before permitting the
 SSAM IRQ to wake the system. Until then, do not attempt unattended s2idle.
+
+The local 6.18 sibling tree has the same unimplemented IRQ TODO. The available
+SQ2 ACPI dump defines SRTC timer and post-resume notification methods but does
+not define the GPIO callback request or queued-event payload. No existing local
+source gives a safe command/payload contract; do not infer one from unrelated
+SAM command IDs. The next evidence would need to come from a supported firmware
+or Windows-driver trace before selective wake handling can be implemented.
