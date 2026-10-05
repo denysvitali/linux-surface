@@ -2,7 +2,7 @@
 
 Recovery boot `1bdff3c9-f785-4613-bf23-4d137850bbb1`, kernel
 `6.18.3-1-surface+`. User cannot provide physical tests; continue autonomously.
-Battery tests remain deferred. No capture, playback or reboot in this phase.
+Battery tests remain deferred. No capture or playback in this phase.
 
 **Evidence:** retained `SurfaceUsbCMuxAcpiFilterDriver.sys` converter RVA0x3c588
 consumes USC bytes0–3 sequence,4 port,5 CC,6 mux,7 high-speed,8 DP pin,
@@ -23,8 +23,15 @@ HPD IRQ unhandled instead of falsely acknowledging it. Incremental W=1 Surface
 module build passes with fixed7.3 release. Not installed or hardware-tested.
 Mode2 needs PHY lane selection; a software correction closes no acceptance box.
 
-**Next:** use the proven polarity through the Type-C switch framework, then
-exercise the attached dock on mainline without human input. MSM's existing HPD
+**Trial prepared:** afb4e980aada adds opt-in primary Type-C switch graph and
+CC polarity before HPD, rejecting changed polarity while DP is connected.
+Modules and DTB compile;31 existing trial-helper tests pass. CG is installed
+with `phy_orientation=1`, the attached dock, known-good default and900s return.
+Preparation initially caught a stale one-entry modules.order; a full incremental
+modules build regenerated it and clean depmod passed. No hardware pass yet.
+
+**Next:** boot CG once; collect decoded USC fields, Type-C callback log, EDID
+and fresh scanout without human input. MSM's existing HPD
 callback distinguishes IRQ from a native hardware pulse counter; it has no
 external explicit IRQ API. Never synthesize replug to mimic an IRQ. Visible
 output, flipped plugs, other-port coverage and U02–U04 remain unverified.
