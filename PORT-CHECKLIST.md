@@ -8,11 +8,12 @@ history that used to live here is in
 
 ## Status (2026-10-05, BW: quiet desktop audio restored; ALS response pending)
 
-Latest result: [BW](tools/spx/boot-diagnostics/RESULT-20261005bw.md), running
-`7.3.0-rc2-spx-mainline-20261004bg+`. Quiet default desktop output passes
-microphone checks; capture is closed and the original playback stream stays
-open. CPU scaling is automatic. TCS3430 power/readout lifecycle passes, but
-zero raw counts need a physical light test. Audio lifecycle/resume stay open.
+Latest result: [BW](tools/spx/boot-diagnostics/RESULT-20261005bw.md), mainline
+`7.3.0-rc2-spx-mainline-20261004bg+`; scheduled return now runs recovery6.18.
+Quiet desktop output passed until shutdown; its shutdown XRUN remains open.
+CPU scaling is automatic. TCS3430 power/readout lifecycle passes, but zero
+counts need a physical light test. Recovery's SSAM timeout was repaired by
+one late bind; a guarded startup retry is being prepared.
 Input/BT confirmations belong to BI; the
 [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
 awaits attribution for later observations.

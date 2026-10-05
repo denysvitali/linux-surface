@@ -32,3 +32,18 @@ Evidence: `/var/lib/spx-boot-diagnostics/recovery/20261004-ab15d0b8-keyboard/`
 contains before/after input inventories and relevant kernel logs, `reprobe.json`
 for the synchronous bind, and `settled-state.json` for asynchronously published
 children and the user confirmation. No additional mainline acceptance box closes.
+
+## Repeat on 2026-10-05
+
+Recovery boot `d87f94b5-e519-4372-be2e-c616d81f5095`, same6.18 release, repeats
+the firmware-version timeout at11.36s after BW's scheduled return. The SSAM
+client is unbound and keyboard/touchpad, power supplies and RTC are absent.
+One guarded bind at267.56s completes in6.9ms and restores all device nodes,
+eleven SSAM children, BAT1/ADP1 and rtc0. RTC resumes reading the correct date.
+Physical typing is not newly confirmed; the October4 user result stays separate.
+
+A generic single late-probe workaround is being prepared for this exact
+unbound-after-timeout condition. It must skip healthy controllers, never unbind
+them, and make no repeated bind attempts. Root cause and cold-start reliability
+remain unresolved. Evidence is under
+`/var/lib/spx-boot-diagnostics/recovery/20261005-d87f94b5-ssam/`.
