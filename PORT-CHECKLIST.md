@@ -37,7 +37,7 @@ awaits attribution for later observations.
 | Buttons (I06) | User: short power press opens shutdown prompt, boot pending | Volume/posture and intended wake |
 | Bluetooth (N02) | **User confirms Bluetooth works on BI** | Device-specific pairing/reconnect and resume |
 | USB data (U01) | Untested | Both ports/orientations, fixtures |
-| USB-C PD, DisplayPort, dock (U02–U04) | BI: WIP DP0 forwarding loaded, monitor disconnected | Dock replug/output, roles/PD, ports/orientations |
+| USB-C PD, DisplayPort, dock (U02–U04) | BZ staged: deferred DP0 forwarding startup; output unverified | Dock replug/output, roles/PD, ports/orientations |
 | Battery and charging (P01) | BU: AC online, 49%, Not charging; prior user report works | Charge-policy explanation, discharge/transitions and chargers |
 | Suspend/resume (P03) | Kernel exposes s2idle; systemd sleep/suspend targets masked | Intended wake, then controlled sleep |
 | Thermal (P05) | BH: 3 min CPU/GPU load stable, peak 60.1°C | Cooling response |
@@ -694,7 +694,10 @@ host datapath; that is not current cellular service verification.
   port/dock path, intended mode, hotplug, extend/mirror and suspend recovery.
   Resolve Type-C/alt-mode/HPD integration. Never live-unbind/rebind MSM components.
   **User report, October 4:** connected dock monitor shows nothing; boot and
-  dock model pending. Mainline lacks the Surface USC-to-HPD forwarding module.
+  dock model pending. The experimental USC-to-DP0 forwarder is present; BZ
+  stages deferred startup and early initramfs loading. Initial dock-state replay,
+  orientation switching and second-port routing remain absent. No visible
+  output or hotplug pass is established.
   [Follow-up](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md).
 - [ ] **U04 — Dock and Surface Connect.** Inventory actual Surface Connect/dock
   capabilities; validate supported charging, USB, Ethernet, display and audio
