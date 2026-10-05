@@ -49,7 +49,7 @@ awaits attribution for later observations.
 | Suspend/resume (P03) | Kernel exposes s2idle; systemd sleep/suspend targets masked | Intended wake, then controlled sleep |
 | Thermal (P05) | BH: 3 min CPU/GPU load stable, peak 60.1°C | Cooling response |
 | Idle power (P02) | BU: CPU scales down; GPU runtime-suspends | **Battery tests deferred by user**; remaining forced-on devices |
-| Sensors (S01, S02) | BW: TCS3430 runtime-PM/readout passes; **CH: relocatable SLPI/GLINK trial staged, WIP** | Physical light response; auto-brightness; SLPI boot, sensor streams and FastRPC |
+| Sensors (S01, S02) | BW: TCS3430 runtime-PM/readout passes; **CH: SLPI memory setup rejected, WIP** | Physical light response; auto-brightness; accepted SLPI memory range, streams and FastRPC |
 | Cellular, GNSS (N03, N04) | Recovery: GNSS starts/stops but no fix; modem rejects online mode | Real modem provisioning, IPA datapath, SIM; actual GNSS fix |
 
 ## Next work, in order
