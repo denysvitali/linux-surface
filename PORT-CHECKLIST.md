@@ -6,14 +6,13 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-05, BW: quiet desktop audio restored; ALS response pending)
+## Status (2026-10-05, BX: early RTC time passes; quiet desktop audio retained)
 
-Latest result: [BW](tools/spx/boot-diagnostics/RESULT-20261005bw.md), mainline
-`7.3.0-rc2-spx-mainline-20261004bg+`; scheduled return now runs recovery6.18.
-Quiet desktop output passed until shutdown; its shutdown XRUN remains open.
-CPU scaling is automatic. TCS3430 power/readout lifecycle passes, but zero
-counts need a physical light test. Recovery's SSAM timeout was repaired by
-one late bind; a guarded startup retry is being prepared.
+Latest result: [BX](tools/spx/boot-diagnostics/RESULT-20261005bx.md), running
+`7.3.0-rc2-spx-mainline-20261004bg+`. B05a passes: RTC sets the correct time
+before root startup/networking. Quiet desktop playback passes, capture is
+closed and CPU scaling is automatic. The SSAM retry guard skips this healthy
+startup. Light response still needs a physical stimulus; audio lifecycle stays open.
 Input/BT confirmations belong to BI; the
 [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
 awaits attribution for later observations.
@@ -26,7 +25,7 @@ awaits attribution for later observations.
 | GPU FD680 (D02) | **Passed on AW**, 30 min rendering | A person looking at the screen |
 | Internal panel (D01) | User: display and brightness work; boot attribution pending | Blank/unblank and resume |
 | Wi-Fi (N01) | 5 GHz: BW download ~419 Mbit/s and reconnect pass; BU upload ~189 Mbit/s | 2.4 GHz, roaming, sustained use and resume |
-| RTC (B05) | Readback and warm reboot pass | Cold power-off retention |
+| RTC (B05) | **BX: B05a early boot time passes**; readback/warm reboot pass | Cold power-off retention and suspend |
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
 | Speakers (A01) | **BW: quiet default desktop playback passes** | Persistence, volume/mapping/balance, reopen and lifecycle |
@@ -148,6 +147,13 @@ reconciled. [Inventory](tools/spx/boot-diagnostics/HARDWARE-INVENTORY-20261002.m
   rollback and pinned/debug paths; document or remove remaining workarounds.
 - [ ] **B05 — RTC/time.** Verify clock retention across power-off and timekeeping
   across suspend without relying on network time to conceal a broken RTC.
+
+  - [x] **B05a — RTC supplies correct startup time before networking.** BX,
+    boot `85aa4bf6-2169-41d5-9d62-ed797b570132`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: RTC sets UTC at3.212s, before root
+    switch14.605s and first NTP source59.007s. No NTP step is logged.
+    [BX result](tools/spx/boot-diagnostics/RESULT-20261005bx.md).
+
   **Observed AV startup, 2026-10-03:** SSAM surface_rtc0 is about791s ahead of
   NTP-synchronized wall time at495.63s; chrony stepped the system clock by
   -790.936215s during startup. Read-only evidence is retained at AV/
