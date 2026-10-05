@@ -23,10 +23,20 @@ single-module build failed dependency linking and omitted the release suffix;
 the fixed release was restored before the successful dependency-aware build.
 No module was installed/reloaded, and no boot, sound or capture occurred.
 
-**Next:** establish the SLPI Q6 MMIO base, reserved-memory ownership and complete
-IRQ/GLINK/FastRPC board wiring before enabling its node. SCSS ACPI exposes only
-IRQ0x199; existing SMP2P declarations and LCX/LMX provider support are useful,
-but not a complete remoteproc description. Once SSC400 is advertised,
-[libssc](https://codeberg.org/DylanVanAssche/libssc) provides supported bounded
-sensor requests; [hexagonrpcd](https://github.com/linux-msm/hexagonrpc) supports
-SensorsPD and serving the saved sensor registry/configuration. S02 stays open.
+**October6 follow-up:** PAS never maps the Q6 register resource. Its earlier
+MMIO blocker was descriptive, not a runtime dependency. All21 SLPI LOAD
+segments carry relocation bit27; dynamic20MiB/1MiB-aligned no-map memory below
+4GiB avoids the ELF range, which overlaps the current ADSP reservation.
+3c1001ac3ac8 adds that reservation and secure-PAS node, with ACPI watchdog
+GSI409/SPI377, existing Q6 family SMP2P bits and LCX/LMX. Handshake reuse needs
+trial validation. No guessed register address is supplied.
+
+Consumed Windows `qcglink8180.sys` dsps table row RVA0x2e690/file0x2d490
+proves host3, IPC0x17c0000c/bit24 and GSI202/SPI170; consumer0x13c04–0x13c34.
+535562d2de53 adds this GLINK edge. Firmware contains `fastrpcglink-apps-dsp`;
+FastRPC context banks and user-domain setup remain separate. CH is installed
+for a boot/QRTR discovery test, with the working CG kernel/modules and900s
+return. Reused initramfs excludes the newer compiled USB IRQ experiment.
+DT syntax/build pass; full schema tools are unavailable locally. S02 stays open
+until actual sensor streams and response are verified. No capture or battery
+measurements are part of this trial.
