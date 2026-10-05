@@ -82,7 +82,7 @@ class WifiBandTests(unittest.TestCase):
         self.assertFalse(any(call[0] == 'curl' for call in calls))
 
     def test_two_exact_downloads_and_restoration_pass(self):
-        result, calls = self.exercise()
+        result, calls = self.exercise(frequency=2422.0)
         self.assertTrue(result['complete'])
         self.assertEqual(len(result['links']), 4)
         self.assertEqual([t['bytes'] for t in result['transfers']], [25000000, 25000000])

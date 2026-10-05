@@ -454,9 +454,9 @@ def wifi_band(args):
         entry = dict(phase=phase, returncode=proc.returncode, link=proc.stdout.strip())
         result['links'].append(entry)
         save()
-        match = re.search(r'^\s*freq:\s*(\d+)\s*$', proc.stdout, re.M)
-        assert proc.returncode == 0 and match and 2400 <= int(match[1]) <= 2500, 'not associated on 2.4 GHz'
-        entry['frequency_mhz'] = int(match[1])
+        match = re.search(r'^\s*freq:\s*(\d+(?:\.\d+)?)\s*$', proc.stdout, re.M)
+        assert proc.returncode == 0 and match and 2400 <= float(match[1]) <= 2500, 'not associated on 2.4 GHz'
+        entry['frequency_mhz'] = float(match[1])
 
     def interrupted(signum, frame):
         raise RuntimeError('Wi-Fi test interrupted by signal ' + str(signum))
