@@ -551,6 +551,151 @@ def wifi_band(args):
     print(json.dumps(result), flush=True)
 
 
+def display_power(args):
+    """Exercise ordinary GNOME display power, with actual off and restored scanout."""
+    os.umask(0o077)
+    boot = wifi_band_gate()  # Same completed-boot and return-window prerequisites.
+    output = OUT / 'display-power'
+    target = output / 'result.json'
+    owner, lock = 'display-' + ATTEMPT, str(REPO / 'tools/spx/spx-lock')
+    account = pwd.getpwuid(REPO.stat().st_uid)
+    assert account.pw_uid != 0 and account.pw_name == args.desktop_user
+    bus = ['runuser', '-u', account.pw_name, '--', 'env',
+           'XDG_RUNTIME_DIR=/run/user/' + str(account.pw_uid),
+           'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/' + str(account.pw_uid) + '/bus',
+           'busctl', '--user', '--timeout=5']
+    interface = ['org.gnome.Mutter.DisplayConfig', '/org/gnome/Mutter/DisplayConfig',
+                 'org.gnome.Mutter.DisplayConfig', 'PowerSaveMode']
+    subprocess.run([lock, 'acquire', 'device', owner], check=True, timeout=5)
+    result = dict(boot_id=boot, release=RELEASE, snapshots={}, complete=False)
+    claimed, changed, handlers = False, False, {}
+    start = float(Path('/proc/uptime').read_text().split()[0])
+    result['start_uptime'] = start
+
+    def save():
+        target.write_text(json.dumps(result, indent=2) + '\n')
+
+    def mode(value=None):
+        argv = bus + (['get-property'] + interface if value is None else
+                      ['set-property'] + interface + ['i', str(value)])
+        proc = subprocess.run(argv, capture_output=True, text=True, timeout=7)
+        assert proc.returncode == 0, 'desktop power request failed: ' + proc.stderr.strip()
+        return proc.stdout.strip()
+
+    def snapshot(name):
+        text = state.read_text()
+        (output / (name + '-drm-state.txt')).write_text(text)
+        blocks = re.split(r'(?=^(?:plane|crtc|connector)\[)', text, flags=re.M)
+        crtcs, connectors, framebuffers = {}, {}, {}
+        for block in blocks:
+            if match := re.match(r'crtc\[\d+\]: crtc-(\d+)\n', block):
+                crtcs[match[1]] = dict(re.findall(r'^\t(enable|active)=(\d+)$', block, re.M))
+                crtcs[match[1]]['mode'] = re.search(r'^\tmode: (.+)$', block, re.M)[1]
+            elif match := re.match(r'connector\[\d+\]: ([^\n]+)\n\tcrtc=crtc-(\d+)', block):
+                connectors[match[1]] = match[2]
+            elif match := re.match(r'plane\[\d+\]: [^\n]+\n\tcrtc=crtc-(\d+)\n\tfb=(\d+)', block):
+                if int(match[2]) and '\t\tallocated by = gnome-shell\n' in block:
+                    framebuffers[match[1]] = int(match[2])
+        snap = dict(power_mode=mode(), crtcs=crtcs, connectors=connectors, framebuffers=framebuffers)
+        result['snapshots'][name] = snap
+        return snap
+
+    def settled(name, on):
+        deadline = time.monotonic() + 10
+        while True:
+            snap = snapshot(name)
+            okay = (all(snap['crtcs'][c]['active'] == '0' and snap['crtcs'][c]['enable'] == '0'
+                        for c in active.values()) if not on else
+                    all(snap['connectors'].get(n) == c and snap['crtcs'][c]['active'] == '1' and
+                        snap['crtcs'][c]['enable'] == '1' and c in snap['framebuffers'] and
+                        snap['crtcs'][c]['mode'] == before['crtcs'][c]['mode'] for n, c in active.items()))
+            if okay and snap['power_mode'] == ('i 0' if on else 'i 3'):
+                break
+            assert time.monotonic() < deadline, 'DRM display state did not settle: ' + name
+            time.sleep(.25)
+        if on:
+            fd = os.open('/dev/dri/' + card, os.O_RDWR | os.O_CLOEXEC)
+            try:
+                snap['vblank'] = {}
+                for c in sorted(set(active.values())):
+                    rows = []
+                    for _ in range(2):
+                        buf = bytearray(struct.pack('=IIQQ', 1 | (int(c) << 1), 1, 0, 0))
+                        fcntl.ioctl(fd, 0xc018643a, buf, True)
+                        _, sequence, seconds, useconds = struct.unpack('=IIqq', buf)
+                        rows.append(dict(sequence=sequence, timestamp=seconds + useconds / 1e6))
+                    snap['vblank'][c] = rows
+                    assert 0 < ((rows[1]['sequence'] - rows[0]['sequence']) & 0xffffffff)
+                    assert rows[1]['timestamp'] > rows[0]['timestamp'], 'stale vblank timestamp'
+            finally:
+                os.close(fd)
+        save()
+
+    def interrupted(signum, frame):
+        raise RuntimeError('interrupted by signal ' + str(signum))
+
+    try:
+        wifi_band_gate()
+        assert mode() == 'i 0', 'desktop must start powered on'
+        edps = list(Path('/sys/class/drm').glob('card*-eDP-1'))
+        assert len(edps) == 1
+        card = edps[0].name.split('-', 1)[0]
+        state = Path('/sys/kernel/debug/dri') / card[4:] / 'state'
+        output.mkdir(mode=0o700, exist_ok=True)
+        with target.open('x') as handle:
+            json.dump(result, handle)
+        claimed = True
+        before = snapshot('before')
+        active = {n: c for n, c in before['connectors'].items()
+                  if before['crtcs'][c]['active'] == before['crtcs'][c]['enable'] == '1'}
+        result['original_active_connectors'] = active
+        assert 'eDP-1' in active and active['eDP-1'] in before['framebuffers']
+        assert '"2880x1920"' in before['crtcs'][active['eDP-1']]['mode']
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            handlers[signum] = signal.signal(signum, interrupted)
+        settled('before', True)
+        for cycle in (1, 2):
+            changed = True
+            mode(3)
+            settled('off-' + str(cycle), False)
+            time.sleep(3)
+            mode(0)
+            settled('on-' + str(cycle), True)
+        result['cycles_passed'] = True
+    except Exception as error:
+        result['error'] = str(error)
+    finally:
+        for signum in handlers:
+            signal.signal(signum, signal.SIG_IGN)
+        try:
+            if changed:
+                try:
+                    mode(0)
+                    settled('finally-restored', True)
+                    result['restored'] = True
+                except Exception as error:
+                    result['restoration_error'] = str(error)
+            if claimed:
+                try:
+                    proc = subprocess.run(['journalctl', '-b', '-k', '--no-pager', '-o', 'short-monotonic'],
+                                          capture_output=True, text=True, timeout=7)
+                    lines = [line for line in proc.stdout.splitlines()
+                             if (stamp := re.match(r'\[\s*([0-9.]+)\]', line)) and float(stamp[1]) >= start]
+                    (output / 'kernel.log').write_text('\n'.join(lines) + '\n')
+                    result['new_kernel_faults'] = [line for line in lines if re.search(
+                        r'(?i)((?:dpu|drm|dp_display|panel|aux).*(?:error|fail|timeout)|BUG:|Oops:|Call trace:)', line)]
+                    result['complete'] = bool(result.get('cycles_passed') and result.get('restored') and
+                                              proc.returncode == 0 and not result['new_kernel_faults'])
+                except Exception as error:
+                    result['kernel_log_error'] = str(error)
+                save()
+        finally:
+            subprocess.run([lock, 'release', 'device', owner], check=True, timeout=5)
+            for signum, handler in handlers.items():
+                signal.signal(signum, handler)
+    print(json.dumps(result), flush=True)
+
+
 def usbc_reload(args):
     """Restart only the USC subscriber; observe the attached display path."""
     assert os.geteuid() == 0 and os.uname().release == RELEASE
@@ -1071,7 +1216,7 @@ def audio_check(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend', 'audio', 'arm-audio', 'enable-desktop-audio', 'usbc-reload', 'wifi-band'))
+    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend', 'audio', 'arm-audio', 'enable-desktop-audio', 'usbc-reload', 'wifi-band', 'display-power'))
     parser.add_argument('attempt')
     parser.add_argument('--build', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bg/work-build'))
     parser.add_argument('--parent', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bf'))
@@ -1133,7 +1278,7 @@ def main():
         else:
             {'install': install, 'boot': boot, 'return': return_to_default,
              'extend': extend_window, 'audio': audio_check, 'arm-audio': arm_audio,
-             'usbc-reload': usbc_reload, 'wifi-band': wifi_band,
+             'usbc-reload': usbc_reload, 'wifi-band': wifi_band, 'display-power': display_power,
              'enable-desktop-audio': enable_desktop_audio}[args.command](args)
 
 
