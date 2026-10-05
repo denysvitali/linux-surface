@@ -28,6 +28,24 @@
 		serial1 = &uart15;
 	};
 
+	/* USC port zero is wired to the primary USB3/DP combo PHY. */
+	usb-c-connector0 {
+		compatible = "usb-c-connector";
+		label = "USB-C port 0";
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@1 {
+				reg = <1>;
+				spx_usbc0_ss: endpoint {
+					remote-endpoint = <&usb_prim_qmpphy_out>;
+				};
+			};
+		};
+	};
+
 	backlight: backlight {
 		compatible = "pwm-backlight";
 
@@ -1135,9 +1153,14 @@
 };
 
 &usb_prim_qmpphy {
+	orientation-switch;
 	status = "okay";
 	vdda-phy-supply = <&vreg_l3c_1p2>;
 	vdda-pll-supply = <&vreg_l9e_0p88>;
+};
+
+&usb_prim_qmpphy_out {
+	remote-endpoint = <&spx_usbc0_ss>;
 };
 
 &usb_prim {

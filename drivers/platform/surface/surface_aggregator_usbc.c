@@ -3,7 +3,7 @@
  * Experimental Surface Pro X USC-to-DP0 hotplug forwarding.
  * Probe waits for SSAM and MSM startup. A pre-connected dock has supplied
  * startup events, but there is no initial-state query or guaranteed replay.
- * PHY orientation/lane switching and second-port routing are unimplemented;
+ * PHY orientation is opt-in; lane switching and second-port routing are absent;
  * DP-only mux forwarding and visible output remain unverified.
  * Never unbind/reload live MSM components when testing this driver.
  */
@@ -14,11 +14,18 @@
 #include <linux/slab.h>
 #include <linux/unaligned.h>
 #include <linux/workqueue.h>
+#include <linux/usb/typec_mux.h>
 #include <linux/surface_aggregator/controller.h>
 
 #include <drm/drm_bridge.h>
 #include <drm/drm_connector.h>
 #include <drm/drm_device.h>
+
+#define SPX_USBC0_PATH "/usb-c-connector0"
+
+static bool phy_orientation;
+module_param(phy_orientation, bool, 0444);
+MODULE_PARM_DESC(phy_orientation, "Enable experimental port-zero PHY orientation switching");
 
 #define SPX_DP0_PATH "/soc@0/display-subsystem@ae00000/displayport-controller@ae90000"
 
@@ -29,6 +36,9 @@ struct spx_usbc {
 	struct ssam_event_notifier notifier;
 	struct workqueue_struct *wq;
 	bool connected;
+	struct typec_switch *sw;
+	enum typec_orientation orientation;
+	bool orientation_valid;
 };
 
 struct spx_usbc_ack {
@@ -90,6 +100,46 @@ static bool spx_usbc_dp_event(const struct spx_usbc_event *event)
 	}
 }
 
+static int spx_usbc_orientation(struct spx_usbc *usbc,
+				const struct spx_usbc_event *event)
+{
+	enum typec_orientation orientation;
+	int ret;
+
+	if (!usbc->sw)
+		return 0;
+
+	/* CC polarity and primary-PHY routing are proven by the Windows driver. */
+	if (event->cc_state == 2)
+		orientation = TYPEC_ORIENTATION_NONE;
+	else if (event->cc_state == 1)
+		orientation = TYPEC_ORIENTATION_REVERSE;
+	else
+		orientation = TYPEC_ORIENTATION_NORMAL;
+
+	/* QMP changes can reset USB and AUX; never switch a live DP connection. */
+	if (orientation != TYPEC_ORIENTATION_NONE && usbc->connected &&
+	    (!usbc->orientation_valid || orientation != usbc->orientation))
+		return -EBUSY;
+
+	ret = typec_switch_set(usbc->sw, orientation);
+	if (ret)
+		return ret;
+
+	if (orientation == TYPEC_ORIENTATION_NONE) {
+		/* QMP's NONE callback preserves its last hardware polarity. */
+		usbc->orientation_valid = false;
+	} else {
+		if (!usbc->orientation_valid || orientation != usbc->orientation)
+			dev_info(usbc->dev, "USC port 0 PHY orientation %s applied (cc=%u)\n",
+				 orientation == TYPEC_ORIENTATION_REVERSE ? "reverse" : "normal",
+				 event->cc_state);
+		usbc->orientation = orientation;
+		usbc->orientation_valid = true;
+	}
+	return 0;
+}
+
 static void spx_usbc_event_work(struct work_struct *work)
 {
 	struct spx_usbc_event *event = container_of(work, struct spx_usbc_event, work);
@@ -108,6 +158,14 @@ static void spx_usbc_event_work(struct work_struct *work)
 
 	/* Only USC port zero is known to route to the primary DP controller. */
 	if (le32_to_cpu(event->ack.port) == 0) {
+		if (spx_usbc_dp_event(event) ||
+		    (event->mux_mode == 0 && event->cc_state == 2)) {
+			ret = spx_usbc_orientation(usbc, event);
+			if (ret) {
+				dev_warn_ratelimited(usbc->dev, "USC PHY orientation unavailable: %d\n", ret);
+				goto ack;
+			}
+		}
 		if (spx_usbc_dp_event(event)) {
 			connected = event->hpd_level == 1;
 			/* A repeated level does not deliver a firmware HPD IRQ. */
@@ -136,6 +194,7 @@ static void spx_usbc_event_work(struct work_struct *work)
 	    event->hpd_irq)
 		dev_dbg(usbc->dev, "USC DP HPD IRQ remains unhandled\n");
 
+ack:
 	/* Sequenced ACK without a response, including unhandled port events. */
 	ret = ssam_request_do_sync(usbc->ctrl, &request, NULL);
 	if (ret)
@@ -252,6 +311,25 @@ static int spx_usbc_probe(struct platform_device *pdev)
 	put_device(&dpdev->dev);
 	usbc->bridge = bridge;
 
+	if (phy_orientation) {
+		node = of_find_node_by_path(SPX_USBC0_PATH);
+		if (!node) {
+			ret = -ENODEV;
+			goto err_bridge;
+		}
+		usbc->sw = fwnode_typec_switch_get(of_fwnode_handle(node));
+		of_node_put(node);
+		if (IS_ERR(usbc->sw)) {
+			ret = PTR_ERR(usbc->sw);
+			usbc->sw = NULL;
+			goto err_bridge;
+		}
+		if (!usbc->sw) {
+			ret = -ENODEV;
+			goto err_bridge;
+		}
+	}
+
 	usbc->wq = alloc_ordered_workqueue("spx_usbc", WQ_MEM_RECLAIM | WQ_FREEZABLE);
 	if (!usbc->wq) {
 		ret = -ENOMEM;
@@ -271,12 +349,14 @@ static int spx_usbc_probe(struct platform_device *pdev)
 		goto err_wq;
 
 	platform_set_drvdata(pdev, usbc);
-	dev_info(dev, "experimental DP0 forwarding ready; replug dock (orientation switching unimplemented)\n");
+	dev_info(dev, "experimental DP0 forwarding ready; replug dock (PHY orientation %s)\n",
+		 phy_orientation ? "enabled" : "disabled");
 	return 0;
 
 err_wq:
 	destroy_workqueue(usbc->wq);
 err_bridge:
+	typec_switch_put(usbc->sw);
 	drm_bridge_put(bridge);
 	return ret;
 err_provider:
@@ -295,6 +375,7 @@ static void spx_usbc_remove(struct platform_device *pdev)
 	ssam_notifier_unregister(usbc->ctrl, &usbc->notifier);
 	destroy_workqueue(usbc->wq);
 	usbc->wq = NULL;
+	typec_switch_put(usbc->sw);
 	drm_bridge_put(usbc->bridge);
 }
 

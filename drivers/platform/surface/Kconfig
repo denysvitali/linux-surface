@@ -151,15 +151,16 @@ config SURFACE_AGGREGATOR_TABLET_SWITCH
 
 config SURFACE_AGGREGATOR_USBC
 	tristate "Experimental Surface Pro X USB-C DP hotplug forwarding"
-	depends on SURFACE_AGGREGATOR && DRM_MSM && DRM_MSM_DP && OF
+	depends on SURFACE_AGGREGATOR && DRM_MSM && DRM_MSM_DP && OF && TYPEC
 	depends on m
 	help
 	  Forward Surface Pro X USC port-zero notifications to the primary
 	  DisplayPort bridge. Probing waits for SSAM and MSM DisplayPort startup.
-	  No initial dock-state query is implemented; replug the dock after
-	  forwarding becomes ready. Pre-connected docks and visible output
-	  remain unverified. Orientation switching and second-port routing are
-	  not implemented, and suspend is not validated.
+	  Startup dock events have been observed, but there is no initial-state
+	  query or guaranteed replay. Visible output remains unverified.
+	  Port-zero PHY orientation switching is experimental
+	  and requires the phy_orientation module parameter. Lane selection and
+	  second-port routing are not implemented, and suspend is not validated.
 	  Unload this experimental driver before testing suspend; never unbind
 	  or reload live MSM display components.
 
