@@ -85,7 +85,11 @@ change is planned; repeating the same remote test would add no functional gain.
 6. External display and dock (U03, U04). Cellular/GNSS (N03/N04) require real
    modem provisioning before further online/reception retries; preserve the
    working WLAN dummy-file setup. Video (D03) remains parked.
-7. Final candidate and regression (F01–F04).
+7. **Battery power (P02):** recharge before the prepared bounded mainline
+   `trial.py power-measure` idle/load/recovery test. Current recovery is on
+   battery at14%; its uncontrolled30-second reference is not a mainline pass.
+   [Power result](tools/spx/boot-diagnostics/RESULT-20261005power.md).
+8. Final candidate and regression (F01–F04).
 
 ## How to use this checklist
 

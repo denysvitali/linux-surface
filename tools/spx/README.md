@@ -217,3 +217,14 @@ those conditions and flushes only the command FIFO once; it does not reset the
 bus or enable speakers. Read `audio/recover-result.json`. A module reload alone
 does not clear retained FIFO state. Initialization now requires actual codec
 `HW_INIT` completion; SoundWire attachment by itself is insufficient.
+
+For P02 on an already checked mainline attempt, run
+`sudo python3 -B tools/spx/trial.py power-measure ATTEMPT`.
+This consumes an exclusive `power-measure/result.json` with boot identity,
+30-second idle/load/recovery samples every two seconds, last-half median watts,
+energy deltas, temperatures and CPU frequencies. It requires external power off,
+discharging battery at least 20%, valid telemetry and return-timer headroom.
+Load uses one nice19 worker per CPU policy; workers are stopped/reaped on exit.
+Any thermal sensor reaching 75°C aborts. Power controls remain as configured.
+Energy deltas are quantized battery telemetry; zero does not imply zero usage.
+This WIP helper has offline tests only; completion does not itself close P02.

@@ -16,6 +16,7 @@ import shutil
 import signal
 import socket
 import stat
+import statistics
 import struct
 import subprocess
 import time
@@ -550,6 +551,110 @@ def wifi_band(args):
                 for signum, handler in handlers.items():
                     signal.signal(signum, handler)
     print(json.dumps(result), flush=True)
+
+
+def power_sample(root=Path('/sys')):
+    """Read numeric telemetry only; fail closed without battery/mains/thermal data."""
+    supplies = list((root / 'class/power_supply').iterdir())
+    batteries = [p for p in supplies if (p / 'type').read_text().strip() == 'Battery']
+    mains = [p for p in supplies if (p / 'online').exists()]
+    assert len(batteries) == 1 and mains, 'missing power telemetry'
+    assert all(int((p / 'online').read_text()) == 0 for p in mains), 'external power online'
+    battery = batteries[0]
+    assert (battery / 'status').read_text().strip() == 'Discharging', 'battery not discharging'
+    values = {k: int((battery / k).read_text()) for k in
+              ('capacity', 'voltage_now', 'power_now', 'energy_now')}
+    assert 20 <= values['capacity'] <= 100, 'battery below 20 percent or invalid'
+    assert all(values[k] > 0 for k in ('voltage_now', 'power_now', 'energy_now')), 'invalid battery telemetry'
+    values['thermal_mc'] = [int(p.read_text()) for p in sorted((root / 'class/thermal').glob('thermal_zone*/temp'))]
+    assert values['thermal_mc'] and all(-40000 <= t < 75000 for t in values['thermal_mc']), 'thermal stop or invalid telemetry'
+    policies = sorted((root / 'devices/system/cpu/cpufreq').glob('policy*'))
+    values['frequency_khz'] = [int((p / 'scaling_cur_freq').read_text()) for p in policies]
+    assert policies and all(f > 0 for f in values['frequency_khz']), 'missing CPU telemetry'
+    return values
+
+
+def power_measure(args):
+    """Bounded idle/load/recovery measurement; never change power controls."""
+    os.umask(0o077)
+    boot = wifi_band_gate()
+    owner, lock = 'power-' + ATTEMPT, str(REPO / 'tools/spx/spx-lock')
+    target = OUT / 'power-measure/result.json'
+    result = dict(attempt=ATTEMPT, boot_id=boot, release=RELEASE, phases={}, complete=False)
+    workers, handlers, claimed = [], {}, False
+
+    def stop():
+        for worker in workers:
+            if worker.poll() is None:
+                worker.terminate()
+        for worker in workers:
+            try:
+                worker.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                worker.kill()
+                worker.wait(timeout=2)
+        workers.clear()
+
+    def interrupted(signum, frame):
+        raise RuntimeError('measurement interrupted')
+
+    subprocess.run([lock, 'acquire', 'device', owner], check=True, timeout=5)
+    try:
+        for signum in (signal.SIGTERM, signal.SIGINT):
+            handlers[signum] = signal.signal(signum, interrupted)
+        assert wifi_band_gate() == boot
+        power_sample()  # Refuse low charge or missing data before creating any worker.
+        policies = sorted(Path('/sys/devices/system/cpu/cpufreq').glob('policy*'))
+        cpus = [int((p / 'affected_cpus').read_text().split()[0]) for p in policies]
+        assert cpus and len(set(cpus)) == len(cpus), 'missing CPU policies'
+        target.parent.mkdir(mode=0o700, exist_ok=True)
+        with target.open('x') as stream:
+            json.dump(result, stream)
+        claimed = True
+        started = time.monotonic()
+        for phase in ('idle', 'load', 'recovery'):
+            power_sample()  # Recheck immediately before starting load.
+            if phase == 'load':
+                for cpu in cpus:
+                    code = ('import os,time; os.nice(19); os.sched_setaffinity(0,{' + str(cpu) +
+                            '}); end=time.monotonic()+32\nwhile time.monotonic()<end: sum(range(10000))')
+                    workers.append(subprocess.Popen(['/usr/bin/python3', '-c', code],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+            begin = time.monotonic()
+            rows = []
+            result['phases'][phase] = dict(samples=rows)
+            for index in range(16):
+                time.sleep(max(0, begin + index * 2 - time.monotonic()))
+                assert time.monotonic() - started < 135, 'measurement deadline expired'
+                assert Path('/proc/sys/kernel/random/boot_id').read_text().strip() == boot, 'boot changed'
+                sample = power_sample()
+                sample.update(seconds=time.monotonic() - started, phase_seconds=time.monotonic() - begin)
+                rows.append(sample)
+                assert not workers or all(w.poll() is None for w in workers), 'CPU worker exited early'
+            if phase == 'load':
+                stop()
+            result['phases'][phase].update(
+                median_watts=statistics.median(r['power_now'] / 1e6 for r in rows if r['phase_seconds'] >= 15),
+                energy_delta_uwh=rows[0]['energy_now'] - rows[-1]['energy_now'])
+        result['complete'] = True
+    except Exception as error:
+        # Never persist exception text containing battery paths or identities.
+        result['failure'] = str(error) if isinstance(error, AssertionError) else type(error).__name__
+    finally:
+        for signum in handlers:
+            signal.signal(signum, signal.SIG_IGN)
+        try:
+            stop()  # Reap workers before result writes or lock release, including failed samples.
+            if claimed:
+                target.write_text(json.dumps(result, indent=2) + '\n')
+        finally:
+            try:
+                subprocess.run([lock, 'release', 'device', owner], check=True, timeout=5)
+            finally:
+                for signum, handler in handlers.items():
+                    signal.signal(signum, handler)
+    print(json.dumps(result), flush=True)
+    assert result['complete'], result.get('failure', 'incomplete measurement')
 
 
 def display_power(args):
@@ -1330,7 +1435,7 @@ def audio_check(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend', 'audio', 'arm-audio', 'enable-desktop-audio', 'usbc-reload', 'wifi-band', 'display-power', 'srtc-timer'))
+    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend', 'audio', 'arm-audio', 'enable-desktop-audio', 'usbc-reload', 'wifi-band', 'display-power', 'srtc-timer', 'power-measure'))
     parser.add_argument('attempt')
     parser.add_argument('--build', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bg/work-build'))
     parser.add_argument('--parent', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bf'))
@@ -1397,7 +1502,7 @@ def main():
             {'install': install, 'boot': boot, 'return': return_to_default,
              'extend': extend_window, 'audio': audio_check, 'arm-audio': arm_audio,
              'usbc-reload': usbc_reload, 'wifi-band': wifi_band, 'display-power': display_power,
-             'enable-desktop-audio': enable_desktop_audio}[args.command](args)
+             'enable-desktop-audio': enable_desktop_audio, 'power-measure': power_measure}[args.command](args)
 
 
 if __name__ == '__main__':
