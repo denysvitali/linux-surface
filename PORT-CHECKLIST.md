@@ -6,14 +6,15 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-05, BY collected: early RTC and IPv6 VPN pass)
+## Status (2026-10-05, BZ live: automatic external DP scanout)
 
-Latest result: [BY](tools/spx/boot-diagnostics/RESULT-20261005by.md), completed
-one hour on `7.3.0-rc2-spx-mainline-20261004bg+`; now back on known-good
-`6.18.3-1-surface+`. B05a early RTC time and N01a IPv6 VPN connectivity pass.
-Quiet desktop audio ran until shutdown with capture closed; shutdown lifecycle
-remains open. The SSAM guard skips healthy startup. Light response still needs
-a physical stimulus.
+Latest result: [BZ](tools/spx/boot-diagnostics/RESULT-20261005bz.md), running
+`7.3.0-rc2-spx-mainline-20261004bg+`. Early USB-C forwarding receives real dock
+events; GNOME extends to Samsung S34J55x at3440×1440/50Hz with active scanout.
+Visible output/replug/orientations/resume remain unverified. B05a early RTC and
+N01a IPv6 VPN retain their prior passes. BY quiet desktop audio passed until
+shutdown; lifecycle remains open. BZ runs without audio/capture. Light response
+still needs a physical stimulus.
 Input/BT confirmations belong to BI; the
 [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
 awaits attribution for later observations.
@@ -37,7 +38,7 @@ awaits attribution for later observations.
 | Buttons (I06) | User: short power press opens shutdown prompt, boot pending | Volume/posture and intended wake |
 | Bluetooth (N02) | **User confirms Bluetooth works on BI** | Device-specific pairing/reconnect and resume |
 | USB data (U01) | Untested | Both ports/orientations, fixtures |
-| USB-C PD, DisplayPort, dock (U02–U04) | BZ staged: deferred DP0 forwarding startup; output unverified | Dock replug/output, roles/PD, ports/orientations |
+| USB-C PD, DisplayPort, dock (U02–U04) | **BZ: automatic DP0 events, valid EDID, GNOME3440×1440/50Hz scanout** | Visible output, replug, roles/PD, ports/orientations/resume |
 | Battery and charging (P01) | BU: AC online, 49%, Not charging; prior user report works | Charge-policy explanation, discharge/transitions and chargers |
 | Suspend/resume (P03) | Kernel exposes s2idle; systemd sleep/suspend targets masked | Intended wake, then controlled sleep |
 | Thermal (P05) | BH: 3 min CPU/GPU load stable, peak 60.1°C | Cooling response |
@@ -694,10 +695,15 @@ host datapath; that is not current cellular service verification.
   port/dock path, intended mode, hotplug, extend/mirror and suspend recovery.
   Resolve Type-C/alt-mode/HPD integration. Never live-unbind/rebind MSM components.
   **User report, October 4:** connected dock monitor shows nothing; boot and
-  dock model pending. The experimental USC-to-DP0 forwarder is present; BZ
-  stages deferred startup and early initramfs loading. Initial dock-state replay,
-  orientation switching and second-port routing remain absent. No visible
-  output or hotplug pass is established.
+  dock model pending. **BZ:** early USC-to-DP0 forwarding starts at12.114s and
+  receives real dock events without a requested replug. Samsung S34J55x EDID
+  checksums pass; GNOME extends to3440×1440/50Hz; DRM has an active external
+  framebuffer and consecutive vblanks20ms apart. Boot
+  `8518c5f4-1306-4e70-a9a0-f8f08a96cef1`, kernel
+  `7.3.0-rc2-spx-mainline-20261004bg+`.
+  [Result](tools/spx/boot-diagnostics/RESULT-20261005bz.md).
+  Visible output, physical hotplug, orientations, second port and resume remain
+  unverified. No explicit initial-state GET/replay is implemented.
   [Follow-up](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md).
 - [ ] **U04 — Dock and Surface Connect.** Inventory actual Surface Connect/dock
   capabilities; validate supported charging, USB, Ethernet, display and audio
