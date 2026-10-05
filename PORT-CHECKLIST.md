@@ -6,19 +6,17 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-05, CA collected: DP0 forwarding reload recovers scanout)
+## Status (2026-10-05, CB: playback reopen fails acoustically)
 
-Latest result: [CA](tools/spx/boot-diagnostics/RESULT-20261005ca.md), tested on
-the fixed `7.3.0-rc2-spx-mainline-20261004bg+`. Automatic DP0 startup repeats;
-forwarder-only reload receives real dock disconnect/reconnect events and
-recovers GNOME Samsung S34J55x3440×1440/50Hz scanout without physical replug.
-Visible output/replug/orientations/resume remain unverified. B05a early RTC and
-N01a IPv6 VPN retain their prior passes. BY quiet desktop audio passed until
-shutdown; lifecycle remains open. CA returned automatically at902.63s with no display timeout through shutdown.
-Current boot is known-good recovery; CA ran without audio/capture. Light response
-still needs a physical stimulus.
-Input/BT confirmations belong to BI; the
-[physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
+Latest result: [CB](tools/spx/boot-diagnostics/RESULT-20261005cb.md), kernel
+`7.3.0-rc2-spx-mainline-20261004bg+`. First quiet playback passes and closes
+cleanly while attached; reopened playback receives DSP completions but its left
+tone fails microphone verification. A03b remains open. Amplifiers are parked;
+final microphone COPP close times out. Keep the working continuous desktop path.
+CA established DP0 automatic startup and subscriber-reload recovery; physical
+USB-C/display tests remain unverified. B05a early RTC and N01a IPv6 VPN retain
+prior passes. Light response still needs a physical stimulus. Input/BT confirmations
+belong to BI; the [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
 awaits attribution for later observations.
 
 | Area | State | What is missing |
@@ -636,6 +634,9 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
     both tones, with clean attached-amplifier teardown between them and after
     the second stream. Keep one continuous microphone capture. This milestone
     does not establish DSP/capture teardown, resume or automatic mixer setup.
+    CB first close passes, but reopened left tone fails despite DSP consumption.
+    [CB result](tools/spx/boot-diagnostics/RESULT-20261005cb.md). No supported fix
+    is established; do not repeat the unchanged test.
 
 - [ ] **A04 — External audio.** Test applicable USB-C audio/dock and Bluetooth
   output/input devices, routing, hotplug and reconnect. The logical codec

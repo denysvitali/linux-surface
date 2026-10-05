@@ -1186,10 +1186,22 @@ def playback_reopen(args, report, pcm_holder, capture, baseline):
         evidence['cycles'].append(cycle)
         report['reopen_cycle'] = number
         first_phase = len(report['capture']['phases'])
-        listen(args, report, pcm_holder, capture, baseline)
-        cycle.update(pcm=report['pcm'], reference=report['reopen_reference'],
-                     late_initialization=report['late_initialization'],
-                     acoustic_phases=report['capture']['phases'][first_phase:])
+        for key in ('pcm', 'reopen_reference', 'late_initialization',
+                    'before_late_init', 'after_late_init', 'after_playback'):
+            report.pop(key, None)
+        try:
+            listen(args, report, pcm_holder, capture, baseline)
+        finally:
+            # Retain the failed stream as well as successful cycles. In
+            # particular, never label the first stream's final state as the
+            # reopened stream's result after an early acoustic failure.
+            for source, target in (('pcm', 'pcm'), ('reopen_reference', 'reference'),
+                                   ('late_initialization', 'late_initialization'),
+                                   ('after_late_init', 'after_late_init'),
+                                   ('after_playback', 'after_playback')):
+                if source in report:
+                    cycle[target] = report[source]
+            cycle['acoustic_phases'] = report['capture']['phases'][first_phase:]
         pcm = pcm_holder[-1]
         cycle['pcm']['log'] = pcm.close()
         pcm_holder.remove(pcm)
