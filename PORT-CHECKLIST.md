@@ -53,11 +53,12 @@ awaits attribution for later observations.
 
 ## Next work, in order
 
-Hands-on checks remain **unverified** without a reported action; obtain
-readiness before stimulus-dependent sampling. Current
-work has established DP0 startup and subscriber-reload recovery on the attached
-dock. Physical USB-C coverage remains deferred. No speculative state GET or PHY
-change is planned; repeating the same remote test would add no functional gain.
+User cannot provide physical assistance (October6); continue autonomous work.
+Physical observations remain unverified. USB-C Windows-driver evidence now
+establishes CC polarity and port-to-QMP routing; integrate standard Type-C
+switching and test the attached dock. Event decoding correction is WIP; no
+USB-C acceptance box has closed. See
+[USB-C contract](tools/spx/boot-diagnostics/RESULT-20261006usbc.md).
 
 1. **Deferred three-minute quiet physical batch:** on mainline, type on the
    keyboard; cover/uncover the front light sensor for5seconds each, twice;
