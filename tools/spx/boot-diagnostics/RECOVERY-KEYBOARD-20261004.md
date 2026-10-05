@@ -42,8 +42,10 @@ One guarded bind at267.56s completes in6.9ms and restores all device nodes,
 eleven SSAM children, BAT1/ADP1 and rtc0. RTC resumes reading the correct date.
 Physical typing is not newly confirmed; the October4 user result stays separate.
 
-A generic single late-probe workaround is being prepared for this exact
-unbound-after-timeout condition. It must skip healthy controllers, never unbind
-them, and make no repeated bind attempts. Root cause and cold-start reliability
-remain unresolved. Evidence is under
+A generic single late-probe workaround (`30096ef51d23`) is installed and enabled
+for this exact unbound-after-timeout condition. Eight offline tests pass.
+The installed service reports `already_bound` on this repaired boot, leaves
+input nodes unchanged and creates no bind-attempt marker. A real future
+startup failure is still required to validate its automatic recovery branch.
+Root cause and cold-start reliability remain unresolved. Evidence is under
 `/var/lib/spx-boot-diagnostics/recovery/20261005-d87f94b5-ssam/`.
