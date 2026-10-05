@@ -409,7 +409,8 @@ def wifi_band_gate():
     parts = re.findall(r'([0-9]+(?:\.[0-9]+)?)(us|ms|min|s|h|d)', value)
     assert parts and re.sub(r'([0-9]+(?:\.[0-9]+)?)(us|ms|min|s|h|d)|\s+', '', value) == '', value
     expires = sum(float(n) * units[u] for n, u in parts)
-    assert expires - time.clock_gettime(time.CLOCK_MONOTONIC) >= 180, 'return timer too close'
+    # Reserve the 135-second test budget plus restoration, logs and lock cleanup.
+    assert expires - time.clock_gettime(time.CLOCK_MONOTONIC) >= 200, 'return timer too close'
     return boot
 
 
