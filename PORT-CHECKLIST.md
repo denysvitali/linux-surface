@@ -6,18 +6,19 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-05, CB: playback reopen fails acoustically)
+## Status (2026-10-05, CC: both internal DMIC inputs capture known tones)
 
-Latest result: [CB](tools/spx/boot-diagnostics/RESULT-20261005cb.md), kernel
-`7.3.0-rc2-spx-mainline-20261004bg+`. First quiet playback passes and closes
-cleanly while attached; reopened playback receives DSP completions but its left
-tone fails microphone verification. A03b remains open. The test parked the amps;
-final microphone COPP close times out. Keep the working continuous desktop path.
-CA established DP0 automatic startup and subscriber-reload recovery; physical
-USB-C/display tests remain unverified. B05a early RTC and N01a IPv6 VPN retain
-prior passes. CB returned to known-good at608.08s; the full shutdown log is saved.
-Light response still needs a physical stimulus. Input/BT confirmations
-belong to BI; the [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
+Latest result: [CC](tools/spx/boot-diagnostics/RESULT-20261005cc.md), kernel
+`7.3.0-rc2-spx-mainline-20261004bg+`. **A02b DMIC0 passes** quiet left/right/both
+acoustic signals and amps-off control; BN previously passed DMIC1. Both fitted
+inputs now record known stimuli. Quality, simultaneous mapping and full capture
+lifecycle remain open. CC returned to known-good at207.26s; full logs are saved.
+CB playback reopen still fails acoustically; keep the working continuous desktop
+pattern. CA established DP0 startup/reload recovery; one DPU startup timeout
+recurs on CC, with physical USB-C/display tests still unverified. B05a early RTC
+and N01a IPv6 VPN retain prior passes. Light response needs physical stimulus.
+Input/BT confirmations belong to BI; the
+[physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
 awaits attribution for later observations.
 
 | Area | State | What is missing |
@@ -32,7 +33,7 @@ awaits attribution for later observations.
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
 | Speakers (A01) | **BY: quiet default desktop playback passes** | Persistence, volume/mapping/balance, reopen and lifecycle |
-| Microphones (A02) | **BN: DMIC1 records known speaker tones** | Other fitted mics, quality and full lifecycle |
+| Microphones (A02) | **BN DMIC1 and CC DMIC0 record known speaker tones** | Quality, simultaneous channel mapping and full lifecycle |
 | Cameras (C01–C05) | Rear sensor identifies | No frame captured |
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
 | Keyboard, touchpad (I04, I05) | **BI keyboard works**; recovery keyboard restored after SSAM timeout | Startup reliability, full keys/gestures and resume |
@@ -616,11 +617,13 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
     `7.3.0-rc2-spx-mainline-20261004bg+`.
     [BN result](tools/spx/boot-diagnostics/RESULT-20261004bn.md).
 
-  - [ ] **A02b — DMIC0 records a known acoustic stimulus.** The second fitted
-    input, paired with DMIC1 in the Windows two-microphone array, must record
-    recognized quiet speaker tones above its own reference and lose those tones
-    with amplifiers off. Use one fresh MM2 capture; leave quality, simultaneous
-    channel mapping and capture teardown/reopen under A02/A03 open.
+  - [x] **A02b — DMIC0 records a known acoustic stimulus.** CC, boot
+    `75135fb8-8413-45c9-8321-7713bc7cbec9`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: selected DMIC0/DEC0/MM2 records
+    quiet left/right/both tones; the identical digital signals disappear with
+    amplifier power off. Both fitted inputs now have known-stimulus evidence.
+    Quality, simultaneous channel mapping and full lifecycle remain open.
+    [CC result](tools/spx/boot-diagnostics/RESULT-20261005cc.md).
 
 - [ ] **A03 — Audio lifecycle/userspace.** Normal PipeWire/ALSA/UCM playback and
   capture, simultaneous use, volume/mute controls and repeated open/close work
