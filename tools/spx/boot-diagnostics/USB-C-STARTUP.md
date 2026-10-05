@@ -7,6 +7,13 @@ Runtime collection is now in [RESULT-BZ](RESULT-20261005bz.md): the attached
 dock supplies real boot events and GNOME activates external scanout without
 a requested replug. This is one observed startup, not complete hotplug coverage.
 
+BZ has now returned automatically; final logs show no repeat of the one early
+frame-done timeout. CA reuses the same kernel/DT/modules for one bounded
+`trial.py usbc-reload 20261005ca` test after90s. It observes scanout before,
+during and after restarting the subscriber, plus real post-restart events.
+No firmware GET, PHY change or synthetic HPD is used. This test cannot prove
+physical hotplug or guaranteed current-state replay.
+
 `acfff8e5bc5a` replaces the forwarder's one-shot platform probe with a
 driver/device registration that supports deferred probing. Missing SSAM,
 DP0 supplier binding, DRM attachment or HPD callback now defer; disabled DP0
