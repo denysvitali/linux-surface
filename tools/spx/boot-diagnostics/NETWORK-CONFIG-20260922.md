@@ -8,11 +8,15 @@ Tailscale reports the MARK router error. Commit `0bc334d2aded` applies the
 single option below to the functional fragment. Incremental Image/modules
 build passes with the fixed release; only `IP6_NF_IPTABLES: n -> m` changes
 effectively in Kconfig. The affected configured modules are xt_mark/xt_connmark.
-Legacy tables stay disabled. Runtime verification is still pending.
+Legacy tables stay disabled. **BY runtime verification passes**, boot
+`f23d0acb-8e26-49af-b888-5769a13b7a04`, same fixed release: normal Tailscale
+startup installs the IPv6 rule, all three intended chains are present, Health
+is empty, and three ICMPv6 packets through tailscale0 to a configured peer
+return without loss. [Actual BY result](RESULT-20261005by.md).
 
-The running firewall holds xt_mark in use, so its active modules/rules/backend
-are preserved. Install the next candidate from recovery, then require normal
-Tailscale startup to install the IPv6 rule and clear its router-health error.
+BX's firewall held xt_mark in use, so its active modules/rules/backend were
+preserved and BY was installed from recovery. The backend remains nf_tables;
+no live host rule or policy was changed manually for a passing test.
 Use current fixed-build/trial rules; historical manifests/distinct-release
 instructions below are superseded by AGENTS.md.
 

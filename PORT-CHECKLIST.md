@@ -6,12 +6,12 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-05, BX: early RTC time passes; quiet desktop audio retained)
+## Status (2026-10-05, BY: early RTC and IPv6 VPN pass; quiet audio retained)
 
-Latest result: [BX](tools/spx/boot-diagnostics/RESULT-20261005bx.md), mainline
-`7.3.0-rc2-spx-mainline-20261004bg+`; now in recovery to install IPv6 support.
-B05a passes: RTC sets correct time before root startup/networking. Quiet desktop
-playback passes until shutdown; audio lifecycle remains open. The SSAM guard
+Latest result: [BY](tools/spx/boot-diagnostics/RESULT-20261005by.md), running
+`7.3.0-rc2-spx-mainline-20261004bg+`. B05a early RTC time and N01a IPv6 VPN
+connectivity pass. Tailscale's firewall setup error is fixed. Quiet desktop
+audio passes with capture closed; audio lifecycle remains open. The SSAM guard
 skips healthy startup. Light response still needs a physical stimulus.
 Input/BT confirmations belong to BI; the
 [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
@@ -24,7 +24,7 @@ awaits attribution for later observations.
 | Storage (B02) | Passed on AP | Post-resume I/O |
 | GPU FD680 (D02) | **Passed on AW**, 30 min rendering | A person looking at the screen |
 | Internal panel (D01) | User: display and brightness work; boot attribution pending | Blank/unblank and resume |
-| Wi-Fi (N01) | 5 GHz: BW download ~419 Mbit/s and reconnect pass; BU upload ~189 Mbit/s | 2.4 GHz, roaming, sustained use and resume |
+| Wi-Fi (N01) | 5 GHz transfers/reconnect pass; **BY IPv6 VPN packets pass** | 2.4 GHz, native WAN IPv6, roaming, sustained use and resume |
 | RTC (B05) | **BX: B05a early boot time passes**; readback/warm reboot pass | Cold power-off retention and suspend |
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
@@ -58,7 +58,7 @@ awaits attribution for later observations.
 3. **Touch startup reliability (I01):** recovery's failed udev identification
    left no IPTSD instance to retry. One targeted add event restored the service;
    BI now starts automatically and physical touch/pen work. Verify reliability.
-4. **Audio (A01–A03):** preserve BW's quiet default desktop path, resolve
+4. **Audio (A01–A03):** preserve BY's quiet default desktop path, resolve
    WCD/ADM close faults and test hardware reopen and persistence. The user authorized bounded automated
    speaker/microphone testing; announce capture and park the amps afterwards.
 5. **Camera frames (C02–C04).**
@@ -636,6 +636,14 @@ host datapath; that is not current cellular service verification.
   verified-HTTPS download succeeds afterward. Startup25MB download ~419Mbit/s.
   BU upload ~189Mbit/s remains demonstrated; other bands, roaming and resume
   stay open. [BW result](tools/spx/boot-diagnostics/RESULT-20261005bw.md).
+
+  - [x] **N01a — IPv6 VPN connectivity and firewall setup.** BY boot
+    `f23d0acb-8e26-49af-b888-5769a13b7a04`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: Tailscale installs its intended IPv6
+    rules with no router-health error; three ICMPv6 packets to a configured
+    peer return without loss. Native WAN IPv6 and exit/subnet routing are
+    separate tests. [BY result](tools/spx/boot-diagnostics/RESULT-20261005by.md).
+
 - [ ] **N02 — Bluetooth.** Real pairing, reconnect and peripheral use (HID and
   audio as available), radio toggle and resume; Wi-Fi coexistence under load.
   Preserve the active remote connection while planning radio tests.
