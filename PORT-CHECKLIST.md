@@ -682,6 +682,12 @@ host datapath; that is not current cellular service verification.
     peer return without loss. Native WAN IPv6 and exit/subnet routing are
     separate tests. [BY result](tools/spx/boot-diagnostics/RESULT-20261005by.md).
 
+  - [ ] **N01b — 2.4 GHz Wi-Fi carries application data.** Associate a visible
+    saved profile on a confirmed 2.4 GHz channel, complete bounded HTTPS
+    transfers and restore the original connection. Roaming, sustained use and
+    resume remain under N01. Zyxel_A0B9 is now visible on 2.4 GHz; use an owned
+    temporary clone without changing saved credentials or original profiles.
+
 - [ ] **N02 — Bluetooth.** Real pairing, reconnect and peripheral use (HID and
   audio as available), radio toggle and resume; Wi-Fi coexistence under load.
   Preserve the active remote connection while planning radio tests.
