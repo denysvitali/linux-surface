@@ -3,6 +3,10 @@
 U02–U04 remain open. The user has no physical access; no dock replug or
 monitor observation can be claimed.
 
+Runtime collection is now in [RESULT-BZ](RESULT-20261005bz.md): the attached
+dock supplies real boot events and GNOME activates external scanout without
+a requested replug. This is one observed startup, not complete hotplug coverage.
+
 `acfff8e5bc5a` replaces the forwarder's one-shot platform probe with a
 driver/device registration that supports deferred probing. Missing SSAM,
 DP0 supplier binding, DRM attachment or HPD callback now defer; disabled DP0
