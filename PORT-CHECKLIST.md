@@ -631,6 +631,12 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
     [BP result](tools/spx/boot-diagnostics/RESULT-20261004bp.md). Hardware reopen,
     WCD/ADM lifecycle and reboot/resume persistence remain unresolved.
 
+  - [ ] **A03b — Linux playback PCM closes and reopens with parked ASM.**
+    Two distinct PCM owners each produce microphone-verified quiet left/right/
+    both tones, with clean attached-amplifier teardown between them and after
+    the second stream. Keep one continuous microphone capture. This milestone
+    does not establish DSP/capture teardown, resume or automatic mixer setup.
+
 - [ ] **A04 — External audio.** Test applicable USB-C audio/dock and Bluetooth
   output/input devices, routing, hotplug and reconnect. The logical codec
   "Headset Jack" node does not establish a physical analog jack on this device.
