@@ -6,21 +6,19 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-05, 2.4 GHz accepted by user assumption)
+## Status (2026-10-05, CE: normal internal display power cycles pass)
 
-Latest result: [CD](tools/spx/boot-diagnostics/RESULT-20261005cd.md), kernel
-`7.3.0-rc2-spx-mainline-20261004bg+`. CD cannot activate the temporary saved
-2.4 GHz profile because NetworkManager lacks usable credentials; IoT5 is restored.
-The user accepts 2.4 GHz by inference from working5GHz; further testing is deferred.
-**A02b DMIC0 passes** quiet left/right/both
-acoustic signals and amps-off control; BN previously passed DMIC1. Both fitted
-inputs now record known stimuli. Quality, simultaneous mapping and full capture
-lifecycle remain open. CC returned to known-good at207.26s; full logs are saved.
-CB playback reopen still fails acoustically; keep the working continuous desktop
-pattern. CA established DP0 startup/reload recovery; one DPU startup timeout
-recurs on CC, with physical USB-C/display tests still unverified. B05a early RTC
-and N01a IPv6 VPN retain prior passes. Light response needs physical stimulus.
-Input/BT confirmations belong to BI; the
+Latest result: [CE](tools/spx/boot-diagnostics/RESULT-20261005ce.md), kernel
+`7.3.0-rc2-spx-mainline-20261004bg+`. **D01a passes:** two GNOME off/on cycles
+restore native2880×1920/60Hz scanout with fresh vblank and no new display faults.
+Visual quality and suspend remain open. CE exposes only USB root hubs and no
+active external display, so external power cycling is not covered. CA's earlier
+DP0 startup/reload result remains scoped to its attached dock.
+CC closes A02b: both fitted microphone inputs record known stimuli; quality,
+simultaneous mapping and lifecycle remain open. CB playback reopen still fails.
+B05a early RTC and N01a IPv6 VPN retain prior passes. **N01b is accepted by user
+assumption from working5GHz; no2.4GHz functional pass was measured.** Light
+response needs physical stimulus. Input/BT confirmations belong to BI; the
 [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
 awaits attribution for later observations.
 
@@ -30,7 +28,7 @@ awaits attribution for later observations.
 | CPU and memory (B03) | **Passed on AP; BU automatic frequency scaling active** | Recheck on final candidate |
 | Storage (B02) | Passed on AP | Post-resume I/O |
 | GPU FD680 (D02) | **Passed on AW**, 30 min rendering | A person looking at the screen |
-| Internal panel (D01) | User: display and brightness work; boot attribution pending | Blank/unblank and resume |
+| Internal panel (D01) | **CE: D01a GNOME off/on scanout passes**; user reports display/brightness working | Visual attribution/quality, brightness range and resume |
 | Wi-Fi (N01) | 5 GHz/reconnect and IPv6 VPN pass; 2.4 GHz accepted by user assumption | Native WAN IPv6, roaming, sustained use and resume |
 | RTC (B05) | **BX: B05a early boot time passes**; readback/warm reboot pass | Cold power-off retention and suspend |
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
@@ -233,11 +231,16 @@ functional blank/unblank result. [Earlier evidence](tools/spx/boot-diagnostics/C
   confirmation and blank/unblank/resume remain pending.
   [Follow-up](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md).
 
-  - [ ] **D01a — Normal desktop display power off/on.** GNOME's display
+  - [x] **D01a — Normal desktop display power off/on.** GNOME's display
     power control disables active scanout and restores the original active
     framebuffers with fresh vblank after two brief off/on cycles, without new
     display/kernel faults. Physical image/brightness quality and suspend remain
     separate D01 checks. Use the normal compositor path; never unbind MSM.
+    CE boot `a8b864a4-0813-4ce5-8ac3-c90e4759afae`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: two3-second off intervals disable
+    internal CRTC/framebuffers; each return restores2880×1920/60Hz, a GNOME
+    framebuffer and advancing fresh vblank. Final restoration passes; no new
+    display/kernel faults. [CE result](tools/spx/boot-diagnostics/RESULT-20261005ce.md).
 
 - [x] *Passed on AW (2026-10-03); visual check by a person still wanted.* **D02 — GPU acceleration.** Confirm hardware rendering in desktop and real
   3D workloads; at least30minutes of rendering/compositing plus idle transitions,
