@@ -6,13 +6,14 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-05, BY: early RTC and IPv6 VPN pass; quiet audio retained)
+## Status (2026-10-05, BY collected: early RTC and IPv6 VPN pass)
 
-Latest result: [BY](tools/spx/boot-diagnostics/RESULT-20261005by.md), running
-`7.3.0-rc2-spx-mainline-20261004bg+`. B05a early RTC time and N01a IPv6 VPN
-connectivity pass. Tailscale's firewall setup error is fixed. Quiet desktop
-audio passes with capture closed; audio lifecycle remains open. The SSAM guard
-skips healthy startup. Light response still needs a physical stimulus.
+Latest result: [BY](tools/spx/boot-diagnostics/RESULT-20261005by.md), completed
+one hour on `7.3.0-rc2-spx-mainline-20261004bg+`; now back on known-good
+`6.18.3-1-surface+`. B05a early RTC time and N01a IPv6 VPN connectivity pass.
+Quiet desktop audio ran until shutdown with capture closed; shutdown lifecycle
+remains open. The SSAM guard skips healthy startup. Light response still needs
+a physical stimulus.
 Input/BT confirmations belong to BI; the
 [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
 awaits attribution for later observations.
@@ -42,7 +43,7 @@ awaits attribution for later observations.
 | Thermal (P05) | BH: 3 min CPU/GPU load stable, peak 60.1°C | Cooling response |
 | Idle power (P02) | BU: CPU scales down; GPU runtime-suspends | Battery power measurement and remaining forced-on devices |
 | Sensors (S01, S02) | BW: TCS3430 runtime-PM/readout passes, counts zero | Physical light response; auto-brightness; motion sensor-hub stack |
-| Cellular, GNSS (N03, N04) | Never tested | SIM |
+| Cellular, GNSS (N03, N04) | Modem control responds; GNSS LOC service exists | Cellular mode and IPA datapath, SIM; actual GNSS fix |
 
 ## Next work, in order
 
@@ -58,7 +59,7 @@ awaits attribution for later observations.
 3. **Touch startup reliability (I01):** recovery's failed udev identification
    left no IPTSD instance to retry. One targeted add event restored the service;
    BI now starts automatically and physical touch/pen work. Verify reliability.
-4. **Audio (A01–A03):** preserve BY's quiet default desktop path, resolve
+4. **Audio (A01–A03):** retain BY's quiet default desktop setup, resolve
    WCD/ADM close faults and test hardware reopen and persistence. The user authorized bounded automated
    speaker/microphone testing; announce capture and park the amps afterwards.
 5. **Camera frames (C02–C04).**
