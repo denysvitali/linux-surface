@@ -6,15 +6,15 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-05, BZ collected: automatic external DP scanout)
+## Status (2026-10-05, CA live: DP0 forwarding reload recovers scanout)
 
-Latest result: [BZ](tools/spx/boot-diagnostics/RESULT-20261005bz.md), returned
-after901seconds to known-good `6.18.3-1-surface+`. On the fixed7.3 trial,
-early USB-C forwarding receives real dock
-events; GNOME extends to Samsung S34J55x at3440×1440/50Hz with active scanout.
+Latest result: [CA](tools/spx/boot-diagnostics/RESULT-20261005ca.md), running
+the fixed `7.3.0-rc2-spx-mainline-20261004bg+`. Automatic DP0 startup repeats;
+forwarder-only reload receives real dock disconnect/reconnect events and
+recovers GNOME Samsung S34J55x3440×1440/50Hz scanout without physical replug.
 Visible output/replug/orientations/resume remain unverified. B05a early RTC and
 N01a IPv6 VPN retain their prior passes. BY quiet desktop audio passed until
-shutdown; lifecycle remains open. BZ ran without audio/capture. Light response
+shutdown; lifecycle remains open. CA runs without audio/capture. Light response
 still needs a physical stimulus.
 Input/BT confirmations belong to BI; the
 [physical report](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md)
@@ -39,7 +39,7 @@ awaits attribution for later observations.
 | Buttons (I06) | User: short power press opens shutdown prompt, boot pending | Volume/posture and intended wake |
 | Bluetooth (N02) | **User confirms Bluetooth works on BI** | Device-specific pairing/reconnect and resume |
 | USB data (U01) | Untested | Both ports/orientations, fixtures |
-| USB-C PD, DisplayPort, dock (U02–U04) | **BZ: automatic DP0 events, valid EDID, GNOME3440×1440/50Hz scanout** | Visible output, replug, roles/PD, ports/orientations/resume |
+| USB-C PD, DisplayPort, dock (U02–U04) | **CA: DP0 automatic startup and subscriber-reload recovery,3440×1440/50Hz** | Visible output, physical replug, roles/PD, ports/orientations/resume |
 | Battery and charging (P01) | BU: AC online, 49%, Not charging; prior user report works | Charge-policy explanation, discharge/transitions and chargers |
 | Suspend/resume (P03) | Kernel exposes s2idle; systemd sleep/suspend targets masked | Intended wake, then controlled sleep |
 | Thermal (P05) | BH: 3 min CPU/GPU load stable, peak 60.1°C | Cooling response |
@@ -51,9 +51,9 @@ awaits attribution for later observations.
 
 The user has no physical access (October5). Hands-on checks remain **unverified**;
 do not wait for them or start unattended stimulus-dependent sampling. Current
-work is one bounded forwarder restart to check attached-display preservation
-and real notification delivery after re-subscription. No speculative state GET
-or PHY change is planned; physical USB-C coverage remains deferred.
+work has established DP0 startup and subscriber-reload recovery on the attached
+dock. Physical USB-C coverage remains deferred. No speculative state GET or PHY
+change is planned; repeating the same remote test would add no functional gain.
 
 1. **Deferred three-minute quiet physical batch:** on mainline, type on the
    keyboard; cover/uncover the front light sensor for5seconds each, twice;
@@ -707,6 +707,12 @@ host datapath; that is not current cellular service verification.
   [Result](tools/spx/boot-diagnostics/RESULT-20261005bz.md).
   Visible output, physical hotplug, orientations, second port and resume remain
   unverified. No explicit initial-state GET/replay is implemented.
+  **CA:** forwarder-only reload receives fresh disconnect/reconnect notifications
+  and recovers the same external mode, with settled vblanks20ms apart; no
+  synthetic HPD or physical action. No frame-done timeout during this observed
+  startup/reload. Boot `9349d90b-0cdc-4363-8d80-1f45bc4b9c9d`, same fixed7.3
+  release. [Result](tools/spx/boot-diagnostics/RESULT-20261005ca.md). Continuous
+  visible output and guaranteed firmware state replay are not established.
   [Follow-up](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md).
 - [ ] **U04 — Dock and Surface Connect.** Inventory actual Surface Connect/dock
   capabilities; validate supported charging, USB, Ethernet, display and audio

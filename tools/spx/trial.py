@@ -444,7 +444,9 @@ def usbc_reload(args):
             replies = []
             # Standard WAIT_VBLANK: relative sequence, selected CRTC index.
             # DRM bounds the blocking wait; no modeset or framebuffer change.
-            for delta in (0, 1):
+            # Wait for both samples: a zero-relative query can return an old
+            # timestamp when vblank IRQs were idle between compositor frames.
+            for delta in (1, 1):
                 buf = bytearray(struct.pack('=IIQQ', 1 | (int(match[1]) << 1), delta, 0, 0))
                 fcntl.ioctl(fd, 0xc018643a, buf, True)
                 _, sequence, seconds, useconds = struct.unpack('=IIqq', buf)
@@ -475,7 +477,7 @@ def usbc_reload(args):
         time.sleep(30)
         snapshot('after')
         assert result['snapshots']['after']['forwarder_bound']
-        result['scanout_preserved'] = True
+        result['scanout_at_all_snapshots'] = True
         result['complete'] = True
     except Exception as error:
         result['error'] = str(error)
@@ -492,7 +494,7 @@ def usbc_reload(args):
                 if 'USC DP port 0' in line and
                 (stamp := re.match(r'\[\s*([0-9.]+)\]', line)) and
                 float(stamp[1]) >= result.get('restart_uptime', float('inf'))]
-            # Preserved scanout and delivered events do not prove GET/replay semantics.
+            # Sampled scanout is not continuity; events do not prove GET/replay semantics.
             save()
         finally:
             subprocess.run([lock, 'release', 'device', owner], check=True)
