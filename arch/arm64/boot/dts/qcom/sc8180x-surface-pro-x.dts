@@ -81,7 +81,7 @@
 		linux,pstore = <&ramoops_mem>;
 	};
 
-	/* WIP secure PAS boot and GLINK; sensor services remain unverified. */
+	/* PAS boot and SSC transport work; motion streams remain WIP. */
 	remoteproc-slpi {
 		compatible = "qcom,sc8180x-slpi-pas";
 
@@ -110,6 +110,20 @@
 			label = "dsps";
 			qcom,remote-pid = <3>;
 			mboxes = <&apss_shared 24>;
+
+			fastrpc {
+				compatible = "qcom,fastrpc";
+				qcom,glink-channels = "fastrpcglink-apps-dsp";
+				label = "sdsp";
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				/* WIP physical-DMA session; no evidenced SDSP SMMU tuple. */
+				compute-cb@0 {
+					compatible = "qcom,fastrpc-compute-cb";
+					reg = <0>;
+				};
+			};
 		};
 	};
 
