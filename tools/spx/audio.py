@@ -247,8 +247,15 @@ def tone(channels, seconds=2, amplitude=1433):
     return bytes(samples)
 
 
-def configure_microphone(card, report, saved):
-    """Strict known DMIC1 -> DEC0 -> MM2 route; retain every prior value."""
+def validate_microphone_source(action, source):
+    need(source in ('DMIC0', 'DMIC1'), 'Unknown microphone source')
+    need(source == 'DMIC1' or action in ('capture', 'feedback'),
+         'DMIC0 is only supported for capture or feedback')
+
+
+def configure_microphone(card, report, saved, source='DMIC1'):
+    """Select one DMIC -> DEC0 -> MM2 route before capture; preserve controls."""
+    need(source in ('DMIC0', 'DMIC1'), 'Unknown microphone source')
     need(parameter('q6asm_dai', 'spx_keep_asm') == 'Y',
          'Capture requires the known parked ASM lifetime workaround')
     for path in Path('/proc/asound').glob('card*/pcm*c/sub*/status'):
@@ -258,7 +265,7 @@ def configure_microphone(card, report, saved):
     for name, value in (
             ('MultiMedia2 Mixer SLIMBUS_0_TX', '1'),
             ('AIF1_CAP Mixer SLIM TX0', '1'), ('CDC_IF TX0 MUX', 'DEC0'),
-            ('DEC0 Volume', '84'), ('ADC MUX0', 'DMIC'), ('DMIC MUX0', 'DMIC1')):
+            ('DEC0 Volume', '84'), ('ADC MUX0', 'DMIC'), ('DMIC MUX0', source)):
         key = 'name=' + name
         before = subprocess.run(base + ['cget', key], capture_output=True,
                                 text=True, check=True, timeout=5)
@@ -271,12 +278,21 @@ def configure_microphone(card, report, saved):
             'returncode': result.returncode, 'readback': result.stdout,
             'stderr': result.stderr})
         need(result.returncode == 0, f'Microphone route {name}: {result.stderr}')
+        if name == 'DMIC MUX0':
+            item = re.search(r"^\s*; Item #(\d+) '" + source + r"'$", result.stdout, re.M)
+            selected = re.search(r'^\s*: values=(\d+)$', result.stdout, re.M)
+            need(item and selected and item[1] == selected[1],
+                 f'Microphone source readback did not select {source}')
+            report['microphone_mixer'][-1]['selected'] = source
+            report['microphone_source'] = source
 
 
 class OwnedCapture:
     """One finite MM2 capture, consumed continuously without XRUN recovery."""
 
     def __init__(self, card, report, directory):
+        source = report['microphone_source']
+        need(source in ('DMIC0', 'DMIC1'), 'Capture requires a verified microphone source')
         self.report = report
         self.directory = directory
         self.raw = bytearray()
@@ -293,7 +309,7 @@ class OwnedCapture:
         self.status = Path(f'/proc/asound/card{card}/pcm1c/sub0/status')
         report['microphone_capture'] = True
         report['capture'] = {'pid': self.process.pid, 'device': f'plughw:{card},1',
-                             'source': 'DMIC1', 'rate': 48000, 'channels': 1,
+                             'source': source, 'rate': 48000, 'channels': 1,
                              'period_frames': 1920, 'buffer_frames': 7680,
                              'maximum_seconds': 90, 'phases': []}
         self.thread = threading.Thread(target=self.consume, daemon=True)
@@ -1229,6 +1245,8 @@ def playback_reopen(args, report, pcm_holder, capture, baseline):
 
 
 def initialize(args, report):
+    source = getattr(args, 'microphone_source', 'DMIC1')
+    validate_microphone_source(args.action, source)
     need(os.geteuid() == 0, 'initialize requires root')
     need(args.action in ('recover', 'capture') or args.allow_amp_power,
          'initialize/listen requires --allow-amp-power for this authorized run')
@@ -1338,7 +1356,7 @@ def initialize(args, report):
             need(args.output is not None, 'Capture requires a private result directory')
             directory = args.output / ('capture-' + report['utc'])
             directory.mkdir(mode=0o700)
-            configure_microphone(initial['internal_cards'][0], report, saved_mixer)
+            configure_microphone(initial['internal_cards'][0], report, saved_mixer, source)
             capture = OwnedCapture(initial['internal_cards'][0], report, directory)
             baseline = capture.baseline()
             if args.action == 'capture':
@@ -1488,11 +1506,15 @@ def main():
                         help='explicitly authorize this one bounded listening run')
     parser.add_argument('--allow-capture', action='store_true',
                         help='authorize bounded internal microphone recording')
+    parser.add_argument('--microphone-source', choices=('DMIC0', 'DMIC1'), default='DMIC1',
+                        help='bounded capture/feedback input (default: DMIC1)')
     parser.add_argument('--serve-seconds', type=serve_duration, default=3600,
                         help='ordinary desktop session duration, 0 until stopped or 1..86400 seconds (default: 3600)')
     parser.add_argument('--desktop-peak', type=desktop_peak_limit,
                         help='serve-only ordinary PCM peak, 1433..12000 (default: 1433)')
     args = parser.parse_args()
+    if args.microphone_source != 'DMIC1' and args.action not in ('capture', 'feedback'):
+        parser.error('--microphone-source DMIC0 requires capture or feedback')
     if args.desktop_peak is not None and args.action != 'serve':
         parser.error('--desktop-peak is only valid with serve')
     if args.desktop_peak is None:

@@ -96,6 +96,71 @@ class AudioTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'allow-capture'):
                 audio.initialize(args, {})
 
+    def test_microphone_source_is_written_verified_and_recorded_before_capture(self):
+        for source, index in (('DMIC0', 1), ('DMIC1', 2)):
+            with self.subTest(source=source), tempfile.TemporaryDirectory() as directory:
+                report, saved = {}, []
+                readback = "; Item #0 'ZERO'\n; Item #1 'DMIC0'\n; Item #2 'DMIC1'\n: values=" + str(index) + '\n'
+
+                def mixer(command, **kwargs):
+                    text = readback if command[-2:] == ['name=DMIC MUX0', source] else ': values=0\n'
+                    return SimpleNamespace(returncode=0, stdout=text, stderr='')
+
+                def opened(command, **kwargs):
+                    self.assertEqual(report['microphone_source'], source)
+                    self.assertEqual(report['microphone_mixer'][-1]['selected'], source)
+                    self.assertEqual(command[-2:], ['-d', '90'])
+                    return SimpleNamespace(pid=2345)
+
+                with patch.object(audio, 'parameter', return_value='Y'), \
+                        patch.object(audio, 'Path') as paths, \
+                        patch.object(audio.subprocess, 'run', side_effect=mixer) as run, \
+                        patch.object(audio.subprocess, 'Popen', side_effect=opened), \
+                        patch.object(audio.threading, 'Thread'):
+                    paths.return_value.glob.return_value = []
+                    audio.configure_microphone(0, report, saved, source)
+                    capture = audio.OwnedCapture(0, report, Path(directory))
+                    capture.log.close()
+                self.assertEqual(run.call_args.args[0][-2:], ['name=DMIC MUX0', source])
+                self.assertEqual(len(saved), 6)
+                self.assertEqual(report['capture']['source'], source)
+                self.assertEqual(report['microphone_mixer'][-1]['readback'], readback)
+
+    def test_microphone_source_readback_mismatch_stops_before_capture(self):
+        report, saved = {}, []
+        wrong = "; Item #1 'DMIC0'\n; Item #2 'DMIC1'\n: values=2\n"
+        with patch.object(audio, 'parameter', return_value='Y'), \
+                patch.object(audio, 'Path') as paths, \
+                patch.object(audio.subprocess, 'run', return_value=SimpleNamespace(
+                    returncode=0, stdout=wrong, stderr='')), \
+                patch.object(audio.subprocess, 'Popen') as opened:
+            paths.return_value.glob.return_value = []
+            with self.assertRaisesRegex(RuntimeError, 'readback did not select DMIC0'):
+                audio.configure_microphone(0, report, saved, 'DMIC0')
+            opened.assert_not_called()
+        self.assertNotIn('microphone_source', report)
+        self.assertEqual(report['microphone_mixer'][-1]['readback'], wrong)
+
+    def test_dmic0_is_rejected_on_other_actions_before_hardware(self):
+        for action in ('initialize', 'listen', 'recover', 'desktop', 'serve', 'reopen'):
+            with self.subTest(action=action), \
+                    patch.object(audio.os, 'geteuid', side_effect=AssertionError('hardware')):
+                with self.assertRaisesRegex(RuntimeError, 'only supported for capture or feedback'):
+                    audio.initialize(SimpleNamespace(action=action, microphone_source='DMIC0'), {})
+        for action in ('capture', 'feedback'):
+            audio.validate_microphone_source(action, 'DMIC0')
+
+    def test_microphone_cli_rejects_invalid_source_before_hardware(self):
+        for action, source in (('serve', 'DMIC0'), ('feedback', 'DMIC2')):
+            with self.subTest(action=action, source=source), \
+                    patch.object(audio.sys, 'argv', ['audio.py', action, '--microphone-source', source]), \
+                    patch.object(audio.sys, 'stderr', io.StringIO()), \
+                    patch.object(audio, 'initialize') as initialize:
+                with self.assertRaises(SystemExit) as stopped:
+                    audio.main()
+                self.assertEqual(stopped.exception.code, 2)
+                initialize.assert_not_called()
+
     def test_capture_monitor_retains_clipped_chunk_and_requests_abort(self):
         # Exercise the actual pipe-consumption path without an ALSA device or
         # delivering a real signal to the test runner.

@@ -554,12 +554,19 @@ def extend_window(args):
     subprocess.run(['systemctl', 'list-timers', unit, '--no-pager'], check=True)
 
 
+def validate_microphone_source(action, source):
+    assert source in ('DMIC0', 'DMIC1'), 'unknown microphone source'
+    assert source == 'DMIC1' or action in ('capture', 'feedback'), 'DMIC0 requires capture or feedback'
+
+
 def arm_audio(args):
     """Queue one authorized initialization or microphone-monitored audio test."""
+    action = 'initialize' if args.audio_action == 'plan' else args.audio_action
+    source = getattr(args, 'microphone_source', 'DMIC1')
+    validate_microphone_source(action, source)
     require_source_boot()
     recovery()
     assert args.allow_amp_power, 'explicit amplifier-power authorization required'
-    action = 'initialize' if args.audio_action == 'plan' else args.audio_action
     assert action in ('initialize', 'feedback', 'desktop', 'serve', 'reopen')
     if action in ('feedback', 'desktop', 'serve', 'reopen'):
         assert args.allow_playback and args.allow_capture, 'feedback needs playback and capture authorization'
@@ -578,6 +585,7 @@ def arm_audio(args):
     with (OUT / 'audio-request.json').open('x') as stream:
         json.dump(dict(attempt=ATTEMPT, release=RELEASE, preboot_id=BOOT_ID,
                        desktop_user=account.pw_name, action=action,
+                       microphone_source=source,
                        allow_amp_power=True, playback=action in ('feedback', 'desktop', 'serve', 'reopen'),
                        capture=action in ('feedback', 'desktop', 'serve', 'reopen'),
                        serve_seconds=args.serve_seconds if action == 'serve' else None,
@@ -742,6 +750,7 @@ def dispatch_audio(args):
     # fails before audio.py can write its own fresh report.
     (OUT / 'audio/serve-ready.json').unlink(missing_ok=True)
     args.audio_action = 'serve'
+    args.microphone_source = 'DMIC1'
     args.serve_seconds = 0
     args.desktop_peak = peak
     args.desktop_user = record['desktop_user']
@@ -760,6 +769,8 @@ def requested_audio(args):
     if not request.exists():
         return
     record = json.loads(request.read_text())
+    source = record.get('microphone_source', 'DMIC1')
+    validate_microphone_source(record['action'], source)
     words = Path('/proc/cmdline').read_text().split()
     boot_id = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
     assert record['attempt'] == ATTEMPT and record['release'] == os.uname().release
@@ -781,6 +792,7 @@ def requested_audio(args):
     archive_audio_result(boot_id)
     (OUT / 'audio/serve-ready.json').unlink(missing_ok=True)
     args.audio_action = record['action']
+    args.microphone_source = source
     args.allow_amp_power = True
     args.allow_playback = feedback
     args.allow_capture = feedback
@@ -818,8 +830,10 @@ def requested_audio(args):
 
 def audio_check(args):
     action = args.audio_action
+    source = getattr(args, 'microphone_source', 'DMIC1')
+    validate_microphone_source(action, source)
     command = ['python3', '-B', str(HERE / 'audio.py'), action,
-               '--output', str(OUT / 'audio')]
+               '--output', str(OUT / 'audio'), '--microphone-source', source]
     if action == 'plan':
         subprocess.run(command, check=True)
         return
@@ -915,12 +929,17 @@ def main():
     parser.add_argument('--allow-amp-power', action='store_true')
     parser.add_argument('--allow-playback', action='store_true')
     parser.add_argument('--allow-capture', action='store_true')
+    parser.add_argument('--microphone-source', choices=('DMIC0', 'DMIC1'), default='DMIC1',
+                        help='bounded capture/feedback input (default: DMIC1)')
     parser.add_argument('--reuse-installed-modules', action='store_true',
                         help='retain current module tree for a command-line-only trial')
     parser.add_argument('--return-after-audio-seconds', type=int,
                         help='after a queued audio test, use the existing return timer after this delay (61..900)')
     parser.add_argument('--desktop-user', default='dvitali')
     args = parser.parse_args()
+    if args.microphone_source != 'DMIC1' and (args.command not in ('audio', 'arm-audio') or
+                                            args.audio_action not in ('capture', 'feedback')):
+        parser.error('--microphone-source DMIC0 requires audio/arm-audio capture or feedback')
     assert re.fullmatch(r'[0-9]{8}[a-z0-9]+', args.attempt)
     global ATTEMPT, OUT, STAGE, BUILD, PARENT, OLD, RECOVERY, BOOT_ID, RELEASE
     ATTEMPT = args.attempt

@@ -59,6 +59,7 @@ class AudioRequestTests(TrialAudioFixture):
             self.assertFalse((self.out / 'audio-request.json').exists())
             self.assertTrue((self.out / 'audio-started.json').exists())
             self.assertEqual(args.serve_seconds, 3600)
+            self.assertEqual(args.microphone_source, 'DMIC1')
             self.assertEqual(self.windows, [3880])
             raise RuntimeError('simulated initialization failure')
 
@@ -80,6 +81,68 @@ class AudioRequestTests(TrialAudioFixture):
             audio_check.assert_not_called()
         self.assertTrue((self.out / 'audio-request.json').exists())
         self.assertEqual(self.windows, [])
+
+    def test_dmic0_feedback_request_reaches_audio_once(self):
+        self.request.update(action='feedback', microphone_source='DMIC0',
+                            return_after_audio_seconds=61)
+        self.write_request()
+        with patch.object(trial, 'audio_check') as check:
+            trial.requested_audio(self.args)
+            trial.requested_audio(self.args)
+            check.assert_called_once()
+            self.assertEqual(check.call_args.args[0].microphone_source, 'DMIC0')
+        self.assertEqual(self.windows, [162])
+
+    def test_invalid_or_unsupported_source_is_rejected_before_claim(self):
+        for action, source in (('feedback', 'DMIC2'), ('feedback', None),
+                               ('feedback', True), ('serve', 'DMIC0'),
+                               ('desktop', 'DMIC0'), ('reopen', 'DMIC0'),
+                               ('initialize', 'DMIC0')):
+            with self.subTest(action=action, source=source):
+                self.request.update(action=action, microphone_source=source)
+                self.write_request()
+                with patch.object(trial, 'claim_audio_boot') as claim, \
+                        patch.object(trial, 'audio_check') as check:
+                    with self.assertRaises(AssertionError):
+                        trial.requested_audio(self.args)
+                    claim.assert_not_called()
+                    check.assert_not_called()
+                self.assertTrue((self.out / 'audio-request.json').exists())
+                self.assertFalse((self.out / 'audio-started.json').exists())
+        self.assertEqual(self.windows, [])
+
+    def test_arm_feedback_records_source(self):
+        (self.out / 'prepared.json').write_text(json.dumps(dict(audio_mode='parked')))
+        (self.out / 'installed.json').touch()
+        self.args = SimpleNamespace(audio_action='feedback', microphone_source='DMIC0',
+                                    allow_amp_power=True, allow_playback=True, allow_capture=True,
+                                    serve_seconds=3600, desktop_peak=1433, desktop_user='dvitali',
+                                    return_after_audio_seconds=61)
+        with patch.object(trial, 'require_source_boot'), patch.object(trial, 'recovery'), \
+                patch.object(trial.pwd, 'getpwnam', return_value=SimpleNamespace(pw_uid=1000, pw_name='dvitali')):
+            trial.arm_audio(self.args)
+        record = json.loads((self.out / 'audio-request.json').read_text())
+        self.assertEqual(record['microphone_source'], 'DMIC0')
+        self.assertTrue(record['playback'] and record['capture'] and record['allow_amp_power'])
+
+    def test_direct_audio_passes_source_and_rejects_invalid_source_before_lock(self):
+        args = SimpleNamespace(audio_action='capture', microphone_source='DMIC0',
+                               allow_capture=True, desktop_user='dvitali')
+        with patch.object(trial.os, 'geteuid', return_value=0), \
+                patch.object(trial.pwd, 'getpwnam', return_value=SimpleNamespace(pw_uid=1000, pw_name='dvitali')), \
+                patch.object(trial.subprocess, 'Popen') as opened:
+            opened.return_value.wait.return_value = 0
+            trial.audio_check(args)
+        command = opened.call_args.args[0]
+        self.assertEqual(command[command.index('--microphone-source') + 1], 'DMIC0')
+        self.assertIn('--allow-capture', command)
+        self.assertNotIn('--allow-amp-power', command)
+        self.assertNotIn('--allow-playback', command)
+        args.audio_action = 'serve'
+        trial.subprocess.run.reset_mock()
+        with self.assertRaisesRegex(AssertionError, 'requires capture or feedback'):
+            trial.audio_check(args)
+        trial.subprocess.run.assert_not_called()
 
     def test_invalid_session_duration_is_rejected_before_consumption(self):
         for duration in (-1, 82801, True, '3600'):
