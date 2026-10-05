@@ -131,6 +131,9 @@ def prepare(args):
                     'q6asm_dai.spx_force_timer_pacing=0']
     else:
         cmdline.append('module_blacklist=wcd934x,soundwire_qcom,snd_soc_wsa881x,snd_soc_wcd934x')
+    if args.usbc_phy_orientation:
+        assert args.usbc, '--usbc-phy-orientation requires --usbc'
+        cmdline.append('surface_aggregator_usbc.phy_orientation=1')
     cmdline = ' '.join(cmdline)
     entry = (OLD / 'entry.cfg').read_text().replace('20261004bf', '{ATTEMPT}'.format(ATTEMPT=ATTEMPT))
     entry = entry.replace(previous['cmdline'].replace('20261004bf', '{ATTEMPT}'.format(ATTEMPT=ATTEMPT)), cmdline)
@@ -141,6 +144,7 @@ def prepare(args):
     prepared = dict(utc=datetime.now(timezone.utc).isoformat(), preboot_id=BOOT_ID, release=RELEASE, attempt=ATTEMPT, entry='spx-trial-' + ATTEMPT, cmdline=cmdline, source_commit=subprocess.check_output(['git', '-c', 'safe.directory=' + str(REPO), 'rev-parse', 'HEAD'], cwd=REPO, text=True).strip(), build_directory=str(BUILD), private_config=str(OUT / 'kernel.config'), bluetooth_address=args.address, address_is_per_installation=True, venus_trial=False, speaker_drivers_blocked=True, hardware_acceptance_closed=False, installed=False, boot_selected=False, boot_payloads=dict(vmlinuz=sha(OUT / 'vmlinuz'), initramfs=sha(OUT / 'initramfs.img'), dtb=sha(OUT / 'spx.dtb')))
     prepared.update(audio_mode='parked' if args.audio else 'blocked',
                     usbc_early_load=args.usbc,
+                    usbc_phy_orientation=args.usbc_phy_orientation,
                     speaker_drivers_blocked=not args.audio,
                     reuse_installed_modules=args.reuse_installed_modules,
                     replace_modules=args.replace_module)
@@ -1446,6 +1450,8 @@ def main():
     parser.add_argument('--audio', action='store_true', help='enable codecs with both amplifiers parked; no playback')
     parser.add_argument('--usbc', action='store_true',
                         help='load experimental USC-to-DP0 forwarding in the initramfs')
+    parser.add_argument('--usbc-phy-orientation', action='store_true',
+                        help='opt in to firmware-grounded primary QMP orientation switching')
     parser.add_argument('--replace-module', action='append', default=[],
                         help='changed unloaded/blacklisted module to install while this release runs')
     parser.add_argument('--return-seconds', type=int, default=3600)
