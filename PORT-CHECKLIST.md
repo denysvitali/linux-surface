@@ -6,10 +6,12 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-05, CE: normal internal display power cycles pass)
+## Status (2026-10-05, CF: actual battery charging passes)
 
-Latest result: [CE](tools/spx/boot-diagnostics/RESULT-20261005ce.md), kernel
-`7.3.0-rc2-spx-mainline-20261004bg+`. **D01a passes:** two GNOME off/on cycles
+Latest result: [CF](tools/spx/boot-diagnostics/RESULT-20261005cf.md), kernel
+`7.3.0-rc2-spx-mainline-20261004bg+`. **P01a passes:** connected charger adds
+1.26Wh in120s, battery27→31%; charger type/transition coverage remains open.
+**D01a passes on CE:** two GNOME off/on cycles
 restore native2880×1920/60Hz scanout with fresh vblank and no new display faults.
 Visual quality and suspend remain open. CE exposes only USB root hubs and no
 active external display, so external power cycling is not covered. CA's earlier
@@ -42,7 +44,7 @@ awaits attribution for later observations.
 | Bluetooth (N02) | **User confirms Bluetooth works on BI** | Device-specific pairing/reconnect and resume |
 | USB data (U01) | Untested | Both ports/orientations, fixtures |
 | USB-C PD, DisplayPort, dock (U02–U04) | **CA: DP0 automatic startup and subscriber-reload recovery,3440×1440/50Hz** | Visible output, physical replug, roles/PD, ports/orientations/resume |
-| Battery and charging (P01) | BU: AC online, 49%, Not charging; prior user report works | Charge-policy explanation, discharge/transitions and chargers |
+| Battery and charging (P01) | **CF: P01a actual charging passes, +1.26Wh/120s** | Charge-policy explanation, discharge/transitions and charger coverage |
 | Suspend/resume (P03) | Kernel exposes s2idle; systemd sleep/suspend targets masked | Intended wake, then controlled sleep |
 | Thermal (P05) | BH: 3 min CPU/GPU load stable, peak 60.1°C | Cooling response |
 | Idle power (P02) | BU: CPU scales down; GPU runtime-suspends | Battery power measurement and remaining forced-on devices |
@@ -51,8 +53,8 @@ awaits attribution for later observations.
 
 ## Next work, in order
 
-The user has no physical access (October5). Hands-on checks remain **unverified**;
-do not wait for them or start unattended stimulus-dependent sampling. Current
+Hands-on checks remain **unverified** without a reported action; obtain
+readiness before stimulus-dependent sampling. Current
 work has established DP0 startup and subscriber-reload recovery on the attached
 dock. Physical USB-C coverage remains deferred. No speculative state GET or PHY
 change is planned; repeating the same remote test would add no functional gain.
@@ -85,9 +87,10 @@ change is planned; repeating the same remote test would add no functional gain.
 6. External display and dock (U03, U04). Cellular/GNSS (N03/N04) require real
    modem provisioning before further online/reception retries; preserve the
    working WLAN dummy-file setup. Video (D03) remains parked.
-7. **Battery power (P02):** recharge before the prepared bounded mainline
-   `trial.py power-measure` idle/load/recovery test. Current recovery is on
-   battery at14%; its uncontrolled30-second reference is not a mainline pass.
+7. **Battery power (P02):** the prepared bounded mainline
+   `trial.py power-measure` idle/load/recovery test requires mains disconnected
+   and battery≥20%. CF's charging pass does not measure battery discharge;
+   the uncontrolled recovery reference is not a mainline idle pass.
    [Power result](tools/spx/boot-diagnostics/RESULT-20261005power.md).
 8. Final candidate and regression (F01–F04).
 
@@ -955,9 +958,10 @@ firmware ownership, receiver DT/bindings and capture integration remain open. [C
 Current: **partial**. BW binds the correct TCS3430 driver and passes runtime
 suspend/read cycles, but light channels stay zero without a known stimulus.
 Motion requires Qualcomm's separate sensor-hub stack.
-BU CPU policies now use schedutil and pass load/idle transitions. AC is online,
-battery49%/14.72Wh, Not charging with no energy change over120s; this does not
-establish a charge fault or successful charging. GPU runtime suspend works.
+BU CPU policies now use schedutil and pass load/idle transitions. CF observes
+actual battery charging,27→31%/+1.26Wh over120s. BU's earlier49%/14.72Wh,
+Not charging observation still has no proven policy explanation.
+GPU runtime suspend works.
 [BU hardware result](tools/spx/boot-diagnostics/RESULT-20261005bu-hardware.md).
 
 - [ ] **S01 — Light/proximity.** Correct the confirmed TCS3430 ALS binding and
@@ -974,6 +978,13 @@ establish a charge fault or successful charging. GPU runtime suspend works.
   and low-battery behavior. Test applicable USB-C and Surface Connect chargers;
   distinguish policy/threshold behavior from a driver fault.
   **User report, October 4:** USB-C charging works, with boot attribution pending.
+
+  - [x] **P01a — Connected charger increases battery energy on mainline.** CF,
+    boot `c36de673-14e4-4c2f-bb90-5a41fc1a37b9`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`:25 samples over120.035s show mains
+    online/Charging,8.17→9.43Wh and27→31%, with no new kernel faults.
+    Charger type was not supplied; transitions and both charger types remain
+    untested. [CF result](tools/spx/boot-diagnostics/RESULT-20261005cf.md).
 - [ ] **P02 — Idle/runtime power.** Measure idle and active consumption, CPU/GPU
   frequency scaling, runtime-PM behavior and battery endurance against a recorded
   reference under comparable conditions. Remove/justify diagnostic power pins,
