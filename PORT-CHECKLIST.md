@@ -232,6 +232,13 @@ functional blank/unblank result. [Earlier evidence](tools/spx/boot-diagnostics/C
   **User report, October 4:** display and brightness work; tested-kernel
   confirmation and blank/unblank/resume remain pending.
   [Follow-up](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md).
+
+  - [ ] **D01a — Normal desktop display power off/on.** GNOME's display
+    power control disables active scanout and restores the original active
+    framebuffers with fresh vblank after two brief off/on cycles, without new
+    display/kernel faults. Physical image/brightness quality and suspend remain
+    separate D01 checks. Use the normal compositor path; never unbind MSM.
+
 - [x] *Passed on AW (2026-10-03); visual check by a person still wanted.* **D02 — GPU acceleration.** Confirm hardware rendering in desktop and real
   3D workloads; at least30minutes of rendering/compositing plus idle transitions,
   without GPU resets, hangs, faults or silent software fallback. Record APIs tested.
