@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Experimental Surface Pro X USC-to-DP0 hotplug forwarding.
- * Load after the desktop starts, then replug the dock. No initial-state query,
- * PHY orientation switching or second-port routing is implemented yet.
+ * Probe waits for SSAM and MSM startup, then a dock replug is still required.
+ * No initial-state query, PHY orientation switching or second-port routing is
+ * implemented yet. Pre-connected docks and visible output remain unverified.
  * Never unbind/reload live MSM components when testing this driver.
  */
 #include <linux/module.h>
@@ -143,7 +144,7 @@ static u32 spx_usbc_notify(struct ssam_event_notifier *nf,
 static int spx_usbc_link(struct device *consumer, struct device *supplier)
 {
 	struct device_link *link;
-	int ret = -ENODEV;
+	int ret = -EPROBE_DEFER;
 
 	device_lock(supplier);
 	if (device_is_bound(supplier)) {
@@ -169,18 +170,28 @@ static int spx_usbc_probe(struct platform_device *pdev)
 	if (!usbc)
 		return -ENOMEM;
 	usbc->dev = dev;
-	usbc->ctrl = ssam_client_bind(dev);
-	if (IS_ERR(usbc->ctrl))
-		return dev_err_probe(dev, PTR_ERR(usbc->ctrl), "SSAM is not ready\n");
 
 	node = of_find_node_by_path(SPX_DP0_PATH);
-	if (!node)
+	if (!of_device_is_available(node)) {
+		of_node_put(node);
 		return -ENODEV;
+	}
+
+	usbc->ctrl = ssam_client_bind(dev);
+	if (IS_ERR(usbc->ctrl)) {
+		of_node_put(node);
+		ret = PTR_ERR(usbc->ctrl);
+		/* This driver only registers on the SSAM-equipped Surface Pro X. */
+		if (ret == -ENODEV)
+			ret = -EPROBE_DEFER;
+		return dev_err_probe(dev, ret, "SSAM is not ready\n");
+	}
+
 	dpdev = of_find_device_by_node(node);
 	bridge = of_drm_find_and_get_bridge(node);
 	of_node_put(node);
 	if (!dpdev || !bridge) {
-		ret = -ENODEV;
+		ret = -EPROBE_DEFER;
 		goto err_provider;
 	}
 
@@ -188,9 +199,13 @@ static int spx_usbc_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_provider;
 
-	/* A registered bridge need not yet have an encoder or HPD callback. */
-	if (!bridge->dev || !bridge->encoder || bridge->type != DRM_MODE_CONNECTOR_DisplayPort) {
+	if (bridge->type != DRM_MODE_CONNECTOR_DisplayPort) {
 		ret = -ENODEV;
+		goto err_provider;
+	}
+	/* A registered bridge need not yet have an encoder or HPD callback. */
+	if (!bridge->dev || !bridge->encoder) {
+		ret = -EPROBE_DEFER;
 		goto err_provider;
 	}
 	ret = spx_usbc_link(dev, bridge->dev->dev);
@@ -200,7 +215,7 @@ static int spx_usbc_probe(struct platform_device *pdev)
 	ready = bridge->hpd_cb;
 	mutex_unlock(&bridge->hpd_mutex);
 	if (!ready) {
-		ret = -ENODEV;
+		ret = -EPROBE_DEFER;
 		goto err_provider;
 	}
 	put_device(&dpdev->dev);
@@ -237,7 +252,7 @@ err_provider:
 	if (dpdev)
 		put_device(&dpdev->dev);
 	drm_bridge_put(bridge);
-	return dev_err_probe(dev, ret, "DP0 bridge unavailable; reload after desktop startup\n");
+	return dev_err_probe(dev, ret, "DP0 bridge is not ready\n");
 }
 
 static void spx_usbc_remove(struct platform_device *pdev)
@@ -253,22 +268,38 @@ static void spx_usbc_remove(struct platform_device *pdev)
 }
 
 static struct platform_driver spx_usbc_driver = {
+	.probe = spx_usbc_probe,
 	.remove = spx_usbc_remove,
 	.shutdown = spx_usbc_remove,
-	.driver.name = "surface_aggregator_usbc",
+	.driver = {
+		.name = "surface_aggregator_usbc",
+		.suppress_bind_attrs = true,
+	},
 };
 
 static struct platform_device *spx_usbc_device;
 
 static int __init spx_usbc_init(void)
 {
+	int ret;
+
 	if (!of_machine_is_compatible("microsoft,surface-pro-x"))
 		return -ENODEV;
 
-	/* Manual, one-shot probe: load only once MSM and SSAM are ready. */
-	spx_usbc_device = platform_create_bundle(&spx_usbc_driver, spx_usbc_probe,
-						 NULL, 0, NULL, 0);
-	return PTR_ERR_OR_ZERO(spx_usbc_device);
+	/* Keep the probe available while SSAM and MSM finish binding. */
+	ret = platform_driver_register(&spx_usbc_driver);
+	if (ret)
+		return ret;
+
+	spx_usbc_device = platform_device_register_simple(spx_usbc_driver.driver.name,
+							PLATFORM_DEVID_NONE, NULL, 0);
+	if (IS_ERR(spx_usbc_device)) {
+		ret = PTR_ERR(spx_usbc_device);
+		platform_driver_unregister(&spx_usbc_driver);
+		return ret;
+	}
+
+	return 0;
 }
 module_init(spx_usbc_init);
 

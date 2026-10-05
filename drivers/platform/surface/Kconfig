@@ -155,9 +155,11 @@ config SURFACE_AGGREGATOR_USBC
 	depends on m
 	help
 	  Forward Surface Pro X USC port-zero notifications to the primary
-	  DisplayPort bridge. Load surface_aggregator_usbc manually after the
-	  desktop starts, then replug the dock. Requires MSM DisplayPort.
-	  Orientation switching, the second port and suspend are not validated.
+	  DisplayPort bridge. Probing waits for SSAM and MSM DisplayPort startup.
+	  No initial dock-state query is implemented; replug the dock after
+	  forwarding becomes ready. Pre-connected docks and visible output
+	  remain unverified. Orientation switching and second-port routing are
+	  not implemented, and suspend is not validated.
 	  Unload this experimental driver before testing suspend; never unbind
 	  or reload live MSM display components.
 
