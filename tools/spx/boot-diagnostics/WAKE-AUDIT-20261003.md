@@ -48,3 +48,24 @@ Eight source files are byte-checked against AX's frozen source-files manifest;
 the capsule includes their copies, actual identity/policy, RTC class attributes,
 power states, wakeup sources, interrupts and input inventory. No acceptance
 checkbox closes.
+
+## New supported timer lead (2026-10-05; not a wake pass)
+
+SQ2 firmware `~/Documents/acpi/surface_pro_x_sq2/dsdt.dsl:103154` enables
+SRTC/ACPI000E; `_GCP` returns SGCP0x1f7, advertising AC/DC timer wake.
+`_STV` at103285 sends SAM category1/target1/instance0 command0x1a with
+LE32 timer ID and LE32 relative seconds, requiring a4-byte status response.
+`_TIV` at103311 sends command0x1d with LE32 ID and reads4-byte remaining time.
+Existing `drivers/acpi/acpi_tad.c` defines AC0/DC1, disabledU32_MAX and relative
+seconds. This is a firmware-defined command contract, rather than a register guess.
+
+A bounded next investigation can preserve both timer values, arm/verify a short
+countdown, then disable/restore. Successful countdown alone would not establish
+wake. `_GWS` reads firmware memory GWAS/GWDS; `_STP` is a no-op and `_TIP`
+returnsOnes. GPIO180 expiry delivery and controller event filtering remain
+unvalidated. Do not expose an RTC alarm feature or enter unattended s2idle
+until the actual wake path works. No timer command or sleep was run here.
+
+The actual SPX DTS manually defines PMCs without an RTC node; it does not
+include the generic `sc8180x-pmics.dtsi` RTC. SQ2 firmware disables PRTC while
+enabling SRTC. There is no validated PMIC RTC ownership/IRQ alternative.
