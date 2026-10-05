@@ -6,10 +6,12 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-05, CC: both internal DMIC inputs capture known tones)
+## Status (2026-10-05, CD: 2.4 GHz test blocked by unavailable credentials)
 
-Latest result: [CC](tools/spx/boot-diagnostics/RESULT-20261005cc.md), kernel
-`7.3.0-rc2-spx-mainline-20261004bg+`. **A02b DMIC0 passes** quiet left/right/both
+Latest result: [CD](tools/spx/boot-diagnostics/RESULT-20261005cd.md), kernel
+`7.3.0-rc2-spx-mainline-20261004bg+`. CD cannot activate the temporary saved
+2.4 GHz profile because NetworkManager lacks usable credentials; IoT5 is restored.
+**A02b DMIC0 passes** quiet left/right/both
 acoustic signals and amps-off control; BN previously passed DMIC1. Both fitted
 inputs now record known stimuli. Quality, simultaneous mapping and full capture
 lifecycle remain open. CC returned to known-good at207.26s; full logs are saved.
@@ -687,6 +689,11 @@ host datapath; that is not current cellular service verification.
     transfers and restore the original connection. Roaming, sustained use and
     resume remain under N01. Zyxel_A0B9 is now visible on 2.4 GHz; use an owned
     temporary clone without changing saved credentials or original profiles.
+    CD boot `52fe2d53-cea0-4c5c-b496-b22fcf427e9b` on the fixed7.3 kernel
+    stops before association: NetworkManager requires unavailable secrets.
+    Original IoT5 restored, clone deleted, 1MB HTTPS transfer passes afterward;
+    no 2.4 GHz data test occurred. Configure usable credentials through
+    NetworkManager before another attempt. [CD result](tools/spx/boot-diagnostics/RESULT-20261005cd.md).
 
 - [ ] **N02 — Bluetooth.** Real pairing, reconnect and peripheral use (HID and
   audio as available), radio toggle and resume; Wi-Fi coexistence under load.
