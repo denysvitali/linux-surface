@@ -6,11 +6,12 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-05, CD: 2.4 GHz test blocked by unavailable credentials)
+## Status (2026-10-05, 2.4 GHz accepted by user assumption)
 
 Latest result: [CD](tools/spx/boot-diagnostics/RESULT-20261005cd.md), kernel
 `7.3.0-rc2-spx-mainline-20261004bg+`. CD cannot activate the temporary saved
 2.4 GHz profile because NetworkManager lacks usable credentials; IoT5 is restored.
+The user accepts 2.4 GHz by inference from working5GHz; further testing is deferred.
 **A02b DMIC0 passes** quiet left/right/both
 acoustic signals and amps-off control; BN previously passed DMIC1. Both fitted
 inputs now record known stimuli. Quality, simultaneous mapping and full capture
@@ -30,7 +31,7 @@ awaits attribution for later observations.
 | Storage (B02) | Passed on AP | Post-resume I/O |
 | GPU FD680 (D02) | **Passed on AW**, 30 min rendering | A person looking at the screen |
 | Internal panel (D01) | User: display and brightness work; boot attribution pending | Blank/unblank and resume |
-| Wi-Fi (N01) | 5 GHz transfers/reconnect pass; **BY IPv6 VPN packets pass** | 2.4 GHz, native WAN IPv6, roaming, sustained use and resume |
+| Wi-Fi (N01) | 5 GHz/reconnect and IPv6 VPN pass; 2.4 GHz accepted by user assumption | Native WAN IPv6, roaming, sustained use and resume |
 | RTC (B05) | **BX: B05a early boot time passes**; readback/warm reboot pass | Cold power-off retention and suspend |
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
@@ -684,7 +685,10 @@ host datapath; that is not current cellular service verification.
     peer return without loss. Native WAN IPv6 and exit/subnet routing are
     separate tests. [BY result](tools/spx/boot-diagnostics/RESULT-20261005by.md).
 
-  - [ ] **N01b — 2.4 GHz Wi-Fi carries application data.** Associate a visible
+  - [x] **N01b — 2.4 GHz Wi-Fi: accepted by user assumption (2026-10-05), untested.**
+    User: “If 5GHz work you can assume 2.4 GHz works too.” This is an acceptance
+    exception based on working5GHz; no observed2.4GHz pass is claimed. The
+    original functional test would associate a visible
     saved profile on a confirmed 2.4 GHz channel, complete bounded HTTPS
     transfers and restore the original connection. Roaming, sustained use and
     resume remain under N01. Zyxel_A0B9 is now visible on 2.4 GHz; use an owned
@@ -692,8 +696,9 @@ host datapath; that is not current cellular service verification.
     CD boot `52fe2d53-cea0-4c5c-b496-b22fcf427e9b` on the fixed7.3 kernel
     stops before association: NetworkManager requires unavailable secrets.
     Original IoT5 restored, clone deleted, 1MB HTTPS transfer passes afterward;
-    no 2.4 GHz data test occurred. Configure usable credentials through
-    NetworkManager before another attempt. [CD result](tools/spx/boot-diagnostics/RESULT-20261005cd.md).
+    no 2.4 GHz data test occurred. User accepted the assumption afterward;
+    do not spend further boots on this prerequisite. If revisited, configure
+    usable credentials through NetworkManager first. [CD result](tools/spx/boot-diagnostics/RESULT-20261005cd.md).
 
 - [ ] **N02 — Bluetooth.** Real pairing, reconnect and peripheral use (HID and
   audio as available), radio toggle and resume; Wi-Fi coexistence under load.
