@@ -81,7 +81,7 @@
 		linux,pstore = <&ramoops_mem>;
 	};
 
-	/* WIP secure PAS boot only; SLPI GLINK and sensor services are absent. */
+	/* WIP secure PAS boot and GLINK; sensor services remain unverified. */
 	remoteproc-slpi {
 		compatible = "qcom,sc8180x-slpi-pas";
 
@@ -103,6 +103,14 @@
 		qcom,qmp = <&aoss_qmp>;
 		qcom,smem-states = <&slpi_smp2p_out 0>;
 		qcom,smem-state-names = "stop";
+
+		/* Retained qcglink8180 dsps entry: GSI 202, AP IPC bit 24. */
+		glink-edge {
+			interrupts = <GIC_SPI 170 IRQ_TYPE_EDGE_RISING>;
+			label = "dsps";
+			qcom,remote-pid = <3>;
+			mboxes = <&apss_shared 24>;
+		};
 	};
 
 	reserved-memory {
