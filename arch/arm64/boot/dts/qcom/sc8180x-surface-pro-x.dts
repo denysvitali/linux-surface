@@ -220,12 +220,9 @@
 			no-map;
 		};
 
-		/* All SLPI load segments are relocatable; allocate outside other DSPs. */
-		slpi_mem: slpi-memory {
-			size = <0 0x01400000>;
-			alignment = <0 0x00100000>;
-			/* CH high-DDR allocation was rejected by PAS12; test below 3 GiB. */
-			alloc-ranges = <0 0x80000000 0 0x40000000>;
+		/* Unused slot inside the firmware-reported PIL relocation pool. */
+		slpi_mem: slpi-memory@8be00000 {
+			reg = <0 0x8be00000 0 0x01400000>;
 			no-map;
 		};
 
