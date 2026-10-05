@@ -28,7 +28,7 @@ awaits attribution for later observations.
 | RTC (B05) | **BX: B05a early boot time passes**; readback/warm reboot pass | Cold power-off retention and suspend |
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
-| Speakers (A01) | **BW: quiet default desktop playback passes** | Persistence, volume/mapping/balance, reopen and lifecycle |
+| Speakers (A01) | **BY: quiet default desktop playback passes** | Persistence, volume/mapping/balance, reopen and lifecycle |
 | Microphones (A02) | **BN: DMIC1 records known speaker tones** | Other fitted mics, quality and full lifecycle |
 | Cameras (C01–C05) | Rear sensor identifies | No frame captured |
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
