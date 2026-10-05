@@ -79,8 +79,17 @@ def prepare(args):
         assert r.returncode == 0, label
     module_root = OUT / 'module-root'
     make = ['make', '-C', str((BUILD / 'source').resolve()), 'O=' + str(BUILD), 'ARCH=arm64', 'LOCALVERSION=+']
-    run('modules-install', make + ['-j4', 'INSTALL_MOD_PATH=' + str(module_root), 'DEPMOD=true', 'modules_install'])
     root = module_root / 'lib/modules' / RELEASE
+    if args.reuse_installed_modules:
+        # A DT/command-line-only trial must use the same modules in initramfs
+        # and real root, even if the build directory has newer experiments.
+        assert not args.replace_module, 'module replacement requires a fresh build staging set'
+        installed = Path('/usr/lib/modules') / RELEASE
+        assert installed.is_dir()
+        root.parent.mkdir(parents=True)
+        shutil.copytree(installed, root, symlinks=True)
+    else:
+        run('modules-install', make + ['-j4', 'INSTALL_MOD_PATH=' + str(module_root), 'DEPMOD=true', 'modules_install'])
     shutil.copy2(BUILD / 'arch/arm64/boot/Image', root / 'vmlinuz')
     with (OUT / 'vmlinuz').open('xb') as stream:
         with gzip.GzipFile(fileobj=stream, mode='wb', mtime=0) as compressed:
