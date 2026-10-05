@@ -797,5 +797,38 @@ class AudioTests(unittest.TestCase):
         self.assertTrue(report['desktop']['acoustic_passed'])
 
 
+class PlaybackReopenTests(unittest.TestCase):
+    def test_failed_attached_teardown_stops_before_second_pcm(self):
+        # A failed hardware close must leave the microphone open for outer
+        # park-first cleanup, and must never open another playback session.
+        capture = Mock()
+        capture.process.pid = 77
+        capture.mark.return_value = 48000
+        pcm = Mock()
+        pcm.status = Path('/test/pcm/status')
+        pcm.close.return_value = ''
+        report = {'capture': {'phases': []}}
+        holders = []
+
+        def listen(*args):
+            holders.append(pcm)
+            report.update(pcm={'pid': 88}, reopen_reference={}, late_initialization=[])
+
+        with patch.object(audio, 'devices', return_value=[]), \
+                patch.object(audio, 'listen', side_effect=listen) as play, \
+                patch.object(audio, 'read_text', return_value='closed'), \
+                patch.object(audio, 'check_desktop_teardown',
+                             side_effect=RuntimeError('teardown failed')):
+            with self.assertRaisesRegex(RuntimeError, 'teardown failed'):
+                audio.playback_reopen(SimpleNamespace(action='reopen'), report,
+                                      holders, capture, [])
+        play.assert_called_once()
+        pcm.close.assert_called_once()
+        capture.close.assert_not_called()
+        self.assertEqual(holders, [])
+        self.assertFalse(report['reopen']['passed'])
+        self.assertEqual(len(report['reopen']['cycles']), 1)
+
+
 if __name__ == '__main__':
     unittest.main()

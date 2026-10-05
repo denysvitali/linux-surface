@@ -14,7 +14,9 @@ the amplifiers parked. ``desktop`` checks finite applications through a temporar
 public PipeWire sink and verifies attached-amplifier PCM teardown. ``serve`` first
 runs that acoustic test, closes the microphone, then retains the same PCM for
 ordinary applications at minimum PA gain. ``--desktop-peak`` selects their fixed
-attenuation (default 1433/32768, at most 12000/32768). None loads modules.
+attenuation (default 1433/32768, at most 12000/32768). ``reopen`` tests two
+Linux playback PCMs with one continuous microphone capture and attached-amp
+teardown between them; ASM stays parked. None loads modules.
 """
 
 import argparse
@@ -1094,6 +1096,9 @@ def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder
     hw_params = read_text(pcm.status.with_name('hw_params'))
     for expression in (r'^format: S16_LE$', r'^channels: 2$', r'^rate: 48000(?: |$)'):
         need(re.search(expression, hw_params, re.M), 'Unexpected PCM hardware parameters')
+    if args.action == 'reopen':
+        for expression in (r'^period_size: 2400$', r'^buffer_size: 12000$'):
+            need(re.search(expression, hw_params, re.M), 'Playback reopen geometry changed')
     report['pcm']['hw_params'] = hw_params
     checks = report.setdefault('playback_checks', [])
     report['before_late_init'] = check_stereo(mapping, paths, observations=checks)
@@ -1133,6 +1138,16 @@ def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder
             if args.action == 'serve' else
             'Persistent/default desktop audio, suspend and long-term reliability remain untested.']
         return
+    if args.action == 'reopen':
+        # Fix the reference before any stimulus, after this stream's late init.
+        quiet_begin = capture.mark()
+        pcm.settle(2)
+        capture.wait_frames(quiet_begin + 2 * 48000)
+        quiet_end = capture.mark()
+        quiet_start = quiet_end - 2 * 48000
+        baseline = capture.samples(quiet_start, quiet_end)
+        report['reopen_reference'] = {'start_frame': quiet_start, 'end_frame': quiet_end,
+            'rms': math.sqrt(sum(v*v for v in baseline) / len(baseline))}
     report['tones'] = []
     for name, channels in (('left', {0}), ('right', {1}), ('both', {0, 1})):
         pcm.healthy()
@@ -1147,7 +1162,8 @@ def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder
             end = capture.mark()
             result = score_phase(capture.samples(start, end), baseline,
                                  [440 if channel == 0 else 660 for channel in sorted(channels)])
-            report['capture']['phases'].append({'name': name, 'start_frame': start,
+            phase_name = f'cycle-{report["reopen_cycle"]}-{name}' if args.action == 'reopen' else name
+            report['capture']['phases'].append({'name': phase_name, 'start_frame': start,
                                                'end_frame': end, 'score': result})
             need(result['passed'], f'Acoustic {name} test failed: {result["reason"]}')
     report['after_playback'] = check_stereo(mapping, paths, initialized=True, observations=checks)
@@ -1158,13 +1174,55 @@ def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder
         report['human_result'] = 'pending; successful software checks do not establish audible output'
 
 
+def playback_reopen(args, report, pcm_holder, capture, baseline):
+    """Close two Linux playback PCMs while attached; retain ASM and one capture."""
+    need(capture is not None, 'Playback reopen requires continuous microphone feedback')
+    paths = {s['unit']: Path('/sys/bus/soundwire/devices') / s['name'] for s in devices()}
+    evidence = report['reopen'] = {'passed': False, 'cycles': [],
+        'capture_pid': capture.process.pid, 'asm_kept': True,
+        'scope': 'Linux playback PCM close/reopen; no DSP or capture reopen'}
+    for number in (1, 2):
+        cycle = {'number': number, 'passed': False, 'capture_start_frame': capture.mark()}
+        evidence['cycles'].append(cycle)
+        report['reopen_cycle'] = number
+        first_phase = len(report['capture']['phases'])
+        listen(args, report, pcm_holder, capture, baseline)
+        cycle.update(pcm=report['pcm'], reference=report['reopen_reference'],
+                     late_initialization=report['late_initialization'],
+                     acoustic_phases=report['capture']['phases'][first_phase:])
+        pcm = pcm_holder[-1]
+        cycle['pcm']['log'] = pcm.close()
+        pcm_holder.remove(pcm)
+        cycle['closed_status'] = read_text(pcm.status)
+        need(cycle['closed_status'] == 'closed', 'Playback PCM remains open after close')
+        need(not re.search(r'underrun|overrun|error', cycle['pcm']['log'], re.I),
+             'Playback close reported an ALSA error')
+        check_desktop_teardown(paths, cycle)
+        capture.healthy()
+        cycle['capture_status_after_close'] = read_text(capture.status)
+        need(re.search(r'^state:\s+RUNNING$', cycle['capture_status_after_close'], re.M) and
+             re.search(r'^owner_pid\s*:\s*' + str(evidence['capture_pid']) + r'$',
+                       cycle['capture_status_after_close'], re.M),
+             'Continuous microphone ownership changed during playback close')
+        cycle['capture_end_frame'] = capture.mark()
+        need(cycle['capture_end_frame'] > cycle['capture_start_frame'],
+             'Microphone did not advance during playback cycle')
+        cycle['passed'] = True
+    need(len({cycle['pcm']['pid'] for cycle in evidence['cycles']}) == 2,
+         'Playback reopen did not use two distinct PCM owners')
+    evidence['passed'] = True
+    report['acoustic_passed'] = True
+    report['remaining_prerequisites'] = [
+        'Full DSP/capture teardown, suspend, volume and long-term reliability remain untested.']
+
+
 def initialize(args, report):
     need(os.geteuid() == 0, 'initialize requires root')
     need(args.action in ('recover', 'capture') or args.allow_amp_power,
          'initialize/listen requires --allow-amp-power for this authorized run')
-    need(args.action not in ('listen', 'feedback', 'desktop', 'serve') or args.allow_playback,
+    need(args.action not in ('listen', 'feedback', 'desktop', 'serve', 'reopen') or args.allow_playback,
          'listen requires separate explicit --allow-playback authorization')
-    need(args.action not in ('capture', 'feedback', 'desktop', 'serve') or args.allow_capture,
+    need(args.action not in ('capture', 'feedback', 'desktop', 'serve', 'reopen') or args.allow_capture,
          'Microphone recording requires --allow-capture')
     need(args.owner and args.desktop_user, 'initialize requires --owner and --desktop-user')
     need(read_text('/tmp/spx-locks/spx-device.lock/owner') == args.owner,
@@ -1184,7 +1242,7 @@ def initialize(args, report):
             ('snd_soc_wsa881x', 'spx_enumerated_mode', 'Y'),
             ('snd_soc_wsa881x', 'spx_write_only', 'N')):
         need(parameter(module, name) == expected, f'{module}.{name} must be {expected}')
-    if args.action in ('listen', 'feedback', 'desktop', 'serve'):
+    if args.action in ('listen', 'feedback', 'desktop', 'serve', 'reopen'):
         need(parameter('snd_soc_wcd934x', 'spx_persist_stream') == 'Y',
              'Playback requires WCD SLIM stream persistence before its first open')
     assert_desktop_paused(args.desktop_user)
@@ -1264,7 +1322,7 @@ def initialize(args, report):
                  'Command FIFO readback is not empty after parked recovery')
             report['fifo_recovered'] = True
             return
-        if args.action in ('capture', 'feedback', 'desktop', 'serve'):
+        if args.action in ('capture', 'feedback', 'desktop', 'serve', 'reopen'):
             need(args.output is not None, 'Capture requires a private result directory')
             directory = args.output / ('capture-' + report['utc'])
             directory.mkdir(mode=0o700)
@@ -1307,7 +1365,9 @@ def initialize(args, report):
                 raise RuntimeError(f'Native enumeration did not settle: {last_error}')
         report['enumeration_passed'] = True
         report['remaining_prerequisites'].remove(UNMET[0])
-        if args.action in ('listen', 'feedback', 'desktop', 'serve'):
+        if args.action == 'reopen':
+            playback_reopen(args, report, pcm_holder, capture, baseline)
+        elif args.action in ('listen', 'feedback', 'desktop', 'serve'):
             listen(args, report, pcm_holder, capture, baseline, desktop_holder, release_recording)
         if args.action == 'feedback':
             # Control for electrical crosstalk: keep the identical capture/PCM
@@ -1406,7 +1466,7 @@ def desktop_peak_limit(value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', nargs='?', choices=('plan', 'inspect', 'initialize', 'listen', 'recover', 'capture', 'feedback', 'desktop', 'serve'), default='plan')
+    parser.add_argument('action', nargs='?', choices=('plan', 'inspect', 'initialize', 'listen', 'recover', 'capture', 'feedback', 'desktop', 'serve', 'reopen'), default='plan')
     parser.add_argument('--output', type=Path, help='directory for result JSON')
     parser.add_argument('--owner', help='coordinator device-lock owner (initialize)')
     parser.add_argument('--desktop-user', help='user whose audio units the caller has paused')
@@ -1437,7 +1497,7 @@ def main():
     try:
         if args.output:
             args.output.mkdir(parents=True, exist_ok=True)
-            if args.action in ('initialize', 'listen', 'recover', 'capture', 'feedback', 'desktop', 'serve'):
+            if args.action in ('initialize', 'listen', 'recover', 'capture', 'feedback', 'desktop', 'serve', 'reopen'):
                 # A killed run must never leave an earlier "parked" verdict.
                 save_run_result(args.output, report)
                 if args.action == 'serve':
@@ -1484,7 +1544,7 @@ def main():
     text = json.dumps(report, indent=2) + '\n'
     if args.output:
         (args.output / f'audio-{args.action}-{stamp}.json').write_text(text)
-        if args.action in ('initialize', 'listen', 'recover', 'capture', 'feedback', 'desktop', 'serve'):
+        if args.action in ('initialize', 'listen', 'recover', 'capture', 'feedback', 'desktop', 'serve', 'reopen'):
             save_run_result(args.output, report)
     print(text, end='')
     return result

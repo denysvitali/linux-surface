@@ -560,8 +560,8 @@ def arm_audio(args):
     recovery()
     assert args.allow_amp_power, 'explicit amplifier-power authorization required'
     action = 'initialize' if args.audio_action == 'plan' else args.audio_action
-    assert action in ('initialize', 'feedback', 'desktop', 'serve')
-    if action in ('feedback', 'desktop', 'serve'):
+    assert action in ('initialize', 'feedback', 'desktop', 'serve', 'reopen')
+    if action in ('feedback', 'desktop', 'serve', 'reopen'):
         assert args.allow_playback and args.allow_capture, 'feedback needs playback and capture authorization'
     if action == 'serve':
         assert 0 <= args.serve_seconds <= 82800
@@ -578,8 +578,8 @@ def arm_audio(args):
     with (OUT / 'audio-request.json').open('x') as stream:
         json.dump(dict(attempt=ATTEMPT, release=RELEASE, preboot_id=BOOT_ID,
                        desktop_user=account.pw_name, action=action,
-                       allow_amp_power=True, playback=action in ('feedback', 'desktop', 'serve'),
-                       capture=action in ('feedback', 'desktop', 'serve'),
+                       allow_amp_power=True, playback=action in ('feedback', 'desktop', 'serve', 'reopen'),
+                       capture=action in ('feedback', 'desktop', 'serve', 'reopen'),
                        serve_seconds=args.serve_seconds if action == 'serve' else None,
                        desktop_peak=args.desktop_peak if action == 'serve' else None,
                        return_after_audio_seconds=args.return_after_audio_seconds,
@@ -765,8 +765,8 @@ def requested_audio(args):
     assert record['attempt'] == ATTEMPT and record['release'] == os.uname().release
     assert record['preboot_id'] == BOOT_ID and boot_id != BOOT_ID
     assert 'spx_attempt=' + ATTEMPT in words and 'spx_audio=parked' in words
-    assert record['action'] in ('initialize', 'feedback', 'desktop', 'serve') and record['allow_amp_power'] is True
-    feedback = record['action'] in ('feedback', 'desktop', 'serve')
+    assert record['action'] in ('initialize', 'feedback', 'desktop', 'serve', 'reopen') and record['allow_amp_power'] is True
+    feedback = record['action'] in ('feedback', 'desktop', 'serve', 'reopen')
     assert record['playback'] is feedback and record['capture'] is feedback
     if record['action'] == 'serve':
         assert type(record.get('serve_seconds')) is int and 0 <= record['serve_seconds'] <= 82800
@@ -831,12 +831,12 @@ def audio_check(args):
     subprocess.run([lock, 'acquire', 'device', owner], check=True)
     active = []
     try:
-        if action in ('initialize', 'listen', 'recover', 'capture', 'feedback', 'desktop', 'serve'):
+        if action in ('initialize', 'listen', 'recover', 'capture', 'feedback', 'desktop', 'serve', 'reopen'):
             from audio import UNITS as audio_units
 
             assert action in ('recover', 'capture') or args.allow_amp_power, 'this run needs explicit speaker-power authorization'
-            assert action not in ('listen', 'feedback', 'desktop', 'serve') or args.allow_playback, 'this run needs explicit playback authorization'
-            assert action not in ('capture', 'feedback', 'desktop', 'serve') or args.allow_capture, 'this run needs microphone authorization'
+            assert action not in ('listen', 'feedback', 'desktop', 'serve', 'reopen') or args.allow_playback, 'this run needs explicit playback authorization'
+            assert action not in ('capture', 'feedback', 'desktop', 'serve', 'reopen') or args.allow_capture, 'this run needs microphone authorization'
             account = pwd.getpwnam(args.desktop_user)
             userctl = ['runuser', '-u', account.pw_name, '--', 'env',
                        'XDG_RUNTIME_DIR=/run/user/' + str(account.pw_uid),
@@ -853,11 +853,11 @@ def audio_check(args):
             if active:
                 subprocess.run(userctl + ['stop'] + active, check=True, timeout=30)
             command += ['--owner', owner, '--desktop-user', account.pw_name]
-            if action in ('initialize', 'listen', 'feedback', 'desktop', 'serve'):
+            if action in ('initialize', 'listen', 'feedback', 'desktop', 'serve', 'reopen'):
                 command.append('--allow-amp-power')
-            if action in ('listen', 'feedback', 'desktop', 'serve'):
+            if action in ('listen', 'feedback', 'desktop', 'serve', 'reopen'):
                 command.append('--allow-playback')
-            if action in ('capture', 'feedback', 'desktop', 'serve'):
+            if action in ('capture', 'feedback', 'desktop', 'serve', 'reopen'):
                 command.append('--allow-capture')
             if action == 'serve':
                 assert 0 <= args.serve_seconds <= 82800
@@ -867,7 +867,7 @@ def audio_check(args):
         process = subprocess.Popen(command)
         try:
             status = process.wait(timeout=(args.serve_seconds + 120 if args.serve_seconds else None) if action == 'serve' else
-                                  120 if action in ('feedback', 'desktop') else 90 if action == 'listen' else 40)
+                                  120 if action in ('feedback', 'desktop', 'reopen') else 90 if action == 'listen' else 40)
         except subprocess.TimeoutExpired:
             # Allow the initializer's signal handler/finally block to park.
             process.terminate()
@@ -907,7 +907,7 @@ def main():
     parser.add_argument('--replace-module', action='append', default=[],
                         help='changed unloaded/blacklisted module to install while this release runs')
     parser.add_argument('--return-seconds', type=int, default=3600)
-    parser.add_argument('--audio-action', choices=('plan', 'inspect', 'initialize', 'listen', 'recover', 'capture', 'feedback', 'desktop', 'serve'), default='plan')
+    parser.add_argument('--audio-action', choices=('plan', 'inspect', 'initialize', 'listen', 'recover', 'capture', 'feedback', 'desktop', 'serve', 'reopen'), default='plan')
     parser.add_argument('--serve-seconds', type=int, default=3600,
                         help='ordinary desktop playback after acoustic verification (0 until stopped, or 1..82800 seconds)')
     parser.add_argument('--desktop-peak', type=int, default=1433,

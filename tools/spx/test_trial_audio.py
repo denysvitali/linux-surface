@@ -131,6 +131,17 @@ class AudioRequestTests(TrialAudioFixture):
                 self.assertTrue((self.out / 'audio-request.json').exists())
                 self.assertEqual(self.windows, [])
 
+    def test_reopen_request_is_consumed_once_and_keeps_return_timer(self):
+        self.request.update(action='reopen', serve_seconds=None, return_after_audio_seconds=120)
+        self.write_request()
+        with patch.object(trial, 'audio_check') as check:
+            trial.requested_audio(self.args)
+            trial.requested_audio(self.args)
+            check.assert_called_once()
+            self.assertEqual(check.call_args.args[0].audio_action, 'reopen')
+            self.assertTrue(check.call_args.args[0].allow_capture)
+        self.assertEqual(self.windows, [221])
+
     def test_existing_desktop_request_retains_short_test_behavior(self):
         self.request.update(action='desktop', serve_seconds=None, return_after_audio_seconds=61)
         self.write_request()
