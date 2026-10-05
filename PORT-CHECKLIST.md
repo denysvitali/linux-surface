@@ -72,7 +72,11 @@ change is planned; repeating the same remote test would add no functional gain.
 4. **Audio (A01–A03):** retain BY's quiet default desktop setup, resolve
    WCD/ADM close faults and test hardware reopen and persistence. The user authorized bounded automated
    speaker/microphone testing; announce capture and park the amps afterwards.
-5. **Camera frames (C02–C04).**
+5. **Camera frames (C02–C04):** the working6.18 v23 rear capture is preserved in
+   sibling commit `005adbc494a5` and `docs/spx-camera-recon.md`, section7. Receiver
+   SID/mask is resolved; real `vdda-phy`/`vdda-pll` ownership remains missing.
+   Reuse that two-frame recipe after the power contract is established; do not
+   repeat unchanged camera audits or substitute dummy supplies.
 6. External display and dock (U03, U04). Cellular/GNSS (N03/N04) require real
    modem provisioning before further online/reception retries; preserve the
    working WLAN dummy-file setup. Video (D03) remains parked.
