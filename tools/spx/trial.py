@@ -90,6 +90,10 @@ def prepare(args):
         path.write_text(path.read_text().replace(str(PARENT), str(OUT)).replace('20261004bf', '{ATTEMPT}'.format(ATTEMPT=ATTEMPT)))
     config = OUT / 'mkinitcpio.conf'
     text = config.read_text()
+    # SSAM already starts in the initramfs. Load its RTC there too so the
+    # clock is initialized before root userspace, without waiting for NTP.
+    assert 'MODULES=(' in text
+    text = text.replace('MODULES=(', 'MODULES=(rtc_surface ', 1)
     for module in ('wcd934x', 'soundwire_qcom', 'snd_soc_wsa881x', 'snd_soc_wcd934x'):
         text = re.sub(r'\b' + module + r'\b', '', text)
     config.write_text(text)
