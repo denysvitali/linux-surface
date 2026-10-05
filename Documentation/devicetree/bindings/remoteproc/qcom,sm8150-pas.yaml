@@ -91,11 +91,21 @@ properties:
 
 required:
   - compatible
-  - reg
   - memory-region
 
 allOf:
   - $ref: /schemas/remoteproc/qcom,pas-common.yaml#
+  # SC8180X SLPI is booted through secure PAS; Linux does not access Q6 MMIO.
+  - if:
+      properties:
+        compatible:
+          contains:
+            const: qcom,sc8180x-slpi-pas
+    then: {}
+    else:
+      required:
+        - reg
+
   - if:
       properties:
         compatible:

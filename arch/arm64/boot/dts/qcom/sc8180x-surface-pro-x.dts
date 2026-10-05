@@ -81,6 +81,30 @@
 		linux,pstore = <&ramoops_mem>;
 	};
 
+	/* WIP secure PAS boot only; SLPI GLINK and sensor services are absent. */
+	remoteproc-slpi {
+		compatible = "qcom,sc8180x-slpi-pas";
+
+		/* SDSP watchdog is ACPI GSI 409; SMP2P bits follow the Q6v5 family. */
+		interrupts-extended = <&intc GIC_SPI 377 IRQ_TYPE_EDGE_RISING>,
+				      <&slpi_smp2p_in 0 IRQ_TYPE_EDGE_RISING>,
+				      <&slpi_smp2p_in 1 IRQ_TYPE_EDGE_RISING>,
+				      <&slpi_smp2p_in 2 IRQ_TYPE_EDGE_RISING>,
+				      <&slpi_smp2p_in 3 IRQ_TYPE_EDGE_RISING>;
+		interrupt-names = "wdog", "fatal", "ready", "handover", "stop-ack";
+
+		clocks = <&rpmhcc RPMH_CXO_CLK>;
+		clock-names = "xo";
+		power-domains = <&rpmhpd SC8180X_LCX>, <&rpmhpd SC8180X_LMX>;
+		power-domain-names = "lcx", "lmx";
+
+		memory-region = <&slpi_mem>;
+		firmware-name = "qcom/microsoft/spx/qcslpi8180.mbn";
+		qcom,qmp = <&aoss_qmp>;
+		qcom,smem-states = <&slpi_smp2p_out 0>;
+		qcom,smem-state-names = "stop";
+	};
+
 	reserved-memory {
 		// Sources for memory regions:
 		// - Windows Device Manager/ACPI
@@ -185,6 +209,14 @@
 
 		mpss_mem: memory@8d800000 {
 			reg = <0x0 0x8d800000 0x0 0x9600000>;
+			no-map;
+		};
+
+		/* All SLPI load segments are relocatable; allocate outside other DSPs. */
+		slpi_mem: slpi-memory {
+			size = <0 0x01400000>;
+			alignment = <0 0x00100000>;
+			alloc-ranges = <0 0x80000000 0 0x80000000>;
 			no-map;
 		};
 
