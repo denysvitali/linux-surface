@@ -1659,6 +1659,10 @@ def main():
     else:
         record = json.loads((OUT / 'prepared.json').read_text())
         BOOT_ID, RELEASE = record['preboot_id'], record['release']
+        if args.command == 'install':
+            BOOT_ID = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        elif args.command == 'boot':
+            BOOT_ID = json.loads((OUT / 'installed.json').read_text())['boot_id']
         if args.command == 'check':
             lock = str(REPO / 'tools/spx/spx-lock')
             owner = 'functional-' + ATTEMPT
