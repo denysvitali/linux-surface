@@ -8,6 +8,7 @@ from pathlib import Path
 import select
 import struct
 import subprocess
+import time
 
 PARENT = '/soc@0/spmi@c440000/pmic@0'
 NODE = PARENT + '/rtc@6000'
@@ -55,9 +56,9 @@ def alarm(fd):
     return struct.unpack('=BB2x9i', data)
 
 
-def exercise(output, attempt, release):
+def exercise(output, attempt, release, *, suspend=False):
     output.mkdir(parents=True, exist_ok=False)
-    result = dict(complete=False, scope='awake PMIC alarm; no suspend',
+    result = dict(complete=False, scope='one PMIC-alarm s2idle' if suspend else 'awake PMIC alarm; no suspend',
                   boot_id=Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
                   release=os.uname().release)
     fd = None
@@ -70,6 +71,15 @@ def exercise(output, attempt, release):
         assert (device / 'device/of_node').resolve().as_posix().endswith(NODE)
         assert (device / 'device/driver').resolve().name == 'rtc-pm8xxx'
         assert (device / 'hctosys').read_text().strip() == '0'
+        if suspend:
+            prior = json.loads((output.parent / 'pmic-rtc/result.json').read_text())
+            assert prior['complete'] and prior['boot_id'] == result['boot_id']
+            assert (device / 'device/power/wakeup').read_text().strip() == 'enabled'
+            assert Path('/sys/power/mem_sleep').read_text().strip() == '[s2idle]'
+            assert '[none]' in Path('/sys/power/pm_test').read_text().split()
+            assert Path('/sys/class/rtc/rtc0/name').read_text().startswith('surface_rtc ')
+            assert subprocess.check_output(['systemctl', 'is-active',
+                'spx-trial-return@' + attempt + '.timer'], text=True).strip() == 'active'
         fd = os.open('/dev/rtc1', os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
         initial = alarm(fd)
         assert initial[0] == 0, 'pre-existing enabled alarm; left untouched'
@@ -80,13 +90,26 @@ def exercise(output, attempt, release):
         current = struct.unpack('=9i', data)
         now = datetime.datetime(current[5] + 1900, current[4] + 1, current[3],
                                 current[2], current[1], current[0], tzinfo=datetime.timezone.utc)
-        target = now + datetime.timedelta(seconds=8)
+        target = now + datetime.timedelta(seconds=15 if suspend else 8)
         tm = (target.second, target.minute, target.hour, target.day, target.month - 1,
               target.year - 1900, (target.weekday() + 1) % 7, target.timetuple().tm_yday - 1, 0)
         # Record cleanup responsibility before the mutating ioctl.
         armed = True
         fcntl.ioctl(fd, RTC_WKALM_SET, struct.pack('=BB2x9i', 1, 0, *tm))
         assert alarm(fd)[0] == 1, 'alarm enable not observed'
+        if suspend:
+            wakecount = Path('/sys/power/wakeup_count')
+            count = wakecount.read_text().strip()
+            wakecount.write_text(count + '\n')
+            # Standard wakeup-count handshake rejects an intervening wake event.
+            mono = time.monotonic()
+            boot = time.clock_gettime(time.CLOCK_BOOTTIME)
+            result['suspend_uptime'] = boot
+            Path('/sys/power/state').write_text('mem\n')
+            slept = ((time.clock_gettime(time.CLOCK_BOOTTIME) - boot)
+                     - (time.monotonic() - mono))
+            result['sleep_seconds'] = slept
+            assert slept >= 3, 'no meaningful s2idle interval observed'
         ready, _, _ = select.select([fd], [], [], 15)
         assert ready, 'no awake alarm event within 15 seconds'
         event = struct.unpack('@L', os.read(fd, struct.calcsize('@L')))[0]
