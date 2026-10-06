@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-07, DD:13 timed s2idle returns, including30-minute AC sleep)
+## Status (2026-10-07, DF: audio-loaded guarded s2idle returns)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
@@ -1217,6 +1217,16 @@ GPU runtime suspend works.
     pass without new faults. This is guarded direct sleep; systemd sleep remains
     masked, physical wake/audio/camera/attached-device and battery tests open.
     [DD result](tools/spx/boot-diagnostics/RESULT-20261006dd.md).
+
+  - [x] **P03b — Guarded s2idle with audio codecs loaded, amplifiers parked.**
+    DF boot `e55b2d29-5f4e-4c4b-bf49-51ccb87f2afa`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: opt-in powered-SLIM retention allows
+    one14.48-second PMIC-alarm sleep; ownership/IRQ/cleanup pass. Native sensor
+    clients and all three motion streams recover, native vblank509→510 advances,
+    zero new DSP/DPU faults. Both SWR amps remain unpowered/UNATTACHED; no PCM
+    owner. This retains core power and does not prove low-power or audio-session
+    recovery. Systemd sleep remains masked.
+    [DF result](tools/spx/boot-diagnostics/RESULT-20261007df.md).
 
 - [ ] **P04 — Hibernate applicability.** Establish whether the intended platform/
   storage/security setup supports hibernation; if supported, verify image restore
