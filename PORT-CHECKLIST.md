@@ -6,12 +6,13 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-06, CS: CPU passive bindings installed; response unproven)
+## Status (2026-10-06, CS: active-user sensor API passes; thermal response unproven)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
 rotation, calibration and resume remain open. **CR closes S02d:** quiesced
-backend stop/start restores ownership and all streams/desktop APIs. Latest result:
+backend stop/start restores ownership and all streams/desktop APIs.
+**CS closes S02e:** active unprivileged user claims/reopens motion and receives compass updates. Latest result:
 [CS](tools/spx/boot-diagnostics/RESULT-20261006cs.md), kernel
 `7.3.0-rc2-spx-mainline-20261004bg+`. **U03a passes:** two GNOME off/on cycles
 restore3440×1440/50Hz external scanout. CC0 normal Type-C callback succeeds;
@@ -1030,6 +1031,14 @@ GPU runtime suspend works.
     with clean disables; native orientation and47 compass updates return.
     Arbitrary crash recovery and resume are unverified.
     [CR result](tools/spx/boot-diagnostics/RESULT-20261006cr.md).
+  - [x] **S02e — Active desktop user sensor API access.** CS, boot
+    `a0a7c1af-7a7a-445b-9f47-df3e7c48d242`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: native clients under UID1000,
+    with active/unlocked Wayland seat0 and unchanged polkit policy, claim the
+    accelerometer across close/reopen and receive47 finite compass updates.
+    Provider/proxy retain their PIDs and zero restarts; all bounded clients end.
+    Physical rotation, bearing accuracy, GNOME auto-rotation and resume remain
+    unverified. [CS result](tools/spx/boot-diagnostics/RESULT-20261006cs.md).
 - [ ] **P01 — Battery and charging.** Plausible voltage/current/capacity/status,
   observed discharge and charging, AC transitions, charge limits where supported
   and low-battery behavior. Test applicable USB-C and Surface Connect chargers;
