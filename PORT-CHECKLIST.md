@@ -35,7 +35,7 @@ awaits attribution for later observations.
 
 | Area | State | What is missing |
 |---|---|---|
-| Boot to desktop, NVMe/LUKS root | Works | Cold/warm repeat count (B01) |
+| Boot to desktop, NVMe/LUKS root | Earlier desktop boots work; CW stops logging at31s | CV shutdown ramdisk stalls; recovery/repeat reliability (B01) |
 | CPU and memory (B03) | **Passed on AP; BU automatic frequency scaling active** | Recheck on final candidate |
 | Storage (B02) | Passed on AP | Post-resume I/O |
 | GPU FD680 (D02) | **Passed on AW**, 30 min rendering | A person looking at the screen |
@@ -64,10 +64,11 @@ awaits attribution for later observations.
 ## Next work, in order
 
 User cannot provide physical assistance (October6); continue autonomous work.
-Physical observations remain unverified. CDSP's translated session now starts,
-but CV's first capability query triggers a watchdog. Correct the demonstrated
-wire-address tag: Windows uses low host IOVAs but prepends session1 on the wire.
-One changed query remains before parking; determine process authorization before compute.
+Physical observations remain unverified. CDSP is parked after three changed
+boots without a usable accelerator result. CW stops before its corrected query;
+CV's return request stalls in shutdown ramdisk generation. Prepare that ramdisk
+during runtime, then disable experimental CDSP for the independent combined
+CPU/GPU thermal test on AC. Full thermal/accelerator acceptance remains open.
 See [CDSP prerequisites](tools/spx/boot-diagnostics/RESULT-20261006cdsp.md).
 USB-C switching and external scanout restoration already have scoped passes;
 physical replug, ports/orientations and visible output still need fixtures.
@@ -255,11 +256,10 @@ reconciled. [Inventory](tools/spx/boot-diagnostics/HARDWARE-INVENTORY-20261002.m
   capabilities and available interfaces; validate a real supported workload or
   document the specific missing support. A thermal-zone name is not a working NPU.
   **October6 WIP:** a freestanding v66 FastRPC workload builds but has not run.
-  CV passes translated session setup, then its first capability query triggers
-  a CDSP watchdog/EPIPE; later kernel worker stalls have unknown causality.
-  Correct Windows-grounded wire tag1 while retaining the low host IOVA window,
-  SID and process restrictions. No capabilities or compute pass yet.
-  [CV result](tools/spx/boot-diagnostics/RESULT-20261006cv.md).
+  **Parked after CU/CV/CW:** CV's first query causes watchdog/EPIPE; CW's
+  startup stops before the corrected tagged query. Later CV BPF stalls and
+  shutdown failure have unresolved causality. No capabilities or compute pass.
+  [CW result](tools/spx/boot-diagnostics/RESULT-20261006cw.md).
   [Preparation and contract](tools/spx/boot-diagnostics/RESULT-20261006cdsp.md).
 
 ## Internal display, GPU and video
