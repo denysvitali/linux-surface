@@ -46,7 +46,7 @@ awaits attribution for later observations.
 | GPU FD680 (D02) | **Passed on AW**, 30 min rendering | A person looking at the screen |
 | Internal panel (D01) | **CE: D01a GNOME off/on scanout passes**; user reports display/brightness working | Visual attribution/quality, brightness range and resume |
 | Wi-Fi (N01) | 5 GHz/reconnect and IPv6 VPN pass; 2.4 GHz accepted by user assumption | Native WAN IPv6, roaming, sustained use and resume |
-| RTC (B05) | **BX: B05a early boot time passes**; readback/warm reboot pass | Cold power-off retention and suspend |
+| RTC (B05) | **BX early boot time; DC PMIC awake alarm passes** | Cold power-off retention and suspend |
 | Firmware TPM/security (B06) | **CT: automatic TPM2 and measured GRUB boot pass; CS reattachment passes** | Signing/Secure Boot and resume |
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
@@ -200,6 +200,13 @@ reconciled. [Inventory](tools/spx/boot-diagnostics/HARDWARE-INVENTORY-20261002.m
     `7.3.0-rc2-spx-mainline-20261004bg+`: RTC sets UTC at3.212s, before root
     switch14.605s and first NTP source59.007s. No NTP step is logged.
     [BX result](tools/spx/boot-diagnostics/RESULT-20261005bx.md).
+
+  - [x] **B05b — PMIC hardware alarm while awake.** DC, boot
+    `4f107d78-1968-4788-b587-8dab9701c0fc`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: eight-second relative alarm on
+    fitted PMIC `rtc1` delivers RTC_AF/RTC_IRQF, IRQ count0→1; disabled cleanup
+    passes. Surface `rtc0` still supplies system time. Suspend wake remains
+    untested. [DC result](tools/spx/boot-diagnostics/RESULT-20261006dc.md).
 
   **Observed AV startup, 2026-10-03:** SSAM surface_rtc0 is about791s ahead of
   NTP-synchronized wall time at495.63s; chrony stepped the system clock by
