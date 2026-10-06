@@ -8,6 +8,8 @@
 #include <linux/dma-mapping.h>
 #include <linux/dma-resv.h>
 #include <linux/idr.h>
+#include <linux/ioport.h>
+#include <linux/workqueue.h>
 #include <linux/list.h>
 #include <linux/miscdevice.h>
 #include <linux/module.h>
@@ -221,6 +223,7 @@ struct fastrpc_buf_overlap {
 
 struct fastrpc_buf {
 	struct fastrpc_user *fl;
+	struct fastrpc_channel_ctx *cctx;
 	struct dma_buf *dmabuf;
 	struct device *dev;
 	void *virt;
@@ -307,6 +310,10 @@ struct fastrpc_channel_ctx {
 	int vmcount;
 	u64 sdsp_heap_start;
 	u64 sdsp_heap_size;
+	u64 sdsp_heap_owners;
+	struct resource *sdsp_heap_lease;
+	struct device *dma_dev;
+	bool reserved_mem_attached;
 	struct qcom_scm_vmperm vmperms[FASTRPC_MAX_VMIDS];
 	struct rpmsg_device *rpdev;
 	struct fastrpc_session_ctx session[FASTRPC_MAX_SESSIONS];
@@ -358,6 +365,9 @@ struct fastrpc_user {
 	/* Reference count */
 	struct kref refcount;
 };
+
+static DEFINE_MUTEX(fastrpc_heap_lock);
+static struct workqueue_struct *fastrpc_response_wq;
 
 /* Extract SMMU PA from consolidated IOVA */
 static inline dma_addr_t fastrpc_ipa_to_dma_addr(struct fastrpc_channel_ctx *cctx, dma_addr_t iova)
@@ -471,7 +481,8 @@ static void fastrpc_buf_free(struct fastrpc_buf *buf)
 		return;
 
 	dma_free_coherent(buf->dev, buf->size, buf->virt,
-			  fastrpc_ipa_to_dma_addr(buf->fl->cctx, buf->dma_addr));
+			  fastrpc_ipa_to_dma_addr(buf->cctx, buf->dma_addr));
+	put_device(buf->dev);
 	kfree(buf);
 }
 
@@ -489,15 +500,17 @@ static int __fastrpc_buf_alloc(struct fastrpc_user *fl, struct device *dev,
 	mutex_init(&buf->lock);
 
 	buf->fl = fl;
+	buf->cctx = fl->cctx;
 	buf->virt = NULL;
 	buf->dma_addr = 0;
 	buf->size = size;
-	buf->dev = dev;
+	buf->dev = get_device(dev);
 	buf->raddr = 0;
 
 	buf->virt = dma_alloc_coherent(dev, buf->size, &buf->dma_addr,
 				       GFP_KERNEL);
 	if (!buf->virt) {
+		put_device(buf->dev);
 		mutex_destroy(&buf->lock);
 		kfree(buf);
 		return -ENOMEM;
@@ -529,18 +542,121 @@ static int fastrpc_buf_alloc(struct fastrpc_user *fl, struct device *dev,
 static int fastrpc_remote_heap_alloc(struct fastrpc_user *fl, struct device *dev,
 				     u64 size, struct fastrpc_buf **obuf)
 {
-	struct device *rdev = &fl->cctx->rpdev->dev;
+	struct device *rdev = fl->cctx->dma_dev;
 
 	return  __fastrpc_buf_alloc(fl, rdev, size, obuf);
+}
+
+/*
+ * A resource-tree lease survives module unload if SCM restoration fails.
+ * It is not devm-managed: device removal must not erase ownership evidence.
+ */
+static int fastrpc_heap_conflict(struct resource *res, void *unused)
+{
+	return -EBUSY;
+}
+
+static int fastrpc_sdsp_heap_assign(struct fastrpc_channel_ctx *cctx,
+				   const struct resource *range)
+{
+	struct resource *lease;
+	int err;
+
+	lease = kzalloc_obj(*lease);
+	if (!lease)
+		return -ENOMEM;
+	lease->name = kstrdup("FastRPC SDSP DMA ownership", GFP_KERNEL);
+	if (!lease->name) {
+		kfree(lease);
+		return -ENOMEM;
+	}
+	lease->start = range->start;
+	lease->end = range->end;
+	lease->flags = IORESOURCE_MEM | IORESOURCE_BUSY;
+	lease->desc = IORES_DESC_RESERVED;
+
+	mutex_lock(&fastrpc_heap_lock);
+	err = walk_iomem_res_desc(IORES_DESC_RESERVED,
+				  IORESOURCE_MEM | IORESOURCE_BUSY,
+				  lease->start, lease->end, NULL,
+				  fastrpc_heap_conflict);
+	if (err == -EBUSY) {
+		dev_err(cctx->dma_dev, "SDSP heap %pr ownership lease busy\n", lease);
+		goto free_lease;
+	}
+	err = insert_resource(&iomem_resource, lease);
+	if (err)
+		goto free_lease;
+
+	cctx->sdsp_heap_owners = BIT_ULL(QCOM_SCM_VMID_HLOS);
+	err = qcom_scm_assign_mem(lease->start, resource_size(lease),
+				  &cctx->sdsp_heap_owners,
+				  cctx->vmperms, cctx->vmcount);
+	if (err) {
+		remove_resource(lease);
+		goto free_lease;
+	}
+	cctx->sdsp_heap_lease = lease;
+	cctx->sdsp_heap_start = lease->start;
+	cctx->sdsp_heap_size = resource_size(lease);
+	dev_info(cctx->dma_dev, "SDSP heap %pr shared owners=%#llx\n",
+		 lease, cctx->sdsp_heap_owners);
+	mutex_unlock(&fastrpc_heap_lock);
+	return 0;
+
+free_lease:
+	mutex_unlock(&fastrpc_heap_lock);
+	kfree(lease->name);
+	kfree(lease);
+	return err;
 }
 
 static void fastrpc_channel_ctx_free(struct kref *ref)
 {
 	struct fastrpc_channel_ctx *cctx;
+	struct fastrpc_buf *buf, *next;
+	struct qcom_scm_vmperm hlos = {
+		.vmid = QCOM_SCM_VMID_HLOS,
+		.perm = QCOM_SCM_PERM_RWX,
+	};
+	int err;
 
 	cctx = container_of(ref, struct fastrpc_channel_ctx, refcount);
+	/* Users and invocation buffers have drained before this final kref. */
+	if (WARN_ON(!idr_is_empty(&cctx->ctx_idr)))
+		return;
+	fastrpc_buf_free(cctx->remote_heap);
+	cctx->remote_heap = NULL;
+	list_for_each_entry_safe(buf, next, &cctx->invoke_interrupted_mmaps, node) {
+		list_del(&buf->node);
+		fastrpc_buf_free(buf);
+	}
 
+	if (cctx->sdsp_heap_lease) {
+		mutex_lock(&fastrpc_heap_lock);
+		err = qcom_scm_assign_mem(cctx->sdsp_heap_start,
+					  cctx->sdsp_heap_size,
+					  &cctx->sdsp_heap_owners, &hlos, 1);
+		if (err) {
+			dev_err(cctx->dma_dev,
+				"SDSP heap restore failed %d owners=%#llx; ownership lease quarantined until reboot\n",
+				err, cctx->sdsp_heap_owners);
+			mutex_unlock(&fastrpc_heap_lock);
+			/* Keep lease, device, CMA association and DMA mask storage. */
+			return;
+		}
+		dev_info(cctx->dma_dev,
+			 "SDSP heap restored to HLOS owners=%#llx; final context drained\n",
+			 cctx->sdsp_heap_owners);
+		remove_resource(cctx->sdsp_heap_lease);
+		kfree(cctx->sdsp_heap_lease->name);
+		kfree(cctx->sdsp_heap_lease);
+		mutex_unlock(&fastrpc_heap_lock);
+	}
+	if (cctx->reserved_mem_attached)
+		of_reserved_mem_device_release(cctx->dma_dev);
 	idr_destroy(&cctx->ctx_idr);
+	put_device(cctx->dma_dev);
 	kfree(cctx);
 }
 
@@ -581,6 +697,7 @@ static void fastrpc_user_free(struct kref *ref)
 	fastrpc_channel_ctx_put(fl->cctx);
 	mutex_destroy(&fl->mutex);
 	kfree(fl);
+	module_put(THIS_MODULE);
 }
 
 static void fastrpc_user_get(struct fastrpc_user *fl)
@@ -796,8 +913,10 @@ static void fastrpc_unmap_dma_buf(struct dma_buf_attachment *attach,
 static void fastrpc_release(struct dma_buf *dmabuf)
 {
 	struct fastrpc_buf *buffer = dmabuf->priv;
+	struct fastrpc_user *fl = buffer->fl;
 
 	fastrpc_buf_free(buffer);
+	fastrpc_user_put(fl);
 }
 
 static int fastrpc_dma_buf_attach(struct dma_buf *dmabuf,
@@ -1811,6 +1930,8 @@ static int fastrpc_device_open(struct inode *inode, struct file *filp)
 	list_add_tail(&fl->user, &cctx->users);
 	spin_unlock_irqrestore(&cctx->lock, flags);
 	kref_init(&fl->refcount);
+	/* Pending RPCs can outlive the file and retain this user reference. */
+	__module_get(THIS_MODULE);
 
 	return 0;
 }
@@ -1832,10 +1953,12 @@ static int fastrpc_dmabuf_alloc(struct fastrpc_user *fl, char __user *argp)
 	exp_info.size = bp.size;
 	exp_info.flags = O_RDWR;
 	exp_info.priv = buf;
+	fastrpc_user_get(fl);
 	buf->dmabuf = dma_buf_export(&exp_info);
 	if (IS_ERR(buf->dmabuf)) {
 		err = PTR_ERR(buf->dmabuf);
 		fastrpc_buf_free(buf);
+		fastrpc_user_put(fl);
 		return err;
 	}
 
@@ -2374,6 +2497,7 @@ static long fastrpc_device_ioctl(struct file *file, unsigned int cmd,
 }
 
 static const struct file_operations fastrpc_fops = {
+	.owner = THIS_MODULE,
 	.open = fastrpc_device_open,
 	.release = fastrpc_device_release,
 	.unlocked_ioctl = fastrpc_device_ioctl,
@@ -2550,33 +2674,25 @@ static const struct of_device_id fastrpc_poll_supported_machines[] __maybe_unuse
 	{},
 };
 
+static void fastrpc_rpmsg_remove(struct rpmsg_device *rpdev);
+
 static int fastrpc_rpmsg_probe(struct rpmsg_device *rpdev)
 {
 	struct device *rdev = &rpdev->dev;
 	struct fastrpc_channel_ctx *data;
-	int i, err, domain_id = -1, vmcount;
+	int i, err, domain_id, vmcount;
 	const char *domain;
 	bool secure_dsp;
 	unsigned int vmids[FASTRPC_MAX_VMIDS];
 	const struct fastrpc_soc_data *soc_data;
 
 	soc_data = device_get_match_data(rdev);
-
 	err = of_property_read_string(rdev->of_node, "label", &domain);
-	if (err) {
-		dev_info(rdev, "FastRPC Domain not specified in DT\n");
+	if (err)
 		return err;
-	}
-
 	domain_id = fastrpc_get_domain_id(domain);
-
-	if (domain_id < 0) {
-		dev_info(rdev, "FastRPC Domain %s not supported\n", domain);
+	if (domain_id < 0)
 		return -EINVAL;
-	}
-
-	if (of_reserved_mem_device_init_by_idx(rdev, rdev->of_node, 0))
-		dev_info(rdev, "no reserved DMA memory for FASTRPC\n");
 
 	vmcount = of_property_read_variable_u32_array(rdev->of_node,
 				"qcom,vmids", &vmids[0], 0, FASTRPC_MAX_VMIDS);
@@ -2588,96 +2704,84 @@ static int fastrpc_rpmsg_probe(struct rpmsg_device *rpdev)
 	data = kzalloc_obj(*data);
 	if (!data)
 		return -ENOMEM;
-
-	if (vmcount) {
-		data->vmcount = vmcount;
-		for (i = 0; i < data->vmcount; i++) {
-			data->vmperms[i].vmid = vmids[i];
-			data->vmperms[i].perm = QCOM_SCM_PERM_RWX;
-		}
-	}
-
-	if (domain_id == SDSP_DOMAIN_ID) {
-		struct resource res;
-		u64 src_perms;
-
-		err = of_reserved_mem_region_to_resource(rdev->of_node, 0, &res);
-		if (!err) {
-			src_perms = BIT(QCOM_SCM_VMID_HLOS);
-
-			err = qcom_scm_assign_mem(res.start, resource_size(&res), &src_perms,
-				    data->vmperms, data->vmcount);
-			if (err) {
-				dev_err(rdev, "SDSP shared heap assignment failed: %d\n", err);
-				goto err_free_data;
-			}
-			data->sdsp_heap_start = res.start;
-			data->sdsp_heap_size = resource_size(&res);
-			dev_info(rdev, "SDSP DMA heap %pr assigned to %d VMIDs\n", &res, vmcount);
-		}
-
-	}
-
-	secure_dsp = !(of_property_read_bool(rdev->of_node, "qcom,non-secure-domain"));
-	data->secure = secure_dsp;
-	data->soc_data = soc_data;
-	data->poll_mode_supported = soc_data->poll_mode_supported ||
-		of_machine_get_match(fastrpc_poll_supported_machines);
-
-	switch (domain_id) {
-	case ADSP_DOMAIN_ID:
-	case MDSP_DOMAIN_ID:
-	case SDSP_DOMAIN_ID:
-		/* Unsigned PD offloading is only supported on CDSP and GDSP */
-		data->unsigned_support = false;
-		err = fastrpc_device_register(rdev, data, secure_dsp, domain);
-		if (err)
-			goto err_free_data;
-		break;
-	case CDSP_DOMAIN_ID:
-	case GDSP_DOMAIN_ID:
-		data->unsigned_support = true;
-		/* Create both device nodes so that we can allow both Signed and Unsigned PD */
-		err = fastrpc_device_register(rdev, data, true, domain);
-		if (err)
-			goto err_free_data;
-
-		err = fastrpc_device_register(rdev, data, false, domain);
-		if (err)
-			goto err_deregister_fdev;
-		break;
-	default:
-		err = -EINVAL;
-		goto err_free_data;
-	}
-
+	/* Initialize all lifetime state before publishing any misc device. */
 	kref_init(&data->refcount);
 	atomic_set(&data->ctx_seq, 0);
-
-	rdev->dma_mask = &data->dma_mask;
-	dma_set_mask_and_coherent(rdev, DMA_BIT_MASK(32));
 	INIT_LIST_HEAD(&data->users);
 	INIT_LIST_HEAD(&data->invoke_interrupted_mmaps);
 	spin_lock_init(&data->lock);
 	idr_init(&data->ctx_idr);
 	data->domain_id = domain_id;
 	data->rpdev = rpdev;
-	dev_set_drvdata(&rpdev->dev, data);
+	data->dma_dev = get_device(rdev);
+	data->soc_data = soc_data;
+	data->poll_mode_supported = soc_data->poll_mode_supported ||
+		of_machine_get_match(fastrpc_poll_supported_machines);
+	secure_dsp = !of_property_read_bool(rdev->of_node, "qcom,non-secure-domain");
+	data->secure = secure_dsp;
+	data->vmcount = vmcount;
+	for (i = 0; i < vmcount; i++) {
+		data->vmperms[i].vmid = vmids[i];
+		data->vmperms[i].perm = QCOM_SCM_PERM_RWX;
+	}
 
+	/* Device-owned mask storage remains valid through delayed DMA frees. */
+	rdev->dma_mask = &rdev->coherent_dma_mask;
+	err = dma_set_mask_and_coherent(rdev, DMA_BIT_MASK(32));
+	if (err)
+		goto err_put_data;
+	err = of_reserved_mem_device_init_by_idx(rdev, rdev->of_node, 0);
+	data->reserved_mem_attached = !err;
+	if (err)
+		dev_info(rdev, "no reserved DMA memory for FASTRPC\n");
+	if (domain_id == SDSP_DOMAIN_ID) {
+		struct resource res;
+
+		if (!of_reserved_mem_region_to_resource(rdev->of_node, 0, &res)) {
+			if (!data->reserved_mem_attached)
+				goto err_put_data;
+			if (!vmcount) {
+				err = -EINVAL;
+				goto err_put_data;
+			}
+			err = fastrpc_sdsp_heap_assign(data, &res);
+			if (err)
+				goto err_put_data;
+		}
+	}
+
+	dev_set_drvdata(rdev, data);
+	/* Context-bank state must also exist before users can open the node. */
 	err = of_platform_populate(rdev->of_node, NULL, NULL, rdev);
 	if (err)
-		goto err_deregister_fdev;
-
+		goto err_remove;
+	switch (domain_id) {
+	case ADSP_DOMAIN_ID:
+	case MDSP_DOMAIN_ID:
+	case SDSP_DOMAIN_ID:
+		data->unsigned_support = false;
+		err = fastrpc_device_register(rdev, data, secure_dsp, domain);
+		break;
+	case CDSP_DOMAIN_ID:
+	case GDSP_DOMAIN_ID:
+		data->unsigned_support = true;
+		err = fastrpc_device_register(rdev, data, true, domain);
+		if (!err)
+			err = fastrpc_device_register(rdev, data, false, domain);
+		break;
+	default:
+		err = -EINVAL;
+	}
+	if (err)
+		goto err_remove;
 	return 0;
 
-err_deregister_fdev:
-	if (data->fdevice)
-		misc_deregister(&data->fdevice->miscdev);
-	if (data->secure_fdevice)
-		misc_deregister(&data->secure_fdevice->miscdev);
-
-err_free_data:
-	kfree(data);
+err_remove:
+	fastrpc_rpmsg_remove(rpdev);
+	return err;
+err_put_data:
+	data->rpdev = NULL;
+	fastrpc_channel_ctx_put(data);
 	return err;
 }
 
@@ -2696,16 +2800,25 @@ static void fastrpc_notify_users(struct fastrpc_user *user)
 static void fastrpc_rpmsg_remove(struct rpmsg_device *rpdev)
 {
 	struct fastrpc_channel_ctx *cctx = dev_get_drvdata(&rpdev->dev);
-	struct fastrpc_buf *buf, *b;
 	struct fastrpc_user *user;
+	struct fastrpc_invoke_ctx *ctx;
 	unsigned long flags;
+	unsigned int users = 0, pending = 0;
+	int id;
 
 	/* No invocations past this point */
 	spin_lock_irqsave(&cctx->lock, flags);
 	cctx->rpdev = NULL;
-	list_for_each_entry(user, &cctx->users, user)
+	list_for_each_entry(user, &cctx->users, user) {
+		users++;
 		fastrpc_notify_users(user);
+	}
+	idr_for_each_entry(&cctx->ctx_idr, ctx, id)
+		pending++;
 	spin_unlock_irqrestore(&cctx->lock, flags);
+	dev_info(&rpdev->dev,
+		 "channel remove users=%u pending=%u; heap release waits for final context\n",
+		 users, pending);
 
 	if (cctx->fdevice)
 		misc_deregister(&cctx->fdevice->miscdev);
@@ -2713,14 +2826,9 @@ static void fastrpc_rpmsg_remove(struct rpmsg_device *rpdev)
 	if (cctx->secure_fdevice)
 		misc_deregister(&cctx->secure_fdevice->miscdev);
 
-	list_for_each_entry_safe(buf, b, &cctx->invoke_interrupted_mmaps, node)
-		list_del(&buf->node);
-
-	if (cctx->remote_heap)
-		fastrpc_buf_free(cctx->remote_heap);
-
+	/* Leave channel buffers and CMA attached until all client refs drain. */
 	of_platform_depopulate(&rpdev->dev);
-
+	dev_set_drvdata(&rpdev->dev, NULL);
 	fastrpc_channel_ctx_put(cctx);
 }
 
@@ -2784,7 +2892,7 @@ static int fastrpc_rpmsg_callback(struct rpmsg_device *rpdev, void *data,
 	 * interrupt context so schedule it through a worker thread to
 	 * avoid a kernel BUG.
 	 */
-	schedule_work(&ctx->put_work);
+	queue_work(fastrpc_response_wq, &ctx->put_work);
 
 	return 0;
 }
@@ -2810,9 +2918,13 @@ static int fastrpc_init(void)
 {
 	int ret;
 
+	fastrpc_response_wq = alloc_workqueue("fastrpc_response", WQ_UNBOUND, 0);
+	if (!fastrpc_response_wq)
+		return -ENOMEM;
 	ret = platform_driver_register(&fastrpc_cb_driver);
 	if (ret < 0) {
 		pr_err("fastrpc: failed to register cb driver\n");
+		destroy_workqueue(fastrpc_response_wq);
 		return ret;
 	}
 
@@ -2820,6 +2932,7 @@ static int fastrpc_init(void)
 	if (ret < 0) {
 		pr_err("fastrpc: failed to register rpmsg driver\n");
 		platform_driver_unregister(&fastrpc_cb_driver);
+		destroy_workqueue(fastrpc_response_wq);
 		return ret;
 	}
 
@@ -2829,8 +2942,10 @@ module_init(fastrpc_init);
 
 static void fastrpc_exit(void)
 {
-	platform_driver_unregister(&fastrpc_cb_driver);
 	unregister_rpmsg_driver(&fastrpc_driver);
+	platform_driver_unregister(&fastrpc_cb_driver);
+	/* Last-user module_put may run in a response worker; wait for its return. */
+	destroy_workqueue(fastrpc_response_wq);
 }
 module_exit(fastrpc_exit);
 
