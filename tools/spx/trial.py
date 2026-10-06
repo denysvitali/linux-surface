@@ -322,9 +322,9 @@ def install(args):
         cdsp_helpers.mkdir(parents=True, exist_ok=True)
         shutil.copy2(HERE / 'cdsp/capabilities.py', cdsp_helpers / 'capabilities.py')
         (cdsp_helpers / 'capabilities.py').chmod(0o644)
-    if prepared.get('cpu_passive_cooling'):
-        shutil.copy2(HERE / 'thermal.py', helper.parent / 'thermal.py')
-        (helper.parent / 'thermal.py').chmod(0o644)
+    # The retained board DTB already contains this policy in later trials.
+    shutil.copy2(HERE / 'thermal.py', helper.parent / 'thermal.py')
+    (helper.parent / 'thermal.py').chmod(0o644)
     if prepared.get('sensors_startup'):
         sensor_helpers = helper.parent / 'sensors'
         sensor_helpers.mkdir(parents=True, exist_ok=True)
@@ -1712,15 +1712,19 @@ def sensors_lifecycle(args):
 
 
 def thermal_check(args):
-    from thermal import Live
+    from thermal import Live, CombinedLive
     lock = str(REPO / 'tools/spx/spx-lock')
     owner = 'thermal-' + ATTEMPT
     subprocess.run([lock, 'acquire', 'device', owner], check=True)
     try:
-        result = Live(OUT / 'cpu-thermal', ATTEMPT, RELEASE).exercise()
-        print(json.dumps(dict(complete=result['complete'], result=str(OUT / 'cpu-thermal/result.json'))), flush=True)
+        output = OUT / ('combined-thermal' if args.thermal_combined else 'cpu-thermal')
+        live = (CombinedLive(output, ATTEMPT, RELEASE, args.thermal_gpu_fixture)
+                if args.thermal_combined else Live(output, ATTEMPT, RELEASE))
+        result = live.exercise()
+        print(json.dumps(dict(complete=result['complete'], result=str(output / 'result.json'),
+                             responses=result.get('responses'))), flush=True)
         if not result['complete']:
-            raise RuntimeError(result.get('error', 'automatic CPU response not proven'))
+            raise RuntimeError(result.get('error', 'scoped thermal test did not pass'))
     finally:
         subprocess.run([lock, 'release', 'device', owner], check=True)
 
@@ -1771,6 +1775,11 @@ def main():
     parser.add_argument('--sensors-ready', type=Path, default=Path('/var/tmp/spx-sensors-ready'))
     parser.add_argument('--cpu-passive-cooling', action='store_true',
                         help='stage board Linux75C/5C passive CPU policy into the retained DTB')
+    parser.add_argument('--thermal-combined', action='store_true',
+                        help='opt in to300s AC-only CPU+GPU thermal workload with80C ceiling; thermal command only')
+    parser.add_argument('--thermal-gpu-fixture', type=Path,
+                        default=Path('/var/tmp/spx-gpu-benchmark-20261003/fixture'),
+                        help='retained glmark2-es2-gbm/data fixture for combined thermal test')
     parser.add_argument('--cdsp', action='store_true',
                         help='enable the guarded CDSP translated capability-only transport')
     parser.add_argument('--audio', action='store_true', help='enable codecs with both amplifiers parked; no playback')
@@ -1800,6 +1809,8 @@ def main():
     if args.microphone_source != 'DMIC1' and (args.command not in ('audio', 'arm-audio') or
                                             args.audio_action not in ('capture', 'feedback', 'desktop-mic')):
         parser.error('--microphone-source DMIC0 requires audio/arm-audio capture, feedback or desktop-mic')
+    if args.thermal_combined and args.command != 'thermal':
+        parser.error('--thermal-combined requires the thermal command')
     assert re.fullmatch(r'[0-9]{8}[a-z0-9]+', args.attempt)
     global ATTEMPT, OUT, STAGE, BUILD, PARENT, OLD, RECOVERY, BOOT_ID, RELEASE
     ATTEMPT = args.attempt
