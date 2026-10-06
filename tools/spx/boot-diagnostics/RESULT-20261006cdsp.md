@@ -34,11 +34,14 @@ Linux `unsigned_support=true` is host policy and does not establish the
 retained firmware's permission. Neither speculative `reg=1` nor `reg=0`
 is declared: the latter also interacts with physical-DMA selection.
 
-**Transport WIP:** the SoC340 evidence supports flat IOVA encoding with a
-nonzero session and its IOMMU device. The guarded module now builds on the fixed
+**Transport WIP (corrected after CV):** the SoC340 evidence supports a low host IOVA allocation with a
+nonzero session and its IOMMU device. Windows' final message/page builder adds
+the SID low-nibble tag in bits32+: SID0x1441 uses tag1. CV sent an untagged
+address and triggered a watchdog; see RESULT-20261006cv.md. The guarded module builds on the fixed
 7.3 release. One disabled board session uses SID0x1441. The inherited DMA limit
 excludes the final partial page; every complete allocation/header/page must lie
-inside the firmware window. Lower allocations are rejected, not retried.
+inside the firmware window after stripping the separately validated wire tag.
+Lower allocations are rejected, not retried.
 Only one GET_DSP_INFO fetch is permitted; process creation/general invocation
 are blocked. The compiled board DT stages successfully through the reusable
 `--cdsp` option. Recovery preflight rejects before opening a device.
