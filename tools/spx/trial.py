@@ -213,6 +213,9 @@ def prepare(args):
     config.write_text(text)
     run('initramfs', ['mkinitcpio', '-k', RELEASE, '-r', str(module_root), '-c', str(OUT / 'mkinitcpio.conf'), '-D', str(OUT / 'initcpio'), '-D', '/etc/initcpio', '-D', '/usr/lib/initcpio', '-g', str(OUT / 'initramfs.img'), '--nopost'])
     run('bluetooth-address', ['/usr/bin/python3', '-B', str(REPO / 'tools/spx/bluetooth-address.py'), str(args.dtb), str(OUT / 'spx.dtb'), '--address', args.address])
+    if args.pmic_rtc:
+        from pmic_rtc import stage
+        stage(OUT / 'spx.dtb')
     if args.cpu_passive_cooling:
         from thermal import stage_policy
         stage_policy(OUT / 'spx.dtb')
@@ -268,6 +271,7 @@ def prepare(args):
     run('grub-syntax', ['grub-script-check', str(OUT / 'entry.cfg')])
     prepared = dict(utc=datetime.now(timezone.utc).isoformat(), preboot_id=BOOT_ID, release=RELEASE, attempt=ATTEMPT, entry='spx-trial-' + ATTEMPT, cmdline=cmdline, source_commit=subprocess.check_output(['git', '-c', 'safe.directory=' + str(REPO), 'rev-parse', 'HEAD'], cwd=REPO, text=True).strip(), build_directory=str(BUILD), private_config=str(OUT / 'kernel.config'), bluetooth_address=args.address, address_is_per_installation=True, venus_trial=False, speaker_drivers_blocked=True, hardware_acceptance_closed=False, installed=False, boot_selected=False, boot_payloads=dict(vmlinuz=sha(OUT / 'vmlinuz'), initramfs=sha(OUT / 'initramfs.img'), dtb=sha(OUT / 'spx.dtb')))
     prepared.update(sensors_close_debug=args.sensors_close_debug, sensors_crash_recovery=args.sensors_crash_recovery, sensors_startup=args.sensors, sensors_private_ssc=bool(args.sensors_ssc_library), audio_mode='parked' if args.audio else 'blocked',
+                    pmic_rtc=args.pmic_rtc,
                     cpu_passive_cooling=args.cpu_passive_cooling,
                     thermal_combined=args.thermal_combined,
                     thermal_gpu_fixture=str(args.thermal_gpu_fixture),
@@ -352,6 +356,8 @@ def install(args):
         (cdsp_helpers / 'capabilities.py').chmod(0o644)
     # The retained board DTB already contains this policy in later trials.
     shutil.copy2(HERE / 'thermal.py', helper.parent / 'thermal.py')
+    if prepared.get('pmic_rtc'):
+        shutil.copy2(HERE / 'pmic_rtc.py', helper.parent / 'pmic_rtc.py')
     (helper.parent / 'thermal.py').chmod(0o644)
     if prepared.get('sensors_startup'):
         sensor_helpers = helper.parent / 'sensors'
@@ -1820,6 +1826,8 @@ def main():
     parser.add_argument('--recovery', type=Path, default=Path('/var/lib/spx-boot-diagnostics/attempts/20261004bf/working-recovery.json'))
     parser.add_argument('--dtb', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bg/spx.dtb'))
     parser.add_argument('--address')
+    parser.add_argument('--pmic-rtc', action='store_true',
+                        help='add upstream PMIC RTC as rtc1 and test one awake alarm; no suspend')
     parser.add_argument('--wifi-profile', help='saved Wi-Fi profile ID to clone for the 2.4 GHz test')
     parser.add_argument('--srtc-observe-expiry', action='store_true',
                         help='observe one 30s AC/DC timer expiry while awake; no suspend or wake-policy change')
@@ -1919,6 +1927,14 @@ def main():
                 functional_check(args)
             finally:
                 subprocess.run([lock, 'release', 'device', owner], check=True)
+            if record.get('pmic_rtc') and not (OUT / 'pmic-rtc').exists():
+                from pmic_rtc import exercise
+                subprocess.run([lock, 'acquire', 'device', 'pmic-rtc-' + ATTEMPT], check=True)
+                try:
+                    result = exercise(OUT / 'pmic-rtc', ATTEMPT, RELEASE)
+                    print(json.dumps(result), flush=True)
+                finally:
+                    subprocess.run([lock, 'release', 'device', 'pmic-rtc-' + ATTEMPT], check=True)
             if record.get('cdsp_capabilities') and not (OUT / 'cdsp-capabilities').exists():
                 cdsp_capabilities(args)
             dispatch_sensors_crash(args, record)
