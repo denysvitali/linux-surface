@@ -65,7 +65,9 @@ def alarm(fd):
     return struct.unpack('=BB2x9i', data)
 
 
-def exercise(output, attempt, release, *, suspend=False):
+def exercise(output, attempt, release, *, suspend=False, suspend_seconds=15):
+    if type(suspend_seconds) is not int or not 15 <= suspend_seconds <= 1800:
+        raise ValueError('suspend alarm must be an integer from 15 to 1800 seconds')
     output.mkdir(parents=True, exist_ok=False)
     result = dict(complete=False, scope='one PMIC-alarm s2idle' if suspend else 'awake PMIC alarm; no suspend',
                   boot_id=Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
@@ -81,8 +83,12 @@ def exercise(output, attempt, release, *, suspend=False):
         assert (device / 'device/driver').resolve().name == 'rtc-pm8xxx'
         assert (device / 'hctosys').read_text().strip() == '0'
         if suspend:
+            result['requested_seconds'] = suspend_seconds
             prior = json.loads((output.parent / 'pmic-rtc/result.json').read_text())
             assert prior['complete'] and prior['boot_id'] == result['boot_id']
+            if suspend_seconds > 15:
+                short = json.loads((output.parent / 'pmic-rtc-suspend/result.json').read_text())
+                assert short['complete'] and short['boot_id'] == result['boot_id']
             assert (device / 'device/power/wakeup').read_text().strip() == 'enabled'
             assert Path('/sys/power/mem_sleep').read_text().strip() == '[s2idle]'
             assert '[none]' in Path('/sys/power/pm_test').read_text().split()
@@ -99,7 +105,7 @@ def exercise(output, attempt, release, *, suspend=False):
         current = struct.unpack('=9i', data)
         now = datetime.datetime(current[5] + 1900, current[4] + 1, current[3],
                                 current[2], current[1], current[0], tzinfo=datetime.timezone.utc)
-        target = now + datetime.timedelta(seconds=15 if suspend else 8)
+        target = now + datetime.timedelta(seconds=suspend_seconds if suspend else 8)
         tm = (target.second, target.minute, target.hour, target.day, target.month - 1,
               target.year - 1900, (target.weekday() + 1) % 7, target.timetuple().tm_yday - 1, 0)
         # Record cleanup responsibility before the mutating ioctl.
@@ -121,7 +127,7 @@ def exercise(output, attempt, release, *, suspend=False):
             slept = ((time.clock_gettime(time.CLOCK_BOOTTIME) - boot)
                      - (time.monotonic() - mono))
             result['sleep_seconds'] = slept
-            assert slept >= 3, 'no meaningful s2idle interval observed'
+            assert slept >= max(3, suspend_seconds - 5), 's2idle returned before the intended alarm interval'
         ready, _, _ = select.select([fd], [], [], 15)
         assert ready, 'no awake alarm event within 15 seconds'
         event = struct.unpack('@L', os.read(fd, struct.calcsize('@L')))[0]

@@ -6,6 +6,15 @@ import pmic_rtc
 
 
 class Staging(unittest.TestCase):
+    def test_refuses_unbounded_alarm_before_creating_output(self):
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / 'alarm'
+            for seconds in (0, 14, 1801, 15.0, True):
+                with self.assertRaises(ValueError):
+                    pmic_rtc.exercise(output, 'unused', 'unused', suspend=True,
+                                      suspend_seconds=seconds)
+                self.assertFalse(output.exists())
+
     def test_preserves_system_clock_alias_and_uses_only_alarm_candidate(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

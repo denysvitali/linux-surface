@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-07, DD: ten sensor-safe timed s2idle returns pass)
+## Status (2026-10-07, DD: eleven sensor-safe timed s2idle returns; post-resume GPU pass)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
@@ -317,6 +317,15 @@ functional blank/unblank result. [Earlier evidence](tools/spx/boot-diagnostics/C
     internal CRTC/framebuffers; each return restores2880×1920/60Hz, a GNOME
     framebuffer and advancing fresh vblank. Final restoration passes; no new
     display/kernel faults. [CE result](tools/spx/boot-diagnostics/RESULT-20261005ce.md).
+
+  - [x] **D01b — Internal scanout after repeated timed s2idle.** DD boot
+    `38f7cb85-f4cf-48a0-af50-42bf1af6b183`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: after eleven alarm-based sleeps,
+    GNOME retains native2880×1920/60Hz scanout and advancing vblank. FD680
+    completes three GLES scenes; no new kernel faults. Visual quality, physical
+    wake and longer sleep remain separate checks.
+    [DD result](tools/spx/boot-diagnostics/RESULT-20261006dd.md),
+    `post-resume-gpu/result.json` in its functional directory.
 
 - [x] *Passed on AW (2026-10-03); visual check by a person still wanted.* **D02 — GPU acceleration.** Confirm hardware rendering in desktop and real
   3D workloads; at least30minutes of rendering/compositing plus idle transitions,
@@ -1160,6 +1169,11 @@ GPU runtime suspend works.
   including a30-minute sleep on battery, with measured drain and intended wake
   sources. Display, input, network, audio, cameras and attached devices recover;
   no kernel hang/reset or repeated manual intervention.
+  **DD:** eleven short alarm-based sleeps pass with the FastRPC freezer fix.
+  Native sensor clients survive nine consecutive cycles; post-resume TPM,
+  RTC readback with chronyd stopped, direct storage I/O, WLAN, FD680 rendering
+  and internal scanout pass. Longer sleep/full recovery remain unverified.
+  [DD result](tools/spx/boot-diagnostics/RESULT-20261006dd.md).
   **DC:** fitted PMIC `rtc1` alarm wakes one14.15-second s2idle interval with
   a real event/IRQ and clean alarm disable. Storage and WLAN work afterward;
   touch is ready/internal scanout active. SensorsPD crashes after interrupted
