@@ -4,6 +4,7 @@
 import importlib.util
 from pathlib import Path
 import tempfile
+import subprocess
 from types import SimpleNamespace
 import unittest
 
@@ -18,6 +19,32 @@ generator_spec.loader.exec_module(generator)
 
 
 class SensorStaging(unittest.TestCase):
+    def sensor_dtb(self, root, body):
+        source = root / 'test.dts'
+        source.write_text('/dts-v1/; / { ' + body + ' };')
+        dtb = root / 'test.dtb'
+        subprocess.run(['dtc', '-I', 'dts', '-O', 'dtb', '-o', str(dtb), str(source)],
+                       capture_output=True, check=True)
+        return dtb
+
+    def test_sensor_dtb_rejects_missing_and_disabled_backend(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaisesRegex(AssertionError, 'sensor DTB missing'):
+                trial.require_sensor_dtb(self.sensor_dtb(root, ''))
+            node = 'remoteproc-slpi { compatible="qcom,sc8180x-slpi-pas"; status="disabled"; };'
+            with self.assertRaisesRegex(AssertionError, 'node disabled'):
+                trial.require_sensor_dtb(self.sensor_dtb(root, node))
+
+    def test_sensor_dtb_accepts_enabled_private_sdsp_contract(self):
+        with tempfile.TemporaryDirectory() as directory:
+            dtb = self.sensor_dtb(Path(directory), '''remoteproc-slpi {
+                compatible="qcom,sc8180x-slpi-pas";
+                firmware-name="qcom/microsoft/spx/qcslpi8180.mbn";
+                glink-edge { fastrpc { compatible="qcom,fastrpc";
+                    label="sdsp"; memory-region=<1>; }; }; };''')
+            trial.require_sensor_dtb(dtb)
+
     def test_running_assets_keep_old_inode_during_reinstallation(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

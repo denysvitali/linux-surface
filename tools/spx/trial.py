@@ -136,10 +136,27 @@ def install_sensors(stage, root=Path('/')):
     replace_asset(stage / '81-spx-sensors.rules', rule, 0o644)
 
 
+def require_sensor_dtb(dtb):
+    """Reject the old baseline before spending a boot on a missing SLPI."""
+    slpi = '/remoteproc-slpi'
+    rpc = slpi + '/glink-edge/fastrpc'
+    for node, prop, expected in ((slpi, 'compatible', 'qcom,sc8180x-slpi-pas'),
+                                 (slpi, 'firmware-name', 'qcom/microsoft/spx/qcslpi8180.mbn'),
+                                 (rpc, 'compatible', 'qcom,fastrpc'), (rpc, 'label', 'sdsp')):
+        found = subprocess.run(['fdtget', '-t', 's', str(dtb), node, prop],
+                               capture_output=True, text=True, check=False)
+        assert found.returncode == 0 and found.stdout.strip() == expected, 'sensor DTB missing ' + node + ':' + prop
+        status = subprocess.check_output(['fdtget', '-t', 's', '-d', 'okay', str(dtb), node, 'status'], text=True).strip()
+        assert status in ('okay', 'ok'), 'sensor DTB node disabled: ' + node
+    subprocess.run(['fdtget', '-t', 'x', str(dtb), rpc, 'memory-region'], capture_output=True, check=True)
+
+
 def prepare(args):
     os.umask(63)
     require_source_boot()
     recovery()
+    if args.sensors:
+        require_sensor_dtb(args.dtb)
     assert (BUILD / 'arch/arm64/boot/Image').is_file() and (BUILD / 'Module.symvers').is_file()
     OUT.mkdir(parents=True, mode=448)
     assert not (OUT / 'prepared.json').exists()
