@@ -6,10 +6,10 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-06, CG: external display power cycles pass)
+## Status (2026-10-06, CM: desktop microphone helper cleanup failed)
 
 **Sensors parked:** CH/CJ/CK produced no motion samples. CL's shared-pool fix is
-prepared but unbooted. Latest result: [CK](tools/spx/boot-diagnostics/RESULT-20261006ck.md), kernel
+prepared but unbooted. Latest result: [CM](tools/spx/boot-diagnostics/RESULT-20261006cm.md), kernel
 `7.3.0-rc2-spx-mainline-20261004bg+`. **U03a passes:** two GNOME off/on cycles
 restore3440×1440/50Hz external scanout. CC0 normal Type-C callback succeeds;
 reverse plugs, visible output and hotplug remain unverified.
@@ -676,8 +676,9 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
     source and record known quiet speaker tones. Source-output routing and the
     retained hardware PCM owners must match across client close/idle/reopen.
     Restore the previous source and park the amplifiers; retain no private raw
-    recording. CM's bounded DMIC0 test is prepared, not yet run. This does not
-    establish persistent availability, hardware capture reopen or full teardown.
+    recording. CM reaches client idle, then helper cleanup crashes and loses
+    the scores; no acceptance. [CM result](tools/spx/boot-diagnostics/RESULT-20261006cm.md).
+    Persistent availability, hardware capture reopen and full teardown stay open.
 
 - [ ] **A04 — External audio.** Test applicable USB-C audio/dock and Bluetooth
   output/input devices, routing, hotplug and reconnect. The logical codec
