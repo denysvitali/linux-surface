@@ -32,6 +32,11 @@ transport cannot create or attach a PD. Existing pending-context references
 retain possibly DSP-owned DMA after timeout; there is no forced reclamation.
 
 This establishes neither live stream-routing permission nor a working query.
+CU's failed DMA translation exposed missing explicit bus cells on the remoteproc
+ancestor. Those cells are now declared: default OF bus matching requires them.
+If a session still fails its full guard, the diagnostic RPMSG channel remains
+bound without publishing a misc node, preventing a firmware CLOSE/OPEN probe
+loop. Its rejection prints the actual map, domain, stream and limit fields.
 No VMIDs, memory ownership assignment, process creation, unsigned module loading
 or workload invocation are added. The coordinator must build and perform a
 bounded capability-only trial. B07 remains open.
