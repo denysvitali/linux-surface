@@ -25,13 +25,25 @@ def validate_address(value):
     return value.upper()
 
 
+def controller_info():
+    # The device unit can precede management enumeration after UART setup.
+    deadline = time.monotonic() + 30
+    while True:
+        info = subprocess.check_output(['btmgmt', 'extinfo'], text=True, timeout=5)
+        if re.search(r'^\w.* controller \(hci0,UART\)$', info, re.M):
+            return info
+        if time.monotonic() >= deadline:
+            raise RuntimeError('fitted UART management controller did not appear')
+        time.sleep(.25)
+
+
 def main():
     if 'spx_boot=known-good' not in Path('/proc/cmdline').read_text().split():
         print('Not a recovery boot; controller unchanged')
         return
     if not Path('/proc/device-tree/model').read_bytes().startswith(b'Microsoft Surface Pro X'):
         raise RuntimeError('fitted Surface Pro X controller required')
-    info = subprocess.check_output(['btmgmt', 'extinfo'], text=True, timeout=5)
+    info = controller_info()
     if not missing_address(info):
         print('No fitted unconfigured controller missing an address; unchanged')
         return

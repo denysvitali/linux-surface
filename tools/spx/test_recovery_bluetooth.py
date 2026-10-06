@@ -15,6 +15,13 @@ hci0: Unconfigured controller
 
 
 class Guards(unittest.TestCase):
+    def test_waits_for_management_enumeration(self):
+        with patch.object(repair.subprocess, 'check_output', side_effect=[
+                'Extended index list with 0 items', MISSING]), \
+             patch.object(repair.time, 'sleep') as wait:
+            self.assertEqual(repair.controller_info(), MISSING)
+            wait.assert_called_once_with(.25)
+
     def test_only_fitted_unconfigured_uart_is_eligible(self):
         self.assertTrue(repair.missing_address(MISSING))
         for text in (MISSING.replace('UART', 'USB'), MISSING.replace('manufacturer 29', 'manufacturer 42'),

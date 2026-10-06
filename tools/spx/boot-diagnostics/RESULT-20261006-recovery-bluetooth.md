@@ -17,11 +17,21 @@ the fitted UART controller reports the missing-public-address option. Configured
 controllers are preserved. The private address is stored outside git in
 `/etc/spx-bluetooth/address`. The guard never writes radio power or rfkill state.
 
-**Verified:** three offline guard tests pass; installed unit verification passes.
-Enabled/startup unit returns success on the current configured controller,
-performing no address/power changes. Radio stays powered on. Automatic repair
-of an unconfigured controller on a fresh recovery boot remains unverified;
-the actual management-address repair was exercised manually on this boot.
+**Verified:** four offline guard tests and installed unit verification pass.
+UART module reload recreated the real missing-address condition, but management
+enumeration took longer than the initial 15-second observation. The helper now
+waits up to 30 seconds for enumeration and fails explicitly if it never appears.
+The first repair was rejected while the unconfigured controller was powered;
+ordinary management power-off also returned Invalid Index. After explicitly
+blocking Bluetooth for the test, the installed service repaired the address,
+returned success and preserved the blocked preference. Restored the original
+unblocked, powered-on state; the configured-controller service path succeeds
+without changing it. Both locks are free.
+
+**Limits:** fresh-boot timing remains untested. The guard does not force a powered
+unconfigured radio off; that case fails explicitly instead of changing its power
+preference. Module reload emitted hardware error 0x40 and repeated malformed MSFT
+events during setup; do not claim a fault-free reload or peripheral operation.
 
 **Remaining:** no paired-device key records or usable peripheral fixture.
 Pairing, reconnect, data and resume remain untested. Mainline retains its
