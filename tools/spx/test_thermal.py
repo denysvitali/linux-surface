@@ -54,6 +54,8 @@ class Thermal(unittest.TestCase):
         self.assertFalse(thermal.response_proven([sample(76000, 1, 1700000)], before, 0))
         self.assertFalse(thermal.response_proven([sample(76000, 1, 300000, 'recovery')], before, 0))
         self.assertTrue(thermal.response_proven([sample(76000, 1, 300000)], before, 0))
+        self.assertTrue(thermal.response_proven([sample(76000, 0, 1700000), sample(74000, 1, 300000)], before, 0))
+        self.assertFalse(thermal.response_proven([sample(74000, 1, 300000), sample(76000, 0, 1700000)], before, 0))
 
     def test_temperature_read_failure_stops_all_workers(self):
         class Worker:

@@ -51,10 +51,15 @@ def stage_policy(dtb):
 
 def response_proven(samples, before, index):
     key = str(index)
-    return any(sample['clusters'][key]['temperature'] >= PASSIVE
-               and sample['clusters'][key]['state'] > 0
-               and sample['clusters'][key]['limit'] < before['clusters'][key]['limit']
-               for sample in samples if sample['phase'] == 'load')
+    crossed = False
+    for sample in samples:
+        if sample['phase'] != 'load':
+            continue
+        cluster = sample['clusters'][key]
+        crossed |= cluster['temperature'] >= PASSIVE
+        if crossed and cluster['state'] > 0 and cluster['limit'] < before['clusters'][key]['limit']:
+            return True
+    return False
 
 
 class Live:
