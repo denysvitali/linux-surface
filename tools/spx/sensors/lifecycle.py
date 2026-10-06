@@ -99,6 +99,7 @@ class Live:
         self.remote = None
 
     def run(self, name, argv, timeout=15, env=None, input=None):
+        started = time.monotonic()
         try:
             proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, env=env, input=input)
             record = dict(returncode=proc.returncode, stdout=proc.stdout, stderr=proc.stderr)
@@ -107,6 +108,7 @@ class Live:
                           stderr='process exceeded harness timeout')
             # This is distinct from the intentionally bounded monitor's rc124.
             record['harness_timeout'] = True
+        record.update(start_monotonic=started, end_monotonic=time.monotonic())
         if argv[0] == 'journalctl':
             self.steps.append(dict(name=name, argv=argv, returncode=record['returncode'],
                                    captured_lines=len(record['stdout'].splitlines())))
@@ -122,7 +124,10 @@ class Live:
 
     def save(self, result):
         result.update(attempt=self.attempt, release=self.release, boot_id=self.boot_id, steps=self.steps)
-        self.result_path.write_text(json.dumps(result, indent=2) + '\n')
+        temporary = self.result_path.with_suffix('.new')
+        temporary.write_text(json.dumps(result, indent=2) + '\n')
+        temporary.chmod(0o600)
+        os.replace(temporary, self.result_path)
 
     def cursor(self):
         log = self.checked('journal-cursor', ['journalctl', '-b', '--show-cursor', '-n', '0', '--no-pager'])
@@ -148,7 +153,7 @@ class Live:
             raise Refused('expected one retained SensorsPD host child')
         return dict(provider_pid=pid, host_pid=hosts[0])
 
-    def gate(self):
+    def gate(self, before=None, allow_native=False):
         words = Path('/proc/cmdline').read_text().split()
         if os.geteuid() != 0 or os.uname().release != self.release or \
                 'spx_attempt=' + self.attempt not in words or 'spx_boot=mainline-functional' not in words or 'spx_sensors=1' not in words:
@@ -166,12 +171,13 @@ class Live:
         if len(matching) != 1 or (matching[0] / 'state').read_text().strip() != 'running':
             raise Refused('exact SPX SLPI backend is not uniquely running')
         self.remote = matching[0]
-        before = self.backend()
+        before = self.backend() if before is None else before
         # Never terminate unknown clients. Owned service stops close their users.
         for proc in Path('/proc').glob('[0-9]*'):
             try:
                 argv = (proc / 'cmdline').read_bytes().split(b'\0')
-                if argv and os.path.basename(os.fsdecode(argv[0])) in ('ssccli', 'monitor-sensor'):
+                if argv and (os.path.basename(os.fsdecode(argv[0])) == 'ssccli' or
+                             (not allow_native and os.path.basename(os.fsdecode(argv[0])) == 'monitor-sensor')):
                     raise Refused('external sensor client PID ' + proc.name + '; no actions permitted')
                 for fd in (proc / 'fd').iterdir():
                     try:

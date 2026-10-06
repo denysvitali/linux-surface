@@ -88,7 +88,7 @@ def stage_sensors(args, out, here=HERE):
     if args.sensors_ssc_library:
         assert args.sensors_ssc_library.is_file()
         shutil.copy2(args.sensors_ssc_library, stage / 'libssc.so.2')
-    for name in ('supervise.py', 'spx-sensors.service', 'generator.py', '81-spx-sensors.rules'):
+    for name in ('supervise.py', 'spx-sensors.service', 'generator.py', '81-spx-sensors.rules', 'recovery.py', 'crash_test.py', 'lifecycle.py', 'spx-sensors-recovery.service'):
         shutil.copy2(here / 'sensors' / name, stage / name)
 
 
@@ -111,7 +111,9 @@ def install_sensors(stage, root=Path('/')):
     for relative, source, mode in (
             ('hexagonrpcd/hexagonrpcd', 'hexagonrpcd', 0o755),
             ('libhexagonrpc/libhexagonrpc.so.0.5', 'libhexagonrpc.so.0.5', 0o644),
-            ('ready', 'ready', 0o755), ('supervise.py', 'supervise.py', 0o644)):
+            ('ready', 'ready', 0o755), ('supervise.py', 'supervise.py', 0o644),
+            ('recovery.py', 'recovery.py', 0o644), ('crash_test.py', 'crash_test.py', 0o644),
+            ('lifecycle.py', 'lifecycle.py', 0o644)):
         target = private / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.parent.chmod(0o755)
@@ -124,6 +126,8 @@ def install_sensors(stage, root=Path('/')):
     target = root / 'etc/systemd/system/spx-sensors.service'
     target.parent.mkdir(parents=True, exist_ok=True)
     replace_asset(stage / 'spx-sensors.service', target, 0o644)
+    replace_asset(stage / 'spx-sensors-recovery.service', root / 'etc/systemd/system/spx-sensors-recovery.service', 0o644)
+    replace_asset(HERE / 'spx-lock', private / 'spx-lock', 0o755)
     generator = root / 'usr/lib/systemd/system-generators/spx-sensors'
     generator.parent.mkdir(parents=True, exist_ok=True)
     replace_asset(stage / 'generator.py', generator, 0o755)
@@ -224,11 +228,13 @@ def prepare(args):
     if args.usbc_phy_orientation:
         assert args.usbc, '--usbc-phy-orientation requires --usbc'
         cmdline.append('surface_aggregator_usbc.phy_orientation=1')
-    cmdline = [word for word in cmdline if not word.startswith(('spx_sensors=', 'spx_sensors_libssc='))]
+    cmdline = [word for word in cmdline if not word.startswith(('spx_sensors=', 'spx_sensors_libssc=', 'spx_sensors_recovery='))]
     if args.sensors:
         cmdline.append('spx_sensors=1')
         if args.sensors_ssc_library:
             cmdline.append('spx_sensors_libssc=private')
+        if args.sensors_crash_recovery:
+            cmdline.append('spx_sensors_recovery=1')
     cmdline = [word for word in cmdline if not word.startswith('spx_cdsp=')]
     if args.cdsp:
         cmdline.append('spx_cdsp=1')
@@ -242,7 +248,7 @@ def prepare(args):
     (OUT / 'entry.cfg').write_text(entry)
     run('grub-syntax', ['grub-script-check', str(OUT / 'entry.cfg')])
     prepared = dict(utc=datetime.now(timezone.utc).isoformat(), preboot_id=BOOT_ID, release=RELEASE, attempt=ATTEMPT, entry='spx-trial-' + ATTEMPT, cmdline=cmdline, source_commit=subprocess.check_output(['git', '-c', 'safe.directory=' + str(REPO), 'rev-parse', 'HEAD'], cwd=REPO, text=True).strip(), build_directory=str(BUILD), private_config=str(OUT / 'kernel.config'), bluetooth_address=args.address, address_is_per_installation=True, venus_trial=False, speaker_drivers_blocked=True, hardware_acceptance_closed=False, installed=False, boot_selected=False, boot_payloads=dict(vmlinuz=sha(OUT / 'vmlinuz'), initramfs=sha(OUT / 'initramfs.img'), dtb=sha(OUT / 'spx.dtb')))
-    prepared.update(sensors_startup=args.sensors, sensors_private_ssc=bool(args.sensors_ssc_library), audio_mode='parked' if args.audio else 'blocked',
+    prepared.update(sensors_crash_recovery=args.sensors_crash_recovery, sensors_startup=args.sensors, sensors_private_ssc=bool(args.sensors_ssc_library), audio_mode='parked' if args.audio else 'blocked',
                     cpu_passive_cooling=args.cpu_passive_cooling,
                     thermal_combined=args.thermal_combined,
                     thermal_gpu_fixture=str(args.thermal_gpu_fixture),
@@ -331,8 +337,9 @@ def install(args):
     if prepared.get('sensors_startup'):
         sensor_helpers = helper.parent / 'sensors'
         sensor_helpers.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(HERE / 'sensors/lifecycle.py', sensor_helpers / 'lifecycle.py')
-        (sensor_helpers / 'lifecycle.py').chmod(0o644)
+        for name in ('lifecycle.py', 'recovery.py', 'crash_test.py', 'supervise.py'):
+            shutil.copy2(HERE / 'sensors' / name, sensor_helpers / name)
+            (sensor_helpers / name).chmod(0o644)
     if prepared.get('audio_mode') == 'parked':
         from audio import UNITS as audio_units
 
@@ -1714,6 +1721,28 @@ def sensors_lifecycle(args):
         subprocess.run([lock, 'release', 'device', owner], check=True)
 
 
+def dispatch_sensors_crash(args, prepared):
+    if not prepared.get('sensors_crash_recovery') or (OUT / 'sensors-crash').exists():
+        return
+    import sys
+    sys.path.insert(0, str(HERE / 'sensors'))
+    import crash_test
+    owner = 'sensor-crash-' + ATTEMPT
+    lock = str(REPO / 'tools/spx/spx-lock')
+    subprocess.run([lock, 'acquire', 'device', owner], check=True)
+    try:
+        result = crash_test.exercise(crash_test.Live(OUT / 'sensors-crash', ATTEMPT, RELEASE))
+        print(json.dumps(dict(complete=result['complete'], result=str(OUT / 'sensors-crash/result.json'))), flush=True)
+        if not result['complete']:
+            raise RuntimeError(result.get('error', 'sensor crash recovery failed'))
+    finally:
+        state = subprocess.check_output(['systemctl', 'show', 'spx-sensors-recovery.service', '-p', 'ActiveState', '--value'], text=True, timeout=5).strip()
+        if state in ('active', 'activating', 'deactivating'):
+            print('Keeping device lock while automatic recovery is live', flush=True)
+        else:
+            subprocess.run([lock, 'release', 'device', owner], check=True)
+
+
 def dispatch_thermal(args, prepared):
     """Consume an explicitly queued combined workload once after baseline."""
     if not prepared.get('thermal_combined') or (OUT / 'combined-thermal').exists():
@@ -1781,6 +1810,7 @@ def main():
                         help='temporarily enable the existing disabled IRQ for awake-only observation')
     parser.add_argument('--srtc-d0-notify', action='store_true',
                         help='also test the documented D0-exit/entry EC notification pair while awake')
+    parser.add_argument('--sensors-crash-recovery', action='store_true', help='queue one verified SensorsPD host failure and guarded automatic recovery test')
     parser.add_argument('--sensors', action='store_true', help='retain initial SensorsPD listener and gate desktop proxy on SSC readiness')
     parser.add_argument('--sensors-config', type=Path, default=Path('/var/tmp/spx-sensors-config'))
     parser.add_argument('--sensors-daemon', type=Path, default=Path('/var/tmp/spx-hexagonrpc/build/hexagonrpcd/hexagonrpcd'))
@@ -1825,6 +1855,8 @@ def main():
     if args.microphone_source != 'DMIC1' and (args.command not in ('audio', 'arm-audio') or
                                             args.audio_action not in ('capture', 'feedback', 'desktop-mic')):
         parser.error('--microphone-source DMIC0 requires audio/arm-audio capture, feedback or desktop-mic')
+    if args.sensors_crash_recovery and (args.command != 'prepare' or not args.sensors or not args.sensors_ssc_library or args.audio or args.cdsp or args.thermal_combined):
+        parser.error('--sensors-crash-recovery requires prepare --sensors --sensors-ssc-library and excludes audio/CDSP/thermal')
     if args.thermal_combined and args.command not in ('prepare', 'thermal'):
         parser.error('--thermal-combined requires prepare or thermal')
     if args.thermal_cpu_stress_ng and (not args.thermal_combined or args.command not in ('prepare', 'thermal')):
@@ -1867,6 +1899,7 @@ def main():
                 subprocess.run([lock, 'release', 'device', owner], check=True)
             if record.get('cdsp_capabilities') and not (OUT / 'cdsp-capabilities').exists():
                 cdsp_capabilities(args)
+            dispatch_sensors_crash(args, record)
             dispatch_thermal(args, record)
             dispatch_audio(args)
         else:

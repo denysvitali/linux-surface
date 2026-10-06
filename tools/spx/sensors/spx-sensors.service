@@ -5,7 +5,11 @@ After=local-fs.target systemd-modules-load.service
 Before=iio-sensor-proxy.service
 RequiresMountsFor=/usr/share/qcom/sc8180x/Microsoft/spx /usr/local/libexec/spx-sensors
 
+OnFailure=spx-sensors-recovery.service
+
 [Service]
+RuntimeDirectory=spx-sensors
+RuntimeDirectoryPreserve=yes
 Type=notify
 NotifyAccess=main
 ExecStart=/usr/bin/python3 -B /usr/local/libexec/spx-sensors/supervise.py

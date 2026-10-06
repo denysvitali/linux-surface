@@ -16,7 +16,7 @@ spec.loader.exec_module(module)
 
 
 class Lifecycle(unittest.TestCase):
-    def run_case(self, daemon, checker, notify=None, timeout=0.3):
+    def run_case(self, daemon, checker, notify=None, timeout=0.3, witness=None):
         children = []
         spawn = subprocess.Popen
         stopped = threading.Event()
@@ -32,7 +32,7 @@ class Lifecycle(unittest.TestCase):
         with patch.object(module.subprocess, 'Popen', side_effect=record):
             result = module.supervise([sys.executable, '-c', daemon],
                                       [sys.executable, '-c', checker],
-                                      stopped, send, timeout)
+                                      stopped, send, timeout, witness=witness)
         self.assertTrue(all(child.poll() is not None for child in children))
         return result, messages
 
@@ -42,6 +42,18 @@ class Lifecycle(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(sum(message.startswith('READY=') for message in messages), 1)
         self.assertIn('STOPPING=1', messages)
+
+    def test_intentional_stop_never_marks_crash_eligible(self):
+        events=[]
+        self.run_case('import time; time.sleep(30)', 'pass',
+                      lambda message, stop: stop.set() if message.startswith('READY=') else None,
+                      witness=lambda event, daemon: events.append(event))
+        self.assertEqual(events, ['ready','intentional-stop'])
+
+    def test_initial_exit_never_marks_crash_eligible(self):
+        events=[]
+        self.run_case('pass', 'import time; time.sleep(30)', witness=lambda event, daemon: events.append(event))
+        self.assertEqual(events, [])
 
     def test_missing_metadata_cleans_up_listener_and_blocked_checker(self):
         result, messages = self.run_case('import time; time.sleep(30)', 'import time; time.sleep(30)')
@@ -56,11 +68,14 @@ class Lifecycle(unittest.TestCase):
     def test_listener_exit_after_readiness_is_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
             marker = Path(tmp) / 'exit'
+            events=[]
             result, messages = self.run_case(
                 'import pathlib,time\np=pathlib.Path(' + repr(str(marker)) + ')\nwhile not p.exists(): time.sleep(.01)',
-                'pass', lambda message, _: marker.touch() if message.startswith('READY=') else None)
+                'pass', lambda message, _: marker.touch() if message.startswith('READY=') else None,
+                witness=lambda event, daemon: events.append(event))
         self.assertEqual(result, 1)
         self.assertTrue(any(message.startswith('READY=') for message in messages))
+        self.assertEqual(events, ['ready', 'crash'])
 
 
 if __name__ == '__main__':

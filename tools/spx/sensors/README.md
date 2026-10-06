@@ -65,3 +65,33 @@ A bounded CLI can use `LD_LIBRARY_PATH=/var/tmp/spx-libssc/build/src` directly.
 The coordinator can test a proxy-only runtime override on the current opted-in
 boot without restarting the retained initial SensorsPD listener. Do not restart
 that listener merely to change the desktop library.
+
+Opt-in automatic failure recovery (WIP): prepare with `--sensors-crash-recovery`
+and the existing `--sensors --sensors-ssc-library PATH`. This adds
+`spx_sensors_recovery=1` and queues one post-baseline test. It cannot be combined
+with audio, CDSP or thermal testing. The provider still has `Restart=no`.
+
+Only a verified retained host's unexpected exit after READY creates an eligible
+current-boot witness. Initial failure and intentional service stop do not.
+`spx-sensors-recovery.service` acquires the exclusive device lock and reserves
+one attempt per boot before stopping owned services and SLPI. It starts SLPI
+again only after fresh `channel remove users=0 pending=0` and final HLOS heap
+restoration `owners=0x8` evidence. Missing proof keeps the backend stopped;
+there are no retries, forced references, module reloads or host-only reattach.
+Fresh shared ownership `0x28`, a changed host and a changed private-library
+proxy are required. Outside the harness, the old proxy identity comes from its
+owned unit's retained `ExecMainPID`; an observer marker is optional and stale
+markers refuse a lock handoff. Recovery requires the current patched lease,
+firmware, prepared attempt, failed provider and at least 300s automatic-return
+reserve, and is bounded by a 180s helper deadline/200s unit timeout.
+
+The queued test requires actual active/unlocked UID1000 Wayland seat0 and keeps
+polkit unchanged. It observes real orientation and three finite heading updates
+before one pidfd SIGKILL of the verified SensorsPD child. It observes the actual
+OnFailure unit, then requires finite accelerometer/gyro/magnetometer streams
+with clean disable and fresh UID1000 orientation/heading delivery across client
+close/reopen. Client logs use monotonic timestamps. Old-client continuity is
+explicitly unproven. A result directory prevents automatic test retry, including
+an interrupted run. Native delivery and clean owned-client cleanup are required;
+metadata readiness alone cannot pass. Live acceptance remains unverified until
+the coordinator runs this feature on the trial kernel.
