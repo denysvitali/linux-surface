@@ -52,3 +52,17 @@ address exception is now corroborated by public SoC ID340. The opt-in
 capability query through one translated session. Establish live routing and
 the firmware's process authorization before attempting compute. See
 [the bounded preparation result](../boot-diagnostics/RESULT-20261006cdsp.md).
+
+The retained `surfaceprox_subextcdsp` package has only `CDSP/fastrpc_shell_3`
+(v66, CDSP.HT.2.1.c2-00037-SC8180X). It has no matched unsigned shell.
+Qualcomm's [public loader](https://github.com/qualcomm/fastrpc/blob/main/src/fastrpc_apps_user.c)
+selects `fastrpc_shell_unsigned_3` with unsigned-PD attributes0x8. A positive
+firmware capability does not supply that artifact. RB5 unsigned v66 shells
+target CDSP.HT.2.3; firmware compatibility is unverified.
+
+The existing HexagonRPC0.5 daemon serves `apps_std`/`apps_mem`, shares its FD
+with clients, and supports `ROOT/dsp/cdsp`. Its shell creation currently uses
+attrs0, so an unsigned-PD path would need an explicit change after prerequisites
+are met. `hexagonrpc_open` uses remotectl handle0/method0; start with dynamic
+open/close of `file://libspx_workload_skel.so?spx_workload_skel_invoke` before
+arithmetic. The legacy two-argument entry does not assume `_modver=1`.
