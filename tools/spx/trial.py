@@ -60,6 +60,66 @@ def require_source_boot():
     assert current.get('complete') and current['boot_id'] == BOOT_ID
 
 
+SENSORS_ROOT = Path('/usr/share/qcom/sc8180x/Microsoft/spx')
+SENSORS_LIBEXEC = Path('/usr/local/libexec/spx-sensors')
+
+
+def stage_sensors(args, out, here=HERE):
+    """Stage only prebuilt userspace and the already validated board config."""
+    source = args.sensors_config
+    expected = dict(soc_id='340', hw_platform='CLS', revision='3.1',
+                    platform_version='65536', platform_subtype_id='0',
+                    platform_subtype='Unknown')
+    for name, value in expected.items():
+        assert (source / 'socinfo' / name).read_text().strip() == value, name
+    assert (source / 'sensors/config/8180_cls_lsm6dso_display.json').is_file()
+    assert not any(path.is_symlink() for path in source.rglob('*')), 'config must contain regular files'
+    stage = out / 'sensors'
+    stage.mkdir()
+    shutil.copytree(source, stage / 'config')
+    for name, path in [('hexagonrpcd', args.sensors_daemon),
+                       ('libhexagonrpc.so.0.5', args.sensors_library),
+                       ('ready', args.sensors_ready)]:
+        assert path.is_file(), str(path)
+        if name != 'libhexagonrpc.so.0.5':
+            assert os.access(path, os.X_OK), str(path)
+        shutil.copy2(path, stage / name)
+    for name in ('supervise.py', 'spx-sensors.service', 'generator.py', '81-spx-sensors.rules'):
+        shutil.copy2(here / 'sensors' / name, stage / name)
+
+
+def install_sensors(stage, root=Path('/')):
+    """Install fixed feature assets; do not attach on the current boot."""
+    config = root / SENSORS_ROOT.relative_to('/')
+    private = root / SENSORS_LIBEXEC.relative_to('/')
+    config.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(stage / 'config', config, dirs_exist_ok=True)
+    for path in config.rglob('*'):
+        path.chmod(0o755 if path.is_dir() else 0o644)
+    config.chmod(0o755)
+    for relative, source, mode in (
+            ('hexagonrpcd/hexagonrpcd', 'hexagonrpcd', 0o755),
+            ('libhexagonrpc/libhexagonrpc.so.0.5', 'libhexagonrpc.so.0.5', 0o644),
+            ('ready', 'ready', 0o755), ('supervise.py', 'supervise.py', 0o644)):
+        target = private / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.parent.chmod(0o755)
+        shutil.copy2(stage / source, target)
+        target.chmod(mode)
+    target = root / 'etc/systemd/system/spx-sensors.service'
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(stage / 'spx-sensors.service', target)
+    target.chmod(0o644)
+    generator = root / 'usr/lib/systemd/system-generators/spx-sensors'
+    generator.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(stage / 'generator.py', generator)
+    generator.chmod(0o755)
+    rule = root / 'etc/udev/rules.d/81-spx-sensors.rules'
+    rule.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(stage / '81-spx-sensors.rules', rule)
+    rule.chmod(0o644)
+
+
 def prepare(args):
     os.umask(63)
     require_source_boot()
@@ -114,6 +174,9 @@ def prepare(args):
         text = text.replace('MODULES=(', 'MODULES=(surface_aggregator_usbc ', 1)
     for module in ('wcd934x', 'soundwire_qcom', 'snd_soc_wsa881x', 'snd_soc_wcd934x'):
         text = re.sub(r'\b' + module + r'\b', '', text)
+    if args.sensors:
+        text = text.replace('MODULES=(', 'MODULES=(fastrpc ', 1)
+        stage_sensors(args, OUT)
     config.write_text(text)
     run('initramfs', ['mkinitcpio', '-k', RELEASE, '-r', str(module_root), '-c', str(OUT / 'mkinitcpio.conf'), '-D', str(OUT / 'initcpio'), '-D', '/etc/initcpio', '-D', '/usr/lib/initcpio', '-g', str(OUT / 'initramfs.img'), '--nopost'])
     run('bluetooth-address', ['/usr/bin/python3', '-B', str(REPO / 'tools/spx/bluetooth-address.py'), str(args.dtb), str(OUT / 'spx.dtb'), '--address', args.address])
@@ -143,6 +206,9 @@ def prepare(args):
     if args.usbc_phy_orientation:
         assert args.usbc, '--usbc-phy-orientation requires --usbc'
         cmdline.append('surface_aggregator_usbc.phy_orientation=1')
+    cmdline = [word for word in cmdline if not word.startswith('spx_sensors=')]
+    if args.sensors:
+        cmdline.append('spx_sensors=1')
     cmdline = ' '.join(cmdline)
     entry = (OLD / 'entry.cfg').read_text().replace('20261004bf', '{ATTEMPT}'.format(ATTEMPT=ATTEMPT))
     entry = entry.replace(previous['cmdline'].replace('20261004bf', '{ATTEMPT}'.format(ATTEMPT=ATTEMPT)), cmdline)
@@ -151,7 +217,7 @@ def prepare(args):
     (OUT / 'entry.cfg').write_text(entry)
     run('grub-syntax', ['grub-script-check', str(OUT / 'entry.cfg')])
     prepared = dict(utc=datetime.now(timezone.utc).isoformat(), preboot_id=BOOT_ID, release=RELEASE, attempt=ATTEMPT, entry='spx-trial-' + ATTEMPT, cmdline=cmdline, source_commit=subprocess.check_output(['git', '-c', 'safe.directory=' + str(REPO), 'rev-parse', 'HEAD'], cwd=REPO, text=True).strip(), build_directory=str(BUILD), private_config=str(OUT / 'kernel.config'), bluetooth_address=args.address, address_is_per_installation=True, venus_trial=False, speaker_drivers_blocked=True, hardware_acceptance_closed=False, installed=False, boot_selected=False, boot_payloads=dict(vmlinuz=sha(OUT / 'vmlinuz'), initramfs=sha(OUT / 'initramfs.img'), dtb=sha(OUT / 'spx.dtb')))
-    prepared.update(audio_mode='parked' if args.audio else 'blocked',
+    prepared.update(sensors_startup=args.sensors, audio_mode='parked' if args.audio else 'blocked',
                     usbc_early_load=args.usbc,
                     usbc_phy_orientation=args.usbc_phy_orientation,
                     speaker_drivers_blocked=not args.audio,
@@ -277,7 +343,12 @@ def install(args):
     os.replace('/boot/grub/custom.cfg.trial-new', '/boot/grub/custom.cfg')
     subprocess.run(['grub-script-check', '/boot/grub/custom.cfg'], check=True, timeout=30)
     shutil.copy2(RECOVERY, OUT / 'working-recovery.json')
+    if prepared.get('sensors_startup'):
+        install_sensors(OUT / 'sensors')
+        subprocess.run(['systemd-analyze', 'verify', str(unit_dir / 'spx-sensors.service')], check=True, timeout=30)
     subprocess.run(['systemctl', 'daemon-reload'], check=True)
+    if prepared.get('sensors_startup'):
+        subprocess.run(['systemctl', 'enable', 'spx-sensors.service'], check=True)
     subprocess.run(['systemctl', 'enable', 'spx-trial-return@' + ATTEMPT + '.timer'], check=True)
     subprocess.run(['systemd-analyze', 'verify', str(unit_dir / 'spx-trial-check@.service'), str(unit_dir / 'spx-trial-check@.timer')], check=True, timeout=30)
     subprocess.run(['systemctl', 'enable', 'spx-trial-check@' + ATTEMPT + '.timer'], check=True)
@@ -1466,6 +1537,11 @@ def main():
     parser.add_argument('--dtb', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bg/spx.dtb'))
     parser.add_argument('--address')
     parser.add_argument('--wifi-profile', help='saved Wi-Fi profile ID to clone for the 2.4 GHz test')
+    parser.add_argument('--sensors', action='store_true', help='retain initial SensorsPD listener and gate desktop proxy on SSC readiness')
+    parser.add_argument('--sensors-config', type=Path, default=Path('/var/tmp/spx-sensors-config'))
+    parser.add_argument('--sensors-daemon', type=Path, default=Path('/var/tmp/spx-hexagonrpc/build/hexagonrpcd/hexagonrpcd'))
+    parser.add_argument('--sensors-library', type=Path, default=Path('/var/tmp/spx-hexagonrpc/build/libhexagonrpc/libhexagonrpc.so.0.5'))
+    parser.add_argument('--sensors-ready', type=Path, default=Path('/var/tmp/spx-sensors-ready'))
     parser.add_argument('--audio', action='store_true', help='enable codecs with both amplifiers parked; no playback')
     parser.add_argument('--usbc', action='store_true',
                         help='load experimental USC-to-DP0 forwarding in the initramfs')

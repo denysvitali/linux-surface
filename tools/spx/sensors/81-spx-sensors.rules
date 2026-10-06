@@ -1,0 +1,3 @@
+# Installed iio-sensor-proxy 3.9 tags SDSP only for light/compass.
+# Add the fitted SPX accelerometer on the proven secure sensor DSP endpoint.
+ACTION!="remove", SUBSYSTEM=="misc", KERNEL=="fastrpc-sdsp-secure", ENV{IIO_SENSOR_PROXY_TYPE}+="ssc-accel", TAG+="systemd", ENV{SYSTEMD_WANTS}+="spx-sensors.service iio-sensor-proxy.service"
