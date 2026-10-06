@@ -6,11 +6,13 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-06, CO: automatic desktop sensors and live compass pass)
+## Status (2026-10-06, CQ: sensor streams pass; backend teardown blocked)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
-rotation, calibration and resume remain open. Latest result: [CO](tools/spx/boot-diagnostics/RESULT-20261006co.md), kernel
+rotation, calibration and resume remain open. CQ repeats live streams but leaves
+one pending request at teardown; guarded restart is refused. Latest result:
+[CQ](tools/spx/boot-diagnostics/RESULT-20261006cq.md), kernel
 `7.3.0-rc2-spx-mainline-20261004bg+`. **U03a passes:** two GNOME off/on cycles
 restore3440×1440/50Hz external scanout. CC0 normal Type-C callback succeeds;
 reverse plugs, visible output and hotplug remain unverified.
@@ -53,7 +55,7 @@ awaits attribution for later observations.
 | Suspend/resume (P03) | Kernel exposes s2idle; systemd sleep/suspend targets masked | Intended wake, then controlled sleep |
 | Thermal (P05) | **CM: P05a CPU/GPU cooling limits pass**; BH 3 min load stable | Automatic temperature response; sustained combined workload |
 | Idle power (P02) | BU: CPU scales down; GPU runtime-suspends | **Battery tests deferred by user**; remaining forced-on devices |
-| Sensors (S01, S02) | BW light readout; **CO: automatic desktop motion/compass APIs pass** | Light response/auto-brightness; axes, physical rotation/calibration, repeat startup/resume |
+| Sensors (S01, S02) | BW light readout; **CO: desktop motion/compass pass; CQ teardown blocked** | Light response; axes, physical rotation/calibration, backend lifecycle/resume |
 | Cellular, GNSS (N03, N04) | Recovery: GNSS starts/stops but no fix; modem rejects online mode | Real modem provisioning, IPA datapath, SIM; actual GNSS fix |
 
 ## Next work, in order
@@ -997,6 +999,9 @@ GPU runtime suspend works.
   physical desktop rotation and resume remain open. CO adds automatic proxy
   startup and magnetometer/heading APIs. A private libssc fix removes cross-axis
   distortion from invalid placement matrices; physical mapping remains unverified.
+  CQ repeats startup/live streams, but controlled stop leaves one pending FastRPC
+  request and retained ownership lease. Restart is refused; backend lifecycle
+  remains open. [CQ result](tools/spx/boot-diagnostics/RESULT-20261006cq.md).
 
   - [x] **S02a — Live accelerometer and gyroscope streams.** CN, boot
     `32087f09-20e6-4d8f-84a0-21b64e3d5ee5`, kernel
