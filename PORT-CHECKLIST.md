@@ -252,6 +252,11 @@ reconciled. [Inventory](tools/spx/boot-diagnostics/HARDWARE-INVENTORY-20261002.m
 - [ ] **B07 — Additional accelerators.** Inventory fitted DSP/NPU/other compute
   capabilities and available interfaces; validate a real supported workload or
   document the specific missing support. A thermal-zone name is not a working NPU.
+  **October6 WIP:** a freestanding v66 FastRPC workload builds and passes host
+  arithmetic checks; it has not run on CDSP. Retained Windows code has a
+  platform-specific flat-IOVA exception. Session address encoding and firmware
+  process authorization must be established before live invocation.
+  [Preparation and contract](tools/spx/boot-diagnostics/RESULT-20261006cdsp.md).
 
 ## Internal display, GPU and video
 
