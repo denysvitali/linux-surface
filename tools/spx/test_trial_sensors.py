@@ -26,6 +26,29 @@ class SensorStaging(unittest.TestCase):
             generator.generate(root, 'spx_boot=mainline-functional spx_sensors=1')
             self.assertIn('BindsTo=spx-sensors.service', (root / 'iio-sensor-proxy.service.d/50-spx-sensors.conf').read_text())
 
+    def test_private_library_is_scoped_to_opted_in_service_jobs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            generator.generate(root, 'spx_sensors=1')
+            self.assertFalse((root / 'spx-sensors.service.d/60-spx-libssc.conf').exists())
+            generator.generate(root, 'spx_sensors=1 spx_sensors_libssc=private')
+            for unit in ('spx-sensors.service', 'iio-sensor-proxy.service'):
+                self.assertIn('LD_LIBRARY_PATH=/usr/local/libexec/spx-sensors/libssc',
+                              (root / (unit + '.d/60-spx-libssc.conf')).read_text())
+
+    def test_optional_private_library_is_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = self.inputs(root)
+            args.sensors_ssc_library = root / 'private-ssc'
+            args.sensors_ssc_library.write_bytes(b'private libssc')
+            stage = root / 'stage'
+            stage.mkdir()
+            trial.stage_sensors(args, stage)
+            trial.install_sensors(stage / 'sensors', root / 'installed')
+            self.assertEqual((root / 'installed' / trial.SENSORS_LIBEXEC.relative_to('/') /
+                              'libssc/libssc.so.2').read_bytes(), b'private libssc')
+
     def inputs(self, root):
         config = root / 'input'
         (config / 'socinfo').mkdir(parents=True)
@@ -43,7 +66,7 @@ class SensorStaging(unittest.TestCase):
             path.chmod(0o755)
             binaries.append(path)
         return SimpleNamespace(sensors_config=config, sensors_daemon=binaries[0],
-                               sensors_library=binaries[1], sensors_ready=binaries[2])
+                               sensors_library=binaries[1], sensors_ready=binaries[2], sensors_ssc_library=None)
 
     def test_private_runpath_layout_and_durable_config(self):
         with tempfile.TemporaryDirectory() as directory:

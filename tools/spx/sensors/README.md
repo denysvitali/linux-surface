@@ -35,3 +35,33 @@ properties after boot. Keep polkit's desktop claim policy intact.
 
 Offline tests: `python3 -B tools/spx/sensors/test_supervise.py` and
 `python3 -B tools/spx/test_trial_sensors.py`.
+
+## Private libssc matrix compatibility fix
+
+`libssc-0.4.4-matrix.patch` replaces the integer-sum fallback test with complete,
+finite, orthonormal 3x3 validation. Invalid matrices are completely cleared before
+identity fallback. Valid signed and fractional rotations are preserved byte for
+byte. Both handednesses are accepted; no board axes or placement layout change
+is inferred. Identity fallback is a compatibility policy, not verified axes.
+
+The helper header is shared by the source patch and standalone offline tests:
+
+```sh
+cc -std=c99 -Wall -Wextra -Werror tools/spx/sensors/test_matrix.c -lm -o /var/tmp/spx-test-matrix
+/var/tmp/spx-test-matrix
+cp tools/spx/sensors/spx-matrix.h /var/tmp/spx-libssc/src/spx-matrix.h
+git -C /var/tmp/spx-libssc apply "$PWD/tools/spx/sensors/libssc-0.4.4-matrix.patch"
+git -C /var/tmp/spx-libssc apply "$PWD/tools/spx/sensors/libssc-0.4.4-build.patch"
+meson setup /var/tmp/spx-libssc/build /var/tmp/spx-libssc
+ninja -C /var/tmp/spx-libssc/build src/libssc.so.2 src/ssccli
+```
+
+The separate build patch guards optional GIR generation when g-ir-scanner is
+absent. The installed system library is untouched. Stage the private library by
+adding `--sensors-ssc-library /var/tmp/spx-libssc/build/src/libssc.so.2` to prepare.
+The generator exposes it only to the SensorsPD readiness helper and desktop
+proxy when both `spx_sensors=1` and `spx_sensors_libssc=private` are present.
+A bounded CLI can use `LD_LIBRARY_PATH=/var/tmp/spx-libssc/build/src` directly.
+The coordinator can test a proxy-only runtime override on the current opted-in
+boot without restarting the retained initial SensorsPD listener. Do not restart
+that listener merely to change the desktop library.

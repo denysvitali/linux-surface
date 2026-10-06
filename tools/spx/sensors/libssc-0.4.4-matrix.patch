@@ -1,0 +1,48 @@
+--- a/src/libssc-sensor.c
++++ b/src/libssc-sensor.c
+@@ -21,6 +21,7 @@
+ #include "ssc-common.pb-c.h"
+ #include "ssc-sensor-suid.pb-c.h"
+ #include "libssc-sensor.h"
++#include "spx-matrix.h"
+ 
+ #define MAX_RETRIES 100
+ 
+@@ -397,27 +398,21 @@
+ 					if (attr_msg->attr[i]->value_array->n_v == 1 && attr_msg->attr[i]->value_array->v[0]->has_i)
+ 						priv->stream_type = attr_msg->attr[i]->value_array->v[0]->i;
+ 					break;
+-				case SSC_ATTRIBUTE_MOUNT_MATRIX:
++				case SSC_ATTRIBUTE_MOUNT_MATRIX: {
++					gboolean complete = attr_msg->attr[i]->value_array->n_v >= 9;
+ 					mount_matrix_attribute_populated = TRUE;
+-					/* 3x3 mount matrix has max 9 values but a 3x4 matrix is provided, use the first 9 values */
++					/* Preserve the existing first-nine-value layout policy. */
++					memset(priv->mount_matrix, 0, sizeof(priv->mount_matrix));
+ 					for (gsize j = 0; j < MIN(attr_msg->attr[i]->value_array->n_v, 9); j++) {
+-						if (attr_msg->attr[i]->value_array->v[j]->has_f) {
++						if (attr_msg->attr[i]->value_array->v[j]->has_f)
+ 							priv->mount_matrix[j/3][j%3] = attr_msg->attr[i]->value_array->v[j]->f;
+-						}
++						else
++							complete = FALSE;
+ 					}
+-
+-					/* Fallback to identity matrix in case matrix is all 0 */
+-					gint sum = 0;
+-					for (gsize k = 0; k < 9; k++)
+-						sum += priv->mount_matrix[k/3][k%3];
+-
+-					if (sum == 0) {
+-						priv->mount_matrix[0][0] = 1.0;
+-						priv->mount_matrix[1][1] = 1.0;
+-						priv->mount_matrix[2][2] = 1.0;
+-						g_warning ("Mount matrix provided by firmware is all 0, falling back to identity matrix!");
+-					}
++					if (!spx_matrix_sanitize(priv->mount_matrix, complete))
++						g_warning ("Invalid mount matrix; using identity compatibility fallback (physical axes unverified)");
+ 					break;
++				}
+ 		       }
+ 		}
+ 
