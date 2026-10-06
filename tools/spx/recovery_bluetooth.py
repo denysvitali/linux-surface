@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 # SPDX-License-Identifier: GPL-2.0-only
-"""Repair only an unconfigured fitted recovery controller; preserve power state."""
+"""Repair only an unconfigured fitted recovery controller; restore rfkill policy."""
+from contextlib import contextmanager
 from pathlib import Path
 import re
 import subprocess
@@ -8,6 +9,7 @@ import time
 
 PRIVATE = Path('/usr/local/libexec/spx-bluetooth')
 CONFIG = Path('/etc/spx-bluetooth/address')
+RFKILL = Path('/sys/class/rfkill')
 
 
 def missing_address(info):
@@ -37,6 +39,31 @@ def controller_info():
         time.sleep(.25)
 
 
+@contextmanager
+def blocked_controller():
+    matches = [entry for entry in RFKILL.glob('rfkill*')
+               if (entry / 'name').read_text().strip() == 'hci0'
+               and (entry / 'type').read_text().strip() == 'bluetooth']
+    if len(matches) != 1:
+        raise RuntimeError('exactly one fitted Bluetooth rfkill device required')
+    soft = matches[0] / 'soft'
+    original = soft.read_text().strip()
+    if original not in ('0', '1'):
+        raise RuntimeError('invalid rfkill soft state')
+    try:
+        # Management cannot power off an unconfigured index. Target only hci0.
+        if original == '0':
+            soft.write_text('1\n')
+        if soft.read_text().strip() != '1':
+            raise RuntimeError('fitted controller did not accept rfkill block')
+        yield
+    finally:
+        if original == '0':
+            soft.write_text('0\n')
+        if soft.read_text().strip() != original:
+            raise RuntimeError('original fitted-controller rfkill state not restored')
+
+
 def main():
     if 'spx_boot=known-good' not in Path('/proc/cmdline').read_text().split():
         print('Not a recovery boot; controller unchanged')
@@ -55,16 +82,17 @@ def main():
         # Recheck after taking exclusive ownership; never rewrite a configured radio.
         if not missing_address(subprocess.check_output(['btmgmt', 'extinfo'], text=True, timeout=5)):
             return
-        subprocess.run(['btmgmt', '--index', '0', 'public-addr', address], check=True, timeout=5)
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            result = subprocess.run(['btmgmt', '--index', '0', 'info'],
-                                    capture_output=True, text=True, timeout=3)
-            if result.returncode == 0 and re.search(r'\baddr ' + re.escape(address) + r'\b', result.stdout):
-                print('Recovery public address configured; power preference preserved')
-                return
-            time.sleep(.1)
-        raise RuntimeError('controller configuration completion not observed')
+        with blocked_controller():
+            subprocess.run(['btmgmt', '--index', '0', 'public-addr', address], check=True, timeout=5)
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                result = subprocess.run(['btmgmt', '--index', '0', 'info'],
+                                        capture_output=True, text=True, timeout=3)
+                if result.returncode == 0 and re.search(r'\baddr ' + re.escape(address) + r'\b', result.stdout):
+                    print('Recovery public address configured; rfkill preference restored on exit')
+                    return
+                time.sleep(.1)
+            raise RuntimeError('controller configuration completion not observed')
     finally:
         subprocess.run([lock, 'release', 'device', owner], check=True, timeout=5)
 

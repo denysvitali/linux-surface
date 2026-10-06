@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: GPL-2.0-only
 """Guard against rewriting a configured radio or changing its power preference."""
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 import recovery_bluetooth as repair
 
@@ -15,6 +17,26 @@ hci0: Unconfigured controller
 
 
 class Guards(unittest.TestCase):
+    def test_restores_original_rfkill_even_when_repair_fails(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            for name, kind, label, state in [('rfkill0', 'wlan', 'phy0', '0'),
+                                             ('rfkill1', 'bluetooth', 'hci0', '0')]:
+                entry = root / name
+                entry.mkdir()
+                for file, value in [('type', kind), ('name', label), ('soft', state)]:
+                    (entry / file).write_text(value)
+            with patch.object(repair, 'RFKILL', root):
+                for original in ('0', '1'):
+                    soft = root / 'rfkill1' / 'soft'
+                    soft.write_text(original)
+                    with self.assertRaisesRegex(RuntimeError, 'repair failed'):
+                        with repair.blocked_controller():
+                            self.assertEqual(soft.read_text().strip(), '1')
+                            self.assertEqual((root / 'rfkill0' / 'soft').read_text(), '0')
+                            raise RuntimeError('repair failed')
+                    self.assertEqual(soft.read_text().strip(), original)
+
     def test_waits_for_management_enumeration(self):
         with patch.object(repair.subprocess, 'check_output', side_effect=[
                 'Extended index list with 0 items', MISSING]), \
