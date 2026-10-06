@@ -1310,7 +1310,8 @@ def return_to_default(args):
     for label, args in [('kernel.log', ['journalctl', '-b', '-k', '--no-pager', '-o', 'short-monotonic']), ('journal.log', ['journalctl', '-b', '--no-pager', '-o', 'short-monotonic'])]:
         with (out / label).open('wb') as stream:
             subprocess.run(args, stdout=stream, stderr=subprocess.STDOUT, check=True, timeout=30)
-    (out / 'return.json').write_text(json.dumps(dict(utc=datetime.now(timezone.utc).isoformat(), boot_id=boot, release=os.uname().release, uptime=Path('/proc/uptime').read_text().strip(), known_good_payloads_intact=True, persistent_default='spx-known-good', next_entry_empty=True), indent=2) + '\n')
+    # This record precedes shutdown; only the next boot can establish recovery.
+    (out / 'return.json').write_text(json.dumps(dict(utc=datetime.now(timezone.utc).isoformat(), boot_id=boot, release=os.uname().release, uptime=Path('/proc/uptime').read_text().strip(), phase='reboot-request', shutdown_completion_verified=False, known_good_payloads_intact=True, persistent_default='spx-known-good', next_entry_empty=True), indent=2) + '\n')
     assert Path('/proc/sys/kernel/random/boot_id').read_text().strip() == boot
     env = dict((line.split('=', 1) for line in subprocess.check_output(['grub-editenv', '/boot/grub/grubenv', 'list'], text=True).splitlines()))
     assert env['saved_entry'] == 'spx-known-good' and (not env.get('next_entry'))
