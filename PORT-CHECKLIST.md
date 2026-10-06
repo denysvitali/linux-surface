@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-06, CT: automatic TPM and measured boot pass)
+## Status (2026-10-06, CY: verified native FP/GPU load pass)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
@@ -27,7 +27,7 @@ CC closes A02b: both fitted microphone inputs record known stimuli; quality,
 simultaneous mapping and lifecycle remain open. CB playback reopen still fails.
 **CM closes P05a:** both CPU clusters and GPU enforce/release cooling limits.
 **CX closes P05b:** five-minute simultaneous CPU/FD680 load and cleanup pass,
-peak69.8C, no new kernel fault. Temperature-triggered responses remain open.
+peak69.8C. CY extends this to verified native FP, peak66.3C; automatic responses remain open.
 Default microphone clients remain unverified after helper failure and level abort.
 B05a early RTC and N01a IPv6 VPN retain prior passes. **N01b is accepted by user
 assumption from working5GHz; no2.4GHz functional pass was measured.** Light
@@ -58,7 +58,7 @@ awaits attribution for later observations.
 | USB-C PD, DisplayPort, dock (U02–U04) | **CG: external off/on scanout restoration passes; normal orientation API works** | Visible output, physical replug, roles/PD, ports/orientations/resume |
 | Battery and charging (P01) | **CF: P01a actual charging passes, +1.26Wh/120s** | Charge-policy explanation, discharge/transitions and charger coverage |
 | Suspend/resume (P03) | Kernel exposes s2idle; systemd sleep/suspend targets masked | Intended wake, then controlled sleep |
-| Thermal (P05) | **CM cooling limits; CX five-minute combined load/cleanup pass** | Real automatic response, longer envelope and enclosure behavior |
+| Thermal (P05) | **CM cooling limits; CX/CY combined load/cleanup, CY native FP verification pass** | Real automatic response, longer envelope and enclosure behavior |
 | Idle power (P02) | BU: CPU scales down; GPU runtime-suspends | **Battery tests deferred by user**; remaining forced-on devices |
 | Sensors (S01, S02) | BW light readout; **CO desktop motion/compass; CR controlled restart pass** | Light response; axes, physical rotation/calibration, crash recovery/resume |
 | Cellular, GNSS (N03, N04) | Recovery: GNSS starts/stops but no fix; modem rejects online mode | Real modem provisioning, IPA datapath, SIM; actual GNSS fix |
@@ -1146,6 +1146,11 @@ GPU runtime suspend works.
     no new kernel faults appear. Two scenes finish; the third is bounded by
     planned termination. Automatic cooling and longer/enclosure coverage remain
     open. [CX result](tools/spx/boot-diagnostics/RESULT-20261006cx.md).
+    CY boot `8f8b6376-9a08-4c5d-937a-ce1fb0814390`, same kernel: eight native FP
+    children verify arithmetic and exit0; three GPU scenes finish during300.992s,
+    peak66.3C, all groups stop and limits recover without new kernel faults.
+    A userspace launch-directory failure is retained before the corrected
+    same-boot run. [CY result](tools/spx/boot-diagnostics/RESULT-20261006cy.md).
 
 ## Diagnostic integrity and final acceptance
 
