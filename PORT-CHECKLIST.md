@@ -8,7 +8,7 @@ history that used to live here is in
 
 ## Status (2026-10-06, CG: external display power cycles pass)
 
-**CJ:** SLPI starts and SSC replies; registry unavailable, no motion samples yet.
+**CK:** SensorsPD attach crashes SLPI; shared DMA pool missing. No motion samples.
 Latest result: [CG](tools/spx/boot-diagnostics/RESULT-20261006cg.md), kernel
 `7.3.0-rc2-spx-mainline-20261004bg+`. **U03a passes:** two GNOME off/on cycles
 restore3440×1440/50Hz external scanout. CC0 normal Type-C callback succeeds;
@@ -50,7 +50,7 @@ awaits attribution for later observations.
 | Suspend/resume (P03) | Kernel exposes s2idle; systemd sleep/suspend targets masked | Intended wake, then controlled sleep |
 | Thermal (P05) | BH: 3 min CPU/GPU load stable, peak 60.1°C | Cooling response |
 | Idle power (P02) | BU: CPU scales down; GPU runtime-suspends | **Battery tests deferred by user**; remaining forced-on devices |
-| Sensors (S01, S02) | BW: TCS3430 runtime-PM/readout passes; **CJ: SLPI running, SSC replies, registry unavailable** | Physical light response; auto-brightness; sensor registry, streams and FastRPC |
+| Sensors (S01, S02) | BW: TCS3430 runtime-PM/readout passes; **CJ: SLPI/SSC up; CK SensorsPD attach crashes** | Physical light response; auto-brightness; shared DMA pool, sensor registry and streams |
 | Cellular, GNSS (N03, N04) | Recovery: GNSS starts/stops but no fix; modem rejects online mode | Real modem provisioning, IPA datapath, SIM; actual GNSS fix |
 
 ## Next work, in order
@@ -983,7 +983,8 @@ GPU runtime suspend works.
   SSC400 replies over GLINK/QRTR. Both motion clients wait for unavailable
   registry SUIDs; neither produces samples. Next is SensorsPD attach and saved
   SPX configuration, with a bounded physical-DMA session trial; no borrowed SIDs.
-  [CJ result](tools/spx/boot-diagnostics/RESULT-20261006cj.md).
+  CK's bare SID0 attach crashes SLPI; a separately owned shared DMA pool is still
+  missing. [CK result](tools/spx/boot-diagnostics/RESULT-20261006ck.md).
 - [ ] **P01 — Battery and charging.** Plausible voltage/current/capacity/status,
   observed discharge and charging, AC transitions, charge limits where supported
   and low-battery behavior. Test applicable USB-C and Surface Connect chargers;
