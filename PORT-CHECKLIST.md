@@ -37,7 +37,7 @@ awaits attribution for later observations.
 
 | Area | State | What is missing |
 |---|---|---|
-| Boot to desktop, NVMe/LUKS root | Earlier desktop boots work; CW stops logging at31s | CV shutdown ramdisk stalls; recovery/repeat reliability (B01) |
+| Boot to desktop, NVMe/LUKS root | CX actual return to recovery observed; CW startup failure unexplained | Cold/warm repeat reliability and late cleanup (B01) |
 | CPU and memory (B03) | **Passed on AP; BU automatic frequency scaling active** | Recheck on final candidate |
 | Storage (B02) | Passed on AP | Post-resume I/O |
 | GPU FD680 (D02) | **Passed on AW**, 30 min rendering | A person looking at the screen |
@@ -67,11 +67,10 @@ awaits attribution for later observations.
 
 User cannot provide physical assistance (October6); continue autonomous work.
 Physical observations remain unverified. CDSP is parked after three changed
-boots without a usable accelerator result. CW stops before its corrected query;
-CV's return request stalls in shutdown ramdisk generation. Prepare that ramdisk
-during runtime, then disable experimental CDSP for the independent combined
-CPU/GPU thermal test on AC now passes its five-minute scope. Verify actual
-shutdown recovery; full thermal/accelerator acceptance remains open.
+boots without a usable accelerator result. CW stops before its recorded query;
+CV's return stalls in shutdown ramdisk generation. CX prepares that ramdisk
+during runtime, passes five-minute combined CPU/GPU load and reaches actual
+known-good recovery. Full thermal/accelerator acceptance remains open.
 See [CDSP prerequisites](tools/spx/boot-diagnostics/RESULT-20261006cdsp.md).
 USB-C switching and external scanout restoration already have scoped passes;
 physical replug, ports/orientations and visible output still need fixtures.
