@@ -6,11 +6,11 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-06, CN: live accelerometer/gyroscope streams pass)
+## Status (2026-10-06, CO: automatic desktop sensors and live compass pass)
 
-**CN closes S02a:** the shared DMA pool enables live accelerometer/gyro samples.
-Desktop proxy discovery/orientation now responds after a scoped udev fix;
-physical rotation, mapping and automatic startup remain open. Latest result: [CN](tools/spx/boot-diagnostics/RESULT-20261006cn.md), kernel
+**CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
+automatic desktop backend and compass heading API work. Physical mapping,
+rotation, calibration and resume remain open. Latest result: [CO](tools/spx/boot-diagnostics/RESULT-20261006co.md), kernel
 `7.3.0-rc2-spx-mainline-20261004bg+`. **U03a passes:** two GNOME off/on cycles
 restore3440×1440/50Hz external scanout. CC0 normal Type-C callback succeeds;
 reverse plugs, visible output and hotplug remain unverified.
@@ -53,7 +53,7 @@ awaits attribution for later observations.
 | Suspend/resume (P03) | Kernel exposes s2idle; systemd sleep/suspend targets masked | Intended wake, then controlled sleep |
 | Thermal (P05) | **CM: P05a CPU/GPU cooling limits pass**; BH 3 min load stable | Automatic temperature response; sustained combined workload |
 | Idle power (P02) | BU: CPU scales down; GPU runtime-suspends | **Battery tests deferred by user**; remaining forced-on devices |
-| Sensors (S01, S02) | BW light readout passes; **CN: S02a live accelerometer/gyro streams pass** | Light response/auto-brightness; axes, desktop rotation, persistence/resume |
+| Sensors (S01, S02) | BW light readout; **CO: automatic desktop motion/compass APIs pass** | Light response/auto-brightness; axes, physical rotation/calibration, repeat startup/resume |
 | Cellular, GNSS (N03, N04) | Recovery: GNSS starts/stops but no fix; modem rejects online mode | Real modem provisioning, IPA datapath, SIM; actual GNSS fix |
 
 ## Next work, in order
@@ -994,7 +994,9 @@ GPU runtime suspend works.
   CJ starts SLPI/SSC but lacks registry; CK's bare SID0 attach crashes SLPI.
   After parking and CM's cooling gain, CN's separate shared DMA pool lets
   SensorsPD attach and real motion streams run. Axis mapping, real rotation,
-  desktop integration and resume remain open.
+  physical desktop rotation and resume remain open. CO adds automatic proxy
+  startup and magnetometer/heading APIs; its libssc placement parser can distort
+  samples, so axis mapping is still unverified.
 
   - [x] **S02a — Live accelerometer and gyroscope streams.** CN, boot
     `32087f09-20e6-4d8f-84a0-21b64e3d5ee5`, kernel
@@ -1003,6 +1005,18 @@ GPU runtime suspend works.
     120/119 finite XYZ samples, then disable successfully and exit0. SLPI remains
     running and the test daemon stops. Stationary sample streams do not prove
     mapping, rotation or full S02. [CN result](tools/spx/boot-diagnostics/RESULT-20261006cn.md).
+  - [x] **S02b — Automatic desktop motion backend.** CO, boot
+    `5c15d575-a56c-4f82-9afb-be6bb1da64de`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: initial SensorsPD host retained;
+    metadata readiness precedes proxy startup. Accelerometer/orientation exposed;
+    two bounded native root clients query values across close/reopen without
+    host restart. Physical auto-rotation and ordinary seated GNOME consumption
+    remain unverified. [CO result](tools/spx/boot-diagnostics/RESULT-20261006co.md).
+  - [x] **S02c — Live magnetometer and desktop heading API.** Same CO boot/kernel:
+    AK0991x identifies,29 finite XYZ samples in3s, successful disable/exit0.
+    Native compass client receives changing headings through the desktop proxy.
+    Calibration and actual bearing accuracy remain open.
+    [CO result](tools/spx/boot-diagnostics/RESULT-20261006co.md).
 - [ ] **P01 — Battery and charging.** Plausible voltage/current/capacity/status,
   observed discharge and charging, AC transitions, charge limits where supported
   and low-battery behavior. Test applicable USB-C and Surface Connect chargers;
