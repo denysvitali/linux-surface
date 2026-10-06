@@ -2733,16 +2733,10 @@ static int fastrpc_rpmsg_probe(struct rpmsg_device *rpdev)
 	err = dma_set_mask_and_coherent(rdev, DMA_BIT_MASK(32));
 	if (err)
 		goto err_put_data;
-	err = of_reserved_mem_device_init_by_idx(rdev, rdev->of_node, 0);
-	data->reserved_mem_attached = !err;
-	if (err)
-		dev_info(rdev, "no reserved DMA memory for FASTRPC\n");
 	if (domain_id == SDSP_DOMAIN_ID) {
 		struct resource res;
 
 		if (!of_reserved_mem_region_to_resource(rdev->of_node, 0, &res)) {
-			if (!data->reserved_mem_attached)
-				goto err_put_data;
 			if (!vmcount) {
 				err = -EINVAL;
 				goto err_put_data;
@@ -2753,6 +2747,16 @@ static int fastrpc_rpmsg_probe(struct rpmsg_device *rpdev)
 		}
 	}
 
+	/* Fence before attachment: a same-device retry must not release an old
+	 * channel's CMA association while that channel still owns DMA buffers.
+	 */
+	err = of_reserved_mem_device_init_by_idx(rdev, rdev->of_node, 0);
+	data->reserved_mem_attached = !err;
+	if (err) {
+		dev_info(rdev, "no reserved DMA memory for FASTRPC\n");
+		if (data->sdsp_heap_lease)
+			goto err_put_data;
+	}
 	dev_set_drvdata(rdev, data);
 	/* Context-bank state must also exist before users can open the node. */
 	err = of_platform_populate(rdev->of_node, NULL, NULL, rdev);

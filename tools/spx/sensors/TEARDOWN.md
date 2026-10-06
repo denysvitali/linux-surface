@@ -28,7 +28,9 @@ Ownership states:
   deliberately leaks bounded state instead of erasing ownership evidence.
 
 Probe lifetime initialization and context-bank creation precede misc publication.
-SCM availability/allocation checks precede reserved-memory attachment. All later
+SCM availability/allocation checks and the SDSP ownership fence precede
+reserved-memory attachment. A same-device retry cannot detach an old channel's
+CMA association on its failure path. All later
 probe failures run the same channel cleanup, including partial population and
 partial misc registration.
 
