@@ -25,3 +25,13 @@ trip values. Require each cluster's real75°C crossing, autonomous cooling-state
 limit change and subsequent release below70°C. A run that never reaches a
 threshold is inconclusive; keep the policy and acceptance status honest instead
 of lowering its threshold to manufacture a pass. Battery tests remain deferred.
+
+The reusable trial tool stages this policy with `--cpu-passive-cooling`, adding
+only the two cluster passive trips/maps to the retained diagnostic DTB. It keeps
+the board's already validated reservations and peripheral properties. After the
+new boot and ordinary baseline complete, run `sudo python3 -B tools/spx/trial.py
+thermal ATTEMPT`. The helper requires AC, the expected passive bindings and a
+naturally unthrottled baseline before spawning workers. JSON and kernel/journal
+captures are saved under the attempt's `cpu-thermal/` directory. The old CR DTB
+correctly refuses before any worker starts. Offline staging/proof/worker cleanup
+tests pass; CS is installed but the physical response is not yet measured.
