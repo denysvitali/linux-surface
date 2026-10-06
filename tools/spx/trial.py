@@ -295,6 +295,11 @@ def install(args):
     helper = Path('/usr/local/lib/spx-boot-diagnostics/trial.py')
     shutil.copy2(__file__, helper)
     helper.chmod(493)
+    if prepared.get('sensors_startup'):
+        sensor_helpers = helper.parent / 'sensors'
+        sensor_helpers.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(HERE / 'sensors/lifecycle.py', sensor_helpers / 'lifecycle.py')
+        (sensor_helpers / 'lifecycle.py').chmod(0o644)
     if prepared.get('audio_mode') == 'parked':
         from audio import UNITS as audio_units
 
@@ -1538,9 +1543,29 @@ def audio_check(args):
             subprocess.run([lock, 'release', 'device', owner], check=True)
 
 
+def sensors_lifecycle(args):
+    """One exclusive lifecycle run; the helper gates before any device action."""
+    import importlib.util
+
+    assert os.geteuid() == 0
+    spec = importlib.util.spec_from_file_location('spx_sensor_lifecycle', HERE / 'sensors/lifecycle.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    lock = str(REPO / 'tools/spx/spx-lock')
+    owner = 'sensor-lifecycle-' + ATTEMPT
+    subprocess.run([lock, 'acquire', 'device', owner], check=True)
+    try:
+        result = module.exercise(module.Live(OUT / 'sensors-lifecycle', ATTEMPT, RELEASE))
+        print(json.dumps(dict(complete=result['complete'], result=str(OUT / 'sensors-lifecycle/result.json'))), flush=True)
+        if not result['complete']:
+            raise RuntimeError(result.get('error', 'sensor lifecycle capture failed'))
+    finally:
+        subprocess.run([lock, 'release', 'device', owner], check=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend', 'audio', 'arm-audio', 'enable-desktop-audio', 'usbc-reload', 'wifi-band', 'display-power', 'srtc-timer', 'power-measure'))
+    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend', 'audio', 'arm-audio', 'enable-desktop-audio', 'usbc-reload', 'wifi-band', 'display-power', 'srtc-timer', 'power-measure', 'sensors-lifecycle'))
     parser.add_argument('attempt')
     parser.add_argument('--build', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bg/work-build'))
     parser.add_argument('--parent', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bf'))
@@ -1616,7 +1641,7 @@ def main():
             {'install': install, 'boot': boot, 'return': return_to_default,
              'extend': extend_window, 'audio': audio_check, 'arm-audio': arm_audio,
              'usbc-reload': usbc_reload, 'wifi-band': wifi_band, 'display-power': display_power,
-             'enable-desktop-audio': enable_desktop_audio, 'power-measure': power_measure}[args.command](args)
+             'enable-desktop-audio': enable_desktop_audio, 'power-measure': power_measure, 'sensors-lifecycle': sensors_lifecycle}[args.command](args)
 
 
 if __name__ == '__main__':

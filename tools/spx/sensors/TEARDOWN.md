@@ -58,3 +58,22 @@ make -C /home/dvitali/Documents/git/linux-surface-next \
 Do not unload the old live module to install this fix. Stage only the rebuilt
 module into the fixed trial release, preserve the separate known-good release,
 and boot the new code before exercising removal.
+
+The reusable coordinator command is:
+
+```sh
+sudo python3 -B tools/spx/trial.py sensors-lifecycle ATTEMPT
+```
+
+It acquires the device lock and refuses an old module without the live ownership
+lease/new sharing log, mismatched attempt/release, external clients, or a missing
+exact SPX SLPI node. It never unloads FastRPC or stops other DSPs. Fresh restoration
+proof gates the sole restart; missing proof leaves the backend stopped and saves
+partial evidence. Provider readiness is bounded by its 95-second unit timeout;
+CLI/native observations are bounded. Root-native monitor-sensor preserves polkit
+and does not establish seated GNOME behavior. Results and service/kernel logs
+are under the attempt's `sensors-lifecycle/` directory. A completed result requires
+new host PID/sharing evidence, fresh finite samples with clean disables, native
+orientation and a finite compass observation.
+
+Offline effect-order tests: `python3 -B tools/spx/sensors/test_lifecycle.py`.
