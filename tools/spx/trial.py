@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import pwd
 import re
+import select
 import shutil
 import signal
 import socket
@@ -945,7 +946,7 @@ def srtc_timer(args):
 
     base = (Path('/var/lib/spx-boot-diagnostics/attempts') if
             os.uname().release == '6.18.3-1-surface+' else OUT.parent)
-    output = base / ATTEMPT / 'srtc-timer'
+    output = base / ATTEMPT / ('srtc-expiry' if args.srtc_observe_expiry else 'srtc-timer')
     output.mkdir(parents=True, mode=0o700)
     target = output / 'result.json'
     owner, lock = 'srtc-' + ATTEMPT, str(REPO / 'tools/spx/spx-lock')
@@ -999,6 +1000,13 @@ def srtc_timer(args):
 
         with device.open('rb', buffering=0) as stream:
             fd = stream.fileno()
+            if args.srtc_observe_expiry:
+                # Software-only observer: no firmware event-enable or wake change.
+                notifier = struct.pack('=iB', 0, 1)
+                fcntl.ioctl(fd, (1 << 30) | (5 << 16) | (0xA5 << 8) | 2, notifier)
+                result['observed_events'] = []
+                result['wake_irq_before'] = [line.strip() for line in
+                    Path('/proc/interrupts').read_text().splitlines() if 'ssam_wakeup' in line]
             values = {timer_id: timer_read(fd, timer_id) for timer_id in (0, 1)}
             result['before'] = {str(k): v for k, v in values.items()}
             save()
@@ -1006,6 +1014,7 @@ def srtc_timer(args):
                 'selected timer is already active; left both firmware timers untouched')
 
             armed = True  # Set before the request so cleanup also covers an uncertain reply.
+            started = time.monotonic()
             timer_set(fd, selected, 30)
             first = timer_read(fd, selected)
             result['armed_remaining_seconds'] = first
@@ -1016,6 +1025,25 @@ def srtc_timer(args):
             result['elapsed_seconds'] = 4
             assert 0 <= second < first, 'firmware countdown did not decrease'
             result['countdown_passed'] = True
+            if args.srtc_observe_expiry:
+                while time.monotonic() < started + 32:
+                    ready, _, _ = select.select([fd], [], [], min(1, started + 32 - time.monotonic()))
+                    if ready:
+                        data = os.read(fd, 4096)
+                        offset = 0
+                        while offset < len(data):
+                            assert len(data) - offset >= 6, 'short SSAM event header'
+                            tc, tid, cid, iid, length = struct.unpack_from('=BBBBH', data, offset)
+                            offset += 6
+                            assert offset + length <= len(data), 'short SSAM event payload'
+                            result['observed_events'].append(dict(category=tc, target=tid,
+                                command=cid, instance=iid, payload=data[offset:offset+length].hex(),
+                                elapsed_seconds=time.monotonic()-started))
+                            offset += length
+                result['expiry_remaining_seconds'] = timer_read(fd, selected)
+                result['expiry_elapsed_seconds'] = time.monotonic() - started
+                result['wake_irq_after'] = [line.strip() for line in
+                    Path('/proc/interrupts').read_text().splitlines() if 'ssam_wakeup' in line]
     except Exception as error:
         result['error'] = repr(error)
     finally:
@@ -1612,6 +1640,8 @@ def main():
     parser.add_argument('--dtb', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bg/spx.dtb'))
     parser.add_argument('--address')
     parser.add_argument('--wifi-profile', help='saved Wi-Fi profile ID to clone for the 2.4 GHz test')
+    parser.add_argument('--srtc-observe-expiry', action='store_true',
+                        help='observe one 30s AC/DC timer expiry while awake; no suspend or wake-policy change')
     parser.add_argument('--sensors', action='store_true', help='retain initial SensorsPD listener and gate desktop proxy on SSC readiness')
     parser.add_argument('--sensors-config', type=Path, default=Path('/var/tmp/spx-sensors-config'))
     parser.add_argument('--sensors-daemon', type=Path, default=Path('/var/tmp/spx-hexagonrpc/build/hexagonrpcd/hexagonrpcd'))
