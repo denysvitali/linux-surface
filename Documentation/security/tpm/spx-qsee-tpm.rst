@@ -34,6 +34,6 @@ manufacturer QCOM, active PCR banks and a nonzero SHA256 PCR0. Two GetRandom
 requests each return32 distinct nonzero bytes. Removing the owned auxiliary
 client releases the device and resource; reattachment repeats the pass with
 unchanged PCR0/update counter. No ownership or persistent object is changed.
-Ordinary boot startup, signing/Secure Boot, measured-boot integration and
+Signing/Secure Boot and
 suspend/resume remain unverified. See RESULT-20261006cs-tpm.md and the bounded
 public command client in tools/spx/tpm/check.py.
