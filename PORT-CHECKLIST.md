@@ -212,6 +212,12 @@ reconciled. [Inventory](tools/spx/boot-diagnostics/HARDWARE-INVENTORY-20261002.m
     fitted PMIC `rtc1` delivers RTC_AF/RTC_IRQF, IRQ count0→1; disabled cleanup
     passes. Surface `rtc0` still supplies system time. Suspend wake remains
     untested. [DC result](tools/spx/boot-diagnostics/RESULT-20261006dc.md).
+  - [x] **B05c — Short-sleep RTC readback without network time updates.** DD,
+    boot `38f7cb85-f4cf-48a0-af50-42bf1af6b183`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: with chronyd stopped, Surface RTC
+    advances18s across17.15s elapsed/14.55s actual s2idle, within whole-second
+    readback tolerance. Chronyd restored. Cold/long retention remains open.
+    [DD result](tools/spx/boot-diagnostics/RESULT-20261006dd.md).
 
   **Observed AV startup, 2026-10-03:** SSAM surface_rtc0 is about791s ahead of
   NTP-synchronized wall time at495.63s; chrony stepped the system clock by
@@ -271,6 +277,12 @@ reconciled. [Inventory](tools/spx/boot-diagnostics/HARDWARE-INVENTORY-20261002.m
     SHA256 PCR0–9 values. GRUB PCR9 file measurements match this boot's kernel,
     initramfs and DTB. This verifies measurement/readout, not signature enforcement.
     [Measured boot result](tools/spx/boot-diagnostics/RESULT-20261006ct-measured-boot.md).
+  - [x] **B06d — Public TPM operations after s2idle.** DD, boot
+    `38f7cb85-f4cf-48a0-af50-42bf1af6b183`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: capabilities, PCR0 read and two
+    distinct nonzero32-byte GetRandom responses pass before/after one timed
+    sleep following ten earlier sleeps; PCR0 remains unchanged. No provisioning,
+    objects or PCR writes. [DD result](tools/spx/boot-diagnostics/RESULT-20261006dd.md).
 - [ ] **B07 — Additional accelerators.** Inventory fitted DSP/NPU/other compute
   capabilities and available interfaces; validate a real supported workload or
   document the specific missing support. A thermal-zone name is not a working NPU.
