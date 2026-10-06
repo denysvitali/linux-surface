@@ -671,6 +671,14 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
     [CB result](tools/spx/boot-diagnostics/RESULT-20261005cb.md). No supported fix
     is established; do not repeat the unchanged test.
 
+  - [ ] **A03c — Default desktop microphone clients.** Two ordinary recording
+    clients use the selected fitted microphone through the default desktop
+    source and record known quiet speaker tones. Source-output routing and the
+    retained hardware PCM owners must match across client close/idle/reopen.
+    Restore the previous source and park the amplifiers; retain no private raw
+    recording. CM's bounded DMIC0 test is prepared, not yet run. This does not
+    establish persistent availability, hardware capture reopen or full teardown.
+
 - [ ] **A04 — External audio.** Test applicable USB-C audio/dock and Bluetooth
   output/input devices, routing, hotplug and reconnect. The logical codec
   "Headset Jack" node does not establish a physical analog jack on this device.
