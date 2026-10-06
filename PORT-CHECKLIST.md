@@ -995,8 +995,8 @@ GPU runtime suspend works.
   After parking and CM's cooling gain, CN's separate shared DMA pool lets
   SensorsPD attach and real motion streams run. Axis mapping, real rotation,
   physical desktop rotation and resume remain open. CO adds automatic proxy
-  startup and magnetometer/heading APIs; its libssc placement parser can distort
-  samples, so axis mapping is still unverified.
+  startup and magnetometer/heading APIs. A private libssc fix removes cross-axis
+  distortion from invalid placement matrices; physical mapping remains unverified.
 
   - [x] **S02a — Live accelerometer and gyroscope streams.** CN, boot
     `32087f09-20e6-4d8f-84a0-21b64e3d5ee5`, kernel
