@@ -9,6 +9,7 @@
 #include <linux/dma-direct.h>
 #include <linux/dma-mapping.h>
 #include <linux/dma-resv.h>
+#include <linux/freezer.h>
 #include <linux/idr.h>
 #include <linux/iommu.h>
 #include <linux/ioport.h>
@@ -22,6 +23,7 @@
 #include <linux/sort.h>
 #include <linux/of_platform.h>
 #include <linux/rpmsg.h>
+#include <linux/sched/signal.h>
 #include <linux/scatterlist.h>
 #include <linux/slab.h>
 #include <linux/sys_soc.h>
@@ -1546,7 +1548,21 @@ static inline int fastrpc_wait_for_response(struct fastrpc_invoke_ctx *ctx,
 		if (!wait_for_completion_timeout(&ctx->work, 10 * HZ))
 			err = -ETIMEDOUT;
 	} else {
-		err = wait_for_completion_interruptible(&ctx->work);
+		for (;;) {
+			err = wait_for_completion_state(&ctx->work,
+					TASK_INTERRUPTIBLE | TASK_FREEZABLE);
+			if (err != -ERESTARTSYS || !freezing(current) ||
+			    !try_to_freeze())
+				break;
+
+			/*
+			 * Keep the same RPC across thaw. Clear the freezer's
+			 * synthetic signal flag while preserving real signals.
+			 */
+			spin_lock_irq(&current->sighand->siglock);
+			recalc_sigpending();
+			spin_unlock_irq(&current->sighand->siglock);
+		}
 	}
 
 	return err;
