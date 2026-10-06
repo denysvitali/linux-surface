@@ -940,15 +940,22 @@ def srtc_timer(args):
         assert checked.get('complete') and checked['boot_id'] == boot
         timer = 'spx-trial-return@' + ATTEMPT + '.timer'
         assert subprocess.check_output(['systemctl', 'is-active', timer], text=True).strip() == 'active'
-        assert float(Path('/proc/uptime').read_text().split()[0]) + 60 < json.loads(
-            (OUT / 'installed.json').read_text())['return_timer_seconds']
+        value = subprocess.check_output(['systemctl', 'show', timer, '-p',
+            'NextElapseUSecMonotonic', '--value'], text=True).strip()
+        units = {'us': 1e-6, 'ms': .001, 's': 1, 'min': 60, 'h': 3600, 'd': 86400}
+        parts = re.findall(r'([0-9]+(?:\.[0-9]+)?)(us|ms|min|s|h|d)', value)
+        assert parts and not re.sub(r'([0-9]+(?:\.[0-9]+)?)(us|ms|min|s|h|d)|\s+', '', value)
+        deadline = sum(float(n) * units[u] for n, u in parts)
+        assert time.clock_gettime(time.CLOCK_MONOTONIC) + 60 < deadline
     recovery()
 
     base = (Path('/var/lib/spx-boot-diagnostics/attempts') if
             os.uname().release == '6.18.3-1-surface+' else OUT.parent)
     assert not args.srtc_queue_events or args.srtc_observe_expiry
-    label = 'srtc-queued-expiry' if args.srtc_queue_events else (
+    assert not args.srtc_observe_irq or args.srtc_queue_events
+    label = 'srtc-irq-expiry' if args.srtc_observe_irq else ('srtc-queued-expiry' if args.srtc_queue_events else (
         'srtc-expiry' if args.srtc_observe_expiry else 'srtc-timer')
+    )
     output = base / ATTEMPT / label
     output.mkdir(parents=True, mode=0o700)
     target = output / 'result.json'
@@ -960,6 +967,7 @@ def srtc_timer(args):
     armed = False
     queued = False
     loaded_here = False
+    irq_observer_owned = False
 
     def save():
         target.write_text(json.dumps(result, indent=2) + '\n')
@@ -992,6 +1000,16 @@ def srtc_timer(args):
             loaded_here = True
         device = Path('/dev/surface/aggregator')
         assert device.exists(), 'SSAM cdev device was not created'
+        if args.srtc_observe_irq:
+            assert not Path('/sys/module/irq_observer').exists(), 'IRQ observer already owned'
+            lines = [line for line in Path('/proc/interrupts').read_text().splitlines()
+                     if line.rstrip().endswith('ssam_wakeup')]
+            assert len(lines) == 1, 'expected exactly one SSAM wake IRQ'
+            irq = int(lines[0].split(':')[0])
+            irq_observer_owned = True
+            subprocess.run(['insmod', str(HERE / 'srtc/irq_observer.ko'), 'irq=' + str(irq)],
+                           check=True, timeout=10)
+            result['awake_irq_observer'] = irq
 
         mains = [p for p in Path('/sys/class/power_supply').glob('*')
                  if (p / 'type').exists() and (p / 'type').read_text().strip() == 'Mains']
@@ -1082,6 +1100,12 @@ def srtc_timer(args):
                         result['cleanup_error'] = 'timer remained active after disable'
                 except Exception as error:
                     result['cleanup_error'] = repr(error)
+            if irq_observer_owned and Path('/sys/module/irq_observer').exists():
+                try:
+                    subprocess.run(['rmmod', 'irq_observer'], check=True, timeout=10)
+                    result['awake_irq_observer_unloaded'] = True
+                except Exception as error:
+                    result['cleanup_error'] = 'IRQ observer unload: ' + repr(error)
             if loaded_here:
                 subprocess.run(['modprobe', '-r', 'surface_aggregator_cdev'],
                                check=True, timeout=10)
@@ -1663,6 +1687,8 @@ def main():
                         help='observe one 30s AC/DC timer expiry while awake; no suspend or wake-policy change')
     parser.add_argument('--srtc-queue-events', action='store_true',
                         help='temporarily notify EC display-off during expiry; restore display-on')
+    parser.add_argument('--srtc-observe-irq', action='store_true',
+                        help='temporarily enable the existing disabled IRQ for awake-only observation')
     parser.add_argument('--sensors', action='store_true', help='retain initial SensorsPD listener and gate desktop proxy on SSC readiness')
     parser.add_argument('--sensors-config', type=Path, default=Path('/var/tmp/spx-sensors-config'))
     parser.add_argument('--sensors-daemon', type=Path, default=Path('/var/tmp/spx-hexagonrpc/build/hexagonrpcd/hexagonrpcd'))
