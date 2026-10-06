@@ -1,4 +1,4 @@
-# CS: firmware TPM app and metadata confirmed; command path WIP
+# CS: firmware TPM capability, PCR and GetRandom work
 
 Boot `a0a7c1af-7a7a-445b-9f47-df3e7c48d242`, kernel
 `7.3.0-rc2-spx-mainline-20261004bg+`.
@@ -16,17 +16,23 @@ the retained SQ2 TPM2 table and UEFI reservation; live iomem reserved range
 Sensor provider723/proxy1213 remain running with zero restarts.
 UEFI reads return SecureBoot0/SetupMode1 through the retained QSEECOM provider.
 
-**Meaning:** the fitted firmware TPM is accessible through the legacy named
-transport. This is metadata evidence, not TPM command acceptance. No control
-area mapping/write, TPM startup/clear, ownership change or key creation occurred.
-B06 remains open. UID81 object discovery needs newer firmware and is not the
-supported route for this retained SPX firmware.
+**B06a passes:** the guarded legacy driver uses Windows SEND_COMMAND
+input-size1024 and exclusively claims the three reserved pages before mapping.
+Live auxiliary registration creates`/dev/tpm0` and`/dev/tpmrm0`; normal TPM-core
+startup/self-test completes. A bounded standard client returns TPM2.0/QCOM
+properties, SHA1/SHA256/SHA384 PCR banks, a nonzero SHA256 PCR0 digest and two
+distinct32-byte GetRandom outputs. Client exits0 and closes its descriptor.
+Removal deletes both class/auxiliary device and memory claim. Reattachment
+passes the same commands again and preserves PCR0/update-counter91. No Clear,
+PCR write, ownership/provisioning or persistent-key operation is performed.
+Sensor services retain their PIDs and zero restarts; the working TPM is retained.
 
-**Next:** port the existing legacy auxiliary TPM driver with the Windows
-SEND_COMMAND input-size value1024, reservation/ownership guards and cleanup.
-Then test standard capability, PCR-read and bounded GetRandom operations.
-The original driver uses normal TPM-core startup/self-test, not Clear.
+**Meaning/next:** fitted TPM commands work. B06 remains open for automatic
+startup on the next kernel, signing/Secure Boot and measured-boot integration,
+and resume. UID81 object discovery requires newer firmware; preserve QSEECOM.
+Build the named auxiliary entry into the next image for ordinary startup.
 
 Evidence: `/var/lib/spx-boot-diagnostics/functional/20261006cs/tpm/`,
-`query-result.json` and`query-kernel.log`; offline source/Windows ABI captures
+`query-result.json`, `check-result.json`, `reopen-result.json` and kernel logs;
+offline source/Windows ABI captures
 are retained at`/var/tmp/spx-tpm-source/`.

@@ -18,6 +18,7 @@ backend stop/start restores ownership and all streams/desktop APIs.
 restore3440×1440/50Hz external scanout. CC0 normal Type-C callback succeeds;
 reverse plugs, visible output and hotplug remain unverified.
 CF retains P01a actual charging pass; further battery tests are deferred.
+**CS closes B06a:** firmware TPM capability/PCR/GetRandom and driver reattachment pass.
 **D01a passes on CE:** two GNOME off/on cycles
 restore native2880×1920/60Hz scanout with fresh vblank and no new display faults.
 Visual quality and suspend remain open. CG extends CE's power-cycle coverage to the attached dock. CA's earlier
@@ -226,6 +227,15 @@ reconciled. [Inventory](tools/spx/boot-diagnostics/HARDWARE-INVENTORY-20261002.m
   firmware security interfaces and Secure Boot support available on this unit;
   validate applicable functions with a documented boot/signing path. Lack of a
   Linux node is not proof that the hardware is absent.
+  - [x] **B06a — Firmware TPM public command path.** CS, boot
+    `a0a7c1af-7a7a-445b-9f47-df3e7c48d242`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: firmware-provisioned QSEECOM appID1
+    returns the reserved control-area address. Guarded driver exposes standard
+    TPM2.0/QCOM properties, PCR banks/read and two distinct32-byte random outputs.
+    Owned auxiliary removal releases the class/resource; reattachment repeats
+    the functional pass without changing PCR0. Automatic boot startup,
+    Secure Boot/signing, measured-boot integration and resume remain open.
+    [TPM result](tools/spx/boot-diagnostics/RESULT-20261006cs-tpm.md).
 - [ ] **B07 — Additional accelerators.** Inventory fitted DSP/NPU/other compute
   capabilities and available interfaces; validate a real supported workload or
   document the specific missing support. A thermal-zone name is not a working NPU.
