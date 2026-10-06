@@ -40,3 +40,13 @@ Implementation evidence: drivers/of/device.c (of_dma_configure_id),
 drivers/of/address.c (of_dma_get_range), drivers/iommu/dma-iommu.c
 (iommu_dma_init_domain and iommu_dma_alloc_iova), and
 RESULT-20261006cdsp.md for the retained Windows exception and SoC identity.
+
+CU rejected the context before any capability fetch. Its first failure is OF
+DMA translation at the GLINK edge. The CDSP remoteproc ancestor had no explicit
+#address-cells: of_bus_default_match requires that property, so
+__of_translate_address cannot select its parent bus. Add explicit 2/2 cells;
+missing ancestor dma-ranges already means identity translation and is unchanged.
+The exact guard fields are now logged if another mismatch remains. A rejected
+context leaves the diagnostic RPMSG channel bound without any misc node, stopping
+the probe-failure GLINK CLOSE/remote-OPEN recreation loop. Removal still releases
+its children and channel reference. This correction remains untested on hardware.

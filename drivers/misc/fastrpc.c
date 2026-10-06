@@ -2640,7 +2640,18 @@ static int fastrpc_cb_probe(struct platform_device *pdev)
 		    map[1].size || sid != 1 || sessions > 1 || !domain ||
 		    !iommu_is_dma_domain(domain) || !dev_dma_iommu(dev) ||
 		    dev->bus_dma_limit != SPX_CDSP_DMA_LIMIT) {
-			dev_err(dev, "Surface CDSP needs session 1, translated DMA and bounded dma-ranges\n");
+			dev_err(dev,
+				"Surface CDSP guard: sid=%u sessions=%d nids=%u id0=%#x domain=%u iommu-dma=%u\n",
+				sid, sessions, fwspec ? fwspec->num_ids : 0,
+				fwspec && fwspec->num_ids ? fwspec->ids[0] : 0,
+				domain ? domain->type : 0, dev_dma_iommu(dev));
+			dev_err(dev,
+				"Surface CDSP DMA map: present=%u dma=%#llx cpu=%#llx size=%#llx next=%#llx limit=%#llx\n",
+				!!map, map ? (unsigned long long)map[0].dma_start : 0,
+				map ? (unsigned long long)map[0].cpu_start : 0,
+				map ? (unsigned long long)map[0].size : 0,
+				map ? (unsigned long long)map[1].size : 0,
+				(unsigned long long)dev->bus_dma_limit);
 			return -EINVAL;
 		}
 		rc = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
@@ -2903,8 +2914,16 @@ static int fastrpc_rpmsg_probe(struct rpmsg_device *rpdev)
 	if (err)
 		goto err_remove;
 	if (data->spx_cdsp_caps && data->sesscount != 1) {
-		err = -ENODEV;
-		goto err_remove;
+		/*
+		 * Keep the diagnostic RPMSG channel bound, without a misc node.
+		 * Failing this parent probe destroys the GLINK endpoint; firmware
+		 * may then reopen it and repeat populate/reject/remove forever.
+		 * Ordinary removal still drains the children and channel reference.
+		 */
+		dev_warn(rdev,
+			 "Surface CDSP capability transport blocked: valid sessions=%d, no misc node\n",
+			 data->sesscount);
+		return 0;
 	}
 	switch (domain_id) {
 	case ADSP_DOMAIN_ID:

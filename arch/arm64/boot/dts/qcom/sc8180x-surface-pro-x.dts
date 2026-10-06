@@ -1393,6 +1393,9 @@
 };
 
 &remoteproc_cdsp {
+	/* OF DMA translation requires this ancestor to match the default bus. */
+	#address-cells = <2>;
+	#size-cells = <2>;
 	status = "okay";
 	memory-region = <&cdsp_mem>;
 	firmware-name = "qcom/msft/surface/pro-x-sq2/qccdsp8180.mbn";
