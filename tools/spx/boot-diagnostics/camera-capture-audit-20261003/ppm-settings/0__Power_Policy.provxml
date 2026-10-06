@@ -1,0 +1,83 @@
+﻿<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<wap-provisioningdoc>
+  <characteristic type="MCSF">
+    <characteristic type="Power">
+      <characteristic type="Policy">
+        <characteristic type="Definitions">
+          <characteristic type="Processor">
+            <characteristic type="HeteroDecreaseThreshold">
+              <characteristic type="List">
+                <characteristic type="0">
+                  <parm name="Value" value="168430095" datatype="integer" />
+                </characteristic>
+              </characteristic>
+            </characteristic>
+            <characteristic type="HeteroIncreaseThreshold">
+              <characteristic type="List">
+                <characteristic type="0">
+                  <parm name="Value" value="336860190" datatype="integer" />
+                </characteristic>
+              </characteristic>
+            </characteristic>
+          </characteristic>
+        </characteristic>
+        <characteristic type="Settings">
+          <characteristic type="Processor">
+            <characteristic type="SchemePersonality">
+              <characteristic type="381b4222-f694-41f0-9685-ff5bb260df2e">
+                <characteristic type="4569e601-272e-4869-bcab-1c6c03d7966f">
+                  <characteristic type="MaxPerformance">
+                    <parm name="AcValue" value="100" datatype="integer" />
+                    <parm name="DcValue" value="100" datatype="integer" />
+                  </characteristic>
+                </characteristic>
+                <characteristic type="8bc6262c-c026-411d-ae3b-7e2f70811a13">
+                  <characteristic type="MinPerformance">
+                    <parm name="AcValue" value="10" datatype="integer" />
+                    <parm name="DcValue" value="10" datatype="integer" />
+                  </characteristic>
+                </characteristic>
+                <characteristic type="DefaultPowerSchemeValues">
+                  <characteristic type="HeteroClass1InitialPerf">
+                    <parm name="AcValue" value="37" datatype="integer" />
+                    <parm name="DcValue" value="37" datatype="integer" />
+                  </characteristic>
+                  <characteristic type="HeteroDecreaseTime">
+                    <parm name="AcValue" value="2" datatype="integer" />
+                    <parm name="DcValue" value="2" datatype="integer" />
+                  </characteristic>
+                  <characteristic type="MinPerformance">
+                    <parm name="AcValue" value="56" datatype="integer" />
+                    <parm name="DcValue" value="56" datatype="integer" />
+                  </characteristic>
+                  <characteristic type="MinPerformance1">
+                    <parm name="AcValue" value="37" datatype="integer" />
+                    <parm name="DcValue" value="37" datatype="integer" />
+                  </characteristic>
+                  <characteristic type="PerfDecreaseThreshold1">
+                    <parm name="AcValue" value="50" datatype="integer" />
+                    <parm name="DcValue" value="50" datatype="integer" />
+                  </characteristic>
+                  <characteristic type="PerfIncreaseThreshold1">
+                    <parm name="AcValue" value="80" datatype="integer" />
+                    <parm name="DcValue" value="80" datatype="integer" />
+                  </characteristic>
+                </characteristic>
+                <characteristic type="a4a61b5f-f42c-4d23-b3ab-5c27df9f0f18">
+                  <characteristic type="MaxFrequency1">
+                    <parm name="DcValue" value="2649" datatype="integer" />
+                  </characteristic>
+                </characteristic>
+                <characteristic type="c04a802d-2205-4910-ae98-3b51e3bb72f2">
+                  <characteristic type="MaxFrequency1">
+                    <parm name="DcValue" value="1056" datatype="integer" />
+                  </characteristic>
+                </characteristic>
+              </characteristic>
+            </characteristic>
+          </characteristic>
+        </characteristic>
+      </characteristic>
+    </characteristic>
+  </characteristic>
+</wap-provisioningdoc>

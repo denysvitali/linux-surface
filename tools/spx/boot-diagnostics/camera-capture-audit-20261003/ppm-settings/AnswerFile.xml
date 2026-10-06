@@ -1,0 +1,85 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Settings xmlns="urn:schemas-microsoft-com:windows-provisioning">
+  <Customizations>
+    <Common>
+      <Power>
+        <Policy>
+          <Definitions>
+            <Processor>
+              <HeteroDecreaseThreshold>
+                <List>
+                  <Entry Id="0">
+                    <Value>168430095</Value>
+                  </Entry>
+                </List>
+              </HeteroDecreaseThreshold>
+              <HeteroIncreaseThreshold>
+                <List>
+                  <Entry Id="0">
+                    <Value>336860190</Value>
+                  </Entry>
+                </List>
+              </HeteroIncreaseThreshold>
+            </Processor>
+          </Definitions>
+          <Settings>
+            <Processor>
+              <SchemePersonality>
+                <Profile SchemeAlias="Balanced">
+                  <Setting ProfileAlias="LowPower">
+                    <MaxPerformance>
+                      <AcValue>100</AcValue>
+                      <DcValue>100</DcValue>
+                    </MaxPerformance>
+                  </Setting>
+                  <Setting ProfileAlias="Standby">
+                    <MinPerformance>
+                      <AcValue>10</AcValue>
+                      <DcValue>10</DcValue>
+                    </MinPerformance>
+                  </Setting>
+                  <Setting ProfileAlias="Default">
+                    <HeteroClass1InitialPerf>
+                      <AcValue>37</AcValue>
+                      <DcValue>37</DcValue>
+                    </HeteroClass1InitialPerf>
+                    <HeteroDecreaseTime>
+                      <AcValue>2</AcValue>
+                      <DcValue>2</DcValue>
+                    </HeteroDecreaseTime>
+                    <MinPerformance>
+                      <AcValue>56</AcValue>
+                      <DcValue>56</DcValue>
+                    </MinPerformance>
+                    <MinPerformance1>
+                      <AcValue>37</AcValue>
+                      <DcValue>37</DcValue>
+                    </MinPerformance1>
+                    <PerfDecreaseThreshold1>
+                      <AcValue>50</AcValue>
+                      <DcValue>50</DcValue>
+                    </PerfDecreaseThreshold1>
+                    <PerfIncreaseThreshold1>
+                      <AcValue>80</AcValue>
+                      <DcValue>80</DcValue>
+                    </PerfIncreaseThreshold1>
+                  </Setting>
+                  <Setting ProfileAlias="EntryLevelPerf">
+                    <MaxFrequency1>
+                      <DcValue>2649</DcValue>
+                    </MaxFrequency1>
+                  </Setting>
+                  <Setting ProfileAlias="Background">
+                    <MaxFrequency1>
+                      <DcValue>1056</DcValue>
+                    </MaxFrequency1>
+                  </Setting>
+                </Profile>
+              </SchemePersonality>
+            </Processor>
+          </Settings>
+        </Policy>
+      </Power>
+    </Common>
+  </Customizations>
+</Settings>
