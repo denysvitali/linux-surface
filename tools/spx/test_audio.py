@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Offline checks only: generated samples, PCM pipe writes and permission gates."""
 import importlib.util
+import contextlib
 import io
 import fcntl
 import json
@@ -934,6 +935,58 @@ class PlaybackReopenTests(unittest.TestCase):
 
 
 class DesktopMicrophoneTests(unittest.TestCase):
+    def test_actual_monitor_close_is_idempotent_without_recording_log(self):
+        reader, writer = os.pipe()
+        process = SimpleNamespace(stdout=os.fdopen(reader, 'rb', buffering=0),
+                                  poll=lambda: 0)
+        monitor = audio.DesktopMonitor(process)
+        self.assertFalse(hasattr(monitor, 'log'))
+        monitor.thread.start()
+        try:
+            monitor.close()
+            monitor.close()
+            self.assertTrue(monitor.closed)
+            self.assertTrue(monitor.stop.is_set())
+            self.assertFalse(monitor.thread.is_alive())
+            self.assertTrue(process.stdout.closed)
+        finally:
+            monitor.stop.set()
+            monitor.thread.join(timeout=1)
+            process.stdout.close()
+            os.close(writer)
+
+    def test_unexpected_graph_failure_does_not_skip_capture_mixer_or_signal_cleanup(self):
+        report, graph, capture, timer = {}, Mock(), Mock(), Mock()
+        graph.close.side_effect = AttributeError('unexpected graph failure')
+        saved = [('saved control', 'name')]
+        with patch.object(audio, 'restore_microphone_mixer') as restore, \
+                patch.object(audio.signal, 'signal') as reset:
+            audio.cleanup_audio_consumers(report, [], [graph], capture, saved, {15: 'handler'}, timer)
+        capture.close.assert_called_once()
+        timer.cancel.assert_called_once()
+        restore.assert_called_once_with(report, saved)
+        reset.assert_called_once_with(15, 'handler')
+        self.assertIn('AttributeError', report['cleanup_errors'][0])
+        self.assertIn('unexpected graph failure', report['desktop']['cleanup_error'])
+
+    def test_main_saves_partial_evidence_after_unexpected_exception(self):
+        with tempfile.TemporaryDirectory() as directory:
+            def fail(args, report):
+                report['desktop'] = {'clients': [{'passed': True}]}
+                raise AttributeError('unexpected cleanup failure')
+            argv = ['audio.py', 'desktop-mic', '--output', directory]
+            with patch.object(audio.sys, 'argv', argv), \
+                    patch.object(audio, 'initialize', side_effect=fail), \
+                    patch.object(audio, 'open', return_value=io.StringIO(), create=True), \
+                    patch.object(audio.fcntl, 'flock'), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(audio.main(), 1)
+            result = json.loads((Path(directory) / 'desktop-mic-result.json').read_text())
+            self.assertFalse(result['success'])
+            self.assertEqual(result['error_type'], 'AttributeError')
+            self.assertTrue(result['desktop']['clients'][0]['passed'])
+            self.assertIn('unexpected cleanup failure', result['error'])
+
     def test_default_client_route_rejects_another_source(self):
         graph = Mock()
         report = {}

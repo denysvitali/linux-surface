@@ -559,6 +559,7 @@ class DesktopMonitor:
         self.input_peak = 0
         self.max_interarrival_seconds = 0.0
         self.thread = threading.Thread(target=self.consume, daemon=True)
+        self.closed = False
 
     def consume(self):
         pending = bytearray()
@@ -609,12 +610,13 @@ class DesktopMonitor:
         need(self.process.poll() is None, 'Desktop monitor process exited')
 
     def close(self):
-        if self.log.closed:
+        if self.closed:
             return
         self.stop.set()
         stop_desktop_process(self.process)
         self.thread.join(timeout=1)
         self.process.stdout.close()
+        self.closed = True
 
 
 def stop_desktop_process(process):
@@ -776,8 +778,8 @@ class DesktopGraph:
         def attempt(function, *args):
             try:
                 function(*args)
-            except (OSError, RuntimeError, subprocess.SubprocessError) as error:
-                errors.append(str(error))
+            except Exception as error:
+                errors.append(type(error).__name__ + ': ' + str(error))
 
         for recording in getattr(self, 'recordings', []):
             attempt(recording.close)
@@ -1014,7 +1016,12 @@ def desktop_microphone(args, report, pcm, paths, mapping, capture, holders):
     graph = DesktopGraph(args.desktop_user, evidence)
     holders.append(graph)
     started = time.monotonic()
-    timer = threading.Timer(60, lambda: os.kill(os.getpid(), signal.SIGTERM))
+    def expire():
+        evidence['deadline_expired'] = True
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    evidence['deadline_expired'] = False
+    timer = threading.Timer(60, expire)
     timer.start()
     try:
         graph.preserve_default_source = True
@@ -1144,8 +1151,8 @@ def restore_microphone_mixer(report, saved):
             result = subprocess.run(command, capture_output=True, text=True, timeout=5)
             restored.append({'name': name, 'returncode': result.returncode,
                              'stderr': result.stderr})
-        except (OSError, subprocess.SubprocessError) as error:
-            errors.append('capture mixer: ' + str(error))
+        except Exception as error:
+            errors.append('capture mixer: ' + type(error).__name__ + ': ' + str(error))
 
 
 def finish_recording(capture, report, saved):
@@ -1507,6 +1514,34 @@ def playback_reopen(args, report, pcm_holder, capture, baseline):
         'Full DSP/capture teardown, suspend, volume and long-term reliability remain untested.']
 
 
+def cleanup_audio_consumers(report, pcms, graphs, capture, saved, signals, timer):
+    """Attempt every consumer cleanup, mixer restoration and signal reset."""
+    errors = report.setdefault('cleanup_errors', [])
+
+    def attempt(label, function, *args):
+        try:
+            return function(*args)
+        except Exception as error:
+            message = label + ': ' + type(error).__name__ + ': ' + str(error)
+            errors.append(message)
+            if label == 'desktop':
+                report.setdefault('desktop', {})['cleanup_error'] = message
+
+    try:
+        while pcms:
+            report.setdefault('pcm', {})['log'] = attempt('PCM', pcms.pop().close)
+        for graph in graphs:
+            attempt('desktop', graph.close)
+        if capture:
+            attempt('capture', capture.close)
+        if timer:
+            attempt('capture deadline', timer.cancel)
+        attempt('microphone mixer', restore_microphone_mixer, report, saved)
+    finally:
+        for signum, handler in signals.items():
+            attempt('signal reset', signal.signal, signum, handler)
+
+
 def initialize(args, report):
     source = getattr(args, 'microphone_source', 'DMIC1')
     validate_microphone_source(args.action, source)
@@ -1622,7 +1657,12 @@ def initialize(args, report):
             directory.mkdir(mode=0o700)
             configure_microphone(initial['internal_cards'][0], report, saved_mixer, source)
             if args.action == 'desktop-mic':
-                capture_deadline = threading.Timer(60, lambda: os.kill(os.getpid(), signal.SIGTERM))
+                def expire_capture():
+                    report['capture_deadline_expired'] = True
+                    os.kill(os.getpid(), signal.SIGTERM)
+
+                report['capture_deadline_expired'] = False
+                capture_deadline = threading.Timer(60, expire_capture)
                 capture_deadline.start()
                 capture = OwnedCapture(initial['internal_cards'][0], report, directory,
                                        maximum_seconds=60, retain_recording=False)
@@ -1693,13 +1733,27 @@ def initialize(args, report):
                          'Test tone persists with amps off: acoustic result inconclusive')
             report['acoustic_passed'] = True
     finally:
+        report['background_errors'] = {
+            'capture': getattr(capture, 'error', None),
+            'playback': [getattr(pcm, 'error', None) for pcm in pcm_holder],
+            'desktop_monitor': [getattr(getattr(graph, 'monitor', None), 'error', None)
+                                for graph in desktop_holder],
+            'microphone_adapter': [getattr(getattr(graph, 'microphone', None), 'error', None)
+                                   for graph in desktop_holder]}
+        cleanup_errors = report.setdefault('cleanup_errors', [])
         for signum in signals:
-            signal.signal(signum, signal.SIG_IGN)
-        # Stop queue production without waiting, before closing its consumer.
-        # Physical parking below must not wait for desktop process teardown.
+            try:
+                signal.signal(signum, signal.SIG_IGN)
+            except Exception as error:
+                cleanup_errors.append('ignore signal: ' + str(error))
+        # A broken desktop object must not prevent physical amplifier parking.
         for graph in desktop_holder:
-            if graph.monitor:
-                graph.monitor.stop.set()
+            try:
+                monitor = getattr(graph, 'monitor', None)
+                if monitor:
+                    monitor.stop.set()
+            except Exception as error:
+                cleanup_errors.append('stop monitor: ' + type(error).__name__ + ': ' + str(error))
         try:
             report['parked'] = False
             if parked is not None:
@@ -1720,29 +1774,8 @@ def initialize(args, report):
                 need(read_text(control) == saved_control, 'Master runtime PM policy was not restored')
                 report['runtime_pm']['restored'] = True
         finally:
-            cleanup_errors = report.setdefault('cleanup_errors', [])
-            while pcm_holder:
-                try:
-                    report['pcm']['log'] = pcm_holder.pop().close()
-                except (OSError, subprocess.SubprocessError) as error:
-                    cleanup_errors.append('PCM: ' + str(error))
-            # Always reached after attempted physical parking, including a
-            # microphone/monitor alarm or partially started desktop graph.
-            for graph in desktop_holder:
-                try:
-                    graph.close()
-                except (OSError, RuntimeError, subprocess.SubprocessError) as error:
-                    report['desktop']['cleanup_error'] = str(error)
-            if capture:
-                try:
-                    capture.close()
-                except (OSError, RuntimeError, subprocess.SubprocessError) as error:
-                    cleanup_errors.append('capture: ' + str(error))
-            if capture_deadline:
-                capture_deadline.cancel()
-            restore_microphone_mixer(report, saved_mixer)
-            for signum, handler in signals.items():
-                signal.signal(signum, handler)
+            cleanup_audio_consumers(report, pcm_holder, desktop_holder, capture,
+                                    saved_mixer, signals, capture_deadline)
     need(not report.get('cleanup_errors'), 'Audio cleanup failed; see cleanup_errors')
     if 'pcm' in report:
         need(not re.search(r'underrun|overrun|error', report['pcm']['log'], re.I),
@@ -1844,8 +1877,9 @@ def main():
                 need(all(item['returncode'] == 0 for item in report['microphone_mixer_restore']),
                      'Microphone mixer restoration failed')
         report['success'] = True
-    except (OSError, RuntimeError, ValueError, KeyError, subprocess.SubprocessError) as error:
+    except Exception as error:
         report['error'] = str(error)
+        report['error_type'] = type(error).__name__
         result = 1
     text = json.dumps(report, indent=2) + '\n'
     if args.output:
