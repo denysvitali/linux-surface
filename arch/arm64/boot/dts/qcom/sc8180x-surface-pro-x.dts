@@ -286,6 +286,45 @@
 	};
 
 	thermal-zones {
+		/*
+		 * Linux passive CPU policy: start cooling at 75 C, with 5 C
+		 * hysteresis, 35 C below the inherited critical limit. These
+		 * are board operating-policy choices, not Windows PEP values.
+		 */
+		cluster0-thermal {
+			trips {
+				spx_cluster0_passive: cluster-passive {
+					temperature = <75000>;
+					hysteresis = <5000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&spx_cluster0_passive>;
+					cooling-device = <&cpu0 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
+		cluster1-thermal {
+			trips {
+				spx_cluster1_passive: cluster-passive {
+					temperature = <75000>;
+					hysteresis = <5000>;
+					type = "passive";
+				};
+			};
+
+			cooling-maps {
+				map0 {
+					trip = <&spx_cluster1_passive>;
+					cooling-device = <&cpu4 THERMAL_NO_LIMIT THERMAL_NO_LIMIT>;
+				};
+			};
+		};
+
 		pmc8180a-thermal {
 			polling-delay-passive = <100>;
 			polling-delay = <0>;
