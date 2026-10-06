@@ -51,6 +51,15 @@ class Fake:
 
 
 class Recovery(unittest.TestCase):
+    def test_da_firmware_fatal_and_shutdown_timeout_are_not_a_clean_pass(self):
+        log = '''qcom_q6v5_pas remoteproc-slpi: fatal error received: EX:kernel:0x0:rcinit:0xc0:PC=0xb0217c28
+remoteproc remoteproc3: crash detected in slpi: type fatal error
+qcom_q6v5_pas remoteproc-slpi: timeout waiting for shutdown response
+channel remove users=0 pending=0
+SDSP heap restored to HLOS owners=0x8; final context drained'''
+        self.assertEqual(len(crash_test.kernel_fault_lines(log)), 3)
+        self.assertEqual(crash_test.kernel_fault_lines(LOG + SHARED), [])
+
     def test_missing_proof_never_restarts_and_keeps_stopped(self):
         for log in ('', 'channel remove users=0 pending=1\n' + LOG.split('\n')[1],
                     'SDSP heap restored to HLOS owners=0x8; final context drained\n'):

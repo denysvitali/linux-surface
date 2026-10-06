@@ -26,6 +26,11 @@ def desktop_proven(accel, compass):
         return False
 
 
+def kernel_fault_lines(log):
+    pattern = r'BUG:|Oops:|blocked for more than|SMMU.*fault|watchdog received|Kernel panic|fatal error received|crash detected in|timeout waiting for shutdown response'
+    return [line for line in log.splitlines() if re.search(pattern, line, re.I)]
+
+
 class Client:
     def __init__(self, flag, credentials, output):
         self.lines = []
@@ -141,8 +146,10 @@ def exercise(ops):
             if not stopped:
                 raise lifecycle.Refused('owned fresh client cleanup missing')
             ops.save(result)
+        result['delivery_complete'] = True
         faults = ops.kernel_since(cursor, 'crash-workload-kernel.log')
-        if re.search(r'BUG:|Oops:|blocked for more than|SMMU.*fault|watchdog received|Kernel panic', faults, re.I):
+        result['fault_lines'] = kernel_fault_lines(faults)
+        if result['fault_lines']:
             raise lifecycle.Refused('new kernel/DSP/SMMU fault during recovery')
         result['after'] = ops.backend()
         result['complete'] = True
