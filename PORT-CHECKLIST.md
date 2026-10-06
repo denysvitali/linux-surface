@@ -40,7 +40,7 @@ awaits attribution for later observations.
 
 | Area | State | What is missing |
 |---|---|---|
-| Boot to desktop, NVMe/LUKS root | CX/CY actual return to recovery observed; CW startup failure unexplained | Cold/warm repeat reliability and late cleanup (B01) |
+| Boot to desktop, NVMe/LUKS root | CX/CY/DA/DB actual return observed; CW startup failure unexplained | Cold/warm repeat reliability and late cleanup (B01) |
 | CPU and memory (B03) | **Passed on AP; BU automatic frequency scaling active** | Recheck on final candidate |
 | Storage (B02) | Passed on AP | Post-resume I/O |
 | GPU FD680 (D02) | **Passed on AW**, 30 min rendering | A person looking at the screen |
