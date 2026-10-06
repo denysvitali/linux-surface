@@ -6,12 +6,14 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-06, CY: verified native FP/GPU load pass)
+## Status (2026-10-06, DA: sensor host recovery restores data with reset fault)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
 rotation, calibration and resume remain open. **CR closes S02d:** quiesced
 backend stop/start restores ownership and all streams/desktop APIs.
+DA restores streams/fresh desktop clients after host exit, but SLPI faults during
+reset; clean crash recovery remains open. [DA result](tools/spx/boot-diagnostics/RESULT-20261006da.md).
 **CS closes S02e:** active unprivileged user claims/reopens motion and receives compass updates. Latest result:
 [CS](tools/spx/boot-diagnostics/RESULT-20261006cs.md), kernel
 `7.3.0-rc2-spx-mainline-20261004bg+`. **U03a passes:** two GNOME off/on cycles
@@ -1042,7 +1044,9 @@ GPU runtime suspend works.
   distortion from invalid placement matrices; physical mapping remains unverified.
   CQ exposes a pending caller/user reference cycle. CR fixes final file-close
   cleanup and passes controlled quiesced backend restart. Arbitrary crash and
-  unanswered DSP response cleanup remain open.
+  unanswered DSP response cleanup remain open. DA's automatic reset restores
+  three streams and fresh user clients after host exit, but firmware faults on
+  shutdown; clean crash recovery fails. [DA result](tools/spx/boot-diagnostics/RESULT-20261006da.md).
   **CS user observation:** upside-down image during "tilted left"; native API
   reports left-up and Mutter90°. Physical pose needs clarification before a
   board sign/mapping fix. [Orientation result](tools/spx/boot-diagnostics/RESULT-20261006cs-orientation.md).
