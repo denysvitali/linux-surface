@@ -6,13 +6,13 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-06, CQ: sensor streams pass; backend teardown blocked)
+## Status (2026-10-06, CR: controlled sensor backend restart passes)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
-rotation, calibration and resume remain open. CQ repeats live streams but leaves
-one pending request at teardown; guarded restart is refused. Latest result:
-[CQ](tools/spx/boot-diagnostics/RESULT-20261006cq.md), kernel
+rotation, calibration and resume remain open. **CR closes S02d:** quiesced
+backend stop/start restores ownership and all streams/desktop APIs. Latest result:
+[CR](tools/spx/boot-diagnostics/RESULT-20261006cr.md), kernel
 `7.3.0-rc2-spx-mainline-20261004bg+`. **U03a passes:** two GNOME off/on cycles
 restore3440×1440/50Hz external scanout. CC0 normal Type-C callback succeeds;
 reverse plugs, visible output and hotplug remain unverified.
@@ -55,7 +55,7 @@ awaits attribution for later observations.
 | Suspend/resume (P03) | Kernel exposes s2idle; systemd sleep/suspend targets masked | Intended wake, then controlled sleep |
 | Thermal (P05) | **CM: P05a CPU/GPU cooling limits pass**; BH 3 min load stable | Automatic temperature response; sustained combined workload |
 | Idle power (P02) | BU: CPU scales down; GPU runtime-suspends | **Battery tests deferred by user**; remaining forced-on devices |
-| Sensors (S01, S02) | BW light readout; **CO: desktop motion/compass pass; CQ teardown blocked** | Light response; axes, physical rotation/calibration, backend lifecycle/resume |
+| Sensors (S01, S02) | BW light readout; **CO desktop motion/compass; CR controlled restart pass** | Light response; axes, physical rotation/calibration, crash recovery/resume |
 | Cellular, GNSS (N03, N04) | Recovery: GNSS starts/stops but no fix; modem rejects online mode | Real modem provisioning, IPA datapath, SIM; actual GNSS fix |
 
 ## Next work, in order
@@ -999,9 +999,9 @@ GPU runtime suspend works.
   physical desktop rotation and resume remain open. CO adds automatic proxy
   startup and magnetometer/heading APIs. A private libssc fix removes cross-axis
   distortion from invalid placement matrices; physical mapping remains unverified.
-  CQ repeats startup/live streams, but controlled stop leaves one pending FastRPC
-  request and retained ownership lease. Restart is refused; backend lifecycle
-  remains open. [CQ result](tools/spx/boot-diagnostics/RESULT-20261006cq.md).
+  CQ exposes a pending caller/user reference cycle. CR fixes final file-close
+  cleanup and passes controlled quiesced backend restart. Arbitrary crash and
+  unanswered DSP response cleanup remain open.
 
   - [x] **S02a — Live accelerometer and gyroscope streams.** CN, boot
     `32087f09-20e6-4d8f-84a0-21b64e3d5ee5`, kernel
@@ -1022,6 +1022,14 @@ GPU runtime suspend works.
     Native compass client receives changing headings through the desktop proxy.
     Calibration and actual bearing accuracy remain open.
     [CO result](tools/spx/boot-diagnostics/RESULT-20261006co.md).
+  - [x] **S02d — Controlled quiesced sensor backend restart.** CR, boot
+    `28c535c2-d979-4f2a-97c9-bd10b3bb8f04`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: owned clients close; removal reports
+    zero users/pending, then HLOS ownership restoration before SLPI restart.
+    New host/private proxy returns91/69/29 finite accel/gyro/magnetometer samples
+    with clean disables; native orientation and47 compass updates return.
+    Arbitrary crash recovery and resume are unverified.
+    [CR result](tools/spx/boot-diagnostics/RESULT-20261006cr.md).
 - [ ] **P01 — Battery and charging.** Plausible voltage/current/capacity/status,
   observed discharge and charging, AC transitions, charge limits where supported
   and low-battery behavior. Test applicable USB-C and Surface Connect chargers;
