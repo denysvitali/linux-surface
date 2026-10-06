@@ -9,7 +9,8 @@ history that used to live here is in
 ## Status (2026-10-06, CN: live accelerometer/gyroscope streams pass)
 
 **CN closes S02a:** the shared DMA pool enables live accelerometer/gyro samples.
-Desktop rotation and mapping remain open. Latest result: [CN](tools/spx/boot-diagnostics/RESULT-20261006cn.md), kernel
+Desktop proxy discovery/orientation now responds after a scoped udev fix;
+physical rotation, mapping and automatic startup remain open. Latest result: [CN](tools/spx/boot-diagnostics/RESULT-20261006cn.md), kernel
 `7.3.0-rc2-spx-mainline-20261004bg+`. **U03a passes:** two GNOME off/on cycles
 restore3440×1440/50Hz external scanout. CC0 normal Type-C callback succeeds;
 reverse plugs, visible output and hotplug remain unverified.
