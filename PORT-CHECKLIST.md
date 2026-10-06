@@ -40,14 +40,14 @@ awaits attribution for later observations.
 
 | Area | State | What is missing |
 |---|---|---|
-| Boot to desktop, NVMe/LUKS root | CX/CY/DA/DB actual return observed; CW startup failure unexplained | Cold/warm repeat reliability and late cleanup (B01) |
+| Boot to desktop, NVMe/LUKS root | CX/CY/DA/DB/DD actual return observed; CW startup failure unexplained | Cold/warm repeat reliability and late cleanup (B01) |
 | CPU and memory (B03) | **Passed on AP; BU automatic frequency scaling active** | Recheck on final candidate |
 | Storage (B02) | **AP sustained I/O; DC post-resume direct I/O pass** | Final candidate regression |
 | GPU FD680 (D02) | **Passed on AW**, 30 min rendering | A person looking at the screen |
 | Internal panel (D01) | **CE: D01a GNOME off/on scanout passes**; user reports display/brightness working | Visual attribution/quality, brightness range and physical wake |
-| Wi-Fi (N01) | 5 GHz/reconnect and IPv6 VPN pass; 2.4 GHz accepted by user assumption | Native WAN IPv6, roaming, sustained use and resume |
-| RTC (B05) | **BX early boot time; DC PMIC awake alarm passes** | Cold power-off retention and suspend |
-| Firmware TPM/security (B06) | **CT: automatic TPM2 and measured GRUB boot pass; CS reattachment passes** | Signing/Secure Boot and resume |
+| Wi-Fi (N01) | 5 GHz/reconnect and IPv6 VPN pass; 2.4 GHz accepted by user assumption | Native WAN IPv6, roaming and sustained use |
+| RTC (B05) | **BX early boot time; DD RTC/alarm/sleep checks pass** | Cold power-off retention |
+| Firmware TPM/security (B06) | **CT measured boot; DD public TPM survives30-minute sleep** | Signing/Secure Boot |
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
 | Speakers (A01) | **BY: quiet default desktop playback passes** | Persistence, volume/mapping/balance, reopen and lifecycle |
@@ -60,10 +60,10 @@ awaits attribution for later observations.
 | USB data (U01) | Untested | Both ports/orientations, fixtures |
 | USB-C PD, DisplayPort, dock (U02–U04) | **CG: external off/on scanout restoration passes; normal orientation API works** | Visible output, physical replug, roles/PD, ports/orientations/resume |
 | Battery and charging (P01) | **CF: P01a actual charging passes, +1.26Wh/120s** | Charge-policy explanation, discharge/transitions and charger coverage |
-| Suspend/resume (P03) | **DD ten alarm wakes; native sensor clients survive**; targets masked | Full device recovery, long sleep and intended physical wakes |
+| Suspend/resume (P03) | **DD13 alarm wakes including30-minute AC; clients survive**; targets masked | Full device recovery, battery sleep and physical wakes |
 | Thermal (P05) | **CM cooling limits; CX/CY combined load/cleanup, CY native FP verification pass** | Real automatic response, longer envelope and enclosure behavior |
 | Idle power (P02) | BU: CPU scales down; GPU runtime-suspends | **Battery tests deferred by user**; remaining forced-on devices |
-| Sensors (S01, S02) | **DD backend/desktop clients survive ten short sleeps** | Light/axes/calibration; DA fault; longer/final regression |
+| Sensors (S01, S02) | **DD backend/desktop clients survive repeated/30-minute AC sleep** | Light/axes/calibration; DA fault; final regression |
 | Cellular, GNSS (N03, N04) | Recovery: GNSS starts/stops but no fix; modem rejects online mode | Real modem provisioning, IPA datapath, SIM; actual GNSS fix |
 
 ## Next work, in order
