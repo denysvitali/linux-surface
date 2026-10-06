@@ -77,3 +77,13 @@ new host PID/sharing evidence, fresh finite samples with clean disables, native
 orientation and a finite compass observation.
 
 Offline effect-order tests: `python3 -B tools/spx/sensors/test_lifecycle.py`.
+
+Final file close drops retained caller references from interrupted/timed-out
+invocations after the release RPC. Active ioctls hold file references, so final
+release cannot overlap an ioctl using that file. Contexts and exported DMA
+buffers independently retain the user; cleaning pending callers in user_free
+would therefore form a reference cycle. Close detaches the pending list under
+the user lock and puts callers outside it. DSP response references are untouched:
+a missing response still retains the context, user, module and heap lease.
+SDSP removal prints at most eight pending contexts (scalar, context, client,
+completion state and reference count; no user payload) to identify that case.

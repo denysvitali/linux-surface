@@ -675,16 +675,10 @@ static void fastrpc_context_put(struct fastrpc_invoke_ctx *ctx);
 static void fastrpc_user_free(struct kref *ref)
 {
 	struct fastrpc_user *fl = container_of(ref, struct fastrpc_user, refcount);
-	struct fastrpc_invoke_ctx *ctx, *n;
 	struct fastrpc_map *map, *m;
 	struct fastrpc_buf *buf, *b;
 
 	fastrpc_buf_free(fl->init_mem);
-
-	list_for_each_entry_safe(ctx, n, &fl->pending, node) {
-		list_del(&ctx->node);
-		fastrpc_context_put(ctx);
-	}
 
 	list_for_each_entry_safe(map, m, &fl->maps, node)
 		fastrpc_map_put(map);
@@ -1405,8 +1399,11 @@ static int fastrpc_invoke_send(struct fastrpc_session_ctx *sctx,
 			return -EACCES;
 		}
 		if (handle == FASTRPC_INIT_HANDLE)
-			dev_info(&cctx->rpdev->dev, "SDSP init pd=%u DMA=%#llx size=%#llx\n",
-				 fl->pd, (unsigned long long)msg->addr,
+			dev_info_ratelimited(&cctx->rpdev->dev,
+				"SDSP init-handle pd=%u method=%u sc=%#x client=%u ctx=%#llx DMA=%#llx size=%#llx\n",
+				 fl->pd, (ctx->sc >> 24) & 0x1f, ctx->sc,
+				 fl->client_id, (unsigned long long)msg->ctx,
+				 (unsigned long long)msg->addr,
 				 (unsigned long long)msg->size);
 	}
 	fastrpc_context_get(ctx);
@@ -1491,6 +1488,7 @@ static int fastrpc_internal_invoke(struct fastrpc_user *fl,  u32 kernel,
 {
 	struct fastrpc_invoke_ctx *ctx = NULL;
 	struct fastrpc_buf *buf, *b;
+	u64 request_ctx;
 
 	int err = 0;
 
@@ -1508,6 +1506,7 @@ static int fastrpc_internal_invoke(struct fastrpc_user *fl,  u32 kernel,
 	ctx = fastrpc_context_alloc(fl, kernel, sc, args);
 	if (IS_ERR(ctx))
 		return PTR_ERR(ctx);
+	request_ctx = ctx->ctxid;
 
 	err = fastrpc_get_args(kernel, ctx);
 	if (err)
@@ -1561,6 +1560,11 @@ bail:
 		spin_unlock(&fl->lock);
 	}
 
+	if (err && fl->cctx->domain_id == SDSP_DOMAIN_ID)
+		dev_info_ratelimited(fl->sctx->dev,
+			"SDSP invoke failed err=%d handle=%u sc=%#x method=%u client=%u ctx=%#llx\n",
+			err, handle, sc, (sc >> 24) & 0x1f, fl->client_id,
+			(unsigned long long)request_ctx);
 	if (err)
 		dev_dbg(fl->sctx->dev, "Error: Invoke Failed %d\n", err);
 
@@ -1877,9 +1881,27 @@ static int fastrpc_device_release(struct inode *inode, struct file *file)
 {
 	struct fastrpc_user *fl = (struct fastrpc_user *)file->private_data;
 	struct fastrpc_channel_ctx *cctx = fl->cctx;
+	struct fastrpc_invoke_ctx *ctx, *next;
+	LIST_HEAD(pending);
 	unsigned long flags;
 
 	fastrpc_release_current_dsp_process(fl);
+
+	/*
+	 * Final file release runs after active ioctls have dropped their file
+	 * references. Interrupted/timed-out calls retain a caller reference on
+	 * pending; drop that reference here, not in user_free(), because every
+	 * context also retains the user. A DSP response reference, if present,
+	 * continues to protect the context and DMA until its callback arrives.
+	 * Exported DMA buffers independently retain the user after file close.
+	 */
+	spin_lock_irqsave(&fl->lock, flags);
+	list_splice_init(&fl->pending, &pending);
+	spin_unlock_irqrestore(&fl->lock, flags);
+	list_for_each_entry_safe(ctx, next, &pending, node) {
+		list_del_init(&ctx->node);
+		fastrpc_context_put(ctx);
+	}
 
 	spin_lock_irqsave(&cctx->lock, flags);
 	list_del(&fl->user);
@@ -2820,8 +2842,16 @@ static void fastrpc_rpmsg_remove(struct rpmsg_device *rpdev)
 		users++;
 		fastrpc_notify_users(user);
 	}
-	idr_for_each_entry(&cctx->ctx_idr, ctx, id)
+	idr_for_each_entry(&cctx->ctx_idr, ctx, id) {
 		pending++;
+		if (cctx->domain_id == SDSP_DOMAIN_ID && pending <= 8)
+			dev_info(&rpdev->dev,
+				 "SDSP pending ctx=%#llx sc=%#x method=%u client=%u retval=%d done=%u refs=%u\n",
+				 (unsigned long long)ctx->ctxid, ctx->sc,
+				 (ctx->sc >> 24) & 0x1f, ctx->client_id,
+				 ctx->retval, ctx->is_work_done,
+				 kref_read(&ctx->refcount));
+	}
 	spin_unlock_irqrestore(&cctx->lock, flags);
 	dev_info(&rpdev->dev,
 		 "channel remove users=%u pending=%u; heap release waits for final context\n",
