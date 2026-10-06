@@ -26,6 +26,8 @@ DP0 startup/reload result remains scoped to its attached dock.
 CC closes A02b: both fitted microphone inputs record known stimuli; quality,
 simultaneous mapping and lifecycle remain open. CB playback reopen still fails.
 **CM closes P05a:** both CPU clusters and GPU enforce/release cooling limits.
+**CX closes P05b:** five-minute simultaneous CPU/FD680 load and cleanup pass,
+peak69.8C, no new kernel fault. Temperature-triggered responses remain open.
 Default microphone clients remain unverified after helper failure and level abort.
 B05a early RTC and N01a IPv6 VPN retain prior passes. **N01b is accepted by user
 assumption from working5GHz; no2.4GHz functional pass was measured.** Light
@@ -56,7 +58,7 @@ awaits attribution for later observations.
 | USB-C PD, DisplayPort, dock (U02–U04) | **CG: external off/on scanout restoration passes; normal orientation API works** | Visible output, physical replug, roles/PD, ports/orientations/resume |
 | Battery and charging (P01) | **CF: P01a actual charging passes, +1.26Wh/120s** | Charge-policy explanation, discharge/transitions and charger coverage |
 | Suspend/resume (P03) | Kernel exposes s2idle; systemd sleep/suspend targets masked | Intended wake, then controlled sleep |
-| Thermal (P05) | **CM cooling limits pass; CS CPU passive maps installed** | CS load stays below trip; real automatic response and combined envelope |
+| Thermal (P05) | **CM cooling limits; CX five-minute combined load/cleanup pass** | Real automatic response, longer envelope and enclosure behavior |
 | Idle power (P02) | BU: CPU scales down; GPU runtime-suspends | **Battery tests deferred by user**; remaining forced-on devices |
 | Sensors (S01, S02) | BW light readout; **CO desktop motion/compass; CR controlled restart pass** | Light response; axes, physical rotation/calibration, crash recovery/resume |
 | Cellular, GNSS (N03, N04) | Recovery: GNSS starts/stops but no fix; modem rejects online mode | Real modem provisioning, IPA datapath, SIM; actual GNSS fix |
@@ -68,7 +70,8 @@ Physical observations remain unverified. CDSP is parked after three changed
 boots without a usable accelerator result. CW stops before its corrected query;
 CV's return request stalls in shutdown ramdisk generation. Prepare that ramdisk
 during runtime, then disable experimental CDSP for the independent combined
-CPU/GPU thermal test on AC. Full thermal/accelerator acceptance remains open.
+CPU/GPU thermal test on AC now passes its five-minute scope. Verify actual
+shutdown recovery; full thermal/accelerator acceptance remains open.
 See [CDSP prerequisites](tools/spx/boot-diagnostics/RESULT-20261006cdsp.md).
 USB-C switching and external scanout restoration already have scoped passes;
 physical replug, ports/orientations and visible output still need fixtures.
@@ -1135,6 +1138,15 @@ GPU runtime suspend works.
     protections remain active, peak44.2°C,5.28s. This verifies the cooling-device
     control path; automatic temperature-triggered policy and sustained combined
     workloads remain open. [CM result](tools/spx/boot-diagnostics/RESULT-20261006cm.md).
+
+  - [x] **P05b — Five-minute combined CPU/GPU load and cleanup.** CX,
+    boot `93128b4e-e4bf-45d3-897e-526a4fa1568f`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: eight CPU workers and offscreen FD680
+    rendering advance together throughout300s on AC. Peak69.8C; scheduled
+    termination removes all workload processes, cooling limits recover and
+    no new kernel faults appear. Two scenes finish; the third is bounded by
+    planned termination. Automatic cooling and longer/enclosure coverage remain
+    open. [CX result](tools/spx/boot-diagnostics/RESULT-20261006cx.md).
 
 ## Diagnostic integrity and final acceptance
 
