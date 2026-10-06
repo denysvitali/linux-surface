@@ -36,6 +36,12 @@ properties:
           - qcom,sm8250-cdsp-pas
           - qcom,sm8250-slpi-pas
 
+  "#address-cells":
+    const: 2
+
+  "#size-cells":
+    const: 2
+
   reg:
     maxItems: 1
 
