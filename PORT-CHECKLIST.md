@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-07, DD: sensor freeze/thaw fix passes one s2idle)
+## Status (2026-10-07, DD: ten sensor-safe timed s2idle returns pass)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
@@ -60,10 +60,10 @@ awaits attribution for later observations.
 | USB data (U01) | Untested | Both ports/orientations, fixtures |
 | USB-C PD, DisplayPort, dock (U02–U04) | **CG: external off/on scanout restoration passes; normal orientation API works** | Visible output, physical replug, roles/PD, ports/orientations/resume |
 | Battery and charging (P01) | **CF: P01a actual charging passes, +1.26Wh/120s** | Charge-policy explanation, discharge/transitions and charger coverage |
-| Suspend/resume (P03) | **DD alarm wake and sensor return pass once**; targets masked | Repetition, live clients and full device recovery |
+| Suspend/resume (P03) | **DD ten alarm wakes; native sensor clients survive**; targets masked | Full device recovery, long sleep and intended physical wakes |
 | Thermal (P05) | **CM cooling limits; CX/CY combined load/cleanup, CY native FP verification pass** | Real automatic response, longer envelope and enclosure behavior |
 | Idle power (P02) | BU: CPU scales down; GPU runtime-suspends | **Battery tests deferred by user**; remaining forced-on devices |
-| Sensors (S01, S02) | **DD backend survives s2idle**; CO APIs/CR restart/DB recovery | Light/axes/calibration; DA fault; live clients/reliability |
+| Sensors (S01, S02) | **DD backend/desktop clients survive ten short sleeps** | Light/axes/calibration; DA fault; longer/final regression |
 | Cellular, GNSS (N03, N04) | Recovery: GNSS starts/stops but no fix; modem rejects online mode | Real modem provisioning, IPA datapath, SIM; actual GNSS fix |
 
 ## Next work, in order
@@ -1117,7 +1117,16 @@ GPU runtime suspend works.
     provider732/host821/proxy1231 remain, zero restarts. Finite accel/gyro/mag
     streams78/70/29 before and93/70/29 after, all clean disables, no new
     DSP/FastRPC faults. Same-context freezable wait fixes DC's observed failure
-    for this test. Active-client continuity and repeated sleep remain open.
+    for this test. S02h covers bounded active-client continuity/repetition.
+    [DD result](tools/spx/boot-diagnostics/RESULT-20261006dd.md).
+  - [x] **S02h — Native desktop sensor clients survive repeated short sleep.**
+    DD boot `38f7cb85-f4cf-48a0-af50-42bf1af6b183`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: same UID1000 motion/compass clients
+    stay open through nine additional14.33–15.41s alarm-based s2idle cycles,
+    receiving at least three fresh finite headings after every return. Host/
+    provider/proxy stay unchanged, zero restarts/new faults; all owned scopes
+    and clients stop. DD totals ten successful short sleeps, kernel fail0.
+    Physical mapping/bearing and longer/full-device regression remain open.
     [DD result](tools/spx/boot-diagnostics/RESULT-20261006dd.md).
 - [ ] **P01 — Battery and charging.** Plausible voltage/current/capacity/status,
   observed discharge and charging, AC transitions, charge limits where supported
