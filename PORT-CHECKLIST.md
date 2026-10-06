@@ -6,11 +6,11 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-07, DD: eleven sensor-safe timed s2idle returns; post-resume GPU pass)
+## Status (2026-10-07, DD:13 timed s2idle returns, including30-minute AC sleep)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
-rotation, calibration and resume remain open. **CR closes S02d:** quiesced
+rotation and calibration remain open; DD proves bounded AC sleep recovery. **CR closes S02d:** quiesced
 backend stop/start restores ownership and all streams/desktop APIs.
 **DB closes S02f:** one debug-enabled automatic host recovery restores streams
 and fresh desktop clients without a reset fault. DA's failure remains unresolved;
@@ -24,7 +24,7 @@ CF retains P01a actual charging pass; further battery tests are deferred.
 **CS closes B06a; CT closes B06b/B06c:** TPM commands, automatic startup and measured GRUB boot pass.
 **D01a passes on CE:** two GNOME off/on cycles
 restore native2880×1920/60Hz scanout with fresh vblank and no new display faults.
-Visual quality and suspend remain open. CG extends CE's power-cycle coverage to the attached dock. CA's earlier
+Visual quality remains open; DD proves post-sleep scanout. CG extends CE's power-cycle coverage to the attached dock. CA's earlier
 DP0 startup/reload result remains scoped to its attached dock.
 CC closes A02b: both fitted microphone inputs record known stimuli; quality,
 simultaneous mapping and lifecycle remain open. CB playback reopen still fails.
@@ -44,7 +44,7 @@ awaits attribution for later observations.
 | CPU and memory (B03) | **Passed on AP; BU automatic frequency scaling active** | Recheck on final candidate |
 | Storage (B02) | **AP sustained I/O; DC post-resume direct I/O pass** | Final candidate regression |
 | GPU FD680 (D02) | **Passed on AW**, 30 min rendering | A person looking at the screen |
-| Internal panel (D01) | **CE: D01a GNOME off/on scanout passes**; user reports display/brightness working | Visual attribution/quality, brightness range and resume |
+| Internal panel (D01) | **CE: D01a GNOME off/on scanout passes**; user reports display/brightness working | Visual attribution/quality, brightness range and physical wake |
 | Wi-Fi (N01) | 5 GHz/reconnect and IPv6 VPN pass; 2.4 GHz accepted by user assumption | Native WAN IPv6, roaming, sustained use and resume |
 | RTC (B05) | **BX early boot time; DC PMIC awake alarm passes** | Cold power-off retention and suspend |
 | Firmware TPM/security (B06) | **CT: automatic TPM2 and measured GRUB boot pass; CS reattachment passes** | Signing/Secure Boot and resume |
@@ -1140,14 +1140,15 @@ GPU runtime suspend works.
     DSP/FastRPC faults. Same-context freezable wait fixes DC's observed failure
     for this test. S02h covers bounded active-client continuity/repetition.
     [DD result](tools/spx/boot-diagnostics/RESULT-20261006dd.md).
-  - [x] **S02h — Native desktop sensor clients survive repeated short sleep.**
+  - [x] **S02h — Native desktop sensor clients survive repeated and longer AC sleep.**
     DD boot `38f7cb85-f4cf-48a0-af50-42bf1af6b183`, kernel
     `7.3.0-rc2-spx-mainline-20261004bg+`: same UID1000 motion/compass clients
     stay open through nine additional14.33–15.41s alarm-based s2idle cycles,
     receiving at least three fresh finite headings after every return. Host/
     provider/proxy stay unchanged, zero restarts/new faults; all owned scopes
-    and clients stop. DD totals ten successful short sleeps, kernel fail0.
-    Physical mapping/bearing and longer/full-device regression remain open.
+    and clients stop. DD later totals13 successful sleeps, including179.97s and1798.40s
+    on AC with retained clients; kernel fail0. Physical mapping/bearing,
+    battery sleep and full-device regression remain open.
     [DD result](tools/spx/boot-diagnostics/RESULT-20261006dd.md).
 - [ ] **P01 — Battery and charging.** Plausible voltage/current/capacity/status,
   observed discharge and charging, AC transitions, charge limits where supported
@@ -1169,10 +1170,12 @@ GPU runtime suspend works.
   including a30-minute sleep on battery, with measured drain and intended wake
   sources. Display, input, network, audio, cameras and attached devices recover;
   no kernel hang/reset or repeated manual intervention.
-  **DD:** eleven short alarm-based sleeps pass with the FastRPC freezer fix.
+  **DD:**13 alarm-based sleeps pass with the FastRPC freezer fix, including
+  three-minute and30-minute intervals on AC.
   Native sensor clients survive nine consecutive cycles; post-resume TPM,
   RTC readback with chronyd stopped, direct storage I/O, WLAN, FD680 rendering
-  and internal scanout pass. Longer sleep/full recovery remain unverified.
+  and internal scanout pass, also after the30-minute interval. Battery sleep,
+  physical wake and full device recovery remain unverified.
   [DD result](tools/spx/boot-diagnostics/RESULT-20261006dd.md).
   **DC:** fitted PMIC `rtc1` alarm wakes one14.15-second s2idle interval with
   a real event/IRQ and clean alarm disable. Storage and WLAN work afterward;
@@ -1200,6 +1203,16 @@ GPU runtime suspend works.
   prompt. Current recovery exposes s2idle, but shared systemd sleep/suspend
   targets are masked and `CanSuspend` is `no`. No sleep was attempted.
   [Follow-up](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md).
+  - [x] **P03a — Repeated autonomous PMIC-alarm sleep on AC.** DD boot
+    `38f7cb85-f4cf-48a0-af50-42bf1af6b183`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`:13 s2idle returns/fail0, including
+   1798.40s long sleep with retained native sensor clients. Real alarm events/
+    IRQ increments and disabled cleanup pass. After long sleep, FD680 GLES,
+    native panel vblank,16MiB direct storage I/O,1MB WLAN and public TPM/PCR0
+    pass without new faults. This is guarded direct sleep; systemd sleep remains
+    masked, physical wake/audio/camera/attached-device and battery tests open.
+    [DD result](tools/spx/boot-diagnostics/RESULT-20261006dd.md).
+
 - [ ] **P04 — Hibernate applicability.** Establish whether the intended platform/
   storage/security setup supports hibernation; if supported, verify image restore
   and the same functional regression checks. An exposed `disk` state is not proof.
