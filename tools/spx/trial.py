@@ -191,6 +191,9 @@ def prepare(args):
     config.write_text(text)
     run('initramfs', ['mkinitcpio', '-k', RELEASE, '-r', str(module_root), '-c', str(OUT / 'mkinitcpio.conf'), '-D', str(OUT / 'initcpio'), '-D', '/etc/initcpio', '-D', '/usr/lib/initcpio', '-g', str(OUT / 'initramfs.img'), '--nopost'])
     run('bluetooth-address', ['/usr/bin/python3', '-B', str(REPO / 'tools/spx/bluetooth-address.py'), str(args.dtb), str(OUT / 'spx.dtb'), '--address', args.address])
+    if args.cpu_passive_cooling:
+        from thermal import stage_policy
+        stage_policy(OUT / 'spx.dtb')
     previous = json.loads((OLD / 'attempt.json').read_text())
     cmdline = []
     for word in previous['cmdline'].split():
@@ -231,6 +234,7 @@ def prepare(args):
     run('grub-syntax', ['grub-script-check', str(OUT / 'entry.cfg')])
     prepared = dict(utc=datetime.now(timezone.utc).isoformat(), preboot_id=BOOT_ID, release=RELEASE, attempt=ATTEMPT, entry='spx-trial-' + ATTEMPT, cmdline=cmdline, source_commit=subprocess.check_output(['git', '-c', 'safe.directory=' + str(REPO), 'rev-parse', 'HEAD'], cwd=REPO, text=True).strip(), build_directory=str(BUILD), private_config=str(OUT / 'kernel.config'), bluetooth_address=args.address, address_is_per_installation=True, venus_trial=False, speaker_drivers_blocked=True, hardware_acceptance_closed=False, installed=False, boot_selected=False, boot_payloads=dict(vmlinuz=sha(OUT / 'vmlinuz'), initramfs=sha(OUT / 'initramfs.img'), dtb=sha(OUT / 'spx.dtb')))
     prepared.update(sensors_startup=args.sensors, sensors_private_ssc=bool(args.sensors_ssc_library), audio_mode='parked' if args.audio else 'blocked',
+                    cpu_passive_cooling=args.cpu_passive_cooling,
                     usbc_early_load=args.usbc,
                     usbc_phy_orientation=args.usbc_phy_orientation,
                     speaker_drivers_blocked=not args.audio,
@@ -297,6 +301,9 @@ def install(args):
     helper = Path('/usr/local/lib/spx-boot-diagnostics/trial.py')
     shutil.copy2(__file__, helper)
     helper.chmod(493)
+    if prepared.get('cpu_passive_cooling'):
+        shutil.copy2(HERE / 'thermal.py', helper.parent / 'thermal.py')
+        (helper.parent / 'thermal.py').chmod(0o644)
     if prepared.get('sensors_startup'):
         sensor_helpers = helper.parent / 'sensors'
         sensor_helpers.mkdir(parents=True, exist_ok=True)
@@ -1565,9 +1572,23 @@ def sensors_lifecycle(args):
         subprocess.run([lock, 'release', 'device', owner], check=True)
 
 
+def thermal_check(args):
+    from thermal import Live
+    lock = str(REPO / 'tools/spx/spx-lock')
+    owner = 'thermal-' + ATTEMPT
+    subprocess.run([lock, 'acquire', 'device', owner], check=True)
+    try:
+        result = Live(OUT / 'cpu-thermal', ATTEMPT, RELEASE).exercise()
+        print(json.dumps(dict(complete=result['complete'], result=str(OUT / 'cpu-thermal/result.json'))), flush=True)
+        if not result['complete']:
+            raise RuntimeError(result.get('error', 'automatic CPU response not proven'))
+    finally:
+        subprocess.run([lock, 'release', 'device', owner], check=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend', 'audio', 'arm-audio', 'enable-desktop-audio', 'usbc-reload', 'wifi-band', 'display-power', 'srtc-timer', 'power-measure', 'sensors-lifecycle'))
+    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend', 'audio', 'arm-audio', 'enable-desktop-audio', 'usbc-reload', 'wifi-band', 'display-power', 'srtc-timer', 'power-measure', 'sensors-lifecycle', 'thermal'))
     parser.add_argument('attempt')
     parser.add_argument('--build', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bg/work-build'))
     parser.add_argument('--parent', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bf'))
@@ -1581,6 +1602,8 @@ def main():
     parser.add_argument('--sensors-library', type=Path, default=Path('/var/tmp/spx-hexagonrpc/build/libhexagonrpc/libhexagonrpc.so.0.5'))
     parser.add_argument('--sensors-ssc-library', type=Path, help='opt in to private patched libssc.so.2 for SensorsPD readiness and desktop proxy')
     parser.add_argument('--sensors-ready', type=Path, default=Path('/var/tmp/spx-sensors-ready'))
+    parser.add_argument('--cpu-passive-cooling', action='store_true',
+                        help='stage board Linux75C/5C passive CPU policy into the retained DTB')
     parser.add_argument('--audio', action='store_true', help='enable codecs with both amplifiers parked; no playback')
     parser.add_argument('--usbc', action='store_true',
                         help='load experimental USC-to-DP0 forwarding in the initramfs')
@@ -1643,7 +1666,7 @@ def main():
             {'install': install, 'boot': boot, 'return': return_to_default,
              'extend': extend_window, 'audio': audio_check, 'arm-audio': arm_audio,
              'usbc-reload': usbc_reload, 'wifi-band': wifi_band, 'display-power': display_power,
-             'enable-desktop-audio': enable_desktop_audio, 'power-measure': power_measure, 'sensors-lifecycle': sensors_lifecycle}[args.command](args)
+             'enable-desktop-audio': enable_desktop_audio, 'power-measure': power_measure, 'sensors-lifecycle': sensors_lifecycle, 'thermal': thermal_check}[args.command](args)
 
 
 if __name__ == '__main__':
