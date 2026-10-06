@@ -81,10 +81,12 @@ def query(output, attempt, release):
         assert baseline.get('complete') and baseline['boot_id'] == result['boot_id']
         prepared = json.loads((output.parent / 'prepared.json').read_text())
         assert prepared.get('cdsp_capabilities'), 'trial must explicitly enable capability transport'
+        assert subprocess.check_output(['systemctl', 'is-active',
+            'spx-trial-return@' + attempt + '.timer'], text=True, timeout=5).strip() == 'active'
         # Read the raw D-Bus uint64, avoiding systemctl's formatted timespan.
         raw = subprocess.check_output(['busctl', 'get-property', 'org.freedesktop.systemd1',
             '/org/freedesktop/systemd1/unit/spx_2dtrial_2dreturn_40' + attempt + '_2etimer',
-            'org.freedesktop.systemd1.Timer', 'NextElapseUSecMonotonic'], text=True).split()
+            'org.freedesktop.systemd1.Timer', 'NextElapseUSecMonotonic'], text=True, timeout=5).split()
         assert raw[0] == 't' and int(raw[1]) / 1e6 - time.monotonic() >= 90
         result['session'] = translated_session()
         device = Path('/dev/fastrpc-cdsp-secure')

@@ -34,7 +34,18 @@ Linux `unsigned_support=true` is host policy and does not establish the
 retained firmware's permission. Neither speculative `reg=1` nor `reg=0`
 is declared: the latter also interacts with physical-DMA selection.
 
-**Meaning/next:** B07 remains open. A matching v66 workload is now available;
-resolve the Surface address translation and process-creation contract before
-adding a live context bank or invoking it. Keep physical/battery deferrals,
-known-good default and current CT candidate. No sound or capture occurred.
+**Transport WIP:** the SoC340 evidence supports flat IOVA encoding with a
+nonzero session and its IOMMU device. The guarded module now builds on the fixed
+7.3 release. One disabled board session uses SID0x1441. The inherited DMA limit
+excludes the final partial page; every complete allocation/header/page must lie
+inside the firmware window. Lower allocations are rejected, not retried.
+Only one GET_DSP_INFO fetch is permitted; process creation/general invocation
+are blocked. The compiled board DT stages successfully through the reusable
+`--cdsp` option. Recovery preflight rejects before opening a device.
+
+**Meaning/next:** B07 remains open. The next one-shot trial queries capabilities
+after normal baseline and translated-domain checks, without creating a PD or
+loading the unsigned workload. Live routing permission and process authorization
+remain unverified. The rebuilt DT otherwise preserves the retained sensor,
+display and75C CPU policy; preparation restores the installation's BT address.
+Keep physical/battery deferrals and known-good default. No sound or capture occurred.

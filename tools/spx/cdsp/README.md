@@ -46,7 +46,9 @@ endian, DSP6, flags `0x66`, with the exported entry and no undefined symbols,
 The retained Surface INF/IORT establish CDSP stream IDs `0x1441..0x1448` and
 hardware context-bank indices `0x21..0x28`. These are not Linux FastRPC `reg`
 values. The Windows driver has a platform-specific flat-IOVA branch, whereas
-Linux's default session encoding shifts `reg` by 32 bits. Resolve that
-address contract and the firmware's process authorization before adding a
-live session or attempting compute. See
+Linux's default session encoding shifts `reg` by 32 bits. The Surface
+address exception is now corroborated by public SoC ID340. The opt-in
+[transport WIP](TRANSPORT-WIP.md) builds but has not run; it permits only a
+capability query through one translated session. Establish live routing and
+the firmware's process authorization before attempting compute. See
 [the bounded preparation result](../boot-diagnostics/RESULT-20261006cdsp.md).

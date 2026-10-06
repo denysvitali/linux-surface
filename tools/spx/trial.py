@@ -236,6 +236,8 @@ def prepare(args):
     entry = (OLD / 'entry.cfg').read_text().replace('20261004bf', '{ATTEMPT}'.format(ATTEMPT=ATTEMPT))
     entry = entry.replace(previous['cmdline'].replace('20261004bf', '{ATTEMPT}'.format(ATTEMPT=ATTEMPT)), cmdline)
     title = 'Audio startup with amplifiers parked' if args.audio else 'Bluetooth address and functional hardware tests'
+    if args.cdsp:
+        title = 'Surface CDSP capability-only transport'
     entry = entry.replace('bounded Venus core startup and Iris1 startup trial', title)
     (OUT / 'entry.cfg').write_text(entry)
     run('grub-syntax', ['grub-script-check', str(OUT / 'entry.cfg')])
@@ -315,6 +317,11 @@ def install(args):
     helper = Path('/usr/local/lib/spx-boot-diagnostics/trial.py')
     shutil.copy2(__file__, helper)
     helper.chmod(493)
+    if prepared.get('cdsp_capabilities'):
+        cdsp_helpers = helper.parent / 'cdsp'
+        cdsp_helpers.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(HERE / 'cdsp/capabilities.py', cdsp_helpers / 'capabilities.py')
+        (cdsp_helpers / 'capabilities.py').chmod(0o644)
     if prepared.get('cpu_passive_cooling'):
         shutil.copy2(HERE / 'thermal.py', helper.parent / 'thermal.py')
         (helper.parent / 'thermal.py').chmod(0o644)
@@ -1806,6 +1813,8 @@ def main():
                 functional_check(args)
             finally:
                 subprocess.run([lock, 'release', 'device', owner], check=True)
+            if record.get('cdsp_capabilities') and not (OUT / 'cdsp-capabilities').exists():
+                cdsp_capabilities(args)
             dispatch_audio(args)
         else:
             {'install': install, 'boot': boot, 'return': return_to_default,
