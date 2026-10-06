@@ -1,7 +1,7 @@
 .. SPDX-License-Identifier: GPL-2.0-only
 
-Surface Pro X QSEECOM TPM (WIP)
-==============================
+Surface Pro X QSEECOM TPM
+========================
 
 The driver is based on Xilin Wu's primary tree:
 https://github.com/strongtz/linux-radxa-qcom/blob/13ee95f997f07e1442c3d68479ea9239854cf450/drivers/char/tpm/tpm_qcom_qsee.c
@@ -28,6 +28,12 @@ startup is retained: self-test, conditional Startup and session setup;
 there is no Clear or ownership-reset command in this driver. Registration
 therefore sends commands and is not a metadata-only test.
 
-Status: driver port is WIP; standard TPM functionality remains untested.
-After registration, bounded GetCapability, PCR read and GetRandom commands
-can establish function without changing ownership or persistent objects.
+On CS boot a0a7c1af-7a7a-445b-9f47-df3e7c48d242 with kernel
+7.3.0-rc2-spx-mainline-20261004bg+, bounded standard commands report TPM2.0,
+manufacturer QCOM, active PCR banks and a nonzero SHA256 PCR0. Two GetRandom
+requests each return32 distinct nonzero bytes. Removing the owned auxiliary
+client releases the device and resource; reattachment repeats the pass with
+unchanged PCR0/update counter. No ownership or persistent object is changed.
+Ordinary boot startup, signing/Secure Boot, measured-boot integration and
+suspend/resume remain unverified. See RESULT-20261006cs-tpm.md and the bounded
+public command client in tools/spx/tpm/check.py.
