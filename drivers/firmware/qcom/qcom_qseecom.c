@@ -85,6 +85,7 @@ static int qseecom_client_register(struct platform_device *qseecom_dev,
  */
 static const struct qseecom_app_desc qcom_qseecom_apps[] = {
 	{ "qcom.tz.uefisecapp", "uefisecapp" },
+	{ "qcom.tz.tpm", "tpm" },
 };
 
 static int qcom_qseecom_probe(struct platform_device *qseecom_dev)
