@@ -946,7 +946,10 @@ def srtc_timer(args):
 
     base = (Path('/var/lib/spx-boot-diagnostics/attempts') if
             os.uname().release == '6.18.3-1-surface+' else OUT.parent)
-    output = base / ATTEMPT / ('srtc-expiry' if args.srtc_observe_expiry else 'srtc-timer')
+    assert not args.srtc_queue_events or args.srtc_observe_expiry
+    label = 'srtc-queued-expiry' if args.srtc_queue_events else (
+        'srtc-expiry' if args.srtc_observe_expiry else 'srtc-timer')
+    output = base / ATTEMPT / label
     output.mkdir(parents=True, mode=0o700)
     target = output / 'result.json'
     owner, lock = 'srtc-' + ATTEMPT, str(REPO / 'tools/spx/spx-lock')
@@ -955,25 +958,26 @@ def srtc_timer(args):
                   controller='/dev/surface/aggregator', before={}, after={},
                   complete=False, suspended=False)
     armed = False
+    queued = False
     loaded_here = False
 
     def save():
         target.write_text(json.dumps(result, indent=2) + '\n')
 
-    def request(fd, command, payload):
+    def request(fd, command, payload, response_size=4):
         payload_buf = ctypes.create_string_buffer(payload) if payload else None
-        response_buf = ctypes.create_string_buffer(4)
+        response_buf = ctypes.create_string_buffer(response_size)
         payload_ptr = ctypes.addressof(payload_buf) if payload_buf else 0
         response_ptr = ctypes.addressof(response_buf)
         header = bytearray(struct.pack('=BBBBHhQH6xQH6x', 1, 1, command, 0, 1, 0,
-                                       payload_ptr, len(payload), response_ptr, 4))
+                                       payload_ptr, len(payload), response_ptr, response_size))
         assert len(header) == 40
         ioctl = (3 << 30) | (len(header) << 16) | (0xA5 << 8) | 1
         fcntl.ioctl(fd, ioctl, header, True)
         fields = struct.unpack('=BBBBHhQH6xQH6x', header)
         assert fields[5] == 0, 'SSAM transport status: ' + str(fields[5])
-        assert fields[9] == 4, 'expected a four-byte SSAM response'
-        return struct.unpack('<I', response_buf.raw)[0]
+        assert fields[9] == response_size, 'unexpected SSAM response size'
+        return int.from_bytes(response_buf.raw, 'little')
 
     def timer_read(fd, timer_id):
         return request(fd, 0x1D, struct.pack('<I', timer_id))
@@ -1012,6 +1016,9 @@ def srtc_timer(args):
             save()
             assert values[selected] == 0xFFFFFFFF, (
                 'selected timer is already active; left both firmware timers untouched')
+            if args.srtc_queue_events:
+                queued = True
+                result['display_off_reply'] = request(fd, 0x15, b'', 1)
 
             armed = True  # Set before the request so cleanup also covers an uncertain reply.
             started = time.monotonic()
@@ -1027,7 +1034,7 @@ def srtc_timer(args):
             result['countdown_passed'] = True
             if args.srtc_observe_expiry:
                 while time.monotonic() < started + 32:
-                    ready, _, _ = select.select([fd], [], [], min(1, started + 32 - time.monotonic()))
+                    ready, _, _ = select.select([fd], [], [], max(0, min(1, started + 32 - time.monotonic())))
                     if ready:
                         data = os.read(fd, 4096)
                         offset = 0
@@ -1044,10 +1051,19 @@ def srtc_timer(args):
                 result['expiry_elapsed_seconds'] = time.monotonic() - started
                 result['wake_irq_after'] = [line.strip() for line in
                     Path('/proc/interrupts').read_text().splitlines() if 'ssam_wakeup' in line]
+                if queued:
+                    result['display_on_reply'] = request(fd, 0x16, b'', 1)
+                    queued = False
+                    result['display_on_restored'] = True
     except Exception as error:
         result['error'] = repr(error)
     finally:
         try:
+            if queued:
+                with Path('/dev/surface/aggregator').open('rb', buffering=0) as stream:
+                    result['cleanup_display_on_reply'] = request(stream.fileno(), 0x16, b'', 1)
+                queued = False
+                result['display_on_restored'] = True
             if armed:
                 try:
                     device = Path('/dev/surface/aggregator')
@@ -1642,6 +1658,8 @@ def main():
     parser.add_argument('--wifi-profile', help='saved Wi-Fi profile ID to clone for the 2.4 GHz test')
     parser.add_argument('--srtc-observe-expiry', action='store_true',
                         help='observe one 30s AC/DC timer expiry while awake; no suspend or wake-policy change')
+    parser.add_argument('--srtc-queue-events', action='store_true',
+                        help='temporarily notify EC display-off during expiry; restore display-on')
     parser.add_argument('--sensors', action='store_true', help='retain initial SensorsPD listener and gate desktop proxy on SSC readiness')
     parser.add_argument('--sensors-config', type=Path, default=Path('/var/tmp/spx-sensors-config'))
     parser.add_argument('--sensors-daemon', type=Path, default=Path('/var/tmp/spx-hexagonrpc/build/hexagonrpcd/hexagonrpcd'))
