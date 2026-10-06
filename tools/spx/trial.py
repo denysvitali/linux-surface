@@ -268,7 +268,13 @@ def install(args):
     assert Path('/proc/sys/kernel/random/boot_id').read_text().strip() == BOOT_ID
     r = recovery()
     prepared = json.loads((OUT / 'prepared.json').read_text())
-    assert prepared['preboot_id'] == BOOT_ID and prepared['release'] == RELEASE
+    assert prepared['release'] == RELEASE
+    # A rebuilt Image can be prepared on the trial, then installed after
+    # returning to recovery so the running module tree is never replaced.
+    if prepared['preboot_id'] != BOOT_ID:
+        assert os.uname().release == '6.18.3-1-surface+'
+        assert 'spx_boot=known-good' in Path('/proc/cmdline').read_text().split()
+        assert not prepared.get('reuse_installed_modules')
     assert not prepared['venus_trial']
     boot = Path('/boot/spx-trial-{ATTEMPT}'.format(ATTEMPT=ATTEMPT))
     modules = Path('/usr/lib/modules') / RELEASE
