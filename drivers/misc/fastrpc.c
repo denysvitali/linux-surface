@@ -385,8 +385,6 @@ static struct workqueue_struct *fastrpc_response_wq;
 /* Extract SMMU PA from consolidated IOVA */
 static inline dma_addr_t fastrpc_ipa_to_dma_addr(struct fastrpc_channel_ctx *cctx, dma_addr_t iova)
 {
-	if (cctx->spx_cdsp_caps)
-		return iova;
 	if (!cctx->soc_data->sid_pos)
 		return 0;
 	return iova & GENMASK_ULL(cctx->soc_data->sid_pos - 1, 0);
@@ -399,8 +397,6 @@ static inline dma_addr_t fastrpc_ipa_to_dma_addr(struct fastrpc_channel_ctx *cct
 static inline u64 fastrpc_sid_offset(struct fastrpc_channel_ctx *cctx,
 				     struct fastrpc_session_ctx *sctx)
 {
-	if (cctx->spx_cdsp_caps)
-		return 0;
 	return (u64)sctx->sid << cctx->soc_data->sid_pos;
 }
 
@@ -412,6 +408,22 @@ static bool fastrpc_spx_cdsp_dma_valid(struct device *dev, u64 addr, u64 size)
 	return domain && iommu_is_dma_domain(domain) && dev_dma_iommu(dev) &&
 		size && addr >= SPX_CDSP_IOVA_START && size <= SPX_CDSP_IOVA_SIZE &&
 		addr - SPX_CDSP_IOVA_START <= SPX_CDSP_IOVA_SIZE - size;
+}
+
+static bool fastrpc_spx_cdsp_wire_valid(struct fastrpc_channel_ctx *cctx,
+				      struct fastrpc_session_ctx *sctx,
+				      u64 addr, u64 size)
+{
+	u64 dma_addr;
+
+	/* Windows uses flat host IOVAs, then adds the SID low-nibble tag. */
+	if (sctx->sid != 1 || cctx->soc_data->sid_pos != 32 || addr >> 32 != 1)
+		return false;
+
+	dma_addr = fastrpc_ipa_to_dma_addr(cctx, addr);
+	return fastrpc_spx_cdsp_dma_valid(sctx->dev, dma_addr, size) &&
+		dma_addr <= SPX_CDSP_DMA_LIMIT &&
+		size - 1 <= SPX_CDSP_DMA_LIMIT - dma_addr;
 }
 
 static void fastrpc_free_map(struct kref *ref)
@@ -1458,18 +1470,26 @@ static int fastrpc_invoke_send(struct fastrpc_session_ctx *sctx,
 		if (!kernel || handle != FASTRPC_DSP_UTILITIES_HANDLE ||
 		    ctx->sc != FASTRPC_SCALARS(0, 1, 1) || !ctx->buf ||
 		    ctx->buf->dev != sctx->dev || !sctx->sid ||
-		    !fastrpc_spx_cdsp_dma_valid(sctx->dev, msg->addr, msg->size))
+		    !fastrpc_spx_cdsp_wire_valid(cctx, sctx, msg->addr, msg->size))
 			return -EACCES;
 		list = fastrpc_invoke_buf_start(ctx->rpra, ctx->nscalars);
 		pages = fastrpc_phy_page_start(list, ctx->nscalars);
 		for (i = 0; i < ctx->nscalars; i++) {
 			if (ctx->maps[i] ||
 			    (pages[i].size &&
-			     !fastrpc_spx_cdsp_dma_valid(sctx->dev, pages[i].addr,
-						      pages[i].size)))
+			     !fastrpc_spx_cdsp_wire_valid(cctx, sctx, pages[i].addr,
+						       pages[i].size)))
 				return -EACCES;
+			dev_info(sctx->dev,
+				 "Surface CDSP capability page %d host=%#llx wire=%#llx size=%#llx\n",
+				 i,
+				 (unsigned long long)fastrpc_ipa_to_dma_addr(cctx, pages[i].addr),
+				 (unsigned long long)pages[i].addr,
+				 (unsigned long long)pages[i].size);
 		}
-		dev_info(sctx->dev, "Surface CDSP capability DMA=%#llx size=%#llx\n",
+		dev_info(sctx->dev,
+			 "Surface CDSP capability header host=%#llx wire=%#llx size=%#llx\n",
+			 (unsigned long long)fastrpc_ipa_to_dma_addr(cctx, msg->addr),
 			 (unsigned long long)msg->addr, (unsigned long long)msg->size);
 	}
 	fastrpc_context_get(ctx);

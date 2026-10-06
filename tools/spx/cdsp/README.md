@@ -45,11 +45,12 @@ endian, DSP6, flags `0x66`, with the exported entry and no undefined symbols,
 
 The retained Surface INF/IORT establish CDSP stream IDs `0x1441..0x1448` and
 hardware context-bank indices `0x21..0x28`. These are not Linux FastRPC `reg`
-values. The Windows driver has a platform-specific flat-IOVA branch, whereas
-Linux's default session encoding shifts `reg` by 32 bits. The Surface
-address exception is now corroborated by public SoC ID340. The opt-in
-[transport WIP](TRANSPORT-WIP.md) builds but has not run; it permits only a
-capability query through one translated session. Establish live routing and
+values. Windows allocates flat host IOVAs on SoC 340/CDSP, then adds the
+SidInfo low-nibble tag in bits32+ to both header and argument-page addresses.
+The first session's tag is1, matching Linux's default `reg=1` encoding.
+CV passed the translated-domain guard but CDSP watchdoged after its untagged
+query. The corrected [transport WIP](TRANSPORT-WIP.md) is unverified; it permits
+only one capability query through the same session. Establish live routing and
 the firmware's process authorization before attempting compute. See
 [the bounded preparation result](../boot-diagnostics/RESULT-20261006cdsp.md).
 
@@ -63,6 +64,6 @@ target CDSP.HT.2.3; firmware compatibility is unverified.
 The existing HexagonRPC0.5 daemon serves `apps_std`/`apps_mem`, shares its FD
 with clients, and supports `ROOT/dsp/cdsp`. Its shell creation currently uses
 attrs0, so an unsigned-PD path would need an explicit change after prerequisites
-are met. `hexagonrpc_open` uses remotectl handle0/method0; start with dynamic
+are met. `hexagonrpc_open` uses remotectl handle0/method 0; start with dynamic
 open/close of `file://libspx_workload_skel.so?spx_workload_skel_invoke` before
 arithmetic. The legacy two-argument entry does not assume `_modver=1`.

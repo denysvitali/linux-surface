@@ -1,57 +1,52 @@
 # Surface CDSP capability transport (WIP)
 
 The board FastRPC node stays disabled. Its compatible selects a narrow transport
-only on Microsoft Surface Pro X, SoC ID 340, CDSP domain 3. One nonzero session
-uses the retained IORT/INF class+2 stream ID 0x1441, mask 0; Linux chooses the
-hardware context bank. Windows CB 33 is not declared as a DSP ABI requirement.
+only on Microsoft Surface Pro X, SoC ID 340, CDSP domain 3. One session uses
+`reg=1`, retained IORT/INF stream ID 0x1441, mask 0; Linux chooses the hardware
+context bank. Windows CB 33 is not declared as a DSP ABI requirement.
 
-The retained Windows allocator exception uses base 0x80000000 and size
-0x7fffffff without the generic session<<32 tag. That is an inclusive end of
-0xfffffffe. The GLINK edge's identity dma-ranges excludes the final incomplete
-4 KiB page: effective bus_dma_limit must be 0xffffefff. Context probe requires
-that exact inherited range, a single matching IOMMU firmware ID, a translated
-DMA domain and active IOMMU DMA operations before publishing a session. Both
-streaming and coherent masks are set to 32 bits.
+## Host allocation and wire encoding
 
-Linux DMA-IOMMU uses bus_dma_limit as an upper allocation limit, but its
-non-PCI initialization does not reserve the lower excluded range. This patch
-therefore rejects allocations below 0x80000000, without retries or modifying
-domain geometry. Rejected allocations are freed before any remote send.
-Every accepted allocation, invocation header and transmitted page interval is
-checked against the complete firmware window; imported mappings are prohibited.
-All query allocation remains on the nonzero session's context-bank device.
-Flat IOVAs are passed unchanged back to DMA APIs on cleanup. Other channels
-retain their existing session offsets, stripping, heaps and process release.
+The retained Windows allocator exception uses base 0x80000000 and size 0x7fffffff
+without the generic session<<32 allocator base. This is a **host allocation**
+exception, not a flat FastRPC wire address. The GLINK edge's identity dma-ranges
+excludes the final incomplete 4 KiB page: bus_dma_limit is 0xffffefff. Context probe
+requires that exact inherited range, one matching IOMMU firmware ID, a translated
+DMA domain and active IOMMU DMA operations. Streaming/coherent masks remain 32 bits.
+Lower allocations are rejected without retries or changing domain geometry.
 
-Only the secure misc node is exposed, mode 0600, with CAP_SYS_ADMIN required
-at open. Every ioctl except GET_DSP_INFO is rejected. At most one remote fetch
-is attempted per channel lifetime; successful results may then be read from
-cache. The remote message itself must be kernel handle 2, method 0, one input
-and one output buffer. File close sends no process release RPC because this
-transport cannot create or attach a PD. Existing pending-context references
-retain possibly DSP-owned DMA after timeout; there is no forced reclamation.
+Retained `qcadsprpc8180.sys` gives the missing wire contract:
 
-This establishes neither live stream-routing permission nor a working query.
-CU's failed DMA translation exposed missing explicit bus cells on the remoteproc
-ancestor. Those cells are now declared: default OF bus matching requires them.
-If a session still fails its full guard, the diagnostic RPMSG channel remains
-bound without publishing a misc node, preventing a firmware CLOSE/OPEN probe
-loop. Its rejection prints the actual map, domain, stream and limit fields.
-No VMIDs, memory ownership assignment, process creation, unsigned module loading
-or workload invocation are added. The coordinator must build and perform a
-bounded capability-only trial. B07 remains open.
+- Registry parser 0x14000b8ec–b914 reads SidInfo's low nibble into the session
+  field at domain+0x120. The first CDSP SID 0x1441 supplies tag 1. Session allocation
+  at 0x140009918 points the file's session to domain+0x110.
+- Allocator 0x14000be1c–be24 skips the generic shifted base for SoC 340/domain 3.
+- Mapped-address builder 0x14000cd14–cd58 takes the 340/domain 3 branch to cd4c,
+  reads session+0x10, and ORs its tag<<32 into the allocator-derived address.
+- Header builder 0x140002d14 calls d868, then cbd8, with message+0x18 as its address
+  destination. Argument-page builder 0x140002b2c calls the same cbd8 helper.
 
-Implementation evidence: drivers/of/device.c (of_dma_configure_id),
-drivers/of/address.c (of_dma_get_range), drivers/iommu/dma-iommu.c
-(iommu_dma_init_domain and iommu_dma_alloc_iova), and
-RESULT-20261006cdsp.md for the retained Windows exception and SoC identity.
+Thus host IOVA 0xffffe000 is wire address 0x1ffffe000. Default sid_pos=32 tagging and
+stripping now apply: host DMA APIs receive the low IOVA on cleanup, while the
+header and pages receive tag 1. Every transmitted interval requires exact high
+word 1 and a valid low interval ending at or below 0xffffefff. Bounds checks reject
+zero size and crossing the low window, so a page cannot roll into the next tag.
+Imported mappings remain prohibited. The one query logs host/wire header and page
+addresses. No high alias mapping or ownership assignment is introduced.
 
-CU rejected the context before any capability fetch. Its first failure is OF
-DMA translation at the GLINK edge. The CDSP remoteproc ancestor had no explicit
-#address-cells: of_bus_default_match requires that property, so
-__of_translate_address cannot select its parent bus. Add explicit 2/2 cells;
-missing ancestor dma-ranges already means identity translation and is unchanged.
-The exact guard fields are now logged if another mismatch remains. A rejected
-context leaves the diagnostic RPMSG channel bound without any misc node, stopping
-the probe-failure GLINK CLOSE/remote-OPEN recreation loop. Removal still releases
-its children and channel reference. This correction remains untested on hardware.
+## Trial scope
+
+Only the secure misc node is exposed, mode 0600, with CAP_SYS_ADMIN required at
+open. Every ioctl except GET_DSP_INFO is rejected. At most one remote fetch is
+attempted per channel lifetime; successful results may then be read from cache.
+The message must be kernel handle 2, method 0, one input and one output buffer.
+File close sends no process-release RPC because no PD can be created or attached.
+Existing pending references protect DMA while a remote context remains outstanding.
+
+CU rejected DMA translation before sending; explicit remoteproc parent bus cells
+corrected that failure. Rejected sessions retain a bound diagnostic channel without
+a misc node, preventing GLINK reprobe storms. CV passed the translated-domain
+guard but sent an untagged query and CDSP watchdoged; this wire correction is
+unverified on hardware. It neither proves the watchdog's cause nor firmware process
+authorization. B07 remains open. Keep the same session, DMA window and one query
+for the changed trial; no SID, CB, VMID, unsigned-PD or workload guess is justified.
