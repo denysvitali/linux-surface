@@ -788,6 +788,10 @@ host datapath; that is not current cellular service verification.
   service; disconnect/reconnect, radio control and resume. Resolve mode and
   IPA/RMNET/WWAN integration before declaring connectivity. An unavailable SIM or
   subscription remains a test dependency, not a pass or a driver-failure verdict.
+  October6 read-only prerequisites: five dummy rmtfs files remain zero; the
+  retained Windows provider selects named block partitions, with fitted physical
+  mapping and same-device EFS restoration unresolved. No online retry or
+  acceptance. [Prerequisites](tools/spx/boot-diagnostics/RESULT-20261006modem-prerequisites.md).
 - [ ] **N04 — GNSS/location.** Establish fitted capability and its modem/interface
   path; if applicable obtain a real fix with plausible time/location and reacquire.
   A missing `/sys/class/gnss` entry does not alone decide support.
