@@ -1532,8 +1532,8 @@ static int wcd934x_swrm_clock(struct wcd934x_codec *wcd, bool enable)
 					   WCD934X_CDC_SWR_CLK_ENABLE);
 			dev_dbg(wcd->dev,
 				"SPX lifecycle swr-clock enable=%d op=write reg=0x%x mask=0xff value=0x%x ret=%d\n",
-				enable, WCD934X_CDC_CLK_RST_CTRL_SWR_CONTROL,
-				WCD934X_CDC_SWR_CLK_ENABLE, ret);
+				enable, (unsigned int) WCD934X_CDC_CLK_RST_CTRL_SWR_CONTROL,
+				(unsigned int) WCD934X_CDC_SWR_CLK_ENABLE, ret);
 		} else {
 			ret = regmap_update_bits(wcd->regmap,
 						 WCD934X_CDC_CLK_RST_CTRL_SWR_CONTROL,
@@ -1541,9 +1541,9 @@ static int wcd934x_swrm_clock(struct wcd934x_codec *wcd, bool enable)
 						 WCD934X_CDC_SWR_CLK_ENABLE);
 			dev_dbg(wcd->dev,
 				"SPX lifecycle swr-clock enable=%d op=update reg=0x%x mask=0x%x value=0x%x ret=%d\n",
-				enable, WCD934X_CDC_CLK_RST_CTRL_SWR_CONTROL,
-				WCD934X_CDC_SWR_CLK_EN_MASK,
-				WCD934X_CDC_SWR_CLK_ENABLE, ret);
+				enable, (unsigned int) WCD934X_CDC_CLK_RST_CTRL_SWR_CONTROL,
+				(unsigned int) WCD934X_CDC_SWR_CLK_EN_MASK,
+				(unsigned int) WCD934X_CDC_SWR_CLK_ENABLE, ret);
 		}
 	} else {
 		ret = regmap_update_bits(wcd->regmap,
@@ -1551,8 +1551,8 @@ static int wcd934x_swrm_clock(struct wcd934x_codec *wcd, bool enable)
 					 WCD934X_CDC_SWR_CLK_EN_MASK, 0);
 		dev_dbg(wcd->dev,
 			"SPX lifecycle swr-clock enable=%d op=update reg=0x%x mask=0x%x value=0x0 ret=%d\n",
-			enable, WCD934X_CDC_CLK_RST_CTRL_SWR_CONTROL,
-			WCD934X_CDC_SWR_CLK_EN_MASK, ret);
+			enable, (unsigned int) WCD934X_CDC_CLK_RST_CTRL_SWR_CONTROL,
+			(unsigned int) WCD934X_CDC_SWR_CLK_EN_MASK, ret);
 		__wcd934x_cdc_mclk_enable(wcd, false);
 	}
 
@@ -4410,7 +4410,7 @@ static int wcd934x_codec_enable_interp_clk(struct snd_soc_dapm_widget *w,
 			dev_dbg(comp->dev,
 				"SPX lifecycle interp=%d event=0x%x reg=0x%x mask=0x%x value=0x%x ret=%d\n",
 				interp_idx, event, main_reg,
-				WCD934X_RX_CLK_EN_MASK, WCD934X_RX_CLK_ENABLE, ret);
+				(unsigned int) WCD934X_RX_CLK_EN_MASK, (unsigned int) WCD934X_RX_CLK_ENABLE, ret);
 		wcd934x_codec_hd2_control(comp, interp_idx, event);
 		wcd934x_codec_hphdelay_lutbypass(comp, interp_idx, event);
 		wcd934x_config_compander(comp, interp_idx, event);
@@ -4427,7 +4427,7 @@ static int wcd934x_codec_enable_interp_clk(struct snd_soc_dapm_widget *w,
 			dev_dbg(comp->dev,
 				"SPX lifecycle interp=%d event=0x%x reg=0x%x mask=0x%x value=0x%x ret=%d\n",
 				interp_idx, event, main_reg,
-				WCD934X_RX_CLK_EN_MASK, 0, ret);
+				(unsigned int) WCD934X_RX_CLK_EN_MASK, 0, ret);
 		/* Reset enable and disable */
 		ret = snd_soc_component_update_bits(comp, main_reg,
 						    WCD934X_RX_RESET_MASK,
@@ -4436,7 +4436,7 @@ static int wcd934x_codec_enable_interp_clk(struct snd_soc_dapm_widget *w,
 			dev_dbg(comp->dev,
 				"SPX lifecycle interp=%d event=0x%x reg=0x%x mask=0x%x value=0x%x ret=%d\n",
 				interp_idx, event, main_reg,
-				WCD934X_RX_RESET_MASK, WCD934X_RX_RESET_ENABLE, ret);
+				(unsigned int) WCD934X_RX_RESET_MASK, (unsigned int) WCD934X_RX_RESET_ENABLE, ret);
 		ret = snd_soc_component_update_bits(comp, main_reg,
 						    WCD934X_RX_RESET_MASK,
 						    WCD934X_RX_RESET_DISABLE);
@@ -4444,7 +4444,7 @@ static int wcd934x_codec_enable_interp_clk(struct snd_soc_dapm_widget *w,
 			dev_dbg(comp->dev,
 				"SPX lifecycle interp=%d event=0x%x reg=0x%x mask=0x%x value=0x%x ret=%d\n",
 				interp_idx, event, main_reg,
-				WCD934X_RX_RESET_MASK, WCD934X_RX_RESET_DISABLE, ret);
+				(unsigned int) WCD934X_RX_RESET_MASK, (unsigned int) WCD934X_RX_RESET_DISABLE, ret);
 		/* Reset rate to 48K*/
 		ret = snd_soc_component_update_bits(comp, main_reg,
 						    WCD934X_RX_PCM_RATE_MASK,
@@ -4453,7 +4453,7 @@ static int wcd934x_codec_enable_interp_clk(struct snd_soc_dapm_widget *w,
 			dev_dbg(comp->dev,
 				"SPX lifecycle interp=%d event=0x%x reg=0x%x mask=0x%x value=0x%x ret=%d\n",
 				interp_idx, event, main_reg,
-				WCD934X_RX_PCM_RATE_MASK, WCD934X_RX_PCM_RATE_F_48K, ret);
+				(unsigned int) WCD934X_RX_PCM_RATE_MASK, (unsigned int) WCD934X_RX_PCM_RATE_F_48K, ret);
 		break;
 	}
 
