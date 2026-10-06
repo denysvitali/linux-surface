@@ -399,6 +399,7 @@ class CombinedLive(Live):
                     try:
                         worker = subprocess.Popen(command, stdin=subprocess.DEVNULL,
                             stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+                            cwd=self.gpu_directory,
                             env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'}, **self.credentials)
                     except Exception:
                         log.close()

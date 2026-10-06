@@ -235,6 +235,51 @@ class NativeFP(unittest.TestCase):
                'stress-ng: info: [42] skipped: 0\n'
                'stress-ng: info: [42] successful run completed in 300s\n')
 
+    @unittest.skipUnless(os.geteuid() in (0, 1000), 'requires UID1000 or privilege drop')
+    def test_native_launch_from_service_root_uses_uid1000_writable_directory(self):
+        actual_popen = subprocess.Popen
+        with tempfile.TemporaryDirectory() as output, \
+             tempfile.TemporaryDirectory(dir='/var/tmp') as working:
+            live = thermal.CombinedLive.__new__(thermal.CombinedLive)
+            live.output, live.gpu_directory = Path(output), Path(working)
+            user = pwd.getpwuid(1000)
+            if os.geteuid() == 0:
+                os.chown(working, 1000, user.pw_gid)
+            live.credentials = (dict(user=1000, group=user.pw_gid,
+                extra_groups=os.getgrouplist(user.pw_name, user.pw_gid)) if os.geteuid() == 0 else {})
+            live.result, live.workers, live.native_workers = {}, [], {}
+            live.cpu_stress_ng = Path('/private/stress-ng')
+            live.clusters = {'0': dict(cpus=list(range(4))), '1': dict(cpus=list(range(4, 8)))}
+            live.return_deadline = float('inf')
+            live.binary, live.fixture = Path('/private/glmark2'), Path('/private/fixture')
+            live.gpu_xml = live.gpu_directory / 'results.xml'
+            launches = []
+            def launch(command, **kwargs):
+                if str(live.cpu_stress_ng) in command:
+                    cpu = command[2]
+                    launches.append(kwargs.get('cwd'))
+                    child = actual_popen(['/usr/bin/python3', '-c',
+                        'import os,pathlib,sys; assert os.geteuid()==1000; '
+                        'pathlib.Path("cpu"+sys.argv[1]).write_text("writable")', cpu], **kwargs)
+                    self.assertEqual(child.wait(timeout=3), 0)
+                    return Mock(pid=100 + int(cpu))
+                return Mock(pid=999)
+            original = Path.cwd()
+            try:
+                os.chdir('/')  # Match the system service's working directory.
+                with patch.object(thermal.subprocess, 'check_output', return_value='-- cursor: cursor\n'), \
+                     patch.object(thermal.subprocess, 'Popen', side_effect=launch):
+                    live.start_load()
+                self.assertEqual(launches, [live.gpu_directory] * 8)
+                self.assertTrue(all((live.gpu_directory / f'cpu{cpu}').read_text() == 'writable'
+                                    for cpu in range(8)))
+            finally:
+                os.chdir(original)
+                for worker in live.native_workers.values():
+                    worker['log'].close()
+                if getattr(live, 'gpu_log', None):
+                    live.gpu_log.close()
+
     def test_native_summary_rejects_nonzero_skip_and_arithmetic_failure(self):
         self.assertTrue(thermal.native_fp_passed(0, self.SUCCESS))
         for rc, text in ((1, self.SUCCESS), (-9, self.SUCCESS), (0, ''),
