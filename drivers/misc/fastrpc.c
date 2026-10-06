@@ -305,6 +305,8 @@ struct fastrpc_channel_ctx {
 	int domain_id;
 	int sesscount;
 	int vmcount;
+	u64 sdsp_heap_start;
+	u64 sdsp_heap_size;
 	struct qcom_scm_vmperm vmperms[FASTRPC_MAX_VMIDS];
 	struct rpmsg_device *rpdev;
 	struct fastrpc_session_ctx session[FASTRPC_MAX_SESSIONS];
@@ -1272,6 +1274,21 @@ static int fastrpc_invoke_send(struct fastrpc_session_ctx *sctx,
 	msg->sc = ctx->sc;
 	msg->addr = ctx->buf ? ctx->buf->dma_addr : 0;
 	msg->size = roundup(ctx->msg_sz, PAGE_SIZE);
+	if (cctx->domain_id == SDSP_DOMAIN_ID && !sctx->sid && ctx->buf) {
+		/* SID0 invocation headers must stay inside the assigned shared heap. */
+		if (msg->addr < cctx->sdsp_heap_start ||
+		    msg->size > cctx->sdsp_heap_size ||
+		    msg->addr - cctx->sdsp_heap_start > cctx->sdsp_heap_size - msg->size) {
+			dev_err(&cctx->rpdev->dev,
+				"SDSP invocation DMA %#llx size %#llx outside assigned heap\n",
+				(unsigned long long)msg->addr, (unsigned long long)msg->size);
+			return -EACCES;
+		}
+		if (handle == FASTRPC_INIT_HANDLE)
+			dev_info(&cctx->rpdev->dev, "SDSP init pd=%u DMA=%#llx size=%#llx\n",
+				 fl->pd, (unsigned long long)msg->addr,
+				 (unsigned long long)msg->size);
+	}
 	fastrpc_context_get(ctx);
 
 	ret = rpmsg_send(cctx->rpdev->ept, (void *)msg, sizeof(*msg));
@@ -2590,8 +2607,13 @@ static int fastrpc_rpmsg_probe(struct rpmsg_device *rpdev)
 
 			err = qcom_scm_assign_mem(res.start, resource_size(&res), &src_perms,
 				    data->vmperms, data->vmcount);
-			if (err)
+			if (err) {
+				dev_err(rdev, "SDSP shared heap assignment failed: %d\n", err);
 				goto err_free_data;
+			}
+			data->sdsp_heap_start = res.start;
+			data->sdsp_heap_size = resource_size(&res);
+			dev_info(rdev, "SDSP DMA heap %pr assigned to %d VMIDs\n", &res, vmcount);
 		}
 
 	}
