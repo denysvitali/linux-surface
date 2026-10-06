@@ -23,6 +23,9 @@ properties:
           - qcom,kaanapali-fastrpc
           - qcom,fastrpc
       - items:
+          - const: microsoft,surface-pro-x-cdsp-fastrpc
+          - const: qcom,fastrpc
+      - items:
           - enum:
               - qcom,glymur-fastrpc
               - qcom,hawi-fastrpc

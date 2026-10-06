@@ -14,6 +14,17 @@ description:
   related to the remote processor.
 
 properties:
+  "#address-cells":
+    const: 2
+
+  "#size-cells":
+    const: 2
+
+  dma-ranges:
+    maxItems: 1
+    description:
+      DMA address window inherited by devices on this communication edge.
+
   apr:
     $ref: /schemas/soc/qcom/qcom,apr.yaml#
     required:
