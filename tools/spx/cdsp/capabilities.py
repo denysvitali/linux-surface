@@ -22,6 +22,9 @@ def stage(dtb):
         return subprocess.check_output(['fdtget', '-t', kind, str(dtb), node, prop], text=True).strip()
 
     assert 'microsoft,surface-pro-x' in get('/', 'compatible').split()
+    parent = NODE.rsplit('/glink-edge/', 1)[0]
+    assert get(parent, '#address-cells', 'u') == '2', 'CDSP DMA parent needs explicit address cells'
+    assert get(parent, '#size-cells', 'u') == '2', 'CDSP DMA parent needs explicit size cells'
     assert get(NODE, 'label') == 'cdsp'
     assert get(NODE, 'status') == 'disabled', 'capability trial requires the disabled opt-in node'
     cb = NODE + '/compute-cb@1'
@@ -44,12 +47,14 @@ def translated_session():
         assert (node / 'reg').read_bytes() == struct.pack('>I', 1)
         cells = struct.unpack('>III', (node / 'iommus').read_bytes())
         assert cells[1:] == (0x1441, 0)
-        assert (device / 'driver').resolve().name == 'qcom,fastrpc-cb'
+        assert (device / 'driver').resolve().name == 'qcom,fastrpc-cb', \
+            'CDSP session driver is not bound; inspect its guarded probe result'
         group = (device / 'iommu_group').resolve(strict=True)
         kind = (group / 'type').read_text().strip()
         assert kind in ('DMA', 'DMA-FQ'), 'identity/unmanaged domains are forbidden'
         members = list((group / 'devices').iterdir())
-        assert len(members) == 1 and members[0].resolve() == device.resolve()
+        assert len(members) == 1 and members[0].resolve() == device.resolve(), \
+            'CDSP IOMMU group must contain only the declared session'
         found.append(dict(device=str(device.resolve()), iommu_group=str(group),
                           domain_type=kind, session=1, stream_id='0x1441'))
     assert len(found) == 1, 'exactly one translated CDSP session is required'
