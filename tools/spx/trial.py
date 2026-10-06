@@ -953,9 +953,10 @@ def srtc_timer(args):
             os.uname().release == '6.18.3-1-surface+' else OUT.parent)
     assert not args.srtc_queue_events or args.srtc_observe_expiry
     assert not args.srtc_observe_irq or args.srtc_queue_events
-    label = 'srtc-irq-expiry' if args.srtc_observe_irq else ('srtc-queued-expiry' if args.srtc_queue_events else (
+    assert not args.srtc_d0_notify or args.srtc_observe_irq
+    label = 'srtc-d0-expiry' if args.srtc_d0_notify else ('srtc-irq-expiry' if args.srtc_observe_irq else ('srtc-queued-expiry' if args.srtc_queue_events else (
         'srtc-expiry' if args.srtc_observe_expiry else 'srtc-timer')
-    )
+    ))
     output = base / ATTEMPT / label
     output.mkdir(parents=True, mode=0o700)
     target = output / 'result.json'
@@ -966,6 +967,7 @@ def srtc_timer(args):
                   complete=False, suspended=False)
     armed = False
     queued = False
+    d0_exited = False
     loaded_here = False
     irq_observer_owned = False
 
@@ -1051,6 +1053,9 @@ def srtc_timer(args):
             assert 0 <= second < first, 'firmware countdown did not decrease'
             result['countdown_passed'] = True
             if args.srtc_observe_expiry:
+                if args.srtc_d0_notify:
+                    d0_exited = True
+                    result['d0_exit_reply'] = request(fd, 0x33, b'', 1)
                 while time.monotonic() < started + 32:
                     ready, _, _ = select.select([fd], [], [], max(0, min(1, started + 32 - time.monotonic())))
                     if ready:
@@ -1065,10 +1070,14 @@ def srtc_timer(args):
                                 command=cid, instance=iid, payload=data[offset:offset+length].hex(),
                                 elapsed_seconds=time.monotonic()-started))
                             offset += length
-                result['expiry_remaining_seconds'] = timer_read(fd, selected)
-                result['expiry_elapsed_seconds'] = time.monotonic() - started
                 result['wake_irq_after'] = [line.strip() for line in
                     Path('/proc/interrupts').read_text().splitlines() if 'ssam_wakeup' in line]
+                if d0_exited:
+                    result['d0_entry_reply'] = request(fd, 0x34, b'', 1)
+                    d0_exited = False
+                    result['d0_restored'] = True
+                result['expiry_remaining_seconds'] = timer_read(fd, selected)
+                result['expiry_elapsed_seconds'] = time.monotonic() - started
                 if queued:
                     result['display_on_reply'] = request(fd, 0x16, b'', 1)
                     queued = False
@@ -1077,6 +1086,14 @@ def srtc_timer(args):
         result['error'] = repr(error)
     finally:
         try:
+            if d0_exited:
+                try:
+                    with Path('/dev/surface/aggregator').open('rb', buffering=0) as stream:
+                        result['cleanup_d0_entry_reply'] = request(stream.fileno(), 0x34, b'', 1)
+                    d0_exited = False
+                    result['d0_restored'] = True
+                except Exception as error:
+                    result['cleanup_error'] = 'D0 restoration: ' + repr(error)
             if queued:
                 try:
                     with Path('/dev/surface/aggregator').open('rb', buffering=0) as stream:
@@ -1689,6 +1706,8 @@ def main():
                         help='temporarily notify EC display-off during expiry; restore display-on')
     parser.add_argument('--srtc-observe-irq', action='store_true',
                         help='temporarily enable the existing disabled IRQ for awake-only observation')
+    parser.add_argument('--srtc-d0-notify', action='store_true',
+                        help='also test the documented D0-exit/entry EC notification pair while awake')
     parser.add_argument('--sensors', action='store_true', help='retain initial SensorsPD listener and gate desktop proxy on SSC readiness')
     parser.add_argument('--sensors-config', type=Path, default=Path('/var/tmp/spx-sensors-config'))
     parser.add_argument('--sensors-daemon', type=Path, default=Path('/var/tmp/spx-hexagonrpc/build/hexagonrpcd/hexagonrpcd'))
