@@ -244,6 +244,8 @@ def prepare(args):
     prepared = dict(utc=datetime.now(timezone.utc).isoformat(), preboot_id=BOOT_ID, release=RELEASE, attempt=ATTEMPT, entry='spx-trial-' + ATTEMPT, cmdline=cmdline, source_commit=subprocess.check_output(['git', '-c', 'safe.directory=' + str(REPO), 'rev-parse', 'HEAD'], cwd=REPO, text=True).strip(), build_directory=str(BUILD), private_config=str(OUT / 'kernel.config'), bluetooth_address=args.address, address_is_per_installation=True, venus_trial=False, speaker_drivers_blocked=True, hardware_acceptance_closed=False, installed=False, boot_selected=False, boot_payloads=dict(vmlinuz=sha(OUT / 'vmlinuz'), initramfs=sha(OUT / 'initramfs.img'), dtb=sha(OUT / 'spx.dtb')))
     prepared.update(sensors_startup=args.sensors, sensors_private_ssc=bool(args.sensors_ssc_library), audio_mode='parked' if args.audio else 'blocked',
                     cpu_passive_cooling=args.cpu_passive_cooling,
+                    thermal_combined=args.thermal_combined,
+                    thermal_gpu_fixture=str(args.thermal_gpu_fixture),
                     cdsp_capabilities=args.cdsp,
                     usbc_early_load=args.usbc,
                     usbc_phy_orientation=args.usbc_phy_orientation,
@@ -1711,6 +1713,15 @@ def sensors_lifecycle(args):
         subprocess.run([lock, 'release', 'device', owner], check=True)
 
 
+def dispatch_thermal(args, prepared):
+    """Consume an explicitly queued combined workload once after baseline."""
+    if not prepared.get('thermal_combined') or (OUT / 'combined-thermal').exists():
+        return
+    args.thermal_combined = True
+    args.thermal_gpu_fixture = Path(prepared['thermal_gpu_fixture'])
+    thermal_check(args)
+
+
 def thermal_check(args):
     from thermal import Live, CombinedLive
     lock = str(REPO / 'tools/spx/spx-lock')
@@ -1776,7 +1787,7 @@ def main():
     parser.add_argument('--cpu-passive-cooling', action='store_true',
                         help='stage board Linux75C/5C passive CPU policy into the retained DTB')
     parser.add_argument('--thermal-combined', action='store_true',
-                        help='opt in to300s AC-only CPU+GPU thermal workload with80C ceiling; thermal command only')
+                        help='opt in to300s AC-only CPU+GPU load with80C ceiling; prepare queues it after baseline')
     parser.add_argument('--thermal-gpu-fixture', type=Path,
                         default=Path('/var/tmp/spx-gpu-benchmark-20261003/fixture'),
                         help='retained glmark2-es2-gbm/data fixture for combined thermal test')
@@ -1809,8 +1820,10 @@ def main():
     if args.microphone_source != 'DMIC1' and (args.command not in ('audio', 'arm-audio') or
                                             args.audio_action not in ('capture', 'feedback', 'desktop-mic')):
         parser.error('--microphone-source DMIC0 requires audio/arm-audio capture, feedback or desktop-mic')
-    if args.thermal_combined and args.command != 'thermal':
-        parser.error('--thermal-combined requires the thermal command')
+    if args.thermal_combined and args.command not in ('prepare', 'thermal'):
+        parser.error('--thermal-combined requires prepare or thermal')
+    if args.command == 'prepare' and args.thermal_combined and (args.audio or args.cdsp):
+        parser.error('combined thermal trial requires audio and experimental CDSP disabled')
     assert re.fullmatch(r'[0-9]{8}[a-z0-9]+', args.attempt)
     global ATTEMPT, OUT, STAGE, BUILD, PARENT, OLD, RECOVERY, BOOT_ID, RELEASE
     ATTEMPT = args.attempt
@@ -1847,6 +1860,7 @@ def main():
                 subprocess.run([lock, 'release', 'device', owner], check=True)
             if record.get('cdsp_capabilities') and not (OUT / 'cdsp-capabilities').exists():
                 cdsp_capabilities(args)
+            dispatch_thermal(args, record)
             dispatch_audio(args)
         else:
             {'install': install, 'boot': boot, 'return': return_to_default,
