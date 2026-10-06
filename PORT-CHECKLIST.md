@@ -27,7 +27,7 @@ restore native2880×1920/60Hz scanout with fresh vblank and no new display fault
 Visual quality remains open; DD proves post-sleep scanout. CG extends CE's power-cycle coverage to the attached dock. CA's earlier
 DP0 startup/reload result remains scoped to its attached dock.
 CC closes A02b: both fitted microphone inputs record known stimuli; quality,
-simultaneous mapping and lifecycle remain open. CB playback reopen still fails.
+simultaneous mapping and lifecycle remain open. CB left and DE right playback reopen fail after first-cycle passes.
 **CM closes P05a:** both CPU clusters and GPU enforce/release cooling limits.
 **CX closes P05b:** five-minute simultaneous CPU/FD680 load and cleanup pass,
 peak69.8C. CY extends this to verified native FP, peak66.3C; automatic responses remain open.
@@ -1170,6 +1170,11 @@ GPU runtime suspend works.
   including a30-minute sleep on battery, with measured drain and intended wake
   sources. Display, input, network, audio, cameras and attached devices recover;
   no kernel hang/reset or repeated manual intervention.
+  **DE:** with audio codecs enabled and sessions parked, the SLIM controller
+  rejects sleep with `-EBUSY`; no complete interval occurs. Its intentional
+  runtime power-collapse guard is reached through forced system PM. DD's
+  audio-disabled sleep acceptance remains scoped.
+  [DE result](tools/spx/boot-diagnostics/RESULT-20261007de.md).
   **DD:**13 alarm-based sleeps pass with the FastRPC freezer fix, including
   three-minute and30-minute intervals on AC.
   Native sensor clients survive nine consecutive cycles; post-resume TPM,
