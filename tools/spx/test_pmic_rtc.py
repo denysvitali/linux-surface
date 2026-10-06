@@ -26,6 +26,9 @@ class Staging(unittest.TestCase):
             self.assertEqual(get('/aliases', 'rtc1'), pmic_rtc.NODE)
             props = subprocess.check_output(['fdtget', '-p', str(dtb), pmic_rtc.NODE], text=True).splitlines()
             self.assertEqual(set(props), {'compatible', 'reg', 'reg-names', 'interrupts'})
+            pmic_rtc.stage(dtb)
+            subprocess.run(['fdtput', '-t', 'x', str(dtb), pmic_rtc.NODE, 'interrupts',
+                            '0', '62', '1', '1'], check=True)
             with self.assertRaises(AssertionError):
                 pmic_rtc.stage(dtb)
 

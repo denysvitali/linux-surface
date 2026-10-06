@@ -24,8 +24,17 @@ def stage(dtb):
     assert get('/', 'model').startswith('Microsoft Surface Pro X')
     assert get(PARENT, 'compatible') == 'qcom,pm8150 qcom,spmi-pmic'
     children = subprocess.check_output(['fdtget', '-l', str(dtb), PARENT], text=True).splitlines()
-    assert 'rtc@6000' not in children, 'RTC candidate already present'
     aliases = subprocess.check_output(['fdtget', '-p', str(dtb), '/aliases'], text=True).splitlines()
+    if 'rtc@6000' in children:
+        assert get(NODE, 'compatible') == 'qcom,pm8941-rtc'
+        assert get('/aliases', 'rtc1') == NODE
+        for prop, value in [('reg', '6000 6100'), ('interrupts', '0 61 1 1')]:
+            actual = subprocess.check_output(['fdtget', '-t', 'x', str(dtb), NODE, prop], text=True).strip()
+            assert actual == value, 'retained RTC resource mismatch'
+        assert get(NODE, 'reg-names') == 'rtc alarm'
+        props = subprocess.check_output(['fdtget', '-p', str(dtb), NODE], text=True).splitlines()
+        assert set(props) <= {'compatible', 'reg', 'reg-names', 'interrupts', 'phandle'}
+        return
     assert 'rtc1' not in aliases, 'rtc1 already reserved'
     subprocess.run(['fdtput', '-c', str(dtb), NODE], check=True)
     for prop, kind, values in [
