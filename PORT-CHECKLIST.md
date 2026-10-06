@@ -6,14 +6,15 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-06, DA: sensor host recovery restores data with reset fault)
+## Status (2026-10-06, DB: one guarded automatic sensor recovery passes)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
 rotation, calibration and resume remain open. **CR closes S02d:** quiesced
 backend stop/start restores ownership and all streams/desktop APIs.
-DA restores streams/fresh desktop clients after host exit, but SLPI faults during
-reset; clean crash recovery remains open. [DA result](tools/spx/boot-diagnostics/RESULT-20261006da.md).
+**DB closes S02f:** one debug-enabled automatic host recovery restores streams
+and fresh desktop clients without a reset fault. DA's failure remains unresolved;
+repeat reliability is open. [DB result](tools/spx/boot-diagnostics/RESULT-20261006db.md).
 **CS closes S02e:** active unprivileged user claims/reopens motion and receives compass updates. Latest result:
 [CS](tools/spx/boot-diagnostics/RESULT-20261006cs.md), kernel
 `7.3.0-rc2-spx-mainline-20261004bg+`. **U03a passes:** two GNOME off/on cycles
@@ -62,7 +63,7 @@ awaits attribution for later observations.
 | Suspend/resume (P03) | Kernel exposes s2idle; systemd sleep/suspend targets masked | Intended wake, then controlled sleep |
 | Thermal (P05) | **CM cooling limits; CX/CY combined load/cleanup, CY native FP verification pass** | Real automatic response, longer envelope and enclosure behavior |
 | Idle power (P02) | BU: CPU scales down; GPU runtime-suspends | **Battery tests deferred by user**; remaining forced-on devices |
-| Sensors (S01, S02) | BW light readout; **CO desktop motion/compass; CR controlled restart pass** | Light response; axes, physical rotation/calibration, crash recovery/resume |
+| Sensors (S01, S02) | **CO desktop APIs; CR restart; DB one automatic host recovery passes** | Light response; axes/calibration; DA reset fault/repeat reliability; resume |
 | Cellular, GNSS (N03, N04) | Recovery: GNSS starts/stops but no fix; modem rejects online mode | Real modem provisioning, IPA datapath, SIM; actual GNSS fix |
 
 ## Next work, in order
@@ -1047,6 +1048,8 @@ GPU runtime suspend works.
   unanswered DSP response cleanup remain open. DA's automatic reset restores
   three streams and fresh user clients after host exit, but firmware faults on
   shutdown; clean crash recovery fails. [DA result](tools/spx/boot-diagnostics/RESULT-20261006da.md).
+  DB passes one debug-enabled automatic host recovery without that fault;
+  logging/timing independence and repeated reliability remain unproven.
   **CS user observation:** upside-down image during "tilted left"; native API
   reports left-up and Mutter90°. Physical pose needs clarification before a
   board sign/mapping fix. [Orientation result](tools/spx/boot-diagnostics/RESULT-20261006cs-orientation.md).
@@ -1086,6 +1089,16 @@ GPU runtime suspend works.
     Provider/proxy retain their PIDs and zero restarts; all bounded clients end.
     Physical rotation, bearing accuracy, GNOME auto-rotation and resume remain
     unverified. [CS result](tools/spx/boot-diagnostics/RESULT-20261006cs.md).
+  - [x] **S02f — One guarded automatic sensor host-exit recovery.** DB, boot
+    `1619b59b-aff4-46ba-9ac8-c9d61335ae00`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: active UID1000 clients receive data,
+    verified host is killed once, actual OnFailure resets only after zero
+    users/pending and final HLOS restoration. New backend returns73/69/29 finite
+    samples with clean disables; fresh desktop clients reopen and receive
+    headings. No new reset/kernel faults; all owned clients/scopes end.
+    Explicit private-proxy debug enabled; DA fault remains unrepaired. Repeated,
+    logging-independent, uninterrupted-client and firmware-crash recovery are
+    unproven. [DB result](tools/spx/boot-diagnostics/RESULT-20261006db.md).
 - [ ] **P01 — Battery and charging.** Plausible voltage/current/capacity/status,
   observed discharge and charging, AC transitions, charge limits where supported
   and low-battery behavior. Test applicable USB-C and Surface Connect chargers;
