@@ -22,3 +22,16 @@ SC8180X/SQ2 PHY power contract, actual board mapping or independently establishe
 ownership; neither successful old raw capture nor related-SoC wiring suffices.
 There was no binary execution, bus access, GPIO/regulator write or reboot.
 C01 remains open.
+
+## Bounded follow-up, 2026-10-06
+
+The current SC8180X PHY table requests no regulators, while its CAMSS resource
+entry inherits the eight SC8280XP CSIDs' normal `vdda-phy`/`vdda-pll` requests.
+The SC8280XP binding describes these as0.88V/1.2V CSIPHY supplies. That is an
+inherited software requirement, not independently established SQ2 wiring.
+SC8180X's existing `refgen@88e7000` node has DSI consumers; neither retained
+receiver tables nor the inspected PEP/MIPI/PMIC data establishes its connection
+to camera analog inputs. No supported provider alias or requirement removal
+follows. The missing fact is the fitted CSI power-net/provider identities and
+control ownership, or an authoritative SC8180X contract identifying their
+internal supply domain. No device operation, build, capture or new trial.
