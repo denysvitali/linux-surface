@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-06, CS: firmware TPM and active-user sensor APIs pass)
+## Status (2026-10-06, CT: automatic firmware TPM startup passes)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
@@ -18,7 +18,7 @@ backend stop/start restores ownership and all streams/desktop APIs.
 restore3440×1440/50Hz external scanout. CC0 normal Type-C callback succeeds;
 reverse plugs, visible output and hotplug remain unverified.
 CF retains P01a actual charging pass; further battery tests are deferred.
-**CS closes B06a:** firmware TPM capability/PCR/GetRandom and driver reattachment pass.
+**CS closes B06a; CT closes B06b:** firmware TPM commands/reattachment and automatic boot startup pass.
 **D01a passes on CE:** two GNOME off/on cycles
 restore native2880×1920/60Hz scanout with fresh vblank and no new display faults.
 Visual quality and suspend remain open. CG extends CE's power-cycle coverage to the attached dock. CA's earlier
@@ -42,7 +42,7 @@ awaits attribution for later observations.
 | Internal panel (D01) | **CE: D01a GNOME off/on scanout passes**; user reports display/brightness working | Visual attribution/quality, brightness range and resume |
 | Wi-Fi (N01) | 5 GHz/reconnect and IPv6 VPN pass; 2.4 GHz accepted by user assumption | Native WAN IPv6, roaming, sustained use and resume |
 | RTC (B05) | **BX: B05a early boot time passes**; readback/warm reboot pass | Cold power-off retention and suspend |
-| Firmware TPM/security (B06) | **CS: TPM2 capability/PCR/GetRandom and reattachment pass** | Automatic boot startup, signing/Secure Boot, measured-boot integration and resume |
+| Firmware TPM/security (B06) | **CT: automatic TPM2 startup and public commands pass; CS reattachment passes** | Signing/Secure Boot, measured-boot integration and resume |
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
 | Speakers (A01) | **BY: quiet default desktop playback passes** | Persistence, volume/mapping/balance, reopen and lifecycle |
@@ -234,9 +234,15 @@ reconciled. [Inventory](tools/spx/boot-diagnostics/HARDWARE-INVENTORY-20261002.m
     returns the reserved control-area address. Guarded driver exposes standard
     TPM2.0/QCOM properties, PCR banks/read and two distinct32-byte random outputs.
     Owned auxiliary removal releases the class/resource; reattachment repeats
-    the functional pass without changing PCR0. Automatic boot startup,
-    Secure Boot/signing, measured-boot integration and resume remain open.
+    the functional pass without changing PCR0. Secure Boot/signing,
+    measured-boot integration and resume remain open.
     [TPM result](tools/spx/boot-diagnostics/RESULT-20261006cs-tpm.md).
+  - [x] **B06b — Automatic firmware TPM startup.** CT, boot
+    `b56c1e85-0913-4327-aade-233064c8b45a`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: built-in named-app discovery and normal
+    module loading create both TPM devices without the temporary lookup helper.
+    Two separate public clients pass capability/PCR/GetRandom and preserve PCR0.
+    [Boot result](tools/spx/boot-diagnostics/RESULT-20261006ct.md).
 - [ ] **B07 — Additional accelerators.** Inventory fitted DSP/NPU/other compute
   capabilities and available interfaces; validate a real supported workload or
   document the specific missing support. A thermal-zone name is not a working NPU.
