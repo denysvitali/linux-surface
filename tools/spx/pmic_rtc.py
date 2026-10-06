@@ -98,6 +98,9 @@ def exercise(output, attempt, release, *, suspend=False):
         fcntl.ioctl(fd, RTC_WKALM_SET, struct.pack('=BB2x9i', 1, 0, *tm))
         assert alarm(fd)[0] == 1, 'alarm enable not observed'
         if suspend:
+            result['phase'] = 'alarm-armed-before-suspend'
+            (output / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
+            os.sync()
             wakecount = Path('/sys/power/wakeup_count')
             count = wakecount.read_text().strip()
             wakecount.write_text(count + '\n')
@@ -132,5 +135,6 @@ def exercise(output, attempt, release, *, suspend=False):
                 result['cleanup_error'] = str(error)
             finally:
                 os.close(fd)
+        result['phase'] = 'finished'
         (output / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
     return result
