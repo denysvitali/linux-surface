@@ -245,6 +245,8 @@ def prepare(args):
                     'q6asm_dai.spx_force_timer_pacing=0']
     else:
         cmdline.append('module_blacklist=wcd934x,soundwire_qcom,snd_soc_wsa881x,snd_soc_wcd934x')
+    if args.slim_s2idle_retain:
+        cmdline.append('slim_qcom_ngd_ctrl.spx_s2idle_retain=1')
     if args.usbc_phy_orientation:
         assert args.usbc, '--usbc-phy-orientation requires --usbc'
         cmdline.append('surface_aggregator_usbc.phy_orientation=1')
@@ -271,7 +273,7 @@ def prepare(args):
     run('grub-syntax', ['grub-script-check', str(OUT / 'entry.cfg')])
     prepared = dict(utc=datetime.now(timezone.utc).isoformat(), preboot_id=BOOT_ID, release=RELEASE, attempt=ATTEMPT, entry='spx-trial-' + ATTEMPT, cmdline=cmdline, source_commit=subprocess.check_output(['git', '-c', 'safe.directory=' + str(REPO), 'rev-parse', 'HEAD'], cwd=REPO, text=True).strip(), build_directory=str(BUILD), private_config=str(OUT / 'kernel.config'), bluetooth_address=args.address, address_is_per_installation=True, venus_trial=False, speaker_drivers_blocked=True, hardware_acceptance_closed=False, installed=False, boot_selected=False, boot_payloads=dict(vmlinuz=sha(OUT / 'vmlinuz'), initramfs=sha(OUT / 'initramfs.img'), dtb=sha(OUT / 'spx.dtb')))
     prepared.update(sensors_close_debug=args.sensors_close_debug, sensors_crash_recovery=args.sensors_crash_recovery, sensors_startup=args.sensors, sensors_private_ssc=bool(args.sensors_ssc_library), audio_mode='parked' if args.audio else 'blocked',
-                    pmic_rtc=args.pmic_rtc,
+                    pmic_rtc=args.pmic_rtc, slim_s2idle_retain=args.slim_s2idle_retain,
                     cpu_passive_cooling=args.cpu_passive_cooling,
                     thermal_combined=args.thermal_combined,
                     thermal_gpu_fixture=str(args.thermal_gpu_fixture),
@@ -1859,6 +1861,8 @@ def main():
     parser.add_argument('--cdsp', action='store_true',
                         help='enable the guarded CDSP translated capability-only transport')
     parser.add_argument('--audio', action='store_true', help='enable codecs with both amplifiers parked; no playback')
+    parser.add_argument('--slim-s2idle-retain', action='store_true',
+                        help='opt in to WIP powered-PIO retention during guarded s2idle; no energy claim')
     parser.add_argument('--usbc', action='store_true',
                         help='load experimental USC-to-DP0 forwarding in the initramfs')
     parser.add_argument('--usbc-phy-orientation', action='store_true',
@@ -1884,6 +1888,8 @@ def main():
                         help='after a queued audio test, use the existing return timer after this delay (61..900)')
     parser.add_argument('--desktop-user', default='dvitali')
     args = parser.parse_args()
+    if args.slim_s2idle_retain and (args.command != 'prepare' or not args.audio or not args.pmic_rtc):
+        parser.error('--slim-s2idle-retain requires prepare --audio --pmic-rtc')
     if args.reopen_first_channel is not None and (args.command != 'audio' or args.audio_action != 'reopen'):
         parser.error('--reopen-first-channel requires audio --audio-action reopen')
     if args.microphone_source != 'DMIC1' and (args.command not in ('audio', 'arm-audio') or
