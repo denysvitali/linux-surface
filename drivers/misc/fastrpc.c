@@ -694,6 +694,7 @@ static void fastrpc_user_free(struct kref *ref)
 		fastrpc_buf_free(buf);
 	}
 
+	put_device(fl->sctx->dev);
 	fastrpc_channel_ctx_put(fl->cctx);
 	mutex_destroy(&fl->mutex);
 	kfree(fl);
@@ -1834,6 +1835,8 @@ static struct fastrpc_session_ctx *fastrpc_session_alloc(
 		if (!cctx->session[i].used && cctx->session[i].valid) {
 			cctx->session[i].used = true;
 			session = &cctx->session[i];
+			/* Keep the context-bank device alive through final user cleanup. */
+			get_device(session->dev);
 			/* any non-zero ID will work, session_idx + 1 is the simplest one */
 			fl->client_id = i + 1;
 			break;

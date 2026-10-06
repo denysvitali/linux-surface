@@ -21,8 +21,8 @@ Ownership states:
   response references remain held, deliberately blocking unload and reprobe.
 - Final channel release occurs after user/context DMA cleanup. It frees channel
   heap buffers, restores the whole pool to HLOS, removes the lease, releases the
-  CMA association and retained device. Buffer/device references keep delayed DMA
-  free valid; mask storage belongs to the device rather than the channel.
+  CMA association and retained device. Users also retain their context-bank device through map cleanup.
+  Buffer/device references keep delayed DMA free valid; mask storage belongs to the device rather than the channel.
 - Failed restoration retains the resource lease, channel/device and CMA
   association until reboot. Reprobe cannot assume the pool is HLOS-owned. This
   deliberately leaks bounded state instead of erasing ownership evidence.
