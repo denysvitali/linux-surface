@@ -34,6 +34,10 @@ manufacturer QCOM, active PCR banks and a nonzero SHA256 PCR0. Two GetRandom
 requests each return32 distinct nonzero bytes. Removing the owned auxiliary
 client releases the device and resource; reattachment repeats the pass with
 unchanged PCR0/update counter. No ownership or persistent object is changed.
-Signing/Secure Boot and
-suspend/resume remain unverified. See RESULT-20261006cs-tpm.md and the bounded
-public command client in tools/spx/tpm/check.py.
+CT boot b56c1e85-0913-4327-aade-233064c8b45a with the same kernel release
+starts the driver automatically without the temporary auxiliary helper.
+Its firmware log replays to all recorded SHA256 PCR0--9 values; GRUB's
+kernel, initramfs and DTB measurements match the actual boot payloads.
+Signing/Secure Boot and suspend/resume remain unverified. See the CS TPM
+and CT measured-boot result files and the bounded public clients in
+tools/spx/tpm/.

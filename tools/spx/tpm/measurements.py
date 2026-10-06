@@ -149,7 +149,7 @@ def main():
             result['payload_measurements'] = measurements
             result['complete'] &= all(m['matches'] for m in measurements)
         if not result['complete']:
-            result['error'] = 'Firmware log digest chain does not match live PCRs'
+            result['error'] = 'Recorded measurement does not match live PCRs or boot payloads'
     except Exception as error:
         result['complete'] = False
         result['error'] = f'{type(error).__name__}: {error}'
