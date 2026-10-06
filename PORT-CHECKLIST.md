@@ -1093,8 +1093,13 @@ GPU runtime suspend works.
   [Wake audit](tools/spx/boot-diagnostics/WAKE-AUDIT-20261003.md).
   **October5 lead:** fitted SQ2 firmware defines SSAM AC/DC relative timers
   (commands0x1a/0x1d); a30-second DC countdown and disable/readback pass on the
-  6.18 recovery kernel. Expiry routing/filtering, mainline behavior and suspend
-  resume remain unvalidated. SSAM's GPIO wake IRQ handler does not drain queued
+  6.18 recovery kernel. CT verifies AC timer0 countdown and automatic expiry
+  on mainline, with timers disabled afterward. Neither normal delivery nor
+  queued events plus supported D0 notifications produces an awake GPIO180 IRQ,
+  including with the existing IRQ temporarily enabled. This does not validate
+  wake from sleep; expiry routing/filtering and suspend resume remain open.
+  [CT timer result](tools/spx/boot-diagnostics/RESULT-20261006ct-srtc.md).
+  SSAM's GPIO wake IRQ handler does not drain queued
   events or filter wake reasons, so wake permission remains disabled. Details
   in the [wake audit](tools/spx/boot-diagnostics/WAKE-AUDIT-20261003.md).
   **User report, October 4:** no suspend option; short power press opens shutdown

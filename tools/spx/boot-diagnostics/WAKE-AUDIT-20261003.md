@@ -83,6 +83,14 @@ This verifies a bounded firmware countdown and cleanup on recovery only. It
 does not show expiry delivery, wake IRQ handling, mainline behavior, or suspend
 resume. Do not close P03 or advertise RTC alarms from this result.
 
+On CT mainline (October6), AC timer0 also counts30→26 seconds and expires to
+disabled after32 seconds. Display-off/on and D0-exit/entry notifications all
+return0 with restoration. Neither a passive SAM observer nor the briefly
+enabled, normally disabled GPIO180 IRQ sees expiry delivery while awake.
+This leaves platform-sleep routing unvalidated. See
+[CT timer result](RESULT-20261006ct-srtc.md); this path is parked pending a
+supported wake contract or physical wake fixture.
+
 ## Expiry delivery path remains unimplemented (2026-10-05)
 
 Read-only review found the blocker in the current SSAM controller. Its
