@@ -1060,10 +1060,13 @@ def srtc_timer(args):
     finally:
         try:
             if queued:
-                with Path('/dev/surface/aggregator').open('rb', buffering=0) as stream:
-                    result['cleanup_display_on_reply'] = request(stream.fileno(), 0x16, b'', 1)
-                queued = False
-                result['display_on_restored'] = True
+                try:
+                    with Path('/dev/surface/aggregator').open('rb', buffering=0) as stream:
+                        result['cleanup_display_on_reply'] = request(stream.fileno(), 0x16, b'', 1)
+                    queued = False
+                    result['display_on_restored'] = True
+                except Exception as error:
+                    result['cleanup_error'] = 'display-on restoration: ' + repr(error)
             if armed:
                 try:
                     device = Path('/dev/surface/aggregator')
