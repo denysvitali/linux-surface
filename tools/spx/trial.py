@@ -407,10 +407,27 @@ def install(args):
     print(ATTEMPT + ' installed with900s return; known-good default retained, no selection', flush=True)
 
 
+def prepare_shutdown_ramfs():
+    """Build native encrypted-root shutdown support before experimental work."""
+    started = time.monotonic()
+    unit = 'mkinitcpio-generate-shutdown-ramfs.service'
+    subprocess.run(['systemctl', 'start', unit], check=True, timeout=60)
+    state = dict(line.split('=', 1) for line in subprocess.check_output(
+        ['systemctl', 'show', unit, '-p', 'Result', '-p', 'ExecMainStatus'],
+        text=True, timeout=10).splitlines())
+    assert state == {'Result': 'success', 'ExecMainStatus': '0'}, state
+    shutdown = Path('/run/initramfs/shutdown')
+    assert shutdown.is_file() and os.access(shutdown, os.X_OK), \
+        'native shutdown ramdisk is not ready'
+    return dict(ready=True, seconds=time.monotonic() - started,
+                scope='native shutdown preparation; kernel waits remain unverified')
+
+
 def boot(args):
     require_source_boot()
     assert float(Path('/proc/uptime').read_text().split()[0]) > 120
     recovery()
+    prepare_shutdown_ramfs()
     installed = json.loads((OUT / 'installed.json').read_text())
     prepared = json.loads((OUT / 'prepared.json').read_text())
     selected = OUT / 'selected.json'
@@ -491,6 +508,9 @@ def functional_check(args):
             result['checks'][name] = dict(error=str(error))
         save()
 
+    save()
+    result['checks']['shutdown-ramfs'] = prepare_shutdown_ramfs()
+    save()
     result['checks']['cpu-frequency-policy'] = configure_cpu_scaling()
     save()
     for pattern in ('class/power_supply/*/uevent', 'class/thermal/thermal_zone*/type',
