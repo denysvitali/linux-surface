@@ -6,10 +6,10 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-06, CM: CPU/GPU cooling requests pass)
+## Status (2026-10-06, CN: live accelerometer/gyroscope streams pass)
 
-CH/CJ/CK produced no motion samples. After CM's cooling gain, **CN is prepared**
-to test CL's unbooted shared-pool fix. Latest result: [CM](tools/spx/boot-diagnostics/RESULT-20261006cm.md), kernel
+**CN closes S02a:** the shared DMA pool enables live accelerometer/gyro samples.
+Desktop rotation and mapping remain open. Latest result: [CN](tools/spx/boot-diagnostics/RESULT-20261006cn.md), kernel
 `7.3.0-rc2-spx-mainline-20261004bg+`. **U03a passes:** two GNOME off/on cycles
 restore3440×1440/50Hz external scanout. CC0 normal Type-C callback succeeds;
 reverse plugs, visible output and hotplug remain unverified.
@@ -52,7 +52,7 @@ awaits attribution for later observations.
 | Suspend/resume (P03) | Kernel exposes s2idle; systemd sleep/suspend targets masked | Intended wake, then controlled sleep |
 | Thermal (P05) | **CM: P05a CPU/GPU cooling limits pass**; BH 3 min load stable | Automatic temperature response; sustained combined workload |
 | Idle power (P02) | BU: CPU scales down; GPU runtime-suspends | **Battery tests deferred by user**; remaining forced-on devices |
-| Sensors (S01, S02) | BW: TCS3430 runtime-PM/readout passes; **CN shared-pool retry prepared after CM gain** | Physical light response; auto-brightness; pool assignment, registry and motion streams |
+| Sensors (S01, S02) | BW light readout passes; **CN: S02a live accelerometer/gyro streams pass** | Light response/auto-brightness; axes, desktop rotation, persistence/resume |
 | Cellular, GNSS (N03, N04) | Recovery: GNSS starts/stops but no fix; modem rejects online mode | Real modem provisioning, IPA datapath, SIM; actual GNSS fix |
 
 ## Next work, in order
@@ -990,14 +990,18 @@ GPU runtime suspend works.
 - [ ] **S02 — Motion/orientation.** Inventory actual accelerometer/gyro/magnetometer
   or sensor-hub interfaces; validate axes, orientation changes and auto-rotation,
   including resume. PMIC ADCs are not evidence of motion-sensor support.
-  **CJ WIP:** separate SLPI/SDSP firmware starts in the reported PIL pool and
-  SSC400 replies over GLINK/QRTR. Both motion clients wait for unavailable
-  registry SUIDs; neither produces samples. CK's bare SID0 attach crashes SLPI.
-  **Parked after three boots without motion samples.** CL's separately owned
-  shared DMA pool and invocation guard are compiled and prepared, unbooted and
-  untested. After CM closes P05a, CN stages this fix for one bounded retry;
-  verify pool assignment before attachment. Actual motion samples remain absent.
-  [CK result](tools/spx/boot-diagnostics/RESULT-20261006ck.md).
+  CJ starts SLPI/SSC but lacks registry; CK's bare SID0 attach crashes SLPI.
+  After parking and CM's cooling gain, CN's separate shared DMA pool lets
+  SensorsPD attach and real motion streams run. Axis mapping, real rotation,
+  desktop integration and resume remain open.
+
+  - [x] **S02a — Live accelerometer and gyroscope streams.** CN, boot
+    `32087f09-20e6-4d8f-84a0-21b64e3d5ee5`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: private16MiB pool assignment succeeds;
+    SensorsPD attaches with invocation DMA inside it. Five-second clients record
+    120/119 finite XYZ samples, then disable successfully and exit0. SLPI remains
+    running and the test daemon stops. Stationary sample streams do not prove
+    mapping, rotation or full S02. [CN result](tools/spx/boot-diagnostics/RESULT-20261006cn.md).
 - [ ] **P01 — Battery and charging.** Plausible voltage/current/capacity/status,
   observed discharge and charging, AC transitions, charge limits where supported
   and low-battery behavior. Test applicable USB-C and Surface Connect chargers;
