@@ -23,6 +23,14 @@ spec.loader.exec_module(audio)
 
 
 class AudioTests(unittest.TestCase):
+    def test_right_first_only_changes_reopened_cycle(self):
+        expected = [('left', {0}), ('right', {1}), ('both', {0, 1})]
+        self.assertEqual(list(audio.playback_tones('reopen', 1, 'right')), expected)
+        self.assertEqual(list(audio.playback_tones('feedback', 2, 'right')), expected)
+        self.assertEqual(list(audio.playback_tones('reopen', 2, None)), expected)
+        self.assertEqual(list(audio.playback_tones('reopen', 2, 'right')),
+                         [expected[1], expected[0], expected[2]])
+
     def test_tones_have_bounded_level_and_correct_channels(self):
         for channels in ({0}, {1}, {0, 1}):
             data = audio.tone(channels)

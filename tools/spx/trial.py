@@ -1693,6 +1693,8 @@ def audio_check(args):
                 command.append('--allow-playback')
             if action in ('capture', 'feedback', 'desktop', 'serve', 'reopen', 'desktop-mic'):
                 command.append('--allow-capture')
+            if action == 'reopen' and getattr(args, 'reopen_first_channel', None):
+                command += ['--reopen-first-channel', args.reopen_first_channel]
             if action == 'serve':
                 assert 0 <= args.serve_seconds <= 82800
                 assert 1433 <= args.desktop_peak <= 12000
@@ -1865,6 +1867,8 @@ def main():
                         help='changed unloaded/blacklisted module to install while this release runs')
     parser.add_argument('--return-seconds', type=int, default=3600)
     parser.add_argument('--audio-action', choices=('plan', 'inspect', 'initialize', 'listen', 'recover', 'capture', 'feedback', 'desktop', 'serve', 'reopen', 'desktop-mic'), default='plan')
+    parser.add_argument('--reopen-first-channel', choices=('left', 'right'),
+                        help='audio reopen only: second-cycle first channel')
     parser.add_argument('--serve-seconds', type=int, default=3600,
                         help='ordinary desktop playback after acoustic verification (0 until stopped, or 1..82800 seconds)')
     parser.add_argument('--desktop-peak', type=int, default=1433,
@@ -1880,6 +1884,8 @@ def main():
                         help='after a queued audio test, use the existing return timer after this delay (61..900)')
     parser.add_argument('--desktop-user', default='dvitali')
     args = parser.parse_args()
+    if args.reopen_first_channel is not None and (args.command != 'audio' or args.audio_action != 'reopen'):
+        parser.error('--reopen-first-channel requires audio --audio-action reopen')
     if args.microphone_source != 'DMIC1' and (args.command not in ('audio', 'arm-audio') or
                                             args.audio_action not in ('capture', 'feedback', 'desktop-mic')):
         parser.error('--microphone-source DMIC0 requires audio/arm-audio capture, feedback or desktop-mic')

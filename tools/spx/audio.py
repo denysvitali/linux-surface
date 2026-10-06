@@ -1435,7 +1435,8 @@ def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder
         report['reopen_reference'] = {'start_frame': quiet_start, 'end_frame': quiet_end,
             'rms': math.sqrt(sum(v*v for v in baseline) / len(baseline))}
     report['tones'] = []
-    for name, channels in (('left', {0}), ('right', {1}), ('both', {0, 1})):
+    for name, channels in playback_tones(args.action, report.get('reopen_cycle'),
+                                         getattr(args, 'reopen_first_channel', None)):
         pcm.healthy()
         check_stereo(mapping, paths, initialized=True, observations=checks)
         print(f'Listening test: {name}, two seconds', flush=True)
@@ -1460,15 +1461,25 @@ def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder
         report['human_result'] = 'pending; successful software checks do not establish audible output'
 
 
+def playback_tones(action, cycle, first_channel):
+    tones = (('left', {0}), ('right', {1}), ('both', {0, 1}))
+    if action == 'reopen' and cycle == 2 and first_channel == 'right':
+        return (tones[1], tones[0], tones[2])
+    return tones
+
+
 def playback_reopen(args, report, pcm_holder, capture, baseline):
     """Close two Linux playback PCMs while attached; retain ASM and one capture."""
     need(capture is not None, 'Playback reopen requires continuous microphone feedback')
     paths = {s['unit']: Path('/sys/bus/soundwire/devices') / s['name'] for s in devices()}
     evidence = report['reopen'] = {'passed': False, 'cycles': [],
         'capture_pid': capture.process.pid, 'asm_kept': True,
-        'scope': 'Linux playback PCM close/reopen; no DSP or capture reopen'}
+        'scope': 'Linux playback PCM close/reopen; no DSP or capture reopen',
+        'second_cycle_first_channel': getattr(args, 'reopen_first_channel', None) or 'left'}
     for number in (1, 2):
-        cycle = {'number': number, 'passed': False, 'capture_start_frame': capture.mark()}
+        cycle = {'number': number, 'passed': False, 'capture_start_frame': capture.mark(),
+                 'tone_order': [name for name, _ in playback_tones(args.action, number,
+                     getattr(args, 'reopen_first_channel', None))]}
         evidence['cycles'].append(cycle)
         report['reopen_cycle'] = number
         first_phase = len(report['capture']['phases'])
@@ -1813,11 +1824,15 @@ def main():
                         help='authorize bounded internal microphone recording')
     parser.add_argument('--microphone-source', choices=('DMIC0', 'DMIC1'), default='DMIC1',
                         help='bounded capture/feedback/desktop-mic input (default: DMIC1)')
+    parser.add_argument('--reopen-first-channel', choices=('left', 'right'),
+                        help='reopen-only second-cycle first channel; first cycle remains left/right/both')
     parser.add_argument('--serve-seconds', type=serve_duration, default=3600,
                         help='ordinary desktop session duration, 0 until stopped or 1..86400 seconds (default: 3600)')
     parser.add_argument('--desktop-peak', type=desktop_peak_limit,
                         help='serve-only ordinary PCM peak, 1433..12000 (default: 1433)')
     args = parser.parse_args()
+    if args.reopen_first_channel is not None and args.action != 'reopen':
+        parser.error('--reopen-first-channel requires reopen')
     if args.microphone_source != 'DMIC1' and args.action not in ('capture', 'feedback', 'desktop-mic'):
         parser.error('--microphone-source DMIC0 requires capture or feedback or desktop-mic')
     if args.desktop_peak is not None and args.action != 'serve':
