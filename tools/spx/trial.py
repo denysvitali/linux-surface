@@ -195,6 +195,9 @@ def prepare(args):
     if args.cpu_passive_cooling:
         from thermal import stage_policy
         stage_policy(OUT / 'spx.dtb')
+    if args.cdsp:
+        from cdsp.capabilities import stage
+        stage(OUT / 'spx.dtb')
     previous = json.loads((OLD / 'attempt.json').read_text())
     cmdline = []
     for word in previous['cmdline'].split():
@@ -226,6 +229,9 @@ def prepare(args):
         cmdline.append('spx_sensors=1')
         if args.sensors_ssc_library:
             cmdline.append('spx_sensors_libssc=private')
+    cmdline = [word for word in cmdline if not word.startswith('spx_cdsp=')]
+    if args.cdsp:
+        cmdline.append('spx_cdsp=1')
     cmdline = ' '.join(cmdline)
     entry = (OLD / 'entry.cfg').read_text().replace('20261004bf', '{ATTEMPT}'.format(ATTEMPT=ATTEMPT))
     entry = entry.replace(previous['cmdline'].replace('20261004bf', '{ATTEMPT}'.format(ATTEMPT=ATTEMPT)), cmdline)
@@ -236,6 +242,7 @@ def prepare(args):
     prepared = dict(utc=datetime.now(timezone.utc).isoformat(), preboot_id=BOOT_ID, release=RELEASE, attempt=ATTEMPT, entry='spx-trial-' + ATTEMPT, cmdline=cmdline, source_commit=subprocess.check_output(['git', '-c', 'safe.directory=' + str(REPO), 'rev-parse', 'HEAD'], cwd=REPO, text=True).strip(), build_directory=str(BUILD), private_config=str(OUT / 'kernel.config'), bluetooth_address=args.address, address_is_per_installation=True, venus_trial=False, speaker_drivers_blocked=True, hardware_acceptance_closed=False, installed=False, boot_selected=False, boot_payloads=dict(vmlinuz=sha(OUT / 'vmlinuz'), initramfs=sha(OUT / 'initramfs.img'), dtb=sha(OUT / 'spx.dtb')))
     prepared.update(sensors_startup=args.sensors, sensors_private_ssc=bool(args.sensors_ssc_library), audio_mode='parked' if args.audio else 'blocked',
                     cpu_passive_cooling=args.cpu_passive_cooling,
+                    cdsp_capabilities=args.cdsp,
                     usbc_early_load=args.usbc,
                     usbc_phy_orientation=args.usbc_phy_orientation,
                     speaker_drivers_blocked=not args.audio,
@@ -1690,9 +1697,29 @@ def thermal_check(args):
         subprocess.run([lock, 'release', 'device', owner], check=True)
 
 
+def cdsp_capabilities(args):
+    import sys
+
+    assert os.geteuid() == 0
+    lock = str(REPO / 'tools/spx/spx-lock')
+    owner = 'cdsp-capabilities-' + ATTEMPT
+    subprocess.run([lock, 'acquire', 'device', owner], check=True)
+    try:
+        # Bound the syscall and close path independently of the coordinator.
+        code = ('import sys; from pathlib import Path; from cdsp.capabilities import query; '
+                'r=query(Path(sys.argv[1]),sys.argv[2],sys.argv[3]); '
+                'sys.exit(0 if r["complete"] else 1)')
+        subprocess.run([sys.executable, '-B', '-c', code, str(OUT / 'cdsp-capabilities'),
+                        ATTEMPT, RELEASE], cwd=HERE, check=True, timeout=25)
+        result = json.loads((OUT / 'cdsp-capabilities/result.json').read_text())
+        print(json.dumps(result), flush=True)
+    finally:
+        subprocess.run([lock, 'release', 'device', owner], check=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend', 'audio', 'arm-audio', 'enable-desktop-audio', 'usbc-reload', 'wifi-band', 'display-power', 'srtc-timer', 'power-measure', 'sensors-lifecycle', 'thermal'))
+    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend', 'audio', 'arm-audio', 'enable-desktop-audio', 'usbc-reload', 'wifi-band', 'display-power', 'srtc-timer', 'power-measure', 'sensors-lifecycle', 'thermal', 'cdsp-capabilities'))
     parser.add_argument('attempt')
     parser.add_argument('--build', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bg/work-build'))
     parser.add_argument('--parent', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bf'))
@@ -1716,6 +1743,8 @@ def main():
     parser.add_argument('--sensors-ready', type=Path, default=Path('/var/tmp/spx-sensors-ready'))
     parser.add_argument('--cpu-passive-cooling', action='store_true',
                         help='stage board Linux75C/5C passive CPU policy into the retained DTB')
+    parser.add_argument('--cdsp', action='store_true',
+                        help='enable the guarded CDSP translated capability-only transport')
     parser.add_argument('--audio', action='store_true', help='enable codecs with both amplifiers parked; no playback')
     parser.add_argument('--usbc', action='store_true',
                         help='load experimental USC-to-DP0 forwarding in the initramfs')
@@ -1782,7 +1811,7 @@ def main():
             {'install': install, 'boot': boot, 'return': return_to_default,
              'extend': extend_window, 'audio': audio_check, 'arm-audio': arm_audio,
              'usbc-reload': usbc_reload, 'wifi-band': wifi_band, 'display-power': display_power,
-             'enable-desktop-audio': enable_desktop_audio, 'power-measure': power_measure, 'sensors-lifecycle': sensors_lifecycle, 'thermal': thermal_check}[args.command](args)
+             'enable-desktop-audio': enable_desktop_audio, 'power-measure': power_measure, 'sensors-lifecycle': sensors_lifecycle, 'thermal': thermal_check, 'cdsp-capabilities': cdsp_capabilities}[args.command](args)
 
 
 if __name__ == '__main__':

@@ -64,11 +64,13 @@ awaits attribution for later observations.
 ## Next work, in order
 
 User cannot provide physical assistance (October6); continue autonomous work.
-Physical observations remain unverified. USB-C Windows-driver evidence now
-establishes CC polarity and port-to-QMP routing; integrate standard Type-C
-switching and test the attached dock. Event decoding correction is WIP; no
-USB-C acceptance box has closed. See
-[USB-C contract](tools/spx/boot-diagnostics/RESULT-20261006usbc.md).
+Physical observations remain unverified. Next autonomous candidate is CDSP:
+the v66 workload is prepared and SoC ID340 corroborates Windows' flat-IOVA
+exception. Establish the complete SMMU/session mapping before a bounded
+firmware capability query; determine process authorization before compute.
+See [CDSP prerequisites](tools/spx/boot-diagnostics/RESULT-20261006cdsp.md).
+USB-C switching and external scanout restoration already have scoped passes;
+physical replug, ports/orientations and visible output still need fixtures.
 
 1. **Deferred three-minute quiet physical batch:** on mainline, type on the
    keyboard; cover/uncover the front light sensor for5seconds each, twice;
