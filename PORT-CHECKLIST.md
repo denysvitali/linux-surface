@@ -50,7 +50,7 @@ awaits attribution for later observations.
 | Firmware TPM/security (B06) | **CT measured boot; DD public TPM survives30-minute sleep** | Signing/Secure Boot |
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
-| Speakers (A01) | **BY: quiet default desktop playback passes** | Persistence, volume/mapping/balance, reopen and lifecycle |
+| Speakers (A01) | **BY desktop playback; DF quiet startup after guarded sleep passes** | Persistence, volume/mapping/balance, reopen and lifecycle |
 | Microphones (A02) | **BN DMIC1 and CC DMIC0 record known speaker tones** | Quality, simultaneous channel mapping and full lifecycle |
 | Cameras (C01–C05) | Rear sensor identifies | No frame captured |
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
@@ -60,7 +60,7 @@ awaits attribution for later observations.
 | USB data (U01) | Untested | Both ports/orientations, fixtures |
 | USB-C PD, DisplayPort, dock (U02–U04) | **CG: external off/on scanout restoration passes; normal orientation API works** | Visible output, physical replug, roles/PD, ports/orientations/resume |
 | Battery and charging (P01) | **CF: P01a actual charging passes, +1.26Wh/120s** | Charge-policy explanation, discharge/transitions and charger coverage |
-| Suspend/resume (P03) | **DD13 alarm wakes including30-minute AC; clients survive**; targets masked | Full device recovery, battery sleep and physical wakes |
+| Suspend/resume (P03) | **DD13 wakes; DF2 audio-loaded retained-core sleeps**; targets masked | Full device recovery, battery sleep and physical wakes |
 | Thermal (P05) | **CM cooling limits; CX/CY combined load/cleanup, CY native FP verification pass** | Real automatic response, longer envelope and enclosure behavior |
 | Idle power (P02) | BU: CPU scales down; GPU runtime-suspends | **Battery tests deferred by user**; remaining forced-on devices |
 | Sensors (S01, S02) | **DD backend/desktop clients survive repeated/30-minute AC sleep** | Light/axes/calibration; DA fault; final regression |
@@ -699,6 +699,9 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
     after idle, and actual public output at peak 4000 pass unchanged acoustic
     thresholds. The timing fix removes active silence insertion; no gaps were
     inserted. [BU result](tools/spx/boot-diagnostics/RESULT-20261005bu.md).
+    DF extends quiet left/right/both acoustic output to first startup after a
+    guarded14.48s sleep; amps park cleanly.
+    [DF result](tools/spx/boot-diagnostics/RESULT-20261007df.md).
     This establishes output from both digital channels, not physical mapping,
     balance or the full useful listening-volume range.
     BW repeats all phases and default-output handoff at quiet1433/minimum PA;
@@ -714,6 +717,7 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
     errors, on boot `b6ebb51f-0d63-4946-a631-e2ab3f424569`, kernel
     `7.3.0-rc2-spx-mainline-20261004bg+`.
     [BN result](tools/spx/boot-diagnostics/RESULT-20261004bn.md).
+    DF also records the known tones after guarded s2idle; capture stops cleanly.
 
   - [x] **A02b — DMIC0 records a known acoustic stimulus.** CC, boot
     `75135fb8-8413-45c9-8321-7713bc7cbec9`, kernel
@@ -746,7 +750,9 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
     the second stream. Keep one continuous microphone capture. This milestone
     does not establish DSP/capture teardown, resume or automatic mixer setup.
     CB first close passes, but reopened left tone fails despite DSP consumption.
-    [CB result](tools/spx/boot-diagnostics/RESULT-20261005cb.md). No supported fix
+    [CB result](tools/spx/boot-diagnostics/RESULT-20261005cb.md). DE right-first
+    reopen also fails; its first cycle passes and cleanup parks the amps.
+    [DE result](tools/spx/boot-diagnostics/RESULT-20261007de.md). No supported fix
     is established; do not repeat the unchanged test.
 
   - [ ] **A03c — Default desktop microphone clients.** Two ordinary recording
@@ -1221,7 +1227,9 @@ GPU runtime suspend works.
   - [x] **P03b — Guarded s2idle with audio codecs loaded, amplifiers parked.**
     DF boot `e55b2d29-5f4e-4c4b-bf49-51ccb87f2afa`, kernel
     `7.3.0-rc2-spx-mainline-20261004bg+`: opt-in powered-SLIM retention allows
-    one14.48-second PMIC-alarm sleep; ownership/IRQ/cleanup pass. Native sensor
+    two14.48/14.20-second PMIC-alarm sleeps; ownership/IRQ/cleanup pass. The
+    second follows real quiet playback/capture and parked DSP sessions, matching
+    DE’s failing configuration. Native sensor
     clients and all three motion streams recover, native vblank509→510 advances,
     zero new DSP/DPU faults. Both SWR amps remain unpowered/UNATTACHED; no PCM
     owner. This retains core power and does not prove low-power or audio-session
