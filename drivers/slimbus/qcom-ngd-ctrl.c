@@ -13,6 +13,7 @@
 #include <linux/slimbus.h>
 #include <linux/delay.h>
 #include <linux/pm_runtime.h>
+#include <linux/suspend.h>
 #include <linux/mutex.h>
 #include <linux/kthread.h>
 #include <linux/notifier.h>
@@ -230,6 +231,12 @@ module_param(spx_ngd_base_offset, int, 0644);
 MODULE_PARM_DESC(spx_ngd_base_offset,
 		 "Surface Pro X NGD child base offset override in bytes, -1=DT id-derived");
 
+/* Diagnostic retention only: this does not power down the SLIMbus core. */
+static bool spx_s2idle_retain;
+module_param(spx_s2idle_retain, bool, 0444);
+MODULE_PARM_DESC(spx_s2idle_retain,
+	"WIP SPX-only s2idle retention of powered PIO controller (default false)");
+
 static bool spx_pio_mode;
 module_param(spx_pio_mode, bool, 0644);
 MODULE_PARM_DESC(spx_pio_mode,
@@ -323,6 +330,9 @@ struct qcom_slim_ngd_ctrl {
 	bool qmi_svc_event_active;
 	bool qmi_module_pinned;
 	bool removing;
+	bool s2idle_retained;
+	enum qcom_slim_ngd_state s2idle_state;
+	struct qmi_handle *s2idle_qmi_handle;
 	/*
 	 * True only between a QMI power-on ack and the next power-off/QMI
 	 * teardown/SSR-down. Any NGD MMIO access while the block is gated
@@ -3299,9 +3309,92 @@ static int __maybe_unused qcom_slim_ngd_runtime_suspend(struct device *dev)
 	return -EBUSY;
 }
 
+#ifdef CONFIG_PM_SLEEP
+static bool qcom_slim_ngd_spx_retention_enabled(void)
+{
+	return spx_s2idle_retain &&
+		of_machine_is_compatible("microsoft,surface-pro-x");
+}
+
+/* Software ownership checks only; do not probe possibly gated MMIO here. */
+static bool qcom_slim_ngd_retention_ready(struct qcom_slim_ngd_ctrl *ctrl,
+					struct device *dev)
+{
+	return !READ_ONCE(ctrl->removing) &&
+		(READ_ONCE(ctrl->state) == QCOM_SLIM_NGD_CTRL_AWAKE ||
+		 READ_ONCE(ctrl->state) == QCOM_SLIM_NGD_CTRL_IDLE) &&
+		READ_ONCE(ctrl->qmi.handle) && READ_ONCE(ctrl->qmi.powered) &&
+		READ_ONCE(ctrl->mmio_alive) && READ_ONCE(ctrl->ctrl_registered) &&
+		ctrl->ngd && ctrl->ngd->base && spx_pio_mode && ctrl->pio_task &&
+		!READ_ONCE(ctrl->pio_rx_dead) &&
+		!ctrl->dma_rx_channel && !ctrl->dma_tx_channel &&
+		!work_busy(&ctrl->ngd_up_work) && !work_busy(&ctrl->m_work) &&
+		READ_ONCE(dev->power.runtime_status) == RPM_ACTIVE;
+}
+
+static int qcom_slim_ngd_system_suspend(struct device *dev)
+{
+	struct qcom_slim_ngd_ctrl *ctrl = dev_get_drvdata(dev);
+	int ret = 0;
+
+	if (!qcom_slim_ngd_spx_retention_enabled())
+		return pm_runtime_force_suspend(dev);
+
+	if (pm_suspend_target_state != PM_SUSPEND_TO_IDLE)
+		return -EOPNOTSUPP;
+
+	mutex_lock(&ctrl->ssr_lock);
+	if (ctrl->s2idle_retained || !qcom_slim_ngd_retention_ready(ctrl, dev)) {
+		ret = -EBUSY;
+		dev_err(dev, "SPX: s2idle retention refused: controller not ready\n");
+		goto out;
+	}
+
+	/*
+	 * Keep state, runtime PM, IRQs, MMIO and the QMI power vote intact.
+	 * In particular, do not call the force-runtime or power-off paths:
+	 * firmware can collapse the core and wedge an in-flight PIO access.
+	 * This deliberately makes no claim about reduced energy consumption.
+	 */
+	ctrl->s2idle_state = READ_ONCE(ctrl->state);
+	ctrl->s2idle_qmi_handle = READ_ONCE(ctrl->qmi.handle);
+	ctrl->s2idle_retained = true;
+	dev_info(dev, "SPX: WIP s2idle retention: keeping powered PIO core\n");
+out:
+	mutex_unlock(&ctrl->ssr_lock);
+	return ret;
+}
+
+static int qcom_slim_ngd_system_resume(struct device *dev)
+{
+	struct qcom_slim_ngd_ctrl *ctrl = dev_get_drvdata(dev);
+	int ret = 0;
+
+	if (!qcom_slim_ngd_spx_retention_enabled())
+		return pm_runtime_force_resume(dev);
+
+	mutex_lock(&ctrl->ssr_lock);
+	if (!ctrl->s2idle_retained ||
+	    !qcom_slim_ngd_retention_ready(ctrl, dev) ||
+	    READ_ONCE(ctrl->state) != ctrl->s2idle_state ||
+	    READ_ONCE(ctrl->qmi.handle) != ctrl->s2idle_qmi_handle) {
+		/* Report lost ownership; never guess a power-up/setup repair. */
+		ret = -EIO;
+		dev_err(dev, "SPX: s2idle retention lost controller invariants\n");
+	} else {
+		dev_info(dev, "SPX: WIP s2idle retention: ownership preserved\n");
+	}
+	ctrl->s2idle_retained = false;
+	ctrl->s2idle_qmi_handle = NULL;
+	mutex_unlock(&ctrl->ssr_lock);
+
+	return ret;
+}
+#endif
+
 static const struct dev_pm_ops qcom_slim_ngd_dev_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend,
-				pm_runtime_force_resume)
+	SET_SYSTEM_SLEEP_PM_OPS(qcom_slim_ngd_system_suspend,
+				qcom_slim_ngd_system_resume)
 	SET_RUNTIME_PM_OPS(
 		qcom_slim_ngd_runtime_suspend,
 		qcom_slim_ngd_runtime_resume,
