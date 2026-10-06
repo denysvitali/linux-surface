@@ -8,8 +8,8 @@ history that used to live here is in
 
 ## Status (2026-10-06, CM: CPU/GPU cooling requests pass)
 
-**Sensors parked:** CH/CJ/CK produced no motion samples. CL's shared-pool fix is
-prepared but unbooted. Latest result: [CM](tools/spx/boot-diagnostics/RESULT-20261006cm.md), kernel
+CH/CJ/CK produced no motion samples. After CM's cooling gain, **CN is prepared**
+to test CL's unbooted shared-pool fix. Latest result: [CM](tools/spx/boot-diagnostics/RESULT-20261006cm.md), kernel
 `7.3.0-rc2-spx-mainline-20261004bg+`. **U03a passes:** two GNOME off/on cycles
 restore3440×1440/50Hz external scanout. CC0 normal Type-C callback succeeds;
 reverse plugs, visible output and hotplug remain unverified.
@@ -52,7 +52,7 @@ awaits attribution for later observations.
 | Suspend/resume (P03) | Kernel exposes s2idle; systemd sleep/suspend targets masked | Intended wake, then controlled sleep |
 | Thermal (P05) | **CM: P05a CPU/GPU cooling limits pass**; BH 3 min load stable | Automatic temperature response; sustained combined workload |
 | Idle power (P02) | BU: CPU scales down; GPU runtime-suspends | **Battery tests deferred by user**; remaining forced-on devices |
-| Sensors (S01, S02) | BW: TCS3430 runtime-PM/readout passes; **S02 parked after CH/CJ/CK** | Physical light response; auto-brightness; CL shared pool untested, registry and motion streams |
+| Sensors (S01, S02) | BW: TCS3430 runtime-PM/readout passes; **CN shared-pool retry prepared after CM gain** | Physical light response; auto-brightness; pool assignment, registry and motion streams |
 | Cellular, GNSS (N03, N04) | Recovery: GNSS starts/stops but no fix; modem rejects online mode | Real modem provisioning, IPA datapath, SIM; actual GNSS fix |
 
 ## Next work, in order
@@ -995,7 +995,8 @@ GPU runtime suspend works.
   registry SUIDs; neither produces samples. CK's bare SID0 attach crashes SLPI.
   **Parked after three boots without motion samples.** CL's separately owned
   shared DMA pool and invocation guard are compiled and prepared, unbooted and
-  untested. Continue other features before resuming SensorsPD.
+  untested. After CM closes P05a, CN stages this fix for one bounded retry;
+  verify pool assignment before attachment. Actual motion samples remain absent.
   [CK result](tools/spx/boot-diagnostics/RESULT-20261006ck.md).
 - [ ] **P01 — Battery and charging.** Plausible voltage/current/capacity/status,
   observed discharge and charging, AC transitions, charge limits where supported
