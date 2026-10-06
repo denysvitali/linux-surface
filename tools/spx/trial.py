@@ -246,6 +246,7 @@ def prepare(args):
                     cpu_passive_cooling=args.cpu_passive_cooling,
                     thermal_combined=args.thermal_combined,
                     thermal_gpu_fixture=str(args.thermal_gpu_fixture),
+                    thermal_cpu_stress_ng=str(args.thermal_cpu_stress_ng.resolve()) if args.thermal_cpu_stress_ng else None,
                     cdsp_capabilities=args.cdsp,
                     usbc_early_load=args.usbc,
                     usbc_phy_orientation=args.usbc_phy_orientation,
@@ -1719,6 +1720,8 @@ def dispatch_thermal(args, prepared):
         return
     args.thermal_combined = True
     args.thermal_gpu_fixture = Path(prepared['thermal_gpu_fixture'])
+    args.thermal_cpu_stress_ng = (Path(prepared['thermal_cpu_stress_ng'])
+                                 if prepared.get('thermal_cpu_stress_ng') else None)
     thermal_check(args)
 
 
@@ -1729,7 +1732,7 @@ def thermal_check(args):
     subprocess.run([lock, 'acquire', 'device', owner], check=True)
     try:
         output = OUT / ('combined-thermal' if args.thermal_combined else 'cpu-thermal')
-        live = (CombinedLive(output, ATTEMPT, RELEASE, args.thermal_gpu_fixture)
+        live = (CombinedLive(output, ATTEMPT, RELEASE, args.thermal_gpu_fixture, args.thermal_cpu_stress_ng)
                 if args.thermal_combined else Live(output, ATTEMPT, RELEASE))
         result = live.exercise()
         print(json.dumps(dict(complete=result['complete'], result=str(output / 'result.json'),
@@ -1791,6 +1794,8 @@ def main():
     parser.add_argument('--thermal-gpu-fixture', type=Path,
                         default=Path('/var/tmp/spx-gpu-benchmark-20261003/fixture'),
                         help='retained glmark2-es2-gbm/data fixture for combined thermal test')
+    parser.add_argument('--thermal-cpu-stress-ng', type=Path,
+                        help='opt in to private stress-ng verified doublemul workers for combined thermal test')
     parser.add_argument('--cdsp', action='store_true',
                         help='enable the guarded CDSP translated capability-only transport')
     parser.add_argument('--audio', action='store_true', help='enable codecs with both amplifiers parked; no playback')
@@ -1822,6 +1827,8 @@ def main():
         parser.error('--microphone-source DMIC0 requires audio/arm-audio capture, feedback or desktop-mic')
     if args.thermal_combined and args.command not in ('prepare', 'thermal'):
         parser.error('--thermal-combined requires prepare or thermal')
+    if args.thermal_cpu_stress_ng and (not args.thermal_combined or args.command not in ('prepare', 'thermal')):
+        parser.error('--thermal-cpu-stress-ng requires prepare/thermal --thermal-combined')
     if args.command == 'prepare' and args.thermal_combined and (args.audio or args.cdsp):
         parser.error('combined thermal trial requires audio and experimental CDSP disabled')
     assert re.fullmatch(r'[0-9]{8}[a-z0-9]+', args.attempt)

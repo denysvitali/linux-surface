@@ -8,6 +8,7 @@ import copy
 import os
 import pwd
 import shutil
+import signal
 import xml.etree.ElementTree as ET
 import tempfile
 import unittest
@@ -226,6 +227,125 @@ class CombinedThermal(unittest.TestCase):
                         'qcom_q6v5_pas 8300000.remoteproc: watchdog received',
                         'BUG: bad page state', 'Oops: 96000004'):
             self.assertTrue(thermal.FAULTS.findall(message), message)
+
+
+class NativeFP(unittest.TestCase):
+    SUCCESS = ('stress-ng: info: [42] passed: 1: fp (1)\n'
+               'stress-ng: info: [42] failed: 0\n'
+               'stress-ng: info: [42] skipped: 0\n'
+               'stress-ng: info: [42] successful run completed in 300s\n')
+
+    def test_native_summary_rejects_nonzero_skip_and_arithmetic_failure(self):
+        self.assertTrue(thermal.native_fp_passed(0, self.SUCCESS))
+        for rc, text in ((1, self.SUCCESS), (-9, self.SUCCESS), (0, ''),
+                (0, self.SUCCESS.replace('passed: 1: fp (1)', 'passed: 0')),
+                (0, self.SUCCESS.replace('failed: 0', 'failed: 1: fp (1)')),
+                (0, self.SUCCESS.replace('skipped: 0', 'skipped: 1: fp (1)')),
+                (0, self.SUCCESS + 'stress-ng: fail: [43] fp: doublemul verification failed\n')):
+            self.assertFalse(thermal.native_fp_passed(rc, text))
+
+    def test_proc_group_evidence_includes_descendant_identity_and_affinity(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for pid, group, name, ticks in ((42, 42, 'stress-ng', 900),
+                                           (43, 42, 'stress-ng-fp', 12),
+                                           (44, 44, 'unrelated', 1000)):
+                member = root / str(pid)
+                member.mkdir()
+                fields = ['0'] * 20
+                fields[0], fields[2], fields[11], fields[12], fields[19] = 'R', str(group), str(ticks), '1', '123'
+                (member / 'stat').write_text(f'{pid} ({name}) ' + ' '.join(fields))
+                (member / 'status').write_text('Cpus_allowed_list:\t3\n')
+            members = thermal.native_group_members(42, root)
+            self.assertEqual(set(members), {'42', '43'})
+            self.assertEqual(members['43'], dict(name='stress-ng-fp', state='R', ticks=13,
+                                                start_ticks=123, affinity='3'))
+
+    def test_only_actual_stressor_ticks_count_and_affinity_restart_are_rejected(self):
+        live = thermal.CombinedLive.__new__(thermal.CombinedLive)
+        live.cpu_stress_ng = Path('/private/stress-ng')
+        worker = Mock(pid=42)
+        live.workers = [worker]
+        live.gpu = Mock(pid=99)
+        live.gpu.poll.return_value = None
+        live.native_workers = {42: dict(cpu=3, child_identity=None)}
+        members = {'42': dict(name='stress-ng', state='S', ticks=900, start_ticks=10, affinity='3'),
+                   '43': dict(name='stress-ng-fp', state='R', ticks=13, start_ticks=11, affinity='3')}
+        with patch.object(thermal, 'native_group_members', return_value=members), \
+             patch.object(Path, 'iterdir', return_value=iter([])):
+            result = live.workload()
+        self.assertEqual(result['cpu_ticks'], {'42': 13})
+        self.assertEqual(result['cpu_groups']['42']['stressor_pids'], ['43'])
+        for changed in ({'42': members['42']},
+                        dict(members, **{'43': dict(members['43'], affinity='3-4')}),
+                        dict(members, **{'43': dict(members['43'], start_ticks=99)})):
+            with patch.object(thermal, 'native_group_members', return_value=changed):
+                with self.assertRaises(AssertionError):
+                    live.workload()
+
+    def test_native_cleanup_stops_supervisor_and_its_real_child_after_partial_launch(self):
+        # Sleeping processes exercise group cleanup without stressing hardware.
+        script = ('import os,signal,time\n'
+                  'pid=os.fork()\n'
+                  'if pid==0:\n signal.signal(signal.SIGTERM, lambda *a: os._exit(0)); time.sleep(60)\n'
+                  'else:\n'
+                  ' def stop(*a):\n  os.waitpid(pid,0); raise SystemExit(0)\n'
+                  ' signal.signal(signal.SIGTERM,stop); print(pid,flush=True); time.sleep(60)\n')
+        with tempfile.TemporaryDirectory() as directory:
+            live = thermal.CombinedLive.__new__(thermal.CombinedLive)
+            live.output = Path(directory)
+            live.result = dict(complete=False)
+            live.cpu_stress_ng = Path('/private/stress-ng')
+            live.workers, live.native_workers = [], {}
+            live.gpu, live.gpu_log, live.load_stopped = None, None, False
+            child_pids = []
+            try:
+                for cpu in range(2):
+                    log = (live.output / f'cpu{cpu}-fp.log').open('wb')
+                    worker = subprocess.Popen(['/usr/bin/python3', '-c', script],
+                        start_new_session=True, stdout=subprocess.PIPE, text=True)
+                    live.workers.append(worker)
+                    live.native_workers[worker.pid] = dict(cpu=cpu, command=[], log=log, child_identity=None)
+                    child_pids.append(int(worker.stdout.readline()))
+                live.stop()
+                self.assertTrue(live.result['workers_stopped'])
+                self.assertFalse(live.result['native_arithmetic_passed'])
+                self.assertTrue(all(r['group_stopped'] for r in live.result['native_cpu_results'].values()))
+                self.assertTrue(all(not Path(f'/proc/{pid}').exists() for pid in child_pids))
+                with patch.object(thermal.os, 'killpg') as killpg:
+                    live.stop()
+                    killpg.assert_not_called()
+            finally:
+                for worker in live.workers:
+                    if worker.poll() is None:
+                        os.killpg(worker.pid, signal.SIGKILL)
+                        worker.wait(timeout=3)
+                    worker.stdout.close()
+
+    def test_forced_kill_rejects_even_a_successful_looking_log(self):
+        with tempfile.TemporaryDirectory() as directory:
+            live = thermal.CombinedLive.__new__(thermal.CombinedLive)
+            live.output = Path(directory)
+            live.result = dict(complete=False)
+            live.cpu_stress_ng = Path('/private/stress-ng')
+            log = (live.output / 'cpu0-fp.log').open('w')
+            log.write(self.SUCCESS)
+            log.flush()
+            worker = Mock(pid=42, returncode=0)
+            worker.poll.return_value = 0
+            worker.wait.side_effect = [subprocess.TimeoutExpired('native worker', 3), 0]
+            live.workers = [worker]
+            live.native_workers = {42: dict(cpu=0, command=[], log=log, child_identity=None)}
+            live.gpu, live.gpu_log, live.load_stopped = None, None, False
+            with patch.object(thermal.os, 'killpg') as killpg, \
+                 patch.object(thermal, 'native_group_members', side_effect=[{'43': {}}, {}]):
+                live.stop()
+            killpg.assert_any_call(42, signal.SIGTERM)
+            killpg.assert_any_call(42, signal.SIGKILL)
+            result = live.result['native_cpu_results']['0']
+            self.assertTrue(result['forced_kill'])
+            self.assertTrue(result['group_stopped'])
+            self.assertFalse(result['arithmetic_passed'])
 
 
 if __name__ == '__main__':

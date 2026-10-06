@@ -21,11 +21,13 @@ class QueuedThermalTests(unittest.TestCase):
     def test_interrupted_run_is_not_retried(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
-            prepared = dict(thermal_combined=True, thermal_gpu_fixture='/retained/fixture')
+            prepared = dict(thermal_combined=True, thermal_gpu_fixture='/retained/fixture',
+                            thermal_cpu_stress_ng='/private/stress-ng')
             args = SimpleNamespace()
             def start(value):
                 self.assertTrue(value.thermal_combined)
                 self.assertEqual(value.thermal_gpu_fixture, Path('/retained/fixture'))
+                self.assertEqual(value.thermal_cpu_stress_ng, Path('/private/stress-ng'))
                 (output / 'combined-thermal').mkdir()
                 raise RuntimeError('interrupted workload')
             with patch.object(trial, 'OUT', output, create=True), \

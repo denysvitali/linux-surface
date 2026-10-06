@@ -280,11 +280,45 @@ def overlap_coverage(samples):
     return sorted(bins)
 
 
+def native_group_members(group, proc=Path('/proc')):
+    """Read every member of a private worker group, including its FP child."""
+    members = {}
+    for directory in proc.iterdir():
+        if not directory.name.isdigit():
+            continue
+        try:
+            text = (directory / 'stat').read_text()
+            name, fields = text.split('(', 1)[1].rsplit(')', 1)
+            fields = fields.split()
+            if int(fields[2]) != group:
+                continue
+            status = (directory / 'status').read_text()
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        affinity = re.search(r'^Cpus_allowed_list:\s*(\S+)', status, re.M)
+        assert affinity, 'worker affinity evidence missing'
+        members[directory.name] = dict(name=name, state=fields[0],
+            ticks=int(fields[11]) + int(fields[12]), start_ticks=int(fields[19]),
+            affinity=affinity[1])
+    return members
+
+
+def native_fp_passed(returncode, text):
+    """A planned TERM must still report arithmetic success, not just exit."""
+    return (returncode == 0 and 'successful run completed' in text
+            and re.search(r'\bpassed:\s+1:\s+fp \(1\)', text) is not None
+            and re.search(r'\bfailed:\s+0\b', text) is not None
+            and re.search(r'\bskipped:\s+0\b', text) is not None
+            and re.search(r'(?:\bfail:|unsuccessful run|verification.*fail)', text, re.I) is None)
+
+
 class CombinedLive(Live):
     """Opt-in AC workload; no frequency, thermal, display or battery writes."""
-    def __init__(self, output, attempt, release, fixture):
+    def __init__(self, output, attempt, release, fixture, cpu_stress_ng=None):
         super().__init__(output, attempt, release)
         self.fixture = fixture.resolve()
+        self.cpu_stress_ng = cpu_stress_ng.resolve() if cpu_stress_ng else None
+        self.native_workers = {}
         self.gpu = None
         self.gpu_log = None
         self.gpu_directory = None
@@ -292,6 +326,7 @@ class CombinedLive(Live):
         self.load_stopped = False
         self.result.update(scope='bounded AC CPU+GPU load and real CPU passive response',
                            combined_seconds=COMBINED_SECONDS,
+                           cpu_workload='verified native doublemul' if cpu_stress_ng else 'Python integer LCG',
                            gpu_automatic_response_proven=False,
                            full_thermal_acceptance=False,
                            limits='80C abort is below the existing85C GPU trip; full GPU automatic response, skin/enclosure and sustained envelope remain unverified.')
@@ -316,6 +351,12 @@ class CombinedLive(Live):
         self.user = pwd.getpwuid(1000)
         groups = os.getgrouplist(self.user.pw_name, self.user.pw_gid)
         self.credentials = dict(user=1000, group=self.user.pw_gid, extra_groups=groups)
+        if self.cpu_stress_ng:
+            assert self.cpu_stress_ng.is_file(), 'native FP binary missing'
+            subprocess.run(['/usr/bin/python3', '-c',
+                'import os,sys; assert os.access(sys.argv[1], os.R_OK|os.X_OK)',
+                str(self.cpu_stress_ng)], check=True, timeout=5, **self.credentials)
+            self.result['cpu_stress_ng'] = str(self.cpu_stress_ng)
         self.binary = self.fixture / 'bin/glmark2-es2-gbm'
         assert self.binary.is_file() and (self.fixture / 'data').is_dir()
         # Actual UID1000 access, including ancestor traversal and any ACLs.
@@ -350,9 +391,25 @@ class CombinedLive(Live):
         self.result['kernel_cursor'] = match[1]
         for c in self.clusters.values():
             for cpu in c['cpus']:
-                code = 'import os; os.sched_setaffinity(0, {' + str(cpu) + '}); x=1\nwhile True: x=(x*1664525+1013904223)&0xffffffff'
-                self.workers.append(subprocess.Popen(['/usr/bin/python3', '-c', code],
-                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+                if self.cpu_stress_ng:
+                    command = ['/usr/bin/taskset', '-c', str(cpu), str(self.cpu_stress_ng),
+                        '--fp', '1', '--fp-method', 'doublemul', '--verify',
+                        '--timeout', '330s', '--metrics-brief']
+                    log = (self.output / f'cpu{cpu}-fp.log').open('xb')
+                    try:
+                        worker = subprocess.Popen(command, stdin=subprocess.DEVNULL,
+                            stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
+                            env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'}, **self.credentials)
+                    except Exception:
+                        log.close()
+                        raise
+                    self.workers.append(worker)
+                    self.native_workers[worker.pid] = dict(cpu=cpu, command=command, log=log,
+                                                          child_identity=None)
+                else:
+                    code = 'import os; os.sched_setaffinity(0, {' + str(cpu) + '}); x=1\nwhile True: x=(x*1664525+1013904223)&0xffffffff'
+                    self.workers.append(subprocess.Popen(['/usr/bin/python3', '-c', code],
+                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         assert len(self.workers) == 8
         self.result['worker_pids'] = [p.pid for p in self.workers]
         command = [str(self.binary), '--off-screen', '--winsys-options=drm-device=' + RENDER_NODE,
@@ -382,9 +439,28 @@ class CombinedLive(Live):
 
     def workload(self):
         ticks = {}
+        cpu_groups = {}
         for worker in self.workers:
-            fields = (Path('/proc') / str(worker.pid) / 'stat').read_text().rsplit(')', 1)[1].split()
-            ticks[str(worker.pid)] = int(fields[11]) + int(fields[12])
+            if getattr(self, 'cpu_stress_ng', None):
+                native = self.native_workers[worker.pid]
+                members = native_group_members(worker.pid)
+                assert str(worker.pid) in members, 'native supervisor missing'
+                assert all(m['affinity'] == str(native['cpu']) for m in members.values()), 'native worker affinity changed'
+                children = {pid: m for pid, m in members.items()
+                            if pid != str(worker.pid) and m['name'] == 'stress-ng-fp' and m['state'] != 'Z'}
+                assert len(children) <= 1, 'unexpected FP child count'
+                identity = {pid: m['start_ticks'] for pid, m in children.items()}
+                if native['child_identity'] is not None:
+                    assert identity == native['child_identity'], 'FP stressor disappeared or restarted'
+                elif children:
+                    native['child_identity'] = identity
+                # Supervisor ticks cannot prove the arithmetic child did work.
+                ticks[str(worker.pid)] = sum(m['ticks'] for m in children.values())
+                cpu_groups[str(worker.pid)] = dict(cpu=native['cpu'], members=members,
+                                                   stressor_pids=list(children))
+            else:
+                fields = (Path('/proc') / str(worker.pid) / 'stat').read_text().rsplit(')', 1)[1].split()
+                ticks[str(worker.pid)] = int(fields[11]) + int(fields[12])
         assert self.gpu.poll() is None, 'GPU exited before the scheduled load stop'
         clients = {}
         nodes = set()
@@ -403,7 +479,7 @@ class CombinedLive(Live):
             client = values['drm-client-id'].strip()
             clients[client] = dict(nanoseconds=int(values['drm-engine-gpu'].split()[0]),
                                    cycles=int(values['drm-cycles-gpu'].split()[0]))
-        return dict(cpu_ticks=ticks, gpu_clients=clients, drm_nodes=sorted(nodes))
+        return dict(cpu_ticks=ticks, cpu_groups=cpu_groups, gpu_clients=clients, drm_nodes=sorted(nodes))
 
     def stop(self):
         if getattr(self, 'load_stopped', False):
@@ -416,7 +492,12 @@ class CombinedLive(Live):
             except ProcessLookupError:
                 pass
         for worker in self.workers:
-            if worker.poll() is None:
+            if getattr(self, 'cpu_stress_ng', None):
+                try:
+                    os.killpg(worker.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            elif worker.poll() is None:
                 worker.terminate()
         deadline = time.monotonic() + 3
         processes = self.workers + ([gpu] if gpu else [])
@@ -431,12 +512,36 @@ class CombinedLive(Live):
             except ProcessLookupError:
                 pass
         for worker in self.workers:
-            if worker.poll() is None:
+            if getattr(self, 'cpu_stress_ng', None):
+                if native_group_members(worker.pid):
+                    self.native_workers[worker.pid]['forced_kill'] = True
+                    try:
+                        os.killpg(worker.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+            elif worker.poll() is None:
                 worker.kill()
         deadline = time.monotonic() + 3
         for process in processes:
             process.wait(timeout=max(0, deadline - time.monotonic()))
         self.result['workers_stopped'] = all(w.poll() is not None for w in self.workers)
+        if getattr(self, 'cpu_stress_ng', None):
+            results = {}
+            for worker in self.workers:
+                native = self.native_workers[worker.pid]
+                native['log'].close()
+                group_stopped = not native_group_members(worker.pid)
+                log_path = self.output / f"cpu{native['cpu']}-fp.log"
+                results[str(native['cpu'])] = dict(pid=worker.pid, command=native['command'],
+                    returncode=worker.returncode, group_stopped=group_stopped,
+                    stressor_identity=native['child_identity'], log=str(log_path),
+                    forced_kill=native.get('forced_kill', False),
+                    arithmetic_passed=(not native.get('forced_kill', False)
+                                       and native_fp_passed(worker.returncode, log_path.read_text())))
+            self.result['native_cpu_results'] = results
+            self.result['workers_stopped'] &= all(r['group_stopped'] for r in results.values())
+            self.result['native_arithmetic_passed'] = (len(results) == 8
+                and all(r['arithmetic_passed'] for r in results.values()))
         self.result['gpu_stopped'] = gpu is None or gpu.poll() is not None
         if gpu:
             self.result['gpu_returncode'] = gpu.returncode
@@ -499,6 +604,7 @@ class CombinedLive(Live):
             self.result['load_seconds'] = round(time.monotonic() - started, 3)
             self.stop()
             assert self.result['workers_stopped'] and self.result['gpu_stopped'] and self.result['gpu_group_stopped'], 'workload cleanup incomplete'
+            assert not self.cpu_stress_ng or self.result['native_arithmetic_passed'], 'native FP arithmetic or planned-stop verification failed'
             self.result['gpu_completed_rows'] = gpu_rows(self.gpu_xml)
             self.result['gpu_xml_interrupted'] = not self.gpu_xml.read_text().rstrip().endswith('</glmark2>')
             self.result['overlap_10s_windows'] = overlap_coverage(self.result['samples'])
