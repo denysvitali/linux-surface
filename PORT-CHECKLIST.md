@@ -64,10 +64,10 @@ awaits attribution for later observations.
 ## Next work, in order
 
 User cannot provide physical assistance (October6); continue autonomous work.
-Physical observations remain unverified. Next autonomous candidate is CDSP:
-the v66 workload is prepared and SoC ID340 corroborates Windows' flat-IOVA
-exception. Establish the complete SMMU/session mapping before a bounded
-firmware capability query; determine process authorization before compute.
+Physical observations remain unverified. CDSP's translated session now starts,
+but CV's first capability query triggers a watchdog. Correct the demonstrated
+wire-address tag: Windows uses low host IOVAs but prepends session1 on the wire.
+One changed query remains before parking; determine process authorization before compute.
 See [CDSP prerequisites](tools/spx/boot-diagnostics/RESULT-20261006cdsp.md).
 USB-C switching and external scanout restoration already have scoped passes;
 physical replug, ports/orientations and visible output still need fixtures.
@@ -255,10 +255,11 @@ reconciled. [Inventory](tools/spx/boot-diagnostics/HARDWARE-INVENTORY-20261002.m
   capabilities and available interfaces; validate a real supported workload or
   document the specific missing support. A thermal-zone name is not a working NPU.
   **October6 WIP:** a freestanding v66 FastRPC workload builds but has not run.
-  CU capability-only transport rejects DMA translation before a remote query:
-  the CDSP parent lacks explicit bus cells. Correct that and prevent failed
-  session reprobes; retain the evidenced SID/window and process restrictions.
-  [CU result](tools/spx/boot-diagnostics/RESULT-20261006cu.md).
+  CV passes translated session setup, then its first capability query triggers
+  a CDSP watchdog/EPIPE; later kernel worker stalls have unknown causality.
+  Correct Windows-grounded wire tag1 while retaining the low host IOVA window,
+  SID and process restrictions. No capabilities or compute pass yet.
+  [CV result](tools/spx/boot-diagnostics/RESULT-20261006cv.md).
   [Preparation and contract](tools/spx/boot-diagnostics/RESULT-20261006cdsp.md).
 
 ## Internal display, GPU and video
