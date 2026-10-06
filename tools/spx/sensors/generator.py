@@ -21,7 +21,11 @@ def generate(output, cmdline):
             override = output / (unit + '.d')
             override.mkdir(parents=True, exist_ok=True)
             (override / '60-spx-libssc.conf').write_text(
-                '[Service]\nEnvironment=LD_LIBRARY_PATH=' + PRIVATE_SSC + '\n')
+                '[Service]\nEnvironment=LD_LIBRARY_PATH=' + PRIVATE_SSC + '\n' +
+                ('Environment=G_MESSAGES_DEBUG=all\n'
+                 if unit == 'iio-sensor-proxy.service' and
+                 'spx_sensors_recovery=1' in cmdline.split() and
+                 'spx_sensors_close_debug=1' in cmdline.split() else ''))
 
 
 if __name__ == '__main__':

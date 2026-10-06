@@ -245,13 +245,15 @@ def prepare(args):
     if args.usbc_phy_orientation:
         assert args.usbc, '--usbc-phy-orientation requires --usbc'
         cmdline.append('surface_aggregator_usbc.phy_orientation=1')
-    cmdline = [word for word in cmdline if not word.startswith(('spx_sensors=', 'spx_sensors_libssc=', 'spx_sensors_recovery='))]
+    cmdline = [word for word in cmdline if not word.startswith(('spx_sensors=', 'spx_sensors_libssc=', 'spx_sensors_recovery=', 'spx_sensors_close_debug='))]
     if args.sensors:
         cmdline.append('spx_sensors=1')
         if args.sensors_ssc_library:
             cmdline.append('spx_sensors_libssc=private')
         if args.sensors_crash_recovery:
             cmdline.append('spx_sensors_recovery=1')
+        if args.sensors_close_debug:
+            cmdline.append('spx_sensors_close_debug=1')
     cmdline = [word for word in cmdline if not word.startswith('spx_cdsp=')]
     if args.cdsp:
         cmdline.append('spx_cdsp=1')
@@ -265,7 +267,7 @@ def prepare(args):
     (OUT / 'entry.cfg').write_text(entry)
     run('grub-syntax', ['grub-script-check', str(OUT / 'entry.cfg')])
     prepared = dict(utc=datetime.now(timezone.utc).isoformat(), preboot_id=BOOT_ID, release=RELEASE, attempt=ATTEMPT, entry='spx-trial-' + ATTEMPT, cmdline=cmdline, source_commit=subprocess.check_output(['git', '-c', 'safe.directory=' + str(REPO), 'rev-parse', 'HEAD'], cwd=REPO, text=True).strip(), build_directory=str(BUILD), private_config=str(OUT / 'kernel.config'), bluetooth_address=args.address, address_is_per_installation=True, venus_trial=False, speaker_drivers_blocked=True, hardware_acceptance_closed=False, installed=False, boot_selected=False, boot_payloads=dict(vmlinuz=sha(OUT / 'vmlinuz'), initramfs=sha(OUT / 'initramfs.img'), dtb=sha(OUT / 'spx.dtb')))
-    prepared.update(sensors_crash_recovery=args.sensors_crash_recovery, sensors_startup=args.sensors, sensors_private_ssc=bool(args.sensors_ssc_library), audio_mode='parked' if args.audio else 'blocked',
+    prepared.update(sensors_close_debug=args.sensors_close_debug, sensors_crash_recovery=args.sensors_crash_recovery, sensors_startup=args.sensors, sensors_private_ssc=bool(args.sensors_ssc_library), audio_mode='parked' if args.audio else 'blocked',
                     cpu_passive_cooling=args.cpu_passive_cooling,
                     thermal_combined=args.thermal_combined,
                     thermal_gpu_fixture=str(args.thermal_gpu_fixture),
@@ -1828,6 +1830,7 @@ def main():
     parser.add_argument('--srtc-d0-notify', action='store_true',
                         help='also test the documented D0-exit/entry EC notification pair while awake')
     parser.add_argument('--sensors-crash-recovery', action='store_true', help='queue one verified SensorsPD host failure and guarded automatic recovery test')
+    parser.add_argument('--sensors-close-debug', action='store_true', help='enable existing private proxy SSC disable/client-close traces during the crash trial')
     parser.add_argument('--sensors', action='store_true', help='retain initial SensorsPD listener and gate desktop proxy on SSC readiness')
     parser.add_argument('--sensors-config', type=Path, default=Path('/var/tmp/spx-sensors-config'))
     parser.add_argument('--sensors-daemon', type=Path, default=Path('/var/tmp/spx-hexagonrpc/build/hexagonrpcd/hexagonrpcd'))
@@ -1874,6 +1877,8 @@ def main():
         parser.error('--microphone-source DMIC0 requires audio/arm-audio capture, feedback or desktop-mic')
     if args.sensors_crash_recovery and (args.command != 'prepare' or not args.sensors or not args.sensors_ssc_library or args.audio or args.cdsp or args.thermal_combined):
         parser.error('--sensors-crash-recovery requires prepare --sensors --sensors-ssc-library and excludes audio/CDSP/thermal')
+    if args.sensors_close_debug and (args.command != 'prepare' or not args.sensors_crash_recovery):
+        parser.error('--sensors-close-debug requires prepare --sensors-crash-recovery')
     if args.thermal_combined and args.command not in ('prepare', 'thermal'):
         parser.error('--thermal-combined requires prepare or thermal')
     if args.thermal_cpu_stress_ng and (not args.thermal_combined or args.command not in ('prepare', 'thermal')):

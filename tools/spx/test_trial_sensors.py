@@ -85,6 +85,10 @@ class SensorStaging(unittest.TestCase):
             for unit in ('spx-sensors.service', 'iio-sensor-proxy.service'):
                 self.assertIn('LD_LIBRARY_PATH=/usr/local/libexec/spx-sensors/libssc',
                               (root / (unit + '.d/60-spx-libssc.conf')).read_text())
+                self.assertNotIn('G_MESSAGES_DEBUG', (root / (unit + '.d/60-spx-libssc.conf')).read_text())
+            generator.generate(root, 'spx_sensors=1 spx_sensors_libssc=private spx_sensors_recovery=1 spx_sensors_close_debug=1')
+            self.assertIn('G_MESSAGES_DEBUG=all', (root / 'iio-sensor-proxy.service.d/60-spx-libssc.conf').read_text())
+            self.assertNotIn('G_MESSAGES_DEBUG', (root / 'spx-sensors.service.d/60-spx-libssc.conf').read_text())
 
     def test_optional_private_library_is_preserved(self):
         with tempfile.TemporaryDirectory() as directory:
