@@ -6,13 +6,13 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-06, CR: controlled sensor backend restart passes)
+## Status (2026-10-06, CS: CPU passive bindings installed; response unproven)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
 rotation, calibration and resume remain open. **CR closes S02d:** quiesced
 backend stop/start restores ownership and all streams/desktop APIs. Latest result:
-[CR](tools/spx/boot-diagnostics/RESULT-20261006cr.md), kernel
+[CS](tools/spx/boot-diagnostics/RESULT-20261006cs.md), kernel
 `7.3.0-rc2-spx-mainline-20261004bg+`. **U03a passes:** two GNOME off/on cycles
 restore3440×1440/50Hz external scanout. CC0 normal Type-C callback succeeds;
 reverse plugs, visible output and hotplug remain unverified.
@@ -53,7 +53,7 @@ awaits attribution for later observations.
 | USB-C PD, DisplayPort, dock (U02–U04) | **CG: external off/on scanout restoration passes; normal orientation API works** | Visible output, physical replug, roles/PD, ports/orientations/resume |
 | Battery and charging (P01) | **CF: P01a actual charging passes, +1.26Wh/120s** | Charge-policy explanation, discharge/transitions and charger coverage |
 | Suspend/resume (P03) | Kernel exposes s2idle; systemd sleep/suspend targets masked | Intended wake, then controlled sleep |
-| Thermal (P05) | **CM: P05a CPU/GPU cooling limits pass**; BH 3 min load stable | Automatic temperature response; sustained combined workload |
+| Thermal (P05) | **CM cooling limits pass; CS CPU passive maps installed** | CS load stays below trip; real automatic response and combined envelope |
 | Idle power (P02) | BU: CPU scales down; GPU runtime-suspends | **Battery tests deferred by user**; remaining forced-on devices |
 | Sensors (S01, S02) | BW light readout; **CO desktop motion/compass; CR controlled restart pass** | Light response; axes, physical rotation/calibration, crash recovery/resume |
 | Cellular, GNSS (N03, N04) | Recovery: GNSS starts/stops but no fix; modem rejects online mode | Real modem provisioning, IPA datapath, SIM; actual GNSS fix |
@@ -1072,6 +1072,10 @@ GPU runtime suspend works.
 - [ ] **P05 — Thermal management.** Sensor plausibility, CPU/GPU cooling response
   and sustained combined workloads without overheating, hangs or firmware faults.
   Do not disable thermal protections or assume this device has a fan.
+  CS adds SPX Linux75°C/5°C passive CPU bindings. A180s AC load peaks66.7°C;
+  cluster0/1 stay56.2/57.7°C, below their trips. Workers stop cleanly; automatic
+  response remains unproven. Park unchanged load retries, keep the chosen policy
+  distinct from recovered Windows policy. [CS result](tools/spx/boot-diagnostics/RESULT-20261006cs.md).
 
   - [x] **P05a — Cooling requests enforce and release CPU/GPU limits.** CM,
     boot `e826a35b-d8f3-4b09-9d1b-99efb59ae9a1`, kernel
