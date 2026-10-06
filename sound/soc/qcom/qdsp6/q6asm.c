@@ -690,6 +690,13 @@ static int32_t q6asm_stream_callback(struct apr_device *adev,
 
 	switch (hdr->opcode) {
 	case APR_BASIC_RSP_RESULT:
+		if (data->payload_size >= (int)sizeof(*result) &&
+		    (result->opcode == ASM_SESSION_CMD_RUN_V2 ||
+		     result->opcode == ASM_DATA_CMD_EOS))
+			dev_dbg(ac->dev,
+				"SPX lifecycle basic-rsp opcode=0x%x status=0x%x session=%d token=0x%x cb_bound=%d\n",
+				result->opcode, result->status, session_id,
+				hdr->token, !!ac->cb);
 		switch (result->opcode) {
 		case ASM_SESSION_CMD_PAUSE:
 			client_event = ASM_CLIENT_EVENT_CMD_PAUSE_DONE;
@@ -740,6 +747,11 @@ static int32_t q6asm_stream_callback(struct apr_device *adev,
 		ac->result = *result;
 		wake_up(&ac->cmd_wait);
 
+		if (data->payload_size >= (int)sizeof(*result) &&
+		    result->opcode == ASM_SESSION_CMD_RUN_V2)
+			dev_dbg(ac->dev,
+				"SPX lifecycle run-done event=0x%x session=%d token=0x%x cb_bound=%d\n",
+				client_event, session_id, hdr->token, !!ac->cb);
 		if (ac->cb)
 			ac->cb(client_event, hdr->token,
 			       data->payload, ac->priv);
@@ -803,10 +815,17 @@ static int32_t q6asm_stream_callback(struct apr_device *adev,
 
 		break;
 	case ASM_DATA_EVENT_RENDERED_EOS:
+		dev_dbg(ac->dev,
+			"SPX lifecycle rendered-eos session=%d token=0x%x cb_bound=%d\n",
+			session_id, hdr->token, !!ac->cb);
 		client_event = ASM_CLIENT_EVENT_CMD_EOS_DONE;
 		break;
 	}
 
+	if (hdr->opcode == ASM_DATA_EVENT_RENDERED_EOS)
+		dev_dbg(ac->dev,
+			"SPX lifecycle eos-done event=0x%x session=%d token=0x%x cb_bound=%d\n",
+			client_event, session_id, hdr->token, !!ac->cb);
 	if (ac->cb)
 		ac->cb(client_event, hdr->token, data->payload, ac->priv);
 
