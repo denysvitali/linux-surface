@@ -30,7 +30,23 @@ class Client:
     def __init__(self, flag, credentials, output):
         self.lines = []
         self.output = output
-        self.process = subprocess.Popen(['stdbuf', '-oL', '-eL', 'monitor-sensor', flag],
+        self.credentials = credentials
+        self.scope = 'spx-sensor-test-' + flag.lstrip('-') + '.scope'
+        self.env = os.environ.copy()
+        self.env.pop('LD_LIBRARY_PATH', None)
+        self.env.update(HOME=pwd.getpwuid(credentials['user']).pw_dir,
+                        XDG_RUNTIME_DIR='/run/user/1000',
+                        DBUS_SESSION_BUS_ADDRESS='unix:path=/run/user/1000/bus')
+        state = subprocess.run(['systemctl', '--user', 'show', self.scope, '-p', 'LoadState', '--value'],
+                               capture_output=True, text=True, env=self.env, timeout=5, **credentials)
+        if state.returncode or state.stdout.strip() != 'not-found':
+            raise lifecycle.Refused('client scope already exists or user manager unavailable')
+        # UID alone in the root trial service is not an active desktop subject.
+        # A user scope supplies the existing user manager's session association;
+        # installed polkit policy still decides each real sensor claim.
+        self.process = subprocess.Popen(['systemd-run', '--user', '--scope', '--collect', '--quiet',
+            '--unit=' + self.scope, 'timeout', '--signal=TERM', '--kill-after=2s', '240s',
+            'stdbuf', '-oL', '-eL', 'monitor-sensor', flag], env=self.env,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True, **credentials)
         self.thread = threading.Thread(target=self.read, daemon=True)
         self.thread.start()
@@ -60,7 +76,14 @@ class Client:
                     pass
                 self.process.wait(timeout=3)
         self.thread.join(timeout=3)
-        return self.process.poll() is not None and not self.thread.is_alive()
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            state = subprocess.run(['systemctl', '--user', 'show', self.scope, '-p', 'ActiveState', '--value'],
+                capture_output=True, text=True, env=self.env, timeout=3, **self.credentials)
+            if state.returncode == 0 and state.stdout.strip() in ('inactive', 'failed'):
+                return self.process.poll() is not None and not self.thread.is_alive()
+            time.sleep(.1)
+        return False
 
 
 def stop_clients(clients, errors):
