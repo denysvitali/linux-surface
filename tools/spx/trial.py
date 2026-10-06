@@ -163,6 +163,22 @@ def prepare(args):
     print('Private functional boot prepared; no boot selected', flush=True)
 
 
+def verify_retained_modules(prepared, modules):
+    """Keep a module baseline only with the Image that owns that tree."""
+    assert modules.is_dir() and not prepared.get('replace_modules')
+    assert sha(modules / 'vmlinuz') == sha(BUILD / 'arch/arm64/boot/Image'), \
+        'installed module tree belongs to a different kernel Image'
+    words = Path('/proc/cmdline').read_text().split()
+    if os.uname().release == RELEASE:
+        current = [w.split('=', 1)[1] for w in words if w.startswith('spx_attempt=')]
+        assert len(current) == 1
+        previous = json.loads((OUT.parent / current[0] / 'installed.json').read_text())
+        assert previous['boot_payloads']['vmlinuz'] == prepared['boot_payloads']['vmlinuz']
+    else:
+        assert os.uname().release == '6.18.3-1-surface+'
+        assert 'spx_boot=known-good' in words
+
+
 def install(args):
     os.umask(63)
     assert os.geteuid() == 0
@@ -178,6 +194,8 @@ def install(args):
     expected = dict(zip(payloads, (prepared['boot_payloads'][k] for k in ('vmlinuz', 'initramfs', 'dtb'))))
     for name, source in payloads.items():
         assert sha(source) == expected[name]
+    if prepared.get('reuse_installed_modules'):
+        verify_retained_modules(prepared, modules)
     space = os.statvfs('/boot')
     assert space.f_bavail * space.f_frsize > sum((f.stat().st_size for f in payloads.values())) + 1048576
     unit_dir = Path('/etc/systemd/system')
@@ -218,16 +236,8 @@ def install(args):
             os.chown(guard, account.pw_uid, account.pw_gid)
     subprocess.run(['systemd-analyze', 'verify', str(unit_dir / ('spx-trial-return@' + ATTEMPT + '.service')), str(unit_dir / ('spx-trial-return@' + ATTEMPT + '.timer'))], check=True, timeout=30)
     if prepared.get('reuse_installed_modules'):
-        # A command-line-only trial keeps the coordinator's current module tree.
-        # No loaded module is overwritten, removed or reloaded by installation.
-        assert modules.exists() and os.uname().release == RELEASE
-        assert not prepared.get('replace_modules')
-        words = Path('/proc/cmdline').read_text().split()
-        current = [w.split('=', 1)[1] for w in words if w.startswith('spx_attempt=')]
-        assert len(current) == 1
-        previous = json.loads((OUT.parent / current[0] / 'installed.json').read_text())
-        assert previous['boot_payloads']['vmlinuz'] == prepared['boot_payloads']['vmlinuz']
-        print('Keeping installed modules for the unchanged running kernel', flush=True)
+        # Also preserve the trial baseline when preparing from recovery.
+        print('Keeping installed modules for the unchanged trial Image', flush=True)
     elif modules.exists() and os.uname().release == RELEASE:
         # Only explicitly named, currently blacklisted and unloaded modules may
         # be replaced while this release is running. Keep all other files.
