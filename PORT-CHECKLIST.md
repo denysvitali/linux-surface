@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-06, CM: desktop microphone helper cleanup failed)
+## Status (2026-10-06, CM: CPU/GPU cooling requests pass)
 
 **Sensors parked:** CH/CJ/CK produced no motion samples. CL's shared-pool fix is
 prepared but unbooted. Latest result: [CM](tools/spx/boot-diagnostics/RESULT-20261006cm.md), kernel
@@ -20,6 +20,8 @@ Visual quality and suspend remain open. CG extends CE's power-cycle coverage to 
 DP0 startup/reload result remains scoped to its attached dock.
 CC closes A02b: both fitted microphone inputs record known stimuli; quality,
 simultaneous mapping and lifecycle remain open. CB playback reopen still fails.
+**CM closes P05a:** both CPU clusters and GPU enforce/release cooling limits.
+Default microphone clients remain unverified after helper failure and level abort.
 B05a early RTC and N01a IPv6 VPN retain prior passes. **N01b is accepted by user
 assumption from working5GHz; no2.4GHz functional pass was measured.** Light
 response needs physical stimulus. Input/BT confirmations belong to BI; the
@@ -48,7 +50,7 @@ awaits attribution for later observations.
 | USB-C PD, DisplayPort, dock (U02–U04) | **CG: external off/on scanout restoration passes; normal orientation API works** | Visible output, physical replug, roles/PD, ports/orientations/resume |
 | Battery and charging (P01) | **CF: P01a actual charging passes, +1.26Wh/120s** | Charge-policy explanation, discharge/transitions and charger coverage |
 | Suspend/resume (P03) | Kernel exposes s2idle; systemd sleep/suspend targets masked | Intended wake, then controlled sleep |
-| Thermal (P05) | BH: 3 min CPU/GPU load stable, peak 60.1°C | Cooling response |
+| Thermal (P05) | **CM: P05a CPU/GPU cooling limits pass**; BH 3 min load stable | Automatic temperature response; sustained combined workload |
 | Idle power (P02) | BU: CPU scales down; GPU runtime-suspends | **Battery tests deferred by user**; remaining forced-on devices |
 | Sensors (S01, S02) | BW: TCS3430 runtime-PM/readout passes; **S02 parked after CH/CJ/CK** | Physical light response; auto-brightness; CL shared pool untested, registry and motion streams |
 | Cellular, GNSS (N03, N04) | Recovery: GNSS starts/stops but no fix; modem rejects online mode | Real modem provisioning, IPA datapath, SIM; actual GNSS fix |
@@ -1037,6 +1039,16 @@ GPU runtime suspend works.
 - [ ] **P05 — Thermal management.** Sensor plausibility, CPU/GPU cooling response
   and sustained combined workloads without overheating, hangs or firmware faults.
   Do not disable thermal protections or assume this device has a fan.
+
+  - [x] **P05a — Cooling requests enforce and release CPU/GPU limits.** CM,
+    boot `e826a35b-d8f3-4b09-9d1b-99efb59ae9a1`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: with two short CPU workers, maximum
+    cooling requests lower reported CPU frequencies from1.7664/3.1488GHz to
+    0.300/0.8256GHz and GPU from315 to177MHz. Restoring each prior state restores
+    its frequency limit and operating frequency. All states restored; thermal
+    protections remain active, peak44.2°C,5.28s. This verifies the cooling-device
+    control path; automatic temperature-triggered policy and sustained combined
+    workloads remain open. [CM result](tools/spx/boot-diagnostics/RESULT-20261006cm.md).
 
 ## Diagnostic integrity and final acceptance
 
