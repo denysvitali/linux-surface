@@ -93,6 +93,13 @@ def stage_sensors(args, out, here=HERE):
 
 def install_sensors(stage, root=Path('/')):
     """Install fixed feature assets; do not attach on the current boot."""
+    def replace_asset(source, target, mode):
+        # Retained daemon executables and mapped libraries must keep their inode.
+        temporary = target.with_name(target.name + '.trial-new')
+        shutil.copy2(source, temporary)
+        temporary.chmod(mode)
+        os.replace(temporary, target)
+
     config = root / SENSORS_ROOT.relative_to('/')
     private = root / SENSORS_LIBEXEC.relative_to('/')
     config.parent.mkdir(parents=True, exist_ok=True)
@@ -107,26 +114,21 @@ def install_sensors(stage, root=Path('/')):
         target = private / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.parent.chmod(0o755)
-        shutil.copy2(stage / source, target)
-        target.chmod(mode)
+        replace_asset(stage / source, target, mode)
     if (stage / 'libssc.so.2').is_file():
         target = private / 'libssc/libssc.so.2'
         target.parent.mkdir(parents=True, exist_ok=True)
         target.parent.chmod(0o755)
-        shutil.copy2(stage / 'libssc.so.2', target)
-        target.chmod(0o644)
+        replace_asset(stage / 'libssc.so.2', target, 0o644)
     target = root / 'etc/systemd/system/spx-sensors.service'
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(stage / 'spx-sensors.service', target)
-    target.chmod(0o644)
+    replace_asset(stage / 'spx-sensors.service', target, 0o644)
     generator = root / 'usr/lib/systemd/system-generators/spx-sensors'
     generator.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(stage / 'generator.py', generator)
-    generator.chmod(0o755)
+    replace_asset(stage / 'generator.py', generator, 0o755)
     rule = root / 'etc/udev/rules.d/81-spx-sensors.rules'
     rule.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(stage / '81-spx-sensors.rules', rule)
-    rule.chmod(0o644)
+    replace_asset(stage / '81-spx-sensors.rules', rule, 0o644)
 
 
 def prepare(args):

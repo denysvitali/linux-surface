@@ -18,6 +18,29 @@ generator_spec.loader.exec_module(generator)
 
 
 class SensorStaging(unittest.TestCase):
+    def test_running_assets_keep_old_inode_during_reinstallation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            args = self.inputs(root)
+            out = root / 'stage'
+            out.mkdir()
+            trial.stage_sensors(args, out)
+            destination = root / 'install'
+            trial.install_sensors(out / 'sensors', destination)
+            private = destination / trial.SENSORS_LIBEXEC.relative_to('/')
+            for relative, staged in (('hexagonrpcd/hexagonrpcd', 'hexagonrpcd'),
+                                     ('libhexagonrpc/libhexagonrpc.so.0.5', 'libhexagonrpc.so.0.5')):
+                target = private / relative
+                with target.open('rb') as retained:
+                    old = retained.read()
+                    inode = target.stat().st_ino
+                    (out / 'sensors' / staged).write_bytes(b'new asset')
+                    trial.install_sensors(out / 'sensors', destination)
+                    retained.seek(0)
+                    self.assertEqual(retained.read(), old)
+                    self.assertNotEqual(target.stat().st_ino, inode)
+                    self.assertEqual(target.read_bytes(), b'new asset')
+
     def test_proxy_dependency_is_generated_only_on_opted_in_boot(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
