@@ -42,7 +42,7 @@ awaits attribution for later observations.
 |---|---|---|
 | Boot to desktop, NVMe/LUKS root | CX/CY/DA/DB actual return observed; CW startup failure unexplained | Cold/warm repeat reliability and late cleanup (B01) |
 | CPU and memory (B03) | **Passed on AP; BU automatic frequency scaling active** | Recheck on final candidate |
-| Storage (B02) | Passed on AP | Post-resume I/O |
+| Storage (B02) | **AP sustained I/O; DC post-resume direct I/O pass** | Final candidate regression |
 | GPU FD680 (D02) | **Passed on AW**, 30 min rendering | A person looking at the screen |
 | Internal panel (D01) | **CE: D01a GNOME off/on scanout passes**; user reports display/brightness working | Visual attribution/quality, brightness range and resume |
 | Wi-Fi (N01) | 5 GHz/reconnect and IPv6 VPN pass; 2.4 GHz accepted by user assumption | Native WAN IPv6, roaming, sustained use and resume |
@@ -60,10 +60,10 @@ awaits attribution for later observations.
 | USB data (U01) | Untested | Both ports/orientations, fixtures |
 | USB-C PD, DisplayPort, dock (U02–U04) | **CG: external off/on scanout restoration passes; normal orientation API works** | Visible output, physical replug, roles/PD, ports/orientations/resume |
 | Battery and charging (P01) | **CF: P01a actual charging passes, +1.26Wh/120s** | Charge-policy explanation, discharge/transitions and charger coverage |
-| Suspend/resume (P03) | Kernel exposes s2idle; systemd sleep/suspend targets masked | Intended wake, then controlled sleep |
+| Suspend/resume (P03) | **DC alarm wakes one s2idle interval**; targets stay masked | Sensors crash on thaw; full recovery/reliability |
 | Thermal (P05) | **CM cooling limits; CX/CY combined load/cleanup, CY native FP verification pass** | Real automatic response, longer envelope and enclosure behavior |
 | Idle power (P02) | BU: CPU scales down; GPU runtime-suspends | **Battery tests deferred by user**; remaining forced-on devices |
-| Sensors (S01, S02) | **CO desktop APIs; CR restart; DB one automatic host recovery passes** | Light response; axes/calibration; DA reset fault/repeat reliability; resume |
+| Sensors (S01, S02) | **CO APIs; CR restart; DB host recovery**; DC suspend crashes | Light/axes/calibration; DA fault; freeze/thaw and reliability |
 | Cellular, GNSS (N03, N04) | Recovery: GNSS starts/stops but no fix; modem rejects online mode | Real modem provisioning, IPA datapath, SIM; actual GNSS fix |
 
 ## Next work, in order
@@ -169,12 +169,17 @@ reconciled. [Inventory](tools/spx/boot-diagnostics/HARDWARE-INVENTORY-20261002.m
 - [ ] **B01 — Repeatable startup/shutdown.** At least five cold boots and ten warm
   reboots on the final candidate, on battery and external power, with clean boot,
   power-off/restart and no manual repair, unexplained reset or regression.
-- [ ] **B02 — Storage integrity.** Verify read/write/fsync and checksum readback
+- [x] **B02 — Storage integrity.** Verify read/write/fsync and checksum readback
   using disposable files; sustained I/O and post-resume I/O show no NVMe, IOMMU,
   encryption or filesystem errors. Never use destructive raw-device tests.
   **Partial, AP:** 18 direct-I/O/fsync/checksum cycles, 2.25GiB each direction in
   62.79s, all checksums matched with no new storage/IOMMU faults; disposable file
-  removed. Post-resume and final-candidate regression remain untested.
+  removed. DC adds post-s2idle16MiB direct write/read, fsync and matching
+  checksum with disposable-file cleanup and no new storage/IOMMU faults.
+  Boot `4f107d78-1968-4788-b587-8dab9701c0fc`, kernel
+  `7.3.0-rc2-spx-mainline-20261004bg+`.
+  [DC result](tools/spx/boot-diagnostics/RESULT-20261006dc.md).
+  Final-candidate regression remains separate.
   [Evidence](tools/spx/boot-diagnostics/RESULT-20261002ap.md).
 - [x] *Passed on AP (2026-10-02).* **B03 — CPU and memory operation.** All expected cores/memory available;
   bounded concurrent CPU/memory load, frequency transitions and idle recovery
