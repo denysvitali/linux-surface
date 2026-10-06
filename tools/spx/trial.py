@@ -931,11 +931,21 @@ def srtc_timer(args):
     """Verify the documented SQ2 AC/DC timer countdown without suspending."""
     os.umask(0o077)
     assert os.geteuid() == 0
-    assert os.uname().release == '6.18.3-1-surface+', 'run from the known-good recovery kernel'
     boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    if os.uname().release != '6.18.3-1-surface+':
+        assert os.uname().release == RELEASE
+        assert 'spx_attempt=' + ATTEMPT in Path('/proc/cmdline').read_text().split()
+        checked = json.loads((OUT / 'functional.json').read_text())
+        assert checked.get('complete') and checked['boot_id'] == boot
+        timer = 'spx-trial-return@' + ATTEMPT + '.timer'
+        assert subprocess.check_output(['systemctl', 'is-active', timer], text=True).strip() == 'active'
+        assert float(Path('/proc/uptime').read_text().split()[0]) + 60 < json.loads(
+            (OUT / 'installed.json').read_text())['return_timer_seconds']
     recovery()
 
-    output = Path('/var/lib/spx-boot-diagnostics/attempts') / ATTEMPT / 'srtc-timer'
+    base = (Path('/var/lib/spx-boot-diagnostics/attempts') if
+            os.uname().release == '6.18.3-1-surface+' else OUT.parent)
+    output = base / ATTEMPT / 'srtc-timer'
     output.mkdir(parents=True, mode=0o700)
     target = output / 'result.json'
     owner, lock = 'srtc-' + ATTEMPT, str(REPO / 'tools/spx/spx-lock')
@@ -1654,7 +1664,7 @@ def main():
         prepare(args)
     elif args.command == 'srtc-timer':
         BOOT_ID = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
-        RELEASE = os.uname().release
+        RELEASE = (args.build / 'include/config/kernel.release').read_text().strip()
         srtc_timer(args)
     else:
         record = json.loads((OUT / 'prepared.json').read_text())
