@@ -72,6 +72,21 @@ class AudioRequestTests(TrialAudioFixture):
         self.assertTrue((self.out / 'kernel.log').exists())
         self.assertTrue((self.out / 'journal.log').exists())
 
+    def test_desktop_mic_dmic0_request_is_bounded_and_consumed_once(self):
+        self.request.update(action='desktop-mic', microphone_source='DMIC0',
+                            return_after_audio_seconds=61)
+        self.write_request()
+        with patch.object(trial, 'audio_check') as check:
+            trial.requested_audio(self.args)
+            self.assertEqual(self.args.audio_action, 'desktop-mic')
+            self.assertEqual(self.args.microphone_source, 'DMIC0')
+            self.assertTrue(self.args.allow_amp_power and self.args.allow_playback and
+                            self.args.allow_capture)
+            self.assertFalse((self.out / 'audio-request.json').exists())
+            trial.requested_audio(self.args)
+            check.assert_called_once()
+        self.assertEqual(self.windows, [162])
+
     def test_missing_capture_authorization_is_rejected_before_consumption(self):
         self.request['capture'] = False
         self.write_request()

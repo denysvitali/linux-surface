@@ -933,5 +933,90 @@ class PlaybackReopenTests(unittest.TestCase):
         self.assertEqual(len(report['reopen']['cycles']), 1)
 
 
+class DesktopMicrophoneTests(unittest.TestCase):
+    def test_default_client_route_rejects_another_source(self):
+        graph = Mock()
+        report = {}
+        source = audio.DesktopMicSource(graph, Mock(), report)
+        source.source_id = 12
+        output = {'index': 3, 'source': 19, 'properties': {'application.name': 'owned-client'}}
+        graph.run.side_effect = [source.name, json.dumps([output])]
+        with self.assertRaisesRegex(RuntimeError, 'another source'):
+            source.require_client_route('owned-client')
+        self.assertNotIn('routes', report)
+        output['source'] = '12'
+        graph.run.side_effect = [source.name, json.dumps([output])]
+        self.assertTrue(source.require_client_route('owned-client'))
+        self.assertEqual(report['routes'][0]['source_output'], 3)
+
+    def test_source_restore_failure_still_unloads_owned_module_and_fifo(self):
+        graph = Mock()
+        report = {}
+        source = audio.DesktopMicSource(graph, Mock(), report)
+        with tempfile.TemporaryDirectory() as directory:
+            source.directory = Path(directory) / 'owned'
+            source.directory.mkdir()
+            source.fifo = source.directory / 'capture'
+            os.mkfifo(source.fifo, 0o600)
+            source.previous, source.module = 'original', '41'
+            def run(*command):
+                if command[1] == 'set-default-source':
+                    raise RuntimeError('restore failed')
+            graph.run.side_effect = run
+            with self.assertRaisesRegex(RuntimeError, 'restore failed'):
+                source.close()
+            self.assertEqual(graph.run.call_args_list[-1].args,
+                             ('pactl', 'unload-module', '41'))
+            self.assertEqual(list(Path(directory).iterdir()), [])
+            self.assertFalse(report['restored'])
+
+    def test_two_clients_keep_hardware_owners_open_even_on_second_failure(self):
+        import acoustic
+        capture = Mock(status=Path('/unused-capture-status'))
+        owners = 'state: RUNNING\nowner_pid: 123\ntrigger_time: 14.567\n'
+        pcm = Mock()
+        pcm.healthy.return_value = owners
+        graph, source = Mock(), Mock()
+        source.require_client_route.return_value = True
+        clients = []
+        def recording(*args):
+            client = Mock()
+            client.process.pid = 200 + len(clients)
+            client.mark.return_value = 144000
+            client.samples.return_value = []
+            clients.append(client)
+            return client
+        report, holders = {}, []
+        scores = [{'passed': True, 'reason': 'tone detected'},
+                  {'passed': False, 'reason': 'missing tone'}]
+        with patch.object(audio, 'DesktopGraph', return_value=graph), \
+                patch.object(audio, 'DesktopMicSource', return_value=source), \
+                patch.object(audio, 'DesktopRecording', side_effect=recording), \
+                patch.object(audio, 'read_text', return_value=owners), \
+                patch.object(audio, 'check_stereo'), \
+                patch.object(audio.threading, 'Timer'), \
+                patch.object(acoustic, 'score_phase', side_effect=scores):
+            with self.assertRaisesRegex(RuntimeError, 'missing tone'):
+                audio.desktop_microphone(SimpleNamespace(desktop_user='test'), report,
+                                         pcm, {}, {}, capture, holders)
+        self.assertEqual(holders, [graph])  # Outer initializer owns failure cleanup.
+        self.assertEqual(len(clients), 2)
+        for client in clients:
+            client.close.assert_called_once()
+        capture.close.assert_not_called()
+        pcm.close.assert_not_called()
+        self.assertFalse(report['desktop']['microphone_client_passed'])
+        self.assertTrue(report['desktop']['clients'][0]['passed'])
+        self.assertFalse(report['desktop']['clients'][1]['passed'])
+
+    def test_desktop_mic_requires_capture_before_any_hardware(self):
+        args = SimpleNamespace(action='desktop-mic', microphone_source='DMIC0',
+                               allow_amp_power=True, allow_playback=True, allow_capture=False)
+        with patch.object(audio.os, 'geteuid', return_value=0), \
+                patch.object(audio, 'parameter', side_effect=AssertionError('hardware read')):
+            with self.assertRaisesRegex(RuntimeError, 'allow-capture'):
+                audio.initialize(args, {})
+
+
 if __name__ == '__main__':
     unittest.main()

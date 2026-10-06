@@ -14,9 +14,10 @@ the amplifiers parked. ``desktop`` checks finite applications through a temporar
 public PipeWire sink and verifies attached-amplifier PCM teardown. ``serve`` first
 runs that acoustic test, closes the microphone, then retains the same PCM for
 ordinary applications at minimum PA gain. ``--desktop-peak`` selects their fixed
-attenuation (default 1433/32768, at most 12000/32768). ``reopen`` tests two
-Linux playback PCMs with one continuous microphone capture and attached-amp
-teardown between them; ASM stays parked. None loads modules.
+attenuation (default 1433/32768, at most 12000/32768). ``desktop-mic`` tests
+two bounded default recording clients over one retained capture/playback pair; it provides no persistent microphone service.
+``reopen`` tests two Linux playback PCMs with one continuous microphone capture
+and attached-amp teardown between them; ASM stays parked. None loads modules.
 """
 
 import argparse
@@ -249,8 +250,8 @@ def tone(channels, seconds=2, amplitude=1433):
 
 def validate_microphone_source(action, source):
     need(source in ('DMIC0', 'DMIC1'), 'Unknown microphone source')
-    need(source == 'DMIC1' or action in ('capture', 'feedback'),
-         'DMIC0 is only supported for capture or feedback')
+    need(source == 'DMIC1' or action in ('capture', 'feedback', 'desktop-mic'),
+         'DMIC0 is only supported for capture or feedback or desktop-mic')
 
 
 def configure_microphone(card, report, saved, source='DMIC1'):
@@ -290,7 +291,9 @@ def configure_microphone(card, report, saved, source='DMIC1'):
 class OwnedCapture:
     """One finite MM2 capture, consumed continuously without XRUN recovery."""
 
-    def __init__(self, card, report, directory):
+    def __init__(self, card, report, directory, maximum_seconds=90, retain_recording=True):
+        self.maximum_seconds = maximum_seconds
+        self.retain_recording = retain_recording
         source = report['microphone_source']
         need(source in ('DMIC0', 'DMIC1'), 'Capture requires a verified microphone source')
         self.report = report
@@ -304,14 +307,14 @@ class OwnedCapture:
         self.process = subprocess.Popen(
             ['arecord', '--fatal-errors', '-q', '-D', f'plughw:{card},1',
              '-t', 'raw', '-f', 'S16_LE', '-r', '48000', '-c', '1',
-             '--period-size=1920', '--buffer-size=7680', '-d', '90'],
+             '--period-size=1920', '--buffer-size=7680', '-d', str(maximum_seconds)],
             stdout=subprocess.PIPE, stderr=self.log, bufsize=0)
         self.status = Path(f'/proc/asound/card{card}/pcm1c/sub0/status')
         report['microphone_capture'] = True
         report['capture'] = {'pid': self.process.pid, 'device': f'plughw:{card},1',
                              'source': source, 'rate': 48000, 'channels': 1,
                              'period_frames': 1920, 'buffer_frames': 7680,
-                             'maximum_seconds': 90, 'phases': []}
+                             'maximum_seconds': maximum_seconds, 'phases': []}
         self.thread = threading.Thread(target=self.consume, daemon=True)
         self.thread.start()
 
@@ -328,7 +331,7 @@ class OwnedCapture:
                 last = time.monotonic()
                 with self.mutex:
                     self.raw.extend(block)
-                    need(len(self.raw) <= 90 * 48000 * 2, 'Capture duration limit exceeded')
+                    need(len(self.raw) <= getattr(self, 'maximum_seconds', 90) * 48000 * 2, 'Capture duration limit exceeded')
                 monitor.extend(block)
                 while len(monitor) >= 9600:
                     samples = array('h', monitor[:9600])
@@ -410,12 +413,19 @@ class OwnedCapture:
         self.report['capture']['error'] = self.error
         self.report['capture']['returncode'] = self.process.returncode
         samples = self.samples()
-        path = self.directory / 'microphone.wav'
-        with wave.open(str(path), 'wb') as output:
-            output.setparams((1, 2, 48000, 0, 'NONE', 'not compressed'))
-            output.writeframes(samples.tobytes())
-        self.report['capture']['recording'] = str(path)
         self.report['capture']['frames'] = len(samples)
+        if getattr(self, 'retain_recording', True):
+            path = self.directory / 'microphone.wav'
+            with wave.open(str(path), 'wb') as output:
+                output.setparams((1, 2, 48000, 0, 'NONE', 'not compressed'))
+                output.writeframes(samples.tobytes())
+            self.report['capture']['recording'] = str(path)
+        else:
+            self.report['capture']['recording'] = None
+            self.report['capture']['closed_status'] = read_text(self.status)
+            self.report['capture']['clean_dsp_teardown_verified'] = False
+            with self.mutex:
+                self.raw.clear()
 
 
 class OwnedPCM:
@@ -599,6 +609,8 @@ class DesktopMonitor:
         need(self.process.poll() is None, 'Desktop monitor process exited')
 
     def close(self):
+        if self.log.closed:
+            return
         self.stop.set()
         stop_desktop_process(self.process)
         self.thread.join(timeout=1)
@@ -634,6 +646,7 @@ class DesktopGraph:
         self.processes = []
         self.module = None
         self.monitor = None
+        self.microphone = None
         self.started = False
         self.report = report
         self.sink = f'spx_desktop_test_{os.getpid()}'
@@ -674,6 +687,8 @@ class DesktopGraph:
                          for key in s.get('properties', {})) for s in sinks),
              'PipeWire exposed an ALSA hardware sink')
         default_sink = self.run('pactl', 'get-default-sink')
+        if getattr(self, 'preserve_default_source', False):
+            self.default_source_before_test = self.run('pactl', 'get-default-source')
         # This is a real public Pulse sink, but never the default. Other
         # desktop applications remain routed to their existing sink.
         self.module = self.run('pactl', 'load-module', 'module-null-sink',
@@ -764,6 +779,11 @@ class DesktopGraph:
             except (OSError, RuntimeError, subprocess.SubprocessError) as error:
                 errors.append(str(error))
 
+        for recording in getattr(self, 'recordings', []):
+            attempt(recording.close)
+        if getattr(self, 'microphone', None) is not None:
+            attempt(self.microphone.close)
+            self.microphone = None
         for process in self.processes:
             attempt(stop_desktop_process, process)
         if self.monitor:
@@ -815,6 +835,246 @@ def check_desktop_teardown(paths, report):
             return
         need(time.monotonic() < deadline, 'Desktop PCM did not close cleanly while amps attached')
         time.sleep(0.1)
+
+
+class DesktopMicSource:
+    """Owned default source for one finite retained hardware capture."""
+
+    def __init__(self, graph, capture, report, previous_default=None):
+        self.graph, self.capture, self.report = graph, capture, report
+        self.module = self.previous = self.directory = self.fifo = self.fd = None
+        self.stop = threading.Event()
+        self.forward = False
+        self.error = None
+        self.thread = None
+        self.name = f'spx_microphone_test_{os.getpid()}'
+        self.previous = previous_default
+
+    def start(self):
+        if self.previous is None:
+            self.previous = self.graph.run('pactl', 'get-default-source')
+        self.directory = Path(tempfile.mkdtemp(prefix='spx-mic-', dir=self.graph.runtime))
+        account = self.graph.account
+        os.chown(self.directory, account.pw_uid, account.pw_gid)
+        self.fifo = self.directory / 'capture'
+        os.mkfifo(self.fifo, 0o600)
+        os.chown(self.fifo, account.pw_uid, account.pw_gid)
+        self.module = self.graph.run('pactl', 'load-module', 'module-pipe-source',
+            'file=' + str(self.fifo), 'source_name=' + self.name,
+            'format=s16le', 'rate=48000', 'channels=1', 'channel_map=mono')
+        need(self.module.isdigit(), 'Pipe source did not return an owned module ID')
+        sources = json.loads(self.graph.run('pactl', '--format=json', 'list', 'sources'))
+        source = next((s for s in sources if s['name'] == self.name), None)
+        need(source is not None and source.get('monitor_of_sink') in (None, 'n/a', 4294967295),
+             'Owned microphone source missing or is a sink monitor')
+        self.source_id = source['index']
+        self.graph.run('pactl', 'set-source-volume', self.name, '65536')
+        self.graph.run('pactl', 'set-source-mute', self.name, '0')
+        self.graph.run('pactl', 'set-default-source', self.name)
+        need(self.graph.run('pactl', 'get-default-source') == self.name,
+             'Default source did not select the fitted microphone adapter')
+        # The module owns the reader. Do not hold a fake reader which could
+        # hide module failure; do not block the main thread waiting for it.
+        deadline = time.monotonic() + 3
+        while self.fd is None:
+            try:
+                self.fd = os.open(self.fifo, os.O_WRONLY | os.O_NONBLOCK)
+            except OSError as error:
+                if error.errno != errno.ENXIO or time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.05)
+        fcntl.fcntl(self.fd, fcntl.F_SETPIPE_SZ, 4096)
+        self.report.update(source=self.name, source_index=self.source_id,
+                           previous_default=self.previous, format='S16_LE/48000/mono')
+        self.thread = threading.Thread(target=self.feed, daemon=True)
+        self.thread.start()
+
+    def feed(self):
+        try:
+            cursor = self.capture.mark()
+            while not self.stop.wait(0.01):
+                end = self.capture.mark()
+                if not self.forward:
+                    cursor = end  # Never replay idle/private audio to a new client.
+                    continue
+                need(end - cursor <= 48000, 'Microphone FIFO adapter fell behind')
+                if end == cursor:
+                    continue
+                data = self.capture.samples(cursor, end).tobytes()
+                cursor = end
+                deadline = time.monotonic() + 1
+                while data and self.forward and not self.stop.is_set():
+                    if not select.select([], [self.fd], [], 0.1)[1]:
+                        need(time.monotonic() < deadline, 'Desktop microphone FIFO stalled')
+                        continue
+                    try:
+                        count = os.write(self.fd, data[:4096])
+                    except BlockingIOError:
+                        continue
+                    need(count > 0, 'Desktop microphone FIFO stopped')
+                    data = data[count:]
+                    deadline = time.monotonic() + 1
+        except (OSError, RuntimeError) as error:
+            if not self.stop.is_set():
+                self.error = str(error)
+                os.kill(os.getpid(), signal.SIGTERM)
+
+    def healthy(self):
+        self.capture.healthy()
+        need(self.error is None, self.error or 'Microphone FIFO adapter failed')
+
+    def require_client_route(self, name):
+        need(self.graph.run('pactl', 'get-default-source') == self.name,
+             'Desktop default microphone changed')
+        outputs = json.loads(self.graph.run('pactl', '--format=json', 'list', 'source-outputs'))
+        matches = [s for s in outputs if s.get('properties', {}).get('application.name') == name]
+        if not matches:
+            return False
+        need(len(matches) == 1 and str(matches[0]['source']) == str(self.source_id),
+             'Default recording client selected another source')
+        self.report.setdefault('routes', []).append(dict(client=name, source=matches[0]['source'],
+                                                         source_output=matches[0]['index']))
+        return True
+
+    def close(self):
+        self.forward = False
+        self.stop.set()
+        errors = []
+        if self.thread:
+            self.thread.join(timeout=2)
+            if self.thread.is_alive():
+                errors.append('Microphone FIFO thread did not stop')
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+        # Restoration failure must not prevent unloading our source/FIFO.
+        for command in ([('pactl', 'set-default-source', self.previous)] if self.previous else []) + \
+                       ([('pactl', 'unload-module', self.module)] if self.module else []):
+            try:
+                self.graph.run(*command)
+                if command[1] == 'set-default-source':
+                    need(self.graph.run('pactl', 'get-default-source') == self.previous,
+                         'Original default microphone was not restored')
+            except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+                errors.append(str(error))
+        if self.fifo:
+            self.fifo.unlink(missing_ok=True)
+        if self.directory:
+            self.directory.rmdir()
+        self.module = self.previous = self.directory = self.fifo = None
+        self.report.update(restored=not errors, adapter_error=self.error, cleanup_errors=errors)
+        need(not errors, 'Desktop microphone cleanup failed: ' + '; '.join(errors))
+
+
+class DesktopRecording(OwnedCapture):
+    """Ordinary default-source client; no device selection or ALSA ownership."""
+
+    def __init__(self, graph, name):
+        self.maximum_seconds = 60
+        self.raw = bytearray()
+        self.mutex = threading.Lock()
+        self.stop = threading.Event()
+        self.error = self.limit = None
+        self.log = tempfile.TemporaryFile()
+        self.process = subprocess.Popen(graph.command + [
+            'parec', '--raw', '--format=s16le', '--rate=48000', '--channels=1',
+            '--latency-msec=20', '--process-time-msec=10', '--client-name=' + name],
+            stdout=subprocess.PIPE, stderr=self.log, bufsize=0, start_new_session=True)
+        graph.processes.append(self.process)
+        if not hasattr(graph, 'recordings'):
+            graph.recordings = []
+        graph.recordings.append(self)
+        self.thread = threading.Thread(target=self.consume, daemon=True)
+        self.thread.start()
+
+    def close(self):
+        if self.log.closed:
+            return
+        self.stop.set()
+        stop_desktop_process(self.process)
+        self.thread.join(timeout=2)
+        self.process.stdout.close()
+        self.log.seek(0)
+        log = self.log.read().decode(errors='replace')
+        self.log.close()
+        with self.mutex:
+            self.raw.clear()
+        need(not self.thread.is_alive() and not self.error,
+             self.error or 'Desktop recording thread did not stop')
+        need(not re.search(r'error|overrun|underrun', log, re.I),
+             'Desktop recording client reported an error: ' + log)
+
+
+def desktop_microphone(args, report, pcm, paths, mapping, capture, holders):
+    """Two default desktop clients over one retained capture/playback pair."""
+    from acoustic import score_phase
+
+    evidence = report['desktop'] = {'microphone_client_passed': False,
+        'maximum_seconds': 60, 'clients': [], 'scope': 'default client path only'}
+    graph = DesktopGraph(args.desktop_user, evidence)
+    holders.append(graph)
+    started = time.monotonic()
+    timer = threading.Timer(60, lambda: os.kill(os.getpid(), signal.SIGTERM))
+    timer.start()
+    try:
+        graph.preserve_default_source = True
+        graph.start()
+        source = graph.microphone = DesktopMicSource(
+            graph, capture, evidence, graph.default_source_before_test)
+        source.start()
+        owners = {'capture': read_text(capture.status), 'playback': pcm.healthy()}
+        evidence['hardware_owners_before'] = owners
+        for index in range(2):
+            name = f'spx-default-microphone-{os.getpid()}-{index}'
+            client = DesktopRecording(graph, name)
+            entry = {'name': name, 'pid': client.process.pid, 'passed': False}
+            evidence['clients'].append(entry)
+            try:
+                deadline = time.monotonic() + 5
+                while not source.require_client_route(name):
+                    client.healthy()
+                    source.healthy()
+                    need(time.monotonic() < deadline, 'Default microphone client did not attach')
+                    time.sleep(0.05)
+                source.forward = True
+                # Discard startup/pipe latency, then fix a contiguous reference.
+                client.wait_frames(3 * 48000)
+                end = client.mark()
+                reference = client.samples(end - 2 * 48000, end)
+                source.healthy()
+                check_stereo(mapping, paths, initialized=True)
+                begin = client.mark()
+                pcm.play(tone({0, 1}))  # Exactly the quiet1433/minimum-PA recipe.
+                client.wait_frames(begin + 3 * 48000)
+                end = client.mark()
+                entry.update(start_frame=begin, end_frame=end,
+                             score=score_phase(client.samples(begin, end), reference, [440, 660]))
+                need(entry['score']['passed'], 'Default microphone acoustic test failed: ' +
+                     entry['score']['reason'])
+                for kind, current in (('capture', read_text(capture.status)),
+                                      ('playback', pcm.healthy())):
+                    for field in ('owner_pid', 'trigger_time'):
+                        before = re.search(r'^' + field + r'\s*:\s*(.+)$', owners[kind], re.M)
+                        after = re.search(r'^' + field + r'\s*:\s*(.+)$', current, re.M)
+                        need(before and after and before[1] == after[1],
+                             'Hardware ' + kind + ' owner/trigger changed')
+                source.healthy()
+                entry['passed'] = True
+            finally:
+                source.forward = False
+                client.close()
+            # Hardware remains open on silence between distinct client owners.
+            pcm.settle(1)
+        need(len({c['pid'] for c in evidence['clients']}) == 2,
+             'Expected two distinct default-source clients')
+        evidence['microphone_client_passed'] = True
+        report['acoustic_passed'] = True
+        report['remaining_prerequisites'] = [
+            'A02 quality, simultaneous mic mapping, persistent/on-demand availability, '
+            'hardware capture reopen and full A03 teardown/resume remain open.']
+    finally:
+        timer.cancel()
+        evidence['seconds'] = time.monotonic() - started
 
 
 def desktop_playback(args, report, pcm, paths, mapping, capture, holders):
@@ -1138,6 +1398,9 @@ def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder
     pcm.settle(1.0)  # Conservative settling margin; minimum has not been measured.
     report['remaining_prerequisites'] = [UNMET[-1]]
     report['playback_ready'] = True
+    if args.action == 'desktop-mic':
+        desktop_microphone(args, report, pcm, paths, mapping, capture, desktop_holder)
+        return
     if args.action in ('desktop', 'serve'):
         desktop_playback(args, report, pcm, paths, mapping, capture, desktop_holder)
         if args.action == 'serve':
@@ -1250,9 +1513,9 @@ def initialize(args, report):
     need(os.geteuid() == 0, 'initialize requires root')
     need(args.action in ('recover', 'capture') or args.allow_amp_power,
          'initialize/listen requires --allow-amp-power for this authorized run')
-    need(args.action not in ('listen', 'feedback', 'desktop', 'serve', 'reopen') or args.allow_playback,
+    need(args.action not in ('listen', 'feedback', 'desktop', 'serve', 'reopen', 'desktop-mic') or args.allow_playback,
          'listen requires separate explicit --allow-playback authorization')
-    need(args.action not in ('capture', 'feedback', 'desktop', 'serve', 'reopen') or args.allow_capture,
+    need(args.action not in ('capture', 'feedback', 'desktop', 'serve', 'reopen', 'desktop-mic') or args.allow_capture,
          'Microphone recording requires --allow-capture')
     need(args.owner and args.desktop_user, 'initialize requires --owner and --desktop-user')
     need(read_text('/tmp/spx-locks/spx-device.lock/owner') == args.owner,
@@ -1272,7 +1535,7 @@ def initialize(args, report):
             ('snd_soc_wsa881x', 'spx_enumerated_mode', 'Y'),
             ('snd_soc_wsa881x', 'spx_write_only', 'N')):
         need(parameter(module, name) == expected, f'{module}.{name} must be {expected}')
-    if args.action in ('listen', 'feedback', 'desktop', 'serve', 'reopen'):
+    if args.action in ('listen', 'feedback', 'desktop', 'serve', 'reopen', 'desktop-mic'):
         need(parameter('snd_soc_wcd934x', 'spx_persist_stream') == 'Y',
              'Playback requires WCD SLIM stream persistence before its first open')
     assert_desktop_paused(args.desktop_user)
@@ -1291,6 +1554,7 @@ def initialize(args, report):
     capture = None
     saved_mixer = []
     baseline = None
+    capture_deadline = None
     signals = {}
 
     def release_recording():
@@ -1352,12 +1616,18 @@ def initialize(args, report):
                  'Command FIFO readback is not empty after parked recovery')
             report['fifo_recovered'] = True
             return
-        if args.action in ('capture', 'feedback', 'desktop', 'serve', 'reopen'):
+        if args.action in ('capture', 'feedback', 'desktop', 'serve', 'reopen', 'desktop-mic'):
             need(args.output is not None, 'Capture requires a private result directory')
             directory = args.output / ('capture-' + report['utc'])
             directory.mkdir(mode=0o700)
             configure_microphone(initial['internal_cards'][0], report, saved_mixer, source)
-            capture = OwnedCapture(initial['internal_cards'][0], report, directory)
+            if args.action == 'desktop-mic':
+                capture_deadline = threading.Timer(60, lambda: os.kill(os.getpid(), signal.SIGTERM))
+                capture_deadline.start()
+                capture = OwnedCapture(initial['internal_cards'][0], report, directory,
+                                       maximum_seconds=60, retain_recording=False)
+            else:
+                capture = OwnedCapture(initial['internal_cards'][0], report, directory)
             baseline = capture.baseline()
             if args.action == 'capture':
                 report['capture_running'] = True
@@ -1397,7 +1667,7 @@ def initialize(args, report):
         report['remaining_prerequisites'].remove(UNMET[0])
         if args.action == 'reopen':
             playback_reopen(args, report, pcm_holder, capture, baseline)
-        elif args.action in ('listen', 'feedback', 'desktop', 'serve'):
+        elif args.action in ('listen', 'feedback', 'desktop', 'serve', 'desktop-mic'):
             listen(args, report, pcm_holder, capture, baseline, desktop_holder, release_recording)
         if args.action == 'feedback':
             # Control for electrical crosstalk: keep the identical capture/PCM
@@ -1468,6 +1738,8 @@ def initialize(args, report):
                     capture.close()
                 except (OSError, RuntimeError, subprocess.SubprocessError) as error:
                     cleanup_errors.append('capture: ' + str(error))
+            if capture_deadline:
+                capture_deadline.cancel()
             restore_microphone_mixer(report, saved_mixer)
             for signum, handler in signals.items():
                 signal.signal(signum, handler)
@@ -1475,7 +1747,7 @@ def initialize(args, report):
     if 'pcm' in report:
         need(not re.search(r'underrun|overrun|error', report['pcm']['log'], re.I),
              'ALSA reported an underrun or playback error; inspect the PCM log')
-    if args.action in ('desktop', 'serve'):
+    if args.action in ('desktop', 'serve', 'desktop-mic'):
         need(report['desktop'].get('graph_restored') and
              not report['desktop'].get('cleanup_error'), 'Desktop graph cleanup failed')
 
@@ -1496,7 +1768,7 @@ def desktop_peak_limit(value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', nargs='?', choices=('plan', 'inspect', 'initialize', 'listen', 'recover', 'capture', 'feedback', 'desktop', 'serve', 'reopen'), default='plan')
+    parser.add_argument('action', nargs='?', choices=('plan', 'inspect', 'initialize', 'listen', 'recover', 'capture', 'feedback', 'desktop', 'serve', 'reopen', 'desktop-mic'), default='plan')
     parser.add_argument('--output', type=Path, help='directory for result JSON')
     parser.add_argument('--owner', help='coordinator device-lock owner (initialize)')
     parser.add_argument('--desktop-user', help='user whose audio units the caller has paused')
@@ -1507,14 +1779,14 @@ def main():
     parser.add_argument('--allow-capture', action='store_true',
                         help='authorize bounded internal microphone recording')
     parser.add_argument('--microphone-source', choices=('DMIC0', 'DMIC1'), default='DMIC1',
-                        help='bounded capture/feedback input (default: DMIC1)')
+                        help='bounded capture/feedback/desktop-mic input (default: DMIC1)')
     parser.add_argument('--serve-seconds', type=serve_duration, default=3600,
                         help='ordinary desktop session duration, 0 until stopped or 1..86400 seconds (default: 3600)')
     parser.add_argument('--desktop-peak', type=desktop_peak_limit,
                         help='serve-only ordinary PCM peak, 1433..12000 (default: 1433)')
     args = parser.parse_args()
-    if args.microphone_source != 'DMIC1' and args.action not in ('capture', 'feedback'):
-        parser.error('--microphone-source DMIC0 requires capture or feedback')
+    if args.microphone_source != 'DMIC1' and args.action not in ('capture', 'feedback', 'desktop-mic'):
+        parser.error('--microphone-source DMIC0 requires capture or feedback or desktop-mic')
     if args.desktop_peak is not None and args.action != 'serve':
         parser.error('--desktop-peak is only valid with serve')
     if args.desktop_peak is None:
@@ -1531,7 +1803,7 @@ def main():
     try:
         if args.output:
             args.output.mkdir(parents=True, exist_ok=True)
-            if args.action in ('initialize', 'listen', 'recover', 'capture', 'feedback', 'desktop', 'serve', 'reopen'):
+            if args.action in ('initialize', 'listen', 'recover', 'capture', 'feedback', 'desktop', 'serve', 'reopen', 'desktop-mic'):
                 # A killed run must never leave an earlier "parked" verdict.
                 save_run_result(args.output, report)
                 if args.action == 'serve':
@@ -1578,7 +1850,7 @@ def main():
     text = json.dumps(report, indent=2) + '\n'
     if args.output:
         (args.output / f'audio-{args.action}-{stamp}.json').write_text(text)
-        if args.action in ('initialize', 'listen', 'recover', 'capture', 'feedback', 'desktop', 'serve', 'reopen'):
+        if args.action in ('initialize', 'listen', 'recover', 'capture', 'feedback', 'desktop', 'serve', 'reopen', 'desktop-mic'):
             save_run_result(args.output, report)
     print(text, end='')
     return result
