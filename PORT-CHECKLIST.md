@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-06, DB: one guarded automatic sensor recovery passes)
+## Status (2026-10-06, DC: alarm/storage pass; sensor resume fails)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
@@ -1131,6 +1131,11 @@ GPU runtime suspend works.
   including a30-minute sleep on battery, with measured drain and intended wake
   sources. Display, input, network, audio, cameras and attached devices recover;
   no kernel hang/reset or repeated manual intervention.
+  **DC:** fitted PMIC `rtc1` alarm wakes one14.15-second s2idle interval with
+  a real event/IRQ and clean alarm disable. Storage and WLAN work afterward;
+  touch is ready/internal scanout active. SensorsPD crashes after interrupted
+  FastRPC listener restart. No full resume pass or unchanged retry.
+  [DC result](tools/spx/boot-diagnostics/RESULT-20261006dc.md).
   AX read-only wake audit confirms only s2idle/rtc0, no RTC alarm operations or
   wakealarm attribute; SSAM GPIO180 wake IRQ enumerates but wake policy defaults
   disabled to avoid unfiltered EC events. PMIC power-key presence does not prove
