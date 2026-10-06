@@ -1013,6 +1013,9 @@ GPU runtime suspend works.
   CQ exposes a pending caller/user reference cycle. CR fixes final file-close
   cleanup and passes controlled quiesced backend restart. Arbitrary crash and
   unanswered DSP response cleanup remain open.
+  **CS user observation:** upside-down image during "tilted left"; native API
+  reports left-up and Mutter90°. Physical pose needs clarification before a
+  board sign/mapping fix. [Orientation result](tools/spx/boot-diagnostics/RESULT-20261006cs-orientation.md).
 
   - [x] **S02a — Live accelerometer and gyroscope streams.** CN, boot
     `32087f09-20e6-4d8f-84a0-21b64e3d5ee5`, kernel
