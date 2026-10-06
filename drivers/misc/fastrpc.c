@@ -2,12 +2,15 @@
 // Copyright (c) 2011-2018, The Linux Foundation. All rights reserved.
 // Copyright (c) 2018, Linaro Limited
 
+#include <linux/capability.h>
 #include <linux/completion.h>
 #include <linux/device.h>
 #include <linux/dma-buf.h>
+#include <linux/dma-direct.h>
 #include <linux/dma-mapping.h>
 #include <linux/dma-resv.h>
 #include <linux/idr.h>
+#include <linux/iommu.h>
 #include <linux/ioport.h>
 #include <linux/workqueue.h>
 #include <linux/list.h>
@@ -21,6 +24,7 @@
 #include <linux/rpmsg.h>
 #include <linux/scatterlist.h>
 #include <linux/slab.h>
+#include <linux/sys_soc.h>
 #include <linux/firmware/qcom/qcom_scm.h>
 #include <uapi/misc/fastrpc.h>
 #include <linux/of_reserved_mem.h>
@@ -35,6 +39,12 @@
 #define SDSP_DOMAIN_ID (2)
 #define CDSP_DOMAIN_ID (3)
 #define GDSP_DOMAIN_ID (4)
+
+/* Retained Surface CDSP allocator: base 0x80000000, size 0x7fffffff. */
+#define SPX_CDSP_IOVA_START 0x80000000ULL
+#define SPX_CDSP_IOVA_SIZE  0x7fffffffULL
+/* Exclude the last, incomplete 4 KiB page from DMA allocation. */
+#define SPX_CDSP_DMA_LIMIT 0xffffefffULL
 #define FASTRPC_MAX_SESSIONS	14
 #define FASTRPC_MAX_VMIDS	16
 #define FASTRPC_ALIGN		128
@@ -323,6 +333,9 @@ struct fastrpc_channel_ctx {
 	struct kref refcount;
 	/* Flag if dsp attributes are cached */
 	bool valid_attributes;
+	/* Disabled-by-default Surface transport, restricted to one capability fetch. */
+	bool spx_cdsp_caps;
+	bool spx_cdsp_caps_attempted;
 	u32 dsp_attributes[FASTRPC_MAX_DSP_ATTRIBUTES];
 	struct fastrpc_device *secure_fdevice;
 	struct fastrpc_device *fdevice;
@@ -372,6 +385,8 @@ static struct workqueue_struct *fastrpc_response_wq;
 /* Extract SMMU PA from consolidated IOVA */
 static inline dma_addr_t fastrpc_ipa_to_dma_addr(struct fastrpc_channel_ctx *cctx, dma_addr_t iova)
 {
+	if (cctx->spx_cdsp_caps)
+		return iova;
 	if (!cctx->soc_data->sid_pos)
 		return 0;
 	return iova & GENMASK_ULL(cctx->soc_data->sid_pos - 1, 0);
@@ -384,7 +399,19 @@ static inline dma_addr_t fastrpc_ipa_to_dma_addr(struct fastrpc_channel_ctx *cct
 static inline u64 fastrpc_sid_offset(struct fastrpc_channel_ctx *cctx,
 				     struct fastrpc_session_ctx *sctx)
 {
+	if (cctx->spx_cdsp_caps)
+		return 0;
 	return (u64)sctx->sid << cctx->soc_data->sid_pos;
+}
+
+static bool fastrpc_spx_cdsp_dma_valid(struct device *dev, u64 addr, u64 size)
+{
+	struct iommu_domain *domain = iommu_get_domain_for_dev(dev);
+
+	/* A group alone does not rule out identity DMA or failed DMA setup. */
+	return domain && iommu_is_dma_domain(domain) && dev_dma_iommu(dev) &&
+		size && addr >= SPX_CDSP_IOVA_START && size <= SPX_CDSP_IOVA_SIZE &&
+		addr - SPX_CDSP_IOVA_START <= SPX_CDSP_IOVA_SIZE - size;
 }
 
 static void fastrpc_free_map(struct kref *ref)
@@ -491,6 +518,11 @@ static int __fastrpc_buf_alloc(struct fastrpc_user *fl, struct device *dev,
 {
 	struct fastrpc_buf *buf;
 
+	if (fl->cctx->spx_cdsp_caps &&
+	    (!fl->sctx || dev != fl->sctx->dev ||
+	     !fastrpc_spx_cdsp_dma_valid(dev, SPX_CDSP_IOVA_START, 1)))
+		return -EACCES;
+
 	buf = kzalloc_obj(*buf);
 	if (!buf)
 		return -ENOMEM;
@@ -514,6 +546,14 @@ static int __fastrpc_buf_alloc(struct fastrpc_user *fl, struct device *dev,
 		mutex_destroy(&buf->lock);
 		kfree(buf);
 		return -ENOMEM;
+	}
+
+	if (fl->cctx->spx_cdsp_caps &&
+	    (dev != fl->sctx->dev ||
+	     !fastrpc_spx_cdsp_dma_valid(dev, buf->dma_addr, PAGE_ALIGN(size)))) {
+		dev_err(dev, "Surface CDSP allocation outside translated IOVA window\n");
+		fastrpc_buf_free(buf);
+		return -EACCES;
 	}
 
 	*obuf = buf;
@@ -1003,6 +1043,9 @@ static int fastrpc_map_attach(struct fastrpc_user *fl, int fd,
 	struct scatterlist *sgl = NULL;
 	int err = 0, sgl_index = 0;
 
+	if (fl->cctx->spx_cdsp_caps)
+		return -EOPNOTSUPP;
+
 	map = kzalloc_obj(*map);
 	if (!map)
 		return -ENOMEM;
@@ -1405,6 +1448,29 @@ static int fastrpc_invoke_send(struct fastrpc_session_ctx *sctx,
 				 fl->client_id, (unsigned long long)msg->ctx,
 				 (unsigned long long)msg->addr,
 				 (unsigned long long)msg->size);
+	}
+	if (cctx->spx_cdsp_caps) {
+		struct fastrpc_invoke_buf *list;
+		struct fastrpc_phy_page *pages;
+		int i;
+
+		/* No process RPC, userspace invocation or imported mapping is allowed. */
+		if (!kernel || handle != FASTRPC_DSP_UTILITIES_HANDLE ||
+		    ctx->sc != FASTRPC_SCALARS(0, 1, 1) || !ctx->buf ||
+		    ctx->buf->dev != sctx->dev || !sctx->sid ||
+		    !fastrpc_spx_cdsp_dma_valid(sctx->dev, msg->addr, msg->size))
+			return -EACCES;
+		list = fastrpc_invoke_buf_start(ctx->rpra, ctx->nscalars);
+		pages = fastrpc_phy_page_start(list, ctx->nscalars);
+		for (i = 0; i < ctx->nscalars; i++) {
+			if (ctx->maps[i] ||
+			    (pages[i].size &&
+			     !fastrpc_spx_cdsp_dma_valid(sctx->dev, pages[i].addr,
+						      pages[i].size)))
+				return -EACCES;
+		}
+		dev_info(sctx->dev, "Surface CDSP capability DMA=%#llx size=%#llx\n",
+			 (unsigned long long)msg->addr, (unsigned long long)msg->size);
 	}
 	fastrpc_context_get(ctx);
 
@@ -1885,7 +1951,9 @@ static int fastrpc_device_release(struct inode *inode, struct file *file)
 	LIST_HEAD(pending);
 	unsigned long flags;
 
-	fastrpc_release_current_dsp_process(fl);
+	/* Capability queries neither create nor attach a remote process. */
+	if (!cctx->spx_cdsp_caps)
+		fastrpc_release_current_dsp_process(fl);
 
 	/*
 	 * Final file release runs after active ioctls have dropped their file
@@ -1924,6 +1992,8 @@ static int fastrpc_device_open(struct inode *inode, struct file *filp)
 
 	fdevice = miscdev_to_fdevice(filp->private_data);
 	cctx = fdevice->cctx;
+	if (cctx->spx_cdsp_caps && !capable(CAP_SYS_ADMIN))
+		return -EPERM;
 
 	fl = kzalloc_obj(*fl);
 	if (!fl)
@@ -2088,6 +2158,13 @@ static int fastrpc_get_info_from_kernel(struct fastrpc_ioctl_capability *cap,
 	if (cctx->valid_attributes) {
 		spin_unlock_irqrestore(&cctx->lock, flags);
 		goto done;
+	}
+	if (cctx->spx_cdsp_caps) {
+		if (cctx->spx_cdsp_caps_attempted) {
+			spin_unlock_irqrestore(&cctx->lock, flags);
+			return -EALREADY;
+		}
+		cctx->spx_cdsp_caps_attempted = true;
 	}
 	spin_unlock_irqrestore(&cctx->lock, flags);
 
@@ -2476,6 +2553,9 @@ static long fastrpc_device_ioctl(struct file *file, unsigned int cmd,
 	char __user *argp = (char __user *)arg;
 	int err;
 
+	if (fl->cctx->spx_cdsp_caps && cmd != FASTRPC_IOCTL_GET_DSP_INFO)
+		return -EOPNOTSUPP;
+
 	switch (cmd) {
 	case FASTRPC_IOCTL_INVOKE:
 		err = fastrpc_invoke(fl, argp);
@@ -2547,6 +2627,28 @@ static int fastrpc_cb_probe(struct platform_device *pdev)
 	of_property_read_u32(dev->of_node, "qcom,nsessions", &sessions);
 	if (of_property_read_u32(dev->of_node, "reg", &sid))
 		dev_info(dev, "FastRPC Session ID not specified in DT\n");
+
+	if (cctx->spx_cdsp_caps) {
+		struct iommu_domain *domain = iommu_get_domain_for_dev(dev);
+		struct iommu_fwspec *fwspec = dev_iommu_fwspec_get(dev);
+		const struct bus_dma_region *map = dev->dma_range_map;
+
+		if (!fwspec || fwspec->num_ids != 1 || fwspec->ids[0] != 0x1441 ||
+		    !map || map[0].dma_start != SPX_CDSP_IOVA_START ||
+		    map[0].cpu_start != SPX_CDSP_IOVA_START ||
+		    map[0].size != SPX_CDSP_DMA_LIMIT - SPX_CDSP_IOVA_START + 1 ||
+		    map[1].size || sid != 1 || sessions > 1 || !domain ||
+		    !iommu_is_dma_domain(domain) || !dev_dma_iommu(dev) ||
+		    dev->bus_dma_limit != SPX_CDSP_DMA_LIMIT) {
+			dev_err(dev, "Surface CDSP needs session 1, translated DMA and bounded dma-ranges\n");
+			return -EINVAL;
+		}
+		rc = dma_set_mask_and_coherent(dev, DMA_BIT_MASK(32));
+		if (rc)
+			return rc;
+		dev_info(dev, "Surface CDSP translated domain type=%u, DMA limit=%#llx\n",
+			 domain->type, (unsigned long long)dev->bus_dma_limit);
+	}
 
 	spin_lock_irqsave(&cctx->lock, flags);
 	if (cctx->sesscount >= FASTRPC_MAX_SESSIONS) {
@@ -2631,6 +2733,8 @@ static int fastrpc_device_register(struct device *dev, struct fastrpc_channel_ct
 	fdev->cctx = cctx;
 	fdev->miscdev.minor = MISC_DYNAMIC_MINOR;
 	fdev->miscdev.fops = &fastrpc_fops;
+	if (cctx->spx_cdsp_caps)
+		fdev->miscdev.mode = 0600;
 	fdev->miscdev.name = devm_kasprintf(dev, GFP_KERNEL, "fastrpc-%s%s",
 					    domain, is_secured ? "-secure" : "");
 	if (!fdev->miscdev.name)
@@ -2701,6 +2805,11 @@ static const struct of_device_id fastrpc_poll_supported_machines[] __maybe_unuse
 
 static void fastrpc_rpmsg_remove(struct rpmsg_device *rpdev);
 
+static const struct soc_device_attribute fastrpc_spx_soc[] = {
+	{ .soc_id = "340" },
+	{ }
+};
+
 static int fastrpc_rpmsg_probe(struct rpmsg_device *rpdev)
 {
 	struct device *rdev = &rpdev->dev;
@@ -2740,6 +2849,15 @@ static int fastrpc_rpmsg_probe(struct rpmsg_device *rpdev)
 	data->rpdev = rpdev;
 	data->dma_dev = get_device(rdev);
 	data->soc_data = soc_data;
+	if (of_device_is_compatible(rdev->of_node, "microsoft,surface-pro-x-cdsp-fastrpc")) {
+		if (domain_id != CDSP_DOMAIN_ID ||
+		    !of_machine_is_compatible("microsoft,surface-pro-x") ||
+		    !soc_device_match(fastrpc_spx_soc)) {
+			err = -ENODEV;
+			goto err_put_data;
+		}
+		data->spx_cdsp_caps = true;
+	}
 	data->poll_mode_supported = soc_data->poll_mode_supported ||
 		of_machine_get_match(fastrpc_poll_supported_machines);
 	secure_dsp = !of_property_read_bool(rdev->of_node, "qcom,non-secure-domain");
@@ -2784,6 +2902,10 @@ static int fastrpc_rpmsg_probe(struct rpmsg_device *rpdev)
 	err = of_platform_populate(rdev->of_node, NULL, NULL, rdev);
 	if (err)
 		goto err_remove;
+	if (data->spx_cdsp_caps && data->sesscount != 1) {
+		err = -ENODEV;
+		goto err_remove;
+	}
 	switch (domain_id) {
 	case ADSP_DOMAIN_ID:
 	case MDSP_DOMAIN_ID:
@@ -2793,6 +2915,11 @@ static int fastrpc_rpmsg_probe(struct rpmsg_device *rpdev)
 		break;
 	case CDSP_DOMAIN_ID:
 	case GDSP_DOMAIN_ID:
+		if (data->spx_cdsp_caps) {
+			data->unsigned_support = false;
+			err = fastrpc_device_register(rdev, data, true, domain);
+			break;
+		}
 		data->unsigned_support = true;
 		err = fastrpc_device_register(rdev, data, true, domain);
 		if (!err)

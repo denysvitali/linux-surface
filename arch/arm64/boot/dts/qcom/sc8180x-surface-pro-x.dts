@@ -1396,6 +1396,30 @@
 	status = "okay";
 	memory-region = <&cdsp_mem>;
 	firmware-name = "qcom/msft/surface/pro-x-sq2/qccdsp8180.mbn";
+
+	glink-edge {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		/* Windows CDSP IOVA window, excluding its final partial page. */
+		dma-ranges = <0 0x80000000 0 0x80000000 0 0x7ffff000>;
+
+		spx_cdsp_fastrpc: fastrpc {
+			compatible = "microsoft,surface-pro-x-cdsp-fastrpc", "qcom,fastrpc";
+			qcom,glink-channels = "fastrpcglink-apps-dsp";
+			label = "cdsp";
+			#address-cells = <1>;
+			#size-cells = <0>;
+			/* Opt-in WIP: root-only GET_DSP_INFO, no process creation. */
+			status = "disabled";
+
+			compute-cb@1 {
+				compatible = "qcom,fastrpc-compute-cb";
+				reg = <1>;
+				/* Retained CDSP ARID session 1, class +2. */
+				iommus = <&apps_smmu 0x1441 0x0>;
+			};
+		};
+	};
 };
 
 &remoteproc_mpss {
