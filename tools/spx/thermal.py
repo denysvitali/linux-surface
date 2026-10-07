@@ -21,21 +21,17 @@ HYSTERESIS = 5000
 CEILING = 80000
 
 
-def stage_policy(dtb):
-    """Apply only the board policy to the retained diagnostic DTB."""
+def validate_trip(value):
+    assert type(value) is int and value in (55000, PASSIVE), 'unsupported CPU passive trip'
+    return value
+
+
+def policy_layout(dtb):
+    """Validate owned CPU bindings without changing the retained board policy."""
     def get(node, prop, kind='u'):
         return subprocess.check_output(['fdtget', '-t', kind, str(dtb), node, prop], text=True).strip()
 
-    def put(node, prop, values, kind='i'):
-        subprocess.run(['fdtput', '-p', '-t', kind, str(dtb), node, prop, *map(str, values)], check=True)
-
-    blob = ctypes.create_string_buffer(dtb.read_bytes())
-    lib = ctypes.CDLL('libfdt.so.1')
-    lib.fdt_find_max_phandle.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
-    lib.fdt_find_max_phandle.restype = ctypes.c_int
-    maximum = ctypes.c_uint32()
-    assert lib.fdt_find_max_phandle(blob, ctypes.byref(maximum)) == 0
-    assert maximum.value < 0xfffffffd
+    layout = []
     for index, cpu in enumerate((0, 4)):
         zone = f'/thermal-zones/cluster{index}-thermal'
         cpu_node = '/cpus/cpu@' + ('0' if cpu == 0 else '400')
@@ -46,31 +42,98 @@ def stage_policy(dtb):
         assert int(get(cpu_node, 'qcom,freq-domain').split()[-1]) == index
         cpu_phandle = int(get(cpu_node, 'phandle'))
         trip = zone + '/trips/cluster-passive'
+        nodes = subprocess.check_output(['fdtget', '-l', str(dtb), zone + '/trips'], text=True).split()
+        existing = 'cluster-passive' in nodes
+        record = dict(zone=zone, trip=trip, cpu_phandle=cpu_phandle, existing=existing)
+        if existing:
+            record['temperature'] = validate_trip(int(get(trip, 'temperature')))
+            assert get(trip, 'hysteresis') == str(HYSTERESIS)
+            assert get(trip, 'type', 's') == 'passive'
+            record['phandle'] = int(get(trip, 'phandle'))
+            assert 0 < record['phandle'] < 0xffffffff
+            assert get(zone + '/cooling-maps/map0', 'trip') == str(record['phandle'])
+            assert get(zone + '/cooling-maps/map0', 'cooling-device') == f'{cpu_phandle} 4294967295 4294967295'
+        layout.append(record)
+    assert layout[0]['existing'] == layout[1]['existing'], 'partial CPU passive policy'
+    if layout[0]['existing']:
+        assert layout[0]['temperature'] == layout[1]['temperature'], 'CPU trips disagree'
+    return layout
+
+
+def policy_trip(dtb):
+    layout = policy_layout(dtb)
+    return layout[0].get('temperature')
+
+
+def stage_policy(dtb, passive_trip=PASSIVE):
+    """Stage an owned policy; retained bindings only change temperature cells."""
+    validate_trip(passive_trip)
+    layout = policy_layout(dtb)  # Validate both clusters before any mutation.
+    def put(node, prop, values, kind='i'):
+        subprocess.run(['fdtput', '-p', '-t', kind, str(dtb), node, prop, *map(str, values)], check=True)
+
+    if layout[0]['existing']:
+        for record in layout:
+            put(record['trip'], 'temperature', [passive_trip])
+        return
+    blob = ctypes.create_string_buffer(dtb.read_bytes())
+    lib = ctypes.CDLL('libfdt.so.1')
+    lib.fdt_find_max_phandle.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+    lib.fdt_find_max_phandle.restype = ctypes.c_int
+    maximum = ctypes.c_uint32()
+    assert lib.fdt_find_max_phandle(blob, ctypes.byref(maximum)) == 0
+    assert maximum.value < 0xfffffffd
+    for index, record in enumerate(layout):
+        zone, trip = record['zone'], record['trip']
         phandle = maximum.value + index + 1
-        put(trip, 'temperature', [PASSIVE])
+        put(trip, 'temperature', [passive_trip])
         put(trip, 'hysteresis', [HYSTERESIS])
         put(trip, 'type', ['passive'], 's')
         put(trip, 'phandle', [phandle])
         put(zone + '/cooling-maps/map0', 'trip', [phandle])
         put(zone + '/cooling-maps/map0', 'cooling-device',
-            [cpu_phandle, 0xffffffff, 0xffffffff])
+            [record['cpu_phandle'], 0xffffffff, 0xffffffff])
 
 
-def response_proven(samples, before, index):
+def response_proven(samples, before, index, passive_trip=PASSIVE):
+    validate_trip(passive_trip)
     key = str(index)
     crossed = False
     for sample in samples:
         if sample['phase'] != 'load':
             continue
         cluster = sample['clusters'][key]
-        crossed |= cluster['temperature'] >= PASSIVE
+        crossed |= cluster['temperature'] >= passive_trip
         if crossed and cluster['state'] > 0 and cluster['limit'] < before['clusters'][key]['limit']:
             return True
     return False
 
 
+def response_evidence(samples, before, index, passive_trip=PASSIVE):
+    """Retain actual crossing, automatic limit response and later recovery."""
+    validate_trip(passive_trip)
+    key = str(index)
+    evidence = dict(trip_mc=passive_trip, recovery_below_mc=passive_trip - HYSTERESIS,
+                    crossing=None, response=None, recovery=None)
+    for sample in samples:
+        cluster = sample['clusters'][key]
+        witness = dict(seconds=sample['seconds'], **cluster)
+        if sample['phase'] == 'load':
+            if evidence['crossing'] is None and cluster['temperature'] >= passive_trip:
+                evidence['crossing'] = witness
+            if evidence['crossing'] is not None and evidence['response'] is None and cluster['state'] > 0 and cluster['limit'] < before['clusters'][key]['limit']:
+                evidence['response'] = witness
+        elif sample['phase'] == 'recovery' and evidence['response'] is not None:
+            if cluster['temperature'] < passive_trip - HYSTERESIS and cluster['state'] == 0 and cluster['limit'] == before['clusters'][key]['limit']:
+                evidence['recovery'] = witness
+                break
+    evidence['complete'] = all(evidence[field] is not None for field in ('crossing', 'response', 'recovery'))
+    return evidence
+
+
 class Live:
-    def __init__(self, output, attempt, release):
+    def __init__(self, output, attempt, release, passive_trip=PASSIVE):
+        self.passive_trip = validate_trip(passive_trip)
         self.output, self.attempt, self.release = output, attempt, release
         output.mkdir(mode=0o700)
         self.workers = []
@@ -81,7 +144,10 @@ class Live:
         self.started = time.monotonic()
         self.result = dict(complete=False, attempt=attempt, release=release,
                            boot_id=Path('/proc/sys/kernel/random/boot_id').read_text().strip(),
-                           policy='Linux75C passive/5C hysteresis; real temperatures only',
+                           policy=f'Linux{passive_trip // 1000}C passive/5C hysteresis; real temperatures only',
+                           cpu_passive_trip_mc=passive_trip, temporary_test_policy=passive_trip != PASSIVE,
+                           full_thermal_acceptance=False,
+                           limits='Temporary55C scope is Linux CPU governor/cooling binding; no75C, OEM, GPU, enclosure or battery acceptance.' if passive_trip != PASSIVE else 'Linux CPU policy only; OEM, GPU, enclosure and battery acceptance remain open.',
                            samples=[])
 
     def save(self):
@@ -106,7 +172,8 @@ class Live:
             trips = [p for p in zone.glob('trip_point_*_type') if p.read_text().strip() == 'passive']
             assert len(trips) == 1, 'new passive CPU policy is not loaded; no workload permitted'
             prefix = str(trips[0])[:-4]
-            assert int(Path(prefix + 'temp').read_text()) == PASSIVE
+            live_trip = int(Path(prefix + 'temp').read_text())
+            assert live_trip == self.passive_trip, 'prepared/live CPU passive trip mismatch; no workload permitted'
             assert int(Path(prefix + 'hyst').read_text()) == HYSTERESIS
             trip_index = int(re.search(r'trip_point_(\d+)_type$', str(trips[0]))[1])
             bindings = [p for p in zone.glob('cdev*') if re.fullmatch(r'cdev\d+', p.name)
@@ -117,9 +184,11 @@ class Live:
             assert (policy / 'scaling_driver').read_text().strip() == 'qcom-cpufreq-hw'
             cpus = [int(v) for v in (policy / 'related_cpus').read_text().split()]
             assert cpus == list(range(cpu, cpu + 4))
-            self.clusters[str(index)] = dict(zone=zone, cooling=bindings[0], policy=policy, cpus=cpus)
+            self.clusters[str(index)] = dict(zone=zone, cooling=bindings[0], policy=policy, cpus=cpus, trip=live_trip)
         before = self.sample('baseline')
-        assert before['maximum'] < PASSIVE - HYSTERESIS
+        assert before['maximum'] < CEILING, '80C all-zone ceiling at baseline'
+        assert all(c['temperature'] < self.clusters[i]['trip'] - HYSTERESIS
+                   for i, c in before['clusters'].items()), 'governed CPU clusters must start below trip hysteresis'
         assert all(c['state'] == 0 for c in before['clusters'].values()), 'baseline must be naturally unthrottled'
         self.result['before'] = before
         self.save()
@@ -168,7 +237,7 @@ class Live:
                 if sample['maximum'] >= CEILING:
                     self.result['stop_reason'] = '80C ceiling'
                     break
-                if all(response_proven(self.result['samples'], self.result['before'], i) for i in (0, 1)):
+                if all(response_proven(self.result['samples'], self.result['before'], i, self.clusters[str(i)]['trip']) for i in (0, 1)):
                     self.result['stop_reason'] = 'both clusters responded'
                     break
                 time.sleep(1)
@@ -177,17 +246,20 @@ class Live:
             self.stop()
             deadline = time.monotonic() + 120
             while time.monotonic() < deadline:
+                assert self.ac(), 'AC disconnected during recovery'
                 sample = self.sample('recovery')
-                recovered = all(c['temperature'] < PASSIVE - HYSTERESIS and c['state'] == 0
+                assert sample['maximum'] < CEILING, '80C ceiling during recovery'
+                recovered = all(c['temperature'] < self.clusters[i]['trip'] - HYSTERESIS and c['state'] == 0
                                 and c['limit'] == self.result['before']['clusters'][i]['limit']
                                 for i, c in sample['clusters'].items())
                 if recovered:
                     break
                 time.sleep(1)
-            self.result['responses'] = {str(i): response_proven(self.result['samples'], self.result['before'], i) for i in (0, 1)}
+            self.result['responses'] = {str(i): response_proven(self.result['samples'], self.result['before'], i, self.clusters[str(i)]['trip']) for i in (0, 1)}
+            self.result['response_evidence'] = {str(i): response_evidence(self.result['samples'], self.result['before'], i, self.clusters[str(i)]['trip']) for i in (0, 1)}
             self.result['recovered'] = recovered
             self.result['complete'] = all(self.result['responses'].values()) and recovered
-            self.result['limits'] = 'CPU passive policy only; GPU response, skin temperature and sustained combined envelope remain open.'
+            self.result['limits'] += ' GPU response, skin temperature and sustained combined envelope remain open.'
         except Exception as error:
             self.result['error'] = str(error)
         finally:
@@ -314,8 +386,8 @@ def native_fp_passed(returncode, text):
 
 class CombinedLive(Live):
     """Opt-in AC workload; no frequency, thermal, display or battery writes."""
-    def __init__(self, output, attempt, release, fixture, cpu_stress_ng=None):
-        super().__init__(output, attempt, release)
+    def __init__(self, output, attempt, release, fixture, cpu_stress_ng=None, passive_trip=PASSIVE):
+        super().__init__(output, attempt, release, passive_trip)
         self.fixture = fixture.resolve()
         self.cpu_stress_ng = cpu_stress_ng.resolve() if cpu_stress_ng else None
         self.native_workers = {}
@@ -329,7 +401,7 @@ class CombinedLive(Live):
                            cpu_workload='verified native doublemul' if cpu_stress_ng else 'Python integer LCG',
                            gpu_automatic_response_proven=False,
                            full_thermal_acceptance=False,
-                           limits='80C abort is below the existing85C GPU trip; full GPU automatic response, skin/enclosure and sustained envelope remain unverified.')
+                           limits=self.result['limits'] + ' 80C abort is below the existing85C GPU trip; full GPU automatic response, skin/enclosure and sustained envelope remain unverified.')
 
     def gate(self):
         cooling = [p for p in Path('/sys/class/thermal').glob('cooling_device*')
@@ -566,7 +638,7 @@ class CombinedLive(Live):
             assert self.ac(), 'AC disconnected during recovery'
             sample = self.sample('recovery')
             assert sample['maximum'] < CEILING, '80C ceiling during recovery'
-            recovered = all(c['temperature'] < PASSIVE - HYSTERESIS and c['state'] == 0
+            recovered = all(c['temperature'] < self.clusters[i]['trip'] - HYSTERESIS and c['state'] == 0
                             and c['limit'] == self.result['before']['clusters'][i]['limit']
                             for i, c in sample['clusters'].items())
             gpu = sample['gpu']
@@ -612,7 +684,8 @@ class CombinedLive(Live):
             self.result['combined_load_witnessed'] = (set(range(2, 30)) <= set(self.result['overlap_10s_windows'])
                                                      and bool(self.result['gpu_completed_rows']))
             recovered = self.recover()
-            self.result['responses'] = {str(i): response_proven(self.result['samples'], self.result['before'], i) for i in (0, 1)}
+            self.result['responses'] = {str(i): response_proven(self.result['samples'], self.result['before'], i, self.clusters[str(i)]['trip']) for i in (0, 1)}
+            self.result['response_evidence'] = {str(i): response_evidence(self.result['samples'], self.result['before'], i, self.clusters[str(i)]['trip']) for i in (0, 1)}
             self.result['automatic_cpu_response_proven'] = all(self.result['responses'].values()) and recovered
             # A bounded combined run can pass without reaching the CPU trip.
             self.result['complete'] = (self.result['stop_reason'] == '300s combined workload bound'

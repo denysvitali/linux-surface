@@ -151,6 +151,14 @@ def require_sensor_dtb(dtb):
     subprocess.run(['fdtget', '-t', 'x', str(dtb), rpc, 'memory-region'], capture_output=True, check=True)
 
 
+def stage_cpu_policy(args, dtb):
+    """Record the actual DTB trip, including an inherited policy."""
+    from thermal import PASSIVE, policy_trip, stage_policy
+    if args.cpu_passive_cooling:
+        stage_policy(dtb, args.cpu_passive_trip or PASSIVE)
+    return policy_trip(dtb)
+
+
 def prepare(args):
     os.umask(63)
     require_source_boot()
@@ -216,9 +224,7 @@ def prepare(args):
     if args.pmic_rtc:
         from pmic_rtc import stage
         stage(OUT / 'spx.dtb')
-    if args.cpu_passive_cooling:
-        from thermal import stage_policy
-        stage_policy(OUT / 'spx.dtb')
+    actual_cpu_trip = stage_cpu_policy(args, OUT / 'spx.dtb')
     if args.cdsp:
         from cdsp.capabilities import stage
         stage(OUT / 'spx.dtb')
@@ -274,7 +280,7 @@ def prepare(args):
     prepared = dict(utc=datetime.now(timezone.utc).isoformat(), preboot_id=BOOT_ID, release=RELEASE, attempt=ATTEMPT, entry='spx-trial-' + ATTEMPT, cmdline=cmdline, source_commit=subprocess.check_output(['git', '-c', 'safe.directory=' + str(REPO), 'rev-parse', 'HEAD'], cwd=REPO, text=True).strip(), build_directory=str(BUILD), private_config=str(OUT / 'kernel.config'), bluetooth_address=args.address, address_is_per_installation=True, venus_trial=False, speaker_drivers_blocked=True, hardware_acceptance_closed=False, installed=False, boot_selected=False, boot_payloads=dict(vmlinuz=sha(OUT / 'vmlinuz'), initramfs=sha(OUT / 'initramfs.img'), dtb=sha(OUT / 'spx.dtb')))
     prepared.update(sensors_close_debug=args.sensors_close_debug, sensors_crash_recovery=args.sensors_crash_recovery, sensors_startup=args.sensors, sensors_private_ssc=bool(args.sensors_ssc_library), audio_mode='parked' if args.audio else 'blocked',
                     pmic_rtc=args.pmic_rtc, slim_s2idle_retain=args.slim_s2idle_retain,
-                    cpu_passive_cooling=args.cpu_passive_cooling,
+                    cpu_passive_cooling=args.cpu_passive_cooling, cpu_passive_trip_mc=actual_cpu_trip,
                     thermal_combined=args.thermal_combined,
                     thermal_gpu_fixture=str(args.thermal_gpu_fixture),
                     thermal_cpu_stress_ng=str(args.thermal_cpu_stress_ng.resolve()) if args.thermal_cpu_stress_ng else None,
@@ -1822,13 +1828,15 @@ def dispatch_thermal(args, prepared):
 
 def thermal_check(args):
     from thermal import Live, CombinedLive
+    prepared = json.loads((OUT / 'prepared.json').read_text())
+    expected_trip = prepared.get('cpu_passive_trip_mc', 75000)
     lock = str(REPO / 'tools/spx/spx-lock')
     owner = 'thermal-' + ATTEMPT
     subprocess.run([lock, 'acquire', 'device', owner], check=True)
     try:
         output = OUT / ('combined-thermal' if args.thermal_combined else 'cpu-thermal')
-        live = (CombinedLive(output, ATTEMPT, RELEASE, args.thermal_gpu_fixture, args.thermal_cpu_stress_ng)
-                if args.thermal_combined else Live(output, ATTEMPT, RELEASE))
+        live = (CombinedLive(output, ATTEMPT, RELEASE, args.thermal_gpu_fixture, args.thermal_cpu_stress_ng, passive_trip=expected_trip)
+                if args.thermal_combined else Live(output, ATTEMPT, RELEASE, passive_trip=expected_trip))
         result = live.exercise()
         print(json.dumps(dict(complete=result['complete'], result=str(output / 'result.json'),
                              responses=result.get('responses'))), flush=True)
@@ -1888,6 +1896,8 @@ def main():
     parser.add_argument('--sensors-ready', type=Path, default=Path('/var/tmp/spx-sensors-ready'))
     parser.add_argument('--cpu-passive-cooling', action='store_true',
                         help='stage board Linux75C/5C passive CPU policy into the retained DTB')
+    parser.add_argument('--cpu-passive-trip', type=int, choices=(55000, 75000),
+                        help='prepare-only CPU trip in millidegrees;55C is a temporary Linux policy test')
     parser.add_argument('--thermal-combined', action='store_true',
                         help='opt in to300s AC-only CPU+GPU load with80C ceiling; prepare queues it after baseline')
     parser.add_argument('--thermal-gpu-fixture', type=Path,
@@ -1950,6 +1960,8 @@ def main():
         parser.error('--sensors-crash-recovery requires prepare --sensors --sensors-ssc-library and excludes audio/CDSP/thermal')
     if args.sensors_close_debug and (args.command != 'prepare' or not args.sensors_crash_recovery):
         parser.error('--sensors-close-debug requires prepare --sensors-crash-recovery')
+    if args.cpu_passive_trip is not None and (args.command != 'prepare' or not args.cpu_passive_cooling):
+        parser.error('--cpu-passive-trip requires prepare --cpu-passive-cooling')
     if args.thermal_combined and args.command not in ('prepare', 'thermal'):
         parser.error('--thermal-combined requires prepare or thermal')
     if args.thermal_cpu_stress_ng and (not args.thermal_combined or args.command not in ('prepare', 'thermal')):

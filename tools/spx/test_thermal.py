@@ -51,6 +51,139 @@ class Thermal(unittest.TestCase):
                 self.assertEqual(get(zone + '/cooling-maps/map0', 'trip'), str(1000 + index))
                 self.assertEqual(get(zone + '/cooling-maps/map0', 'cooling-device'), f'{cpu_phandle} 4294967295 4294967295')
 
+    def board(self, root):
+        dtb = root / 'board.dtb'
+        subprocess.run(['dtc', '-I', 'dts', '-O', 'dtb', '-o', str(dtb), '-'],
+            input='''/dts-v1/; / {
+                unrelated { phandle = <999>; value = <0xdeadbeef>; };
+                cpus {
+                    cpu@0 { phandle = <25>; #cooling-cells = <2>; qcom,freq-domain = <99 0>; };
+                    cpu@400 { phandle = <29>; #cooling-cells = <2>; qcom,freq-domain = <99 1>; };
+                };
+                thermal-zones {
+                    cluster0-thermal { polling-delay-passive = <250>; thermal-sensors = <77 5>;
+                        trips { cluster-crit { temperature = <110000>; type = "critical"; }; }; };
+                    cluster1-thermal { polling-delay-passive = <250>; thermal-sensors = <77 6>;
+                        trips { cluster-crit { temperature = <110000>; type = "critical"; }; }; };
+                };
+            };''', text=True, capture_output=True, check=True)
+        return dtb
+
+    def test_retained_policy_changes_only_two_temperature_cells(self):
+        with tempfile.TemporaryDirectory() as directory:
+            dtb = self.board(Path(directory))
+            self.assertIsNone(thermal.policy_trip(dtb))
+            thermal.stage_policy(dtb)
+            def decode():
+                return subprocess.check_output(['dtc', '-I', 'dtb', '-O', 'dts', str(dtb)],
+                                               text=True, stderr=subprocess.DEVNULL)
+            before = decode()
+            thermal.stage_policy(dtb, 55000)
+            self.assertEqual(thermal.policy_trip(dtb), 55000)
+            self.assertEqual(decode(), before.replace('temperature = <0x124f8>', 'temperature = <0xd6d8>'))
+            thermal.stage_policy(dtb)
+            self.assertEqual(decode(), before)
+
+    def test_invalid_second_cluster_binding_rejects_before_any_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            dtb = self.board(Path(directory))
+            thermal.stage_policy(dtb)
+            subprocess.run(['fdtput', '-t', 'i', str(dtb),
+                '/thermal-zones/cluster1-thermal/cooling-maps/map0',
+                'cooling-device', '25', '4294967295', '4294967295'], check=True)
+            before = dtb.read_bytes()
+            with self.assertRaises(AssertionError):
+                thermal.stage_policy(dtb, 55000)
+            self.assertEqual(dtb.read_bytes(), before)
+            for invalid in (50000, 85000, None, True, '55000'):
+                with self.assertRaises(AssertionError):
+                    thermal.stage_policy(dtb, invalid)
+                self.assertEqual(dtb.read_bytes(), before)
+
+    def fake_live(self, root, actual_trip=55000, expected_trip=55000, hot=65000):
+        def write(path, value):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(str(value))
+        live = thermal.Live.__new__(thermal.Live)
+        live.output = root / 'result'; live.output.mkdir()
+        live.attempt, live.release, live.passive_trip = '20261007test', 'test-kernel', expected_trip
+        live.started, live.clusters, live.workers = thermal.time.monotonic(), {}, []
+        live.result = dict(complete=False, samples=[])
+        live.mains = [root / 'mains']; write(live.mains[0] / 'online', 1)
+        live.zones = []
+        for index, cpu in enumerate((0, 4)):
+            zone = root / f'zone{index}'; live.zones.append(zone)
+            for name, value in dict(type=f'cluster{index}-thermal', policy='step_wise', mode='enabled',
+                trip_point_0_type='passive', trip_point_0_temp=actual_trip,
+                trip_point_0_hyst=5000, cdev0_trip_point=0, temp=44000).items():
+                write(zone / name, value)
+            cooling = root / f'cooling{index}'
+            write(cooling / 'type', f'cpufreq-cpu{cpu}'); write(cooling / 'cur_state', 0)
+            (zone / 'cdev0').symlink_to(cooling, target_is_directory=True)
+            policy = root / f'sys/devices/system/cpu/cpufreq/policy{cpu}'
+            for name, value in dict(scaling_driver='qcom-cpufreq-hw',
+                    related_cpus=' '.join(map(str, range(cpu, cpu + 4))),
+                    scaling_max_freq=1700000, scaling_cur_freq=1000000).items():
+                write(policy / name, value)
+        ungoverned = root / 'hot-zone'; live.zones.append(ungoverned)
+        write(ungoverned / 'type', 'unguverned-sensor'); write(ungoverned / 'temp', hot)
+        write(root / 'proc/cmdline', 'spx_attempt=20261007test spx_boot=mainline-functional')
+        actual_path = Path
+        def mapped_path(value):
+            return root / str(value).lstrip('/') if str(value).startswith(('/sys/', '/proc/')) else actual_path(value)
+        return live, mapped_path
+
+    def test_baseline_gates_governed_clusters_not_unrelated_hot_sensor(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            live, mapped = self.fake_live(root)
+            with patch.object(thermal, 'Path', side_effect=mapped), \
+                 patch.object(thermal.os, 'geteuid', return_value=0), \
+                 patch.object(thermal.os, 'uname', return_value=Mock(release='test-kernel')):
+                live.gate()
+            self.assertEqual(live.result['before']['maximum'], 65000)
+            self.assertEqual([c['trip'] for c in live.clusters.values()], [55000, 55000])
+            (root / 'hot-zone/temp').write_text('80000')
+            with patch.object(thermal, 'Path', side_effect=mapped), \
+                 patch.object(thermal.os, 'geteuid', return_value=0), \
+                 patch.object(thermal.os, 'uname', return_value=Mock(release='test-kernel')):
+                with self.assertRaisesRegex(AssertionError, 'all-zone ceiling'):
+                    live.gate()
+
+    def test_expected_live_mismatch_launches_no_workers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            live, mapped = self.fake_live(Path(directory), actual_trip=75000)
+            with patch.object(thermal, 'Path', side_effect=mapped), \
+                 patch.object(thermal.os, 'geteuid', return_value=0), \
+                 patch.object(thermal.os, 'uname', return_value=Mock(release='test-kernel')), \
+                 patch.object(thermal.subprocess, 'run'), \
+                 patch.object(thermal.subprocess, 'Popen') as launch:
+                result = live.exercise()
+            launch.assert_not_called()
+            self.assertFalse(result['complete'])
+            self.assertIn('prepared/live CPU passive trip mismatch', result['error'])
+
+    def test_lower_trip_response_evidence_is_per_cluster_and_chronological(self):
+        before = {'clusters': {'0': {'limit': 1700000}, '1': {'limit': 2500000}}}
+        def sample(second, phase, t0, s0, f0, t1=44000, s1=0, f1=2500000):
+            return dict(seconds=second, phase=phase, clusters={
+                '0': dict(temperature=t0, state=s0, limit=f0),
+                '1': dict(temperature=t1, state=s1, limit=f1)})
+        samples = [sample(0, 'recovery', 44000, 0, 1700000),
+                   sample(1, 'load', 54000, 1, 1500000),
+                   sample(2, 'load', 55000, 0, 1700000),
+                   sample(3, 'load', 53000, 1, 1500000),
+                   sample(4, 'recovery', 50000, 0, 1700000),
+                   sample(5, 'recovery', 49000, 0, 1700000)]
+        self.assertTrue(thermal.response_proven(samples, before, 0, 55000))
+        self.assertFalse(thermal.response_proven(samples, before, 0))
+        self.assertFalse(thermal.response_proven(samples, before, 1, 55000))
+        evidence = thermal.response_evidence(samples, before, 0, 55000)
+        self.assertTrue(evidence['complete'])
+        self.assertEqual([evidence[k]['seconds'] for k in ('crossing', 'response', 'recovery')], [2, 3, 5])
+        self.assertFalse(thermal.response_evidence(samples[:5], before, 0, 55000)['complete'])
+        self.assertFalse(thermal.response_evidence(samples, before, 1, 55000)['complete'])
+
     def test_response_requires_real_crossing_and_limit_change(self):
         before = {'clusters': {'0': {'limit': 1700000}}}
         def sample(temp, state, limit, phase='load'):
