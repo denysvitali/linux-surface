@@ -101,8 +101,10 @@ physical replug, ports/orientations and visible output still need fixtures.
    A03b reopen is parked after CB/DE/DG: first-cycle playback passes, reopened
    output fails despite successful clock writes and playback RUN/EOS callbacks.
    A03c/default clients and A03d/native capture reopen now pass on DI. Next
-   simultaneous array capture requires stereo as the first MM2 session; avoid unchanged retries
-   or destroying parked DSP sessions.
+   A02c/native simultaneous array now passes on DK. Retained capture format and
+   buffer admission must be honest: reject incompatible reuse before mutation,
+   then prove the original contract still captures. Avoid unchanged playback
+   reopen retries or destroying parked DSP sessions.
    The user authorized bounded speaker/microphone testing; announce capture and
    park the amps afterwards. WCD/ADM lifecycle and persistence remain open.
 5. **Camera frames (C02–C04):** the working6.18 v23 rear capture is preserved in
