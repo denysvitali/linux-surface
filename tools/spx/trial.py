@@ -1880,6 +1880,22 @@ def tpm_sign(args):
         subprocess.run([lock, 'release', 'device', owner], check=True)
 
 
+def systemd_suspend(args):
+    from systemd_sleep import Live, exercise
+    assert os.geteuid() == 0
+    lock = str(REPO / 'tools/spx/spx-lock')
+    owner = 'systemd-suspend-' + ATTEMPT
+    subprocess.run([lock, 'acquire', 'device', owner], check=True)
+    try:
+        result = exercise(Live(OUT / 'systemd-suspend', ATTEMPT, RELEASE))
+        print(json.dumps(dict(complete=result['complete'], result=str(OUT / 'systemd-suspend/result.json'),
+                             error=result.get('error'), cleanup_error=result.get('cleanup_error'))), flush=True)
+        if not result['complete']:
+            raise RuntimeError(result.get('error', result.get('cleanup_error', 'normal suspend did not pass')))
+    finally:
+        subprocess.run([lock, 'release', 'device', owner], check=True)
+
+
 def cdsp_capabilities(args):
     import sys
 
@@ -1902,7 +1918,7 @@ def cdsp_capabilities(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend', 'audio', 'arm-audio', 'enable-desktop-audio', 'usbc-reload', 'wifi-band', 'display-power', 'srtc-timer', 'power-measure', 'sensors-lifecycle', 'thermal', 'cdsp-capabilities', 'tpm-sign'))
+    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend', 'audio', 'arm-audio', 'enable-desktop-audio', 'usbc-reload', 'wifi-band', 'display-power', 'srtc-timer', 'power-measure', 'sensors-lifecycle', 'thermal', 'cdsp-capabilities', 'tpm-sign', 'systemd-suspend'))
     parser.add_argument('attempt')
     parser.add_argument('--build', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bg/work-build'))
     parser.add_argument('--parent', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bf'))
@@ -2058,7 +2074,7 @@ def main():
             {'install': install, 'boot': boot, 'return': return_to_default,
              'extend': extend_window, 'audio': audio_check, 'arm-audio': arm_audio,
              'usbc-reload': usbc_reload, 'wifi-band': wifi_band, 'display-power': display_power,
-             'enable-desktop-audio': enable_desktop_audio, 'power-measure': power_measure, 'sensors-lifecycle': sensors_lifecycle, 'thermal': thermal_check, 'cdsp-capabilities': cdsp_capabilities, 'tpm-sign': tpm_sign}[args.command](args)
+             'enable-desktop-audio': enable_desktop_audio, 'power-measure': power_measure, 'sensors-lifecycle': sensors_lifecycle, 'thermal': thermal_check, 'cdsp-capabilities': cdsp_capabilities, 'tpm-sign': tpm_sign, 'systemd-suspend': systemd_suspend}[args.command](args)
 
 
 if __name__ == '__main__':
