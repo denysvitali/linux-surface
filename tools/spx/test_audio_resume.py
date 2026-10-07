@@ -220,13 +220,13 @@ class DefaultMicResume(unittest.TestCase):
         import json
         witness = self.witness()
         source = dict(index=17, name='owned-microphone', owner_module=41,
-                      monitor_of_sink=4294967295, sample_spec='s16le 1ch 48000Hz')
+                      monitor_source=None, sample_specification='s16le 1ch 48000Hz')
         output = dict(index=29, source=17, client=52, corked=False,
                       properties={'application.name': witness.name, 'application.process.id': '124'})
         replies = {
             'get-default-source': witness.source.name,
             'sources': json.dumps([source]),
-            'modules': json.dumps([dict(index=41, name='module-pipe-source', argument='owned fifo')]),
+            'modules': '41\tmodule-pipe-source\towned fifo\t\n',
             'source-outputs': json.dumps([output]),
             'services': '\n\n'.join('Id='+unit+'\nActiveState=active\nSubState=running\nMainPID='+str(pid)+'\nExecMainStartTimestampMonotonic=10' for pid, unit in enumerate(('pipewire.service', 'pipewire-pulse.service', 'wireplumber.service'), 200))}
         def command(*argv):
@@ -234,6 +234,7 @@ class DefaultMicResume(unittest.TestCase):
         witness.graph.run.side_effect = command
         with patch.object(resume, 'process_identity', side_effect=lambda pid: dict(pid=int(pid), start_ticks='10')):
             witness.report['held'] = witness.identity(); witness.retained()
+            witness.graph.run.assert_any_call('pactl', '--format=text', 'list', 'short', 'modules')
             replies['source-outputs'] = json.dumps([output, output])
             with self.assertRaisesRegex(AssertionError, 'Unexpected'): witness.identity()
             replies['source-outputs'] = json.dumps([{**output, 'index': 30}])
@@ -241,8 +242,47 @@ class DefaultMicResume(unittest.TestCase):
             replies['source-outputs'] = json.dumps([output])
             replies['services'] = replies['services'].replace('Monotonic=10', 'Monotonic=11')
             with self.assertRaisesRegex(AssertionError, 'identity changed'): witness.retained()
+            replies['services'] = replies['services'].replace('Monotonic=11', 'Monotonic=10')
+            replies['sources'] = json.dumps([{**source, 'sample_specification': 's16le 2ch 48000Hz'}])
+            with self.assertRaisesRegex(AssertionError, 'identity changed'): witness.retained()
+            replies['sources'] = json.dumps([{**source, 'monitor_source': 'existing.monitor'}])
+            with self.assertRaisesRegex(AssertionError, 'sink monitor'): witness.identity()
             replies['sources'] = json.dumps([{**source, 'owner_module': 42}])
             with self.assertRaisesRegex(AssertionError, 'module changed'): witness.identity()
+
+    def test_failed_start_closes_public_client_source_before_native_unwind(self):
+        for cleanup_failed in (False, True):
+            result = {}; events = []
+            witness = Mock()
+            witness.start.side_effect = RuntimeError('module admission failed')
+            def close():
+                events.append('public-client-source-close')
+                if cleanup_failed: raise RuntimeError('source restore failed')
+            witness.close.side_effect = close
+            window = resume.ResumeWindow(Mock(), result, True)
+            with patch.object(resume, 'DefaultMicrophone', return_value=witness):
+                with self.assertRaisesRegex(RuntimeError, 'module admission failed'):
+                    window.prepare(Mock(), Mock(), Mock())
+            events.append('native-unwind')
+            self.assertEqual(events, ['public-client-source-close', 'native-unwind'])
+            self.assertEqual('default_microphone_start_cleanup_error' in result, cleanup_failed)
+
+    def test_installed_pactl_schema_uses_real_text_module_index(self):
+        import json
+        # Installed libpulse b096704c0 emits no index in module JSON.
+        actual_json = json.dumps([dict(name='module-pipe-source', argument='owned fifo',
+                                      usage_counter='n/a', properties={})])
+        self.assertNotIn('index', json.loads(actual_json)[0])
+        actual_text = '2\tmodule-always-sink\t\t\n41\tmodule-pipe-source\towned fifo\t\n'
+        self.assertEqual(resume.owned_module(actual_text, '41'),
+                         dict(index=41, name='module-pipe-source', argument='owned fifo'))
+        for response in ('41\tmodule-pipe-source\n',
+                         'n/a\tmodule-pipe-source\towned fifo\t\n',
+                         '42\tmodule-pipe-source\towned fifo\t\n',
+                         '41\tmodule-null-sink\towned fifo\t\n',
+                         actual_text + '41\tmodule-pipe-source\tduplicate\t\n'):
+            with self.subTest(response=response), self.assertRaises(AssertionError):
+                resume.owned_module(response, '41')
 
     def test_cleanup_closes_client_then_restores_source_even_if_client_fails(self):
         for failed in (False, True):

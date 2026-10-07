@@ -31,6 +31,19 @@ def process_identity(pid):
     return dict(pid=int(pid), start_ticks=text.rsplit(')', 1)[1].split()[19])
 
 
+def owned_module(text, module_id):
+    # pactl b096704c0 omits module indices from JSON; its text short
+    # get_module_info_callback emits the actual index/name/argument columns.
+    matches = []
+    for line in text.splitlines():
+        fields = line.split('\t', 3)
+        assert len(fields) >= 3 and fields[0].isdigit(), 'Invalid Pulse module index row'
+        if int(fields[0]) == int(module_id):
+            matches.append(dict(index=int(fields[0]), name=fields[1], argument=fields[2]))
+    assert len(matches) == 1 and matches[0]['name'] == 'module-pipe-source', 'Owned microphone module missing'
+    return matches[0]
+
+
 class DefaultMicrophone:
     """One public default client, scored from the existing quiet speaker tones."""
     def __init__(self, graph, capture, report, pcm=None):
@@ -74,10 +87,9 @@ class DefaultMicrophone:
         source = owned[0]
         assert str(source['index']) == str(self.source.source_id), 'Default microphone source index changed'
         assert str(source['owner_module']) == str(self.source.module), 'Default microphone module changed'
-        assert source.get('monitor_of_sink') in (None, 'n/a', 4294967295), 'Default microphone became a sink monitor'
-        modules = json.loads(self.graph.run('pactl', '--format=json', 'list', 'modules'))
-        module = [item for item in modules if str(item['index']) == str(self.source.module)]
-        assert len(module) == 1 and module[0]['name'] == 'module-pipe-source', 'Owned microphone module missing'
+        assert source.get('monitor_source') is None, 'Default microphone became a sink monitor'
+        module = owned_module(self.graph.run('pactl', '--format=text', 'list', 'short', 'modules'),
+                              self.source.module)
         outputs = json.loads(self.graph.run('pactl', '--format=json', 'list', 'source-outputs'))
         routed = [item for item in outputs if str(item['source']) == str(self.source.source_id)]
         assert len(routed) == 1 and routed[0].get('properties', {}).get('application.name') == self.name, 'Unexpected default microphone recording client'
@@ -100,8 +112,8 @@ class DefaultMicrophone:
             for name, owner in (('playback', self.pcm), ('capture', self.capture))}
         return dict(native_processes=native, owner=process_identity(self.client.process.pid),
             recording_process=process_identity(client_pid), services=services,
-            source={key: source.get(key) for key in ('index', 'name', 'owner_module', 'sample_spec', 'channel_map', 'volume', 'mute')},
-            module={key: module[0].get(key) for key in ('index', 'name', 'argument')},
+            source={key: source.get(key) for key in ('index', 'name', 'owner_module', 'sample_specification', 'channel_map', 'volume', 'mute')},
+            module=module,
             source_output={key: output.get(key) for key in ('index', 'source', 'client')})
 
     def retained(self):
@@ -174,7 +186,16 @@ class ResumeWindow:
             self.microphone = DefaultMicrophone(graph, capture,
                 self.result.setdefault('default_microphone', {}), pcm)
             graph.live_resume_microphone = self.microphone
-            self.microphone.start()
+            try:
+                self.microphone.start()
+            except Exception:
+                # Unwind the public client/source before initialize can close
+                # native consumers; preserve the original admission failure.
+                try:
+                    self.microphone.close()
+                except Exception as error:
+                    self.result['default_microphone_start_cleanup_error'] = str(error)
+                raise
 
     def __call__(self, *arguments):
         try:
