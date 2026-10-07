@@ -1881,14 +1881,16 @@ def tpm_sign(args):
 
 
 def systemd_suspend(args):
-    from systemd_sleep import Live, exercise
+    from systemd_sleep import Live, exercise, verify_returned
     assert os.geteuid() == 0
     lock = str(REPO / 'tools/spx/spx-lock')
     owner = 'systemd-suspend-' + ATTEMPT
     subprocess.run([lock, 'acquire', 'device', owner], check=True)
     try:
-        result = exercise(Live(OUT / 'systemd-suspend', ATTEMPT, RELEASE))
-        print(json.dumps(dict(complete=result['complete'], result=str(OUT / 'systemd-suspend/result.json'),
+        name = 'systemd-suspend-recovery' if args.verify_sleep_return else 'systemd-suspend'
+        live = Live(OUT / name, ATTEMPT, RELEASE)
+        result = verify_returned(live, json.loads((OUT / 'systemd-suspend/result.json').read_text())) if args.verify_sleep_return else exercise(live)
+        print(json.dumps(dict(complete=result['complete'], result=str(OUT / name / 'result.json'),
                              error=result.get('error'), cleanup_error=result.get('cleanup_error'))), flush=True)
         if not result['complete']:
             raise RuntimeError(result.get('error', result.get('cleanup_error', 'normal suspend did not pass')))
@@ -1927,6 +1929,7 @@ def main():
     parser.add_argument('--address')
     parser.add_argument('--pmic-rtc', action='store_true',
                         help='add upstream PMIC RTC as rtc1 and test one awake alarm; no suspend')
+    parser.add_argument('--verify-sleep-return', action='store_true', help='systemd-suspend: verify a returned sleep from fresh journal evidence without sleeping again')
     parser.add_argument('--tpm-sign', action='store_true', help='prepare-only opt in to one transient TPM signing test after baseline')
     parser.add_argument('--tpm-tools', type=Path, default=Path('/var/tmp/spx-tpm2-tools-5.8/usr/bin'), help='private tpm2-tools 5.8 executable directory')
     parser.add_argument('--wifi-profile', help='saved Wi-Fi profile ID to clone for the 2.4 GHz test')

@@ -66,6 +66,25 @@ class Effects(unittest.TestCase):
             r[key] = value
             self.assertFalse(sleep.sleep_proven(r), key)
 
+    def test_collected_service_requires_fresh_successful_journal(self):
+        before = dict(ExecMainExitTimestampMonotonic='0')
+        after = dict(ActiveState='inactive', SubState='dead', Result='success', ExecMainStatus='0', ExecMainExitTimestampMonotonic='0')
+        self.assertFalse(sleep.service_completed(before, after))
+        self.assertTrue(sleep.service_completed(before, after, fresh_journal=True))
+
+    def test_journal_requires_one_invocation_and_successful_finished_job(self):
+        messages = ["Successfully froze unit 'user.slice'.", "Performing sleep operation 'suspend'...",
+                    "System returned from sleep operation 'suspend'.", "Successfully thawed unit 'user.slice'."]
+        records = [dict(UNIT='systemd-suspend.service', MESSAGE_ID='7d4958e842da4a758f6c1cdc7b36dcc5', JOB_TYPE='start', __MONOTONIC_TIMESTAMP='1')]
+        records += [dict(MESSAGE=m, _SYSTEMD_UNIT='systemd-suspend.service', _SYSTEMD_INVOCATION_ID='one', __MONOTONIC_TIMESTAMP=str(i+2)) for i, m in enumerate(messages)]
+        records += [dict(UNIT='systemd-suspend.service', MESSAGE_ID='39f53479d3a045ac8e11786248231fbf', JOB_TYPE='start', JOB_RESULT='done', __MONOTONIC_TIMESTAMP='6')]
+        self.assertTrue(sleep.journal_completed(records))
+        records[-1]['JOB_RESULT'] = 'failed'
+        self.assertFalse(sleep.journal_completed(records))
+        records[-1]['JOB_RESULT'] = 'done'
+        records[3]['_SYSTEMD_INVOCATION_ID'] = 'another'
+        self.assertFalse(sleep.journal_completed(records))
+
     def test_previous_completion_and_active_job_do_not_pass(self):
         before = dict(ExecMainExitTimestampMonotonic='100')
         after = dict(ActiveState='inactive', SubState='dead', Result='success', ExecMainStatus='0', ExecMainExitTimestampMonotonic='101')

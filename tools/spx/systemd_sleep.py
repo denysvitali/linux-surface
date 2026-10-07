@@ -33,10 +33,28 @@ def sleep_proven(r):
                 r['alarm_disabled'] and r['user_thawed'])
 
 
-def service_completed(before, after):
+def journal_completed(records):
+    starts = [r for r in records if r.get('UNIT') == 'systemd-suspend.service' and r.get('MESSAGE_ID') == '7d4958e842da4a758f6c1cdc7b36dcc5' and r.get('JOB_TYPE') == 'start']
+    finishes = [r for r in records if r.get('UNIT') == 'systemd-suspend.service' and r.get('MESSAGE_ID') == '39f53479d3a045ac8e11786248231fbf' and r.get('JOB_TYPE') == 'start' and r.get('JOB_RESULT') == 'done']
+    for start in starts:
+        for finish in finishes:
+            between = [r for r in records if int(start['__MONOTONIC_TIMESTAMP']) <= int(r['__MONOTONIC_TIMESTAMP']) <= int(finish['__MONOTONIC_TIMESTAMP']) and r.get('_SYSTEMD_UNIT') == 'systemd-suspend.service']
+            wanted = ["Successfully froze unit 'user.slice'.", "Performing sleep operation 'suspend'...", "System returned from sleep operation 'suspend'.", "Successfully thawed unit 'user.slice'."]
+            position, invocation = 0, None
+            for r in between:
+                if r.get('MESSAGE') == wanted[position] and r.get('_SYSTEMD_INVOCATION_ID'):
+                    invocation = invocation or r['_SYSTEMD_INVOCATION_ID']
+                    if r['_SYSTEMD_INVOCATION_ID'] == invocation:
+                        position += 1
+                        if position == len(wanted):
+                            return True
+    return False
+
+
+def service_completed(before, after, fresh_journal=False):
     return (after['ActiveState'] == 'inactive' and after['SubState'] == 'dead' and
             after['Result'] == 'success' and after['ExecMainStatus'] == '0' and
-            int(after['ExecMainExitTimestampMonotonic']) > int(before['ExecMainExitTimestampMonotonic']))
+            (fresh_journal or int(after['ExecMainExitTimestampMonotonic']) > int(before['ExecMainExitTimestampMonotonic'])))
 
 
 def exercise(ops):
@@ -59,6 +77,44 @@ def exercise(ops):
         result['traceback'] = traceback.format_exc()
         if hasattr(ops, 'sleep_result'):
             result['sleep'] = ops.sleep_result
+    finally:
+        try:
+            result['cleanup'] = ops.cleanup()
+        except Exception as error:
+            result['cleanup_error'] = str(error)
+        result['complete'] = bool(result.get('functional_pass') and result.get('cleanup', {}).get('masks_restored'))
+        ops.save(result)
+    return result
+
+
+def verify_returned(ops, original):
+    """Verify an already returned sleep independently, preserving its failed report."""
+    result = dict(complete=False, scope='independent same-boot normal-suspend recovery verification',
+                  full_suspend_acceptance=False, audio_tested=False,
+                  source_result=str(ops.output.parent / 'systemd-suspend/result.json'))
+    try:
+        ops.gate()
+        assert original['boot_id'] == ops.boot and original['release'] == ops.release
+        assert original['attempt'] == ops.attempt and original['direct_prerequisite']['complete']
+        assert all(original['cleanup'][k] for k in ('masks_restored', 'owned_files_removed', 'idle_inhibitor_reaped'))
+        assert any(x['name'] == 'normal-suspend' and x['returncode'] == 0 for x in original['steps'])
+        cursor = next(x['stdout'].split('-- cursor: ')[1].strip() for x in original['steps'] if x['name'] == 'cursor')
+        proof = ops.service_evidence(cursor)
+        result['fresh_service_journal_completed'] = proof
+        r = dict(original['sleep'])
+        r['service_completed'] = proof
+        assert sleep_proven(r), 'original sleep plus fresh normal-service journal incomplete'
+        fd = os.open('/dev/rtc1', os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+        try:
+            assert pmic_rtc.alarm(fd)[:2] == (0, 0), 'alarm not disabled'
+        finally:
+            os.close(fd)
+        result['verified_sleep'] = r
+        result['after'] = ops.post(original['before'])
+        result['functional_pass'] = True
+    except Exception as error:
+        result['error'] = type(error).__name__ + ': ' + str(error)
+        result['traceback'] = traceback.format_exc()
     finally:
         try:
             result['cleanup'] = ops.cleanup()
@@ -231,6 +287,12 @@ class Live:
         assert self.run('can-suspend', ['busctl', 'call', 'org.freedesktop.login1', '/org/freedesktop/login1',
             'org.freedesktop.login1.Manager', 'CanSuspend']) == 's "yes"'
 
+    def service_evidence(self, cursor):
+        log = self.run('sleep-service-journal', ['journalctl', '-b', '-u', 'systemd-suspend.service',
+            '--after-cursor=' + cursor, '--no-pager', '-o', 'json'])
+        (self.output / 'sleep-service-journal.jsonl').write_text(log + '\n')
+        return journal_completed([json.loads(line) for line in log.splitlines()])
+
     def sleep(self):
         self.ac()
         self.fd = os.open('/dev/rtc1', os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
@@ -238,6 +300,7 @@ class Live:
         r = dict(requested_alarm_seconds=30, minimum_real_sleep_seconds=15, irq_before=pmic_rtc.irq_count())
         self.sleep_result = r
         cursor = re.search(r'-- cursor: (\S+)', self.run('cursor', ['journalctl', '-b', '--show-cursor', '-n', '0', '--no-pager']))[1]
+        r['journal_cursor'] = cursor
         before = self.properties('systemd-suspend.service', 'ExecMainExitTimestampMonotonic', 'ActiveState')
         assert before['ActiveState'] == 'inactive', 'sleep service already running/failed'
         data = bytearray(36)
@@ -261,7 +324,7 @@ class Live:
         completed = False
         while time.clock_gettime(time.CLOCK_BOOTTIME) < end:
             after = self.properties('systemd-suspend.service', 'ActiveState', 'SubState', 'Result', 'ExecMainStatus', 'ExecMainExitTimestampMonotonic')
-            completed = service_completed(before, after)
+            completed = service_completed(before, after, self.service_evidence(cursor) if after['ActiveState'] == 'inactive' else False)
             if completed:
                 break
             time.sleep(.2)

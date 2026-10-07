@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-07, DO: firmware TPM signing passes)
+## Status (2026-10-07, DO: TPM signing and normal AC suspend pass)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
@@ -23,6 +23,7 @@ reverse plugs, visible output and hotplug remain unverified.
 CF retains P01a actual charging pass; further battery tests are deferred.
 **CS closes B06a; CT closes B06b/B06c:** TPM commands, automatic startup and measured GRUB boot pass.
 **DO closes B06e:** TPM-generated ephemeral P256 signatures verify independently; changed messages reject, cleanup passes.
+**DO closes P03c:** normal login1/systemd AC suspend wakes on the PMIC alarm; network, motion streams and storage recover with audio disabled.
 **D01a passes on CE:** two GNOME off/on cycles
 restore native2880×1920/60Hz scanout with fresh vblank and no new display faults.
 Visual quality remains open; DD proves post-sleep scanout. CG extends CE's power-cycle coverage to the attached dock. CA's earlier
@@ -65,7 +66,7 @@ awaits attribution for later observations.
 | USB data (U01) | Untested | Both ports/orientations, fixtures |
 | USB-C PD, DisplayPort, dock (U02–U04) | **CG: external off/on scanout restoration passes; normal orientation API works** | Visible output, physical replug, roles/PD, ports/orientations/resume |
 | Battery and charging (P01) | **CF: P01a actual charging passes, +1.26Wh/120s** | Charge-policy explanation, discharge/transitions and charger coverage |
-| Suspend/resume (P03) | **DD13 wakes; DF2 audio-loaded retained-core sleeps**; targets masked | Full device recovery, battery sleep and physical wakes |
+| Suspend/resume (P03) | **DD13 direct wakes; DF2 guarded audio-loaded sleeps; DO normal systemd AC sleep passes**; targets masked | Full device recovery, battery sleep and physical wakes |
 | Thermal (P05) | **CM cooling limits; CX/CY combined load/cleanup; DN below temporary55C, automatic testing parked** | Real automatic response, longer envelope and enclosure behavior |
 | Idle power (P02) | BU: CPU scales down; GPU runtime-suspends | **Battery tests deferred by user**; remaining forced-on devices |
 | Sensors (S01, S02) | **DD backend/desktop clients survive repeated/30-minute AC sleep** | Light/axes/calibration; DA fault; final regression |
@@ -1290,6 +1291,19 @@ GPU runtime suspend works.
     owner. This retains core power and does not prove low-power or audio-session
     recovery. Systemd sleep remains masked.
     [DF result](tools/spx/boot-diagnostics/RESULT-20261007df.md).
+
+  - [x] **P03c — Normal login1/systemd AC suspend with audio disabled.** DO boot
+    `58c31e46-c008-4903-9fc0-95db8ebc5abf`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: one28.695s s2idle interval wakes on
+    the30s PMIC alarm, IRQ2→3/event416, alarm disabled. Fresh same-invocation
+    journal proves user.slice freeze/suspend/return/thaw and successful job.
+    Independent same-boot verification preserves the original timestamp-check
+    failure and proves retained sensor provider/host/proxy PIDs, all three motion
+    streams, same WLAN connection/1MB transfer and64KiB fsync/readback.
+    Temporary stock target shadows are removed and persistent masks restored.
+    One AC cycle; physical wake, battery, audio/camera/input/attached-device
+    recovery and permanent desktop sleep availability remain open.
+    [DO result](tools/spx/boot-diagnostics/RESULT-20261007do.md).
 
 - [ ] **P04 — Hibernate applicability.** Establish whether the intended platform/
   storage/security setup supports hibernation; if supported, verify image restore
