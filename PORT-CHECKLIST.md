@@ -27,7 +27,7 @@ restore native2880×1920/60Hz scanout with fresh vblank and no new display fault
 Visual quality remains open; DD proves post-sleep scanout. CG extends CE's power-cycle coverage to the attached dock. CA's earlier
 DP0 startup/reload result remains scoped to its attached dock.
 CC closes A02b: both fitted microphone inputs record known stimuli; quality,
-simultaneous mapping and lifecycle remain open. CB left and DE right playback reopen fail after first-cycle passes.
+simultaneous mapping and lifecycle remain open. CB left and DE/DG right playback reopen fail after first-cycle passes; A03b parked.
 **CM closes P05a:** both CPU clusters and GPU enforce/release cooling limits.
 **CX closes P05b:** five-minute simultaneous CPU/FD680 load and cleanup pass,
 peak69.8C. CY extends this to verified native FP, peak66.3C; automatic responses remain open.
@@ -95,9 +95,10 @@ physical replug, ports/orientations and visible output still need fixtures.
    left no IPTSD instance to retry. One targeted add event restored the service;
    BI now starts automatically and physical touch/pen work. Verify reliability.
 4. **Audio (A01–A03):** preserve BY's working continuous quiet desktop setup.
-   CB's acoustic reopen fails despite a clean first close and real DSP completions;
-   localize the post-close route before another changed test. No validated causal
-   fix is available; avoid unchanged retries or destroying parked DSP sessions.
+   A03b reopen is parked after CB/DE/DG: first-cycle playback passes, reopened
+   output fails despite successful clock writes and playback RUN/EOS callbacks.
+   Investigate A03c default microphone adapter separately; avoid unchanged retries
+   or destroying parked DSP sessions.
    The user authorized bounded speaker/microphone testing; announce capture and
    park the amps afterwards. WCD/ADM lifecycle and persistence remain open.
 5. **Camera frames (C02–C04):** the working6.18 v23 rear capture is preserved in
@@ -752,8 +753,10 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
     CB first close passes, but reopened left tone fails despite DSP consumption.
     [CB result](tools/spx/boot-diagnostics/RESULT-20261005cb.md). DE right-first
     reopen also fails; its first cycle passes and cleanup parks the amps.
-    [DE result](tools/spx/boot-diagnostics/RESULT-20261007de.md). No supported fix
-    is established; do not repeat the unchanged test.
+    [DE result](tools/spx/boot-diagnostics/RESULT-20261007de.md). DG clock writes and
+    playback RUN/EOS callbacks succeed while reopened right remains silent.
+    [DG result](tools/spx/boot-diagnostics/RESULT-20261007dg.md). **Parked** after
+    three changed boots without gain; no supported causal fix.
 
   - [ ] **A03c — Default desktop microphone clients.** Two ordinary recording
     clients use the selected fitted microphone through the default desktop
