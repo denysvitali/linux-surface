@@ -76,29 +76,96 @@ class NativeAndRoutingTests(unittest.TestCase):
         self.assertNotEqual(identity, controls.native_identity(valid.replace('10.002', '10.003'),
                                                                12, audio.need))
 
-    def test_default_client_uses_no_device_and_checks_actual_routing(self):
-        for sink, expected_success in ((31, True), (22, False)):
-            with self.subTest(sink=sink):
-                graph = audio.DesktopGraph.__new__(audio.DesktopGraph)
-                graph.sink = 'spx_speakers'
-                graph.public_sink_id = 31
-                graph.monitor = Mock()
-                graph.processes = []
-                graph.command = ['runuser', '-u', 'fixture', '--']
-                graph.report = {'applications': []}
-                graph.run = Mock(side_effect=['spx_speakers', json.dumps([dict(index=6, sink=sink,
-                    properties={'application.name': 'spx-desktop-controls-muted'})])])
-                process = Mock(pid=44, returncode=0)
-                process.communicate.return_value = (None, b'')
-                with patch.object(audio.subprocess, 'Popen', return_value=process) as opened:
-                    if expected_success:
-                        graph.play(b'finite fixture', 'controls-muted', default_sink=True)
-                        self.assertEqual(graph.report['applications'][0]['routing']['sink_index'], 31)
-                    else:
-                        with self.assertRaisesRegex(RuntimeError, 'different sink'):
-                            graph.play(b'finite fixture', 'controls-muted', default_sink=True)
-                        process.communicate.assert_not_called()
-                    self.assertFalse(any(arg.startswith('--device=') for arg in opened.call_args.args[0]))
+    @staticmethod
+    def owned(sink=31, index=6):
+        return dict(index=index, sink=sink, corked=False, properties={
+            'application.name': 'spx-desktop-controls-muted',
+            'target.object': 'spx_speakers', 'node.target': '31'})
+
+    def route_fixture(self, states, rejection=None, defaults=None, polls=None):
+        graph = audio.DesktopGraph.__new__(audio.DesktopGraph)
+        graph.sink = 'spx_speakers'
+        graph.public_sink_id = 31
+        graph.monitor = Mock()
+        graph.processes = []
+        graph.command = ['runuser', '-u', 'fixture', '--']
+        graph.report = {'applications': []}
+        counter = [0]
+        now = [0.0]
+        sinks_queries = []
+
+        def run(*args):
+            if args == ('pactl', 'get-default-sink'):
+                sequence = defaults or ['spx_speakers']
+                return sequence[min(counter[0], len(sequence) - 1)]
+            if args == ('pactl', '--format=json', 'list', 'sink-inputs'):
+                items = states[min(counter[0], len(states) - 1)]
+                counter[0] += 1
+                return json.dumps(items)
+            if args == ('pactl', '--format=json', 'list', 'sinks'):
+                sinks_queries.append(args)
+                return json.dumps([dict(index=31, name='spx_speakers'), dict(index=22, name='other')])
+            self.fail('Unexpected command: ' + repr(args))
+
+        graph.run = Mock(side_effect=run)
+        process = Mock(pid=44, returncode=0)
+        if polls:
+            process.poll.side_effect = polls
+        else:
+            process.poll.return_value = None
+        process.communicate.return_value = (None, b'')
+        with patch.object(audio.subprocess, 'Popen', return_value=process) as opened, \
+                patch.object(audio.time, 'monotonic', side_effect=lambda: now[0]), \
+                patch.object(audio.time, 'sleep', side_effect=lambda seconds: now.__setitem__(0, now[0] + seconds)):
+            if rejection:
+                with self.assertRaisesRegex(RuntimeError, rejection):
+                    graph.play(b'finite fixture', 'controls-muted', default_sink=True)
+                process.communicate.assert_not_called()
+                self.assertEqual(len(sinks_queries), 1)
+                self.assertIn('routing_error', graph.report['applications'][0])
+                self.assertEqual(graph.report['applications'][0]['routing_failure_sinks'][1]['name'], 'other')
+            else:
+                graph.play(b'finite fixture', 'controls-muted', default_sink=True)
+                process.communicate.assert_called_once_with(b'finite fixture', timeout=6)
+                self.assertEqual(sinks_queries, [])
+            self.assertFalse(any(arg.startswith('--device=') for arg in opened.call_args.args[0]))
+        return graph.report['applications'][0]
+
+    def test_default_client_waits_absent_then_invalid_then_actual_expected_route(self):
+        entry = self.route_fixture([[], [self.owned(4294967295)], [self.owned(31)]])
+        self.assertEqual(entry['routing']['sink_index'], 31)
+        self.assertEqual([item['raw_sink'] for item in entry['routing_snapshots']], [None, 4294967295, 31])
+        self.assertEqual(entry['routing_snapshots'][1]['target_object'], 'spx_speakers')
+        self.assertEqual(entry['exit_code'], 0)
+
+    def test_concrete_wrong_route_is_immediately_rejected_and_saved(self):
+        for states in ([[self.owned(22)]], [[self.owned(4294967295)], [self.owned(22)]]):
+            with self.subTest(states=states):
+                entry = self.route_fixture(states, rejection='different sink')
+                self.assertEqual(entry['routing_snapshots'][-1]['raw_sink'], 22)
+                self.assertEqual(len(entry['routing_snapshots']), len(states))
+                self.assertLess(entry['routing_snapshots'][-1]['elapsed_seconds'], 3)
+
+    def test_unlinked_and_absent_timeouts_remain_distinct(self):
+        for states, rejection in (([[self.owned(4294967295)]], 'remains unlinked'),
+                                  ([[]], 'never appeared')):
+            with self.subTest(rejection=rejection):
+                entry = self.route_fixture(states, rejection=rejection)
+                self.assertGreaterEqual(entry['routing_snapshots'][-1]['elapsed_seconds'], 3)
+                self.assertLess(entry['routing_snapshots'][-1]['elapsed_seconds'], 3.1)
+
+    def test_process_exit_duplicate_and_default_change_rejected_before_payload(self):
+        entry = self.route_fixture([[self.owned(4294967295)], [self.owned(31)]],
+                                   rejection='exited before routing', polls=[None, 1, 1])
+        self.assertEqual(entry['routing_snapshots'][-1]['exit_code'], 1)
+        entry = self.route_fixture([[self.owned(31), self.owned(31, index=7)]],
+                                   rejection='Duplicate')
+        self.assertEqual(len(entry['routing_snapshots']), 2)
+        self.assertEqual(entry['routing_snapshots'][0]['owned_inputs'], 2)
+        entry = self.route_fixture([[self.owned(4294967295)], [self.owned(31)]],
+                                   rejection='Default playback sink changed',
+                                   defaults=['spx_speakers', 'other'])
+        self.assertEqual(entry['routing_snapshots'][-1]['default_sink'], 'other')
 
     def test_control_readback_rejects_muted_or_missing_volume_monitor(self):
         sink = dict(name='spx_speakers', mute=False, volume={side: {'value': 52016}

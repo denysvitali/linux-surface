@@ -874,8 +874,6 @@ class DesktopGraph:
 
     def play(self, data, name, default_sink=False):
         self.monitor.healthy()
-        if default_sink:
-            need(self.run("pactl", "get-default-sink") == self.sink, "Default playback sink changed")
         self.monitor.forward = True
         process = subprocess.Popen(self.command + [
             'pacat', '--playback', '--raw',
@@ -886,29 +884,65 @@ class DesktopGraph:
             '--client-name=spx-desktop-' + name], stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True)
         self.processes.append(process)
-        routing = None
-        if default_sink:
-            deadline = time.monotonic() + 3
-            while routing is None:
-                inputs = json.loads(self.run('pactl', '--format=json', 'list', 'sink-inputs'))
-                matches = [item for item in inputs if item.get('properties', {}).get('application.name') ==
-                           'spx-desktop-' + name]
-                need(len(matches) <= 1, 'Duplicate owned default playback client')
-                if matches:
-                    need(str(matches[0]['sink']) == str(self.public_sink_id),
-                         'Default client is routed to a different sink')
-                    routing = {'input_index': matches[0]['index'], 'sink_index': matches[0]['sink'],
-                               'default_sink': self.sink, 'explicit_device': False}
-                else:
-                    need(process.poll() is None and time.monotonic() < deadline,
-                         'Owned default playback client did not appear')
-                    time.sleep(0.05)
-        _, error = process.communicate(data, timeout=6)
-        entry = {'name': name, 'pid': process.pid, 'exit_code': process.returncode,
-                 'stderr': error.decode(errors='replace')}
-        if routing is not None:
-            entry['routing'] = routing
+        entry = {'name': name, 'pid': process.pid, 'exit_code': None, 'stderr': None}
         self.report['applications'].append(entry)
+        if default_sink:
+            # WirePlumber can publish the owned input before its async link is
+            # ready. Only SPA_ID_INVALID may wait; a concrete wrong route fails.
+            started = time.monotonic()
+            deadline = started + 3
+            seen = False
+            entry['routing_snapshots'] = []
+            try:
+                while True:
+                    default = self.run('pactl', 'get-default-sink')
+                    inputs = json.loads(self.run('pactl', '--format=json', 'list', 'sink-inputs'))
+                    matches = [item for item in inputs if item.get('properties', {}).get('application.name') ==
+                               'spx-desktop-' + name]
+                    elapsed = time.monotonic() - started
+                    exited = process.poll()
+                    for item in matches or [None]:
+                        props = item.get('properties', {}) if item else {}
+                        entry['routing_snapshots'].append(dict(
+                            elapsed_seconds=elapsed, default_sink=default, owned_inputs=len(matches),
+                            input_index=item.get('index') if item else None,
+                            raw_sink=item.get('sink') if item else None,
+                            corked=item.get('corked') if item else None,
+                            application=props.get('application.name'),
+                            target_object=props.get('target.object'), node_target=props.get('node.target'),
+                            exit_code=exited))
+                    need(default == self.sink, 'Default playback sink changed')
+                    need(exited is None, 'Owned default playback client exited before routing')
+                    need(len(matches) <= 1, 'Duplicate owned default playback client')
+                    if matches:
+                        seen = True
+                        raw_sink = matches[0].get('sink')
+                        if str(raw_sink) != '4294967295':
+                            need(str(raw_sink) == str(self.public_sink_id),
+                                 'Default client is routed to a different sink')
+                            need(elapsed < 3, 'Owned default playback route became ready after 3 second deadline')
+                            entry['routing'] = {'input_index': matches[0]['index'], 'sink_index': raw_sink,
+                                                'default_sink': self.sink, 'explicit_device': False}
+                            break
+                    need(time.monotonic() < deadline,
+                         'Owned default playback client remains unlinked after 3 seconds' if seen else
+                         'Owned default playback client never appeared within 3 seconds')
+                    time.sleep(0.05)
+            except Exception as error:
+                entry['routing_error'] = str(error)
+                entry['exit_code'] = process.poll()
+                # Resolve the recorded raw indices once; preserve the original
+                # rejection even if this bounded diagnostic command also fails.
+                try:
+                    sinks = json.loads(self.run('pactl', '--format=json', 'list', 'sinks'))
+                    entry['routing_failure_sinks'] = [{'index': item['index'], 'name': item['name']}
+                                                      for item in sinks]
+                except Exception as diagnostic_error:
+                    entry['routing_diagnostic_error'] = str(diagnostic_error)
+                raise
+        # No PCM payload is submitted until the actual default route is ready.
+        _, error = process.communicate(data, timeout=6)
+        entry.update(exit_code=process.returncode, stderr=error.decode(errors='replace'))
         need(process.returncode == 0, f'Desktop application failed: {entry}')
 
     def connect_public(self, pcm, desktop_peak=1433):
