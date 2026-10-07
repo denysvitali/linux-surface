@@ -29,4 +29,6 @@ in its initramfs for boot persistence; DU boot payload itself predates live fix.
 **Evidence/recovery:** functional/20261007du/msft-module-reload.json,
 bluetooth-power-msft/result.json, msft-result.json/msft-after-kernel.log and
 msft-live.json preserve both stages separately. DU initial evidence remains.
-Guarded known-good return/log collection next; actual recovery pending.
+Actual recovery `8dda40ad-da47-4ea2-b272-735ebd502da5`/6.18 verified:
+three payloads/default intact, selections empty; full final logs saved. DU
+staging/timer enables and previous DT payload retired; DU/modules retained.
