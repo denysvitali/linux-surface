@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-07, DF: audio-loaded guarded s2idle returns)
+## Status (2026-10-07, DI: microphone clients and native capture reopen pass)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
@@ -33,6 +33,8 @@ simultaneous mapping and lifecycle remain open. CB left and DE/DG right playback
 peak69.8C. CY extends this to verified native FP, peak66.3C; automatic responses remain open.
 **DH closes A03c:** two default microphone clients pass acoustically; absent-default
 cleanup is fixed and real virtual-source restoration verified separately.
+**DI closes A03d:** native microphone PCM close/reopen and third client pass;
+whole-run source restoration/cleanup now passes directly.
 B05a early RTC and N01a IPv6 VPN retain prior passes. **N01b is accepted by user
 assumption from working5GHz; no2.4GHz functional pass was measured.** Light
 response needs physical stimulus. Input/BT confirmations belong to BI; the
@@ -52,7 +54,7 @@ awaits attribution for later observations.
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
 | Speakers (A01) | **BY desktop playback; DF quiet startup after guarded sleep passes** | Persistence, volume/mapping/balance, reopen and lifecycle |
-| Microphones (A02) | **BN DMIC1 and CC DMIC0 record known speaker tones** | Quality, simultaneous channel mapping and full lifecycle |
+| Microphones (A02) | **Both inputs record known tones; DI default clients/native mono capture reopen pass** | Quality, simultaneous array mapping, availability and full lifecycle |
 | Cameras (C01–C05) | Rear sensor identifies | No frame captured |
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
 | Keyboard, touchpad (I04, I05) | **BI keyboard works**; recovery keyboard restored after SSAM timeout | Startup reliability, full keys/gestures and resume |
@@ -98,7 +100,8 @@ physical replug, ports/orientations and visible output still need fixtures.
 4. **Audio (A01–A03):** preserve BY's working continuous quiet desktop setup.
    A03b reopen is parked after CB/DE/DG: first-cycle playback passes, reopened
    output fails despite successful clock writes and playback RUN/EOS callbacks.
-   Investigate A03c default microphone adapter separately; avoid unchanged retries
+   A03c/default clients and A03d/native capture reopen now pass on DI. Next
+   simultaneous array capture requires stereo as the first MM2 session; avoid unchanged retries
    or destroying parked DSP sessions.
    The user authorized bounded speaker/microphone testing; announce capture and
    park the amps afterwards. WCD/ADM lifecycle and persistence remain open.
@@ -771,7 +774,16 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
     Separate real silent-source tests verify corrected absent/named/unavailable
     preference restoration and owned-source cleanup; original failed report retained.
     [DH result](tools/spx/boot-diagnostics/RESULT-20261007dh.md).
-    Persistent availability, hardware capture reopen and full teardown stay open.
+    DI directly repeats the corrected whole run and extends native capture reopen.
+    Persistent availability and full teardown/resume stay open.
+
+  - [x] **A03d — Native microphone PCM close/reopen with retained ASM.**
+    DI boot `cbc29221-4101-479b-8923-baba974bcee0`, fixed mainline release:
+    capture2780 closes, capture3077 starts with new owner/trigger; unchanged
+    playback2835. Third ordinary default-source client records quiet440/660Hz,
+    all three clients pass and source/graph/mixer cleanup parks the amps.
+    [DI result](tools/spx/boot-diagnostics/RESULT-20261007di.md).
+    Scope excludes DSP destruction, playback reopen, resume and availability.
 
 - [ ] **A04 — External audio.** Test applicable USB-C audio/dock and Bluetooth
   output/input devices, routing, hotplug and reconnect. The logical codec
