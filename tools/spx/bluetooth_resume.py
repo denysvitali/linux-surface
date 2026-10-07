@@ -3,10 +3,30 @@
 """Fresh native discovery across one normal AC sleep, without radio power writes."""
 from pathlib import Path
 import signal
+import subprocess
 import time
 
 import bluetooth_power as power
 import systemd_sleep as sleep
+
+
+class CommandFailure(RuntimeError):
+    def __init__(self, stage, returncode=None, timed_out=False):
+        self.status = dict(stage=stage, returncode=returncode, timed_out=timed_out)
+        detail = 'timed out' if timed_out else 'failed with exit ' + str(returncode)
+        super().__init__('Bluetooth ' + stage + ' ' + detail)
+
+
+def command_stage(argv):
+    if argv[:2] == ['busctl', 'set-property']:
+        return 'fixture power request'
+    if argv[0] == 'busctl':
+        return 'native property observation'
+    if argv[0] == 'nmcli':
+        return 'WLAN observation'
+    if argv[:2] == ['systemctl', 'show']:
+        return 'BlueZ service identity observation'
+    return 'native gate observation'
 
 
 class Radio(power.Live):
@@ -15,7 +35,17 @@ class Radio(power.Live):
         if 'set-property' in argv:
             assert getattr(self, 'fixture_window', False), 'Bluetooth property mutation refused outside fixture window'
             assert argv[:6] == ['busctl', 'set-property', 'org.bluez', power.ADAPTER, power.INTERFACE, 'Powered']
-        return super().command(argv, timeout)
+        if self.deadline is not None:
+            timeout = min(timeout, self.deadline - time.monotonic())
+            assert timeout > 0, 'Bluetooth test deadline expired'
+        stage = command_stage(argv)
+        try:
+            proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise CommandFailure(stage, timed_out=True) from None
+        if proc.returncode != 0:
+            raise CommandFailure(stage, returncode=proc.returncode)
+        return proc.stdout.strip()
 
     def identity(self):
         values = dict(line.split('=', 1) for line in self.command([
@@ -57,14 +87,35 @@ class Radio(power.Live):
         (entries[0] / 'soft').write_text(value + '\n')
         assert (entries[0] / 'soft').read_text().strip() == value
 
+    def fixture_needs_power_request(self, unblocked):
+        # rfkill unblock can itself start BlueZ/QCA setup. Observe its native
+        # transition first; a redundant Powered=true request can return InProgress.
+        end = time.monotonic() + 5
+        off_since = None
+        while time.monotonic() < end:
+            adapter = power.idle(self.objects())
+            if adapter['Powered'] is True and adapter['PowerState'] == 'on':
+                return False
+            if adapter['Powered'] is False and adapter['PowerState'] == 'off':
+                if off_since is None:
+                    off_since = time.monotonic()
+                if not unblocked or time.monotonic() - off_since >= 1:
+                    return True
+            else:
+                off_since = None
+            time.sleep(.1)
+        raise RuntimeError('native fixture power transition did not settle within5s')
+
     def prepare_fixture(self, original, allow_radio_on):
         assert allow_radio_on is True, 'explicit radio-on fixture authorization required'
         self.fixture_window = True
         try:
-            if original['rfkill']['bluetooth:hci0']['soft'] == '1':
+            unblocked = original['rfkill']['bluetooth:hci0']['soft'] == '1'
+            if unblocked:
                 self.write_soft('0')
-            self.set_power(True)
-            self.settle(True)
+            if self.fixture_needs_power_request(unblocked):
+                self.set_power(True)
+                self.settle(True)
             current = self.original()
             for key in ('address', 'policy', 'network'):
                 assert current[key] == original[key], 'radio fixture changed ' + key
@@ -164,6 +215,8 @@ def exercise(ops, radio=None, *, allow_radio_on=False):
     except (Exception, KeyboardInterrupt) as error:
         # Bluetooth command failures deliberately omit their private replies.
         result['error'] = type(error).__name__ + ': ' + power.error_text(error)
+        if isinstance(error, CommandFailure):
+            result['command_failure'] = error.status
         if hasattr(ops, 'sleep_result'):
             result['sleep'] = ops.sleep_result
     finally:

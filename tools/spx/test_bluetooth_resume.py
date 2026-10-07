@@ -231,6 +231,7 @@ class Resume(unittest.TestCase):
         radio.set_power = lambda value: calls.append(('power', value, radio.fixture_window))
         radio.settle = lambda value: calls.append(('settle', value, radio.fixture_window))
         radio.original = lambda: current
+        radio.fixture_needs_power_request = lambda unblocked: True
         with self.assertRaises(AssertionError): radio.prepare_fixture(original, False)
         self.assertEqual(calls, [])
         radio.prepare_fixture(original, True)
@@ -240,6 +241,53 @@ class Resume(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, 'unrelated rfkill'):
             radio.prepare_fixture(original, True)
         self.assertFalse(radio.fixture_window)
+
+    def test_rfkill_auto_start_is_observed_without_redundant_power_request(self):
+        radio = resume.Radio.__new__(resume.Radio)
+        original = dict(address=ADDRESS, policy={}, network='private', powered=False,
+                        power_state='off-blocked', rfkill={'bluetooth:hci0': dict(soft='1')})
+        current = copy.deepcopy(original)
+        current.update(powered=True, power_state='on')
+        current['rfkill']['bluetooth:hci0']['soft'] = '0'
+        radio.write_soft = Mock()
+        radio.set_power = Mock(side_effect=AssertionError('redundant Powered=true request'))
+        radio.settle = Mock(side_effect=AssertionError('unnecessary settle'))
+        radio.original = lambda: current
+        observations = [dict(Powered=False, PowerState='off-enabling'),
+                        dict(Powered=False, PowerState='off-enabling'),
+                        dict(Powered=True, PowerState='on')]
+        radio.objects = lambda: observations.pop(0)
+        with patch.object(resume.power, 'idle', side_effect=lambda adapter: adapter), patch.object(resume.time, 'sleep'):
+            radio.prepare_fixture(original, True)
+        radio.write_soft.assert_called_once_with('0')
+        radio.set_power.assert_not_called()
+        self.assertFalse(radio.fixture_window)
+
+    def test_fixture_stable_off_gets_one_request_and_transition_timeout_gets_none(self):
+        radio = resume.Radio.__new__(resume.Radio)
+        radio.objects = lambda: dict(Powered=False, PowerState='off')
+        with patch.object(resume.power, 'idle', side_effect=lambda adapter: adapter), patch.object(resume.time, 'sleep'), patch.object(resume.time, 'monotonic', side_effect=[0, 0, 0, 0, .5, .5, 1.1, 1.1]):
+            self.assertTrue(radio.fixture_needs_power_request(True))
+        radio.objects = lambda: dict(Powered=False, PowerState='off-enabling')
+        with patch.object(resume.power, 'idle', side_effect=lambda adapter: adapter), patch.object(resume.time, 'sleep'), patch.object(resume.time, 'monotonic', side_effect=[0, 0, 6]):
+            with self.assertRaisesRegex(RuntimeError, 'did not settle'):
+                radio.fixture_needs_power_request(True)
+
+    def test_command_failures_preserve_only_safe_stage_and_exit_status(self):
+        radio = resume.Radio.__new__(resume.Radio)
+        radio.deadline, radio.fixture_window = None, True
+        argv = ['busctl', 'set-property', 'org.bluez', resume.power.ADAPTER, resume.power.INTERFACE, 'Powered', 'b', 'true']
+        private = 'PRIVATE-ADDRESS-OR-REPLY'
+        with patch.object(resume.subprocess, 'run', return_value=Mock(returncode=1, stdout=private, stderr=private)):
+            with self.assertRaises(resume.CommandFailure) as caught:
+                radio.command(argv)
+        self.assertEqual(caught.exception.status, dict(stage='fixture power request', returncode=1, timed_out=False))
+        self.assertNotIn(private, str(caught.exception))
+        with patch.object(resume.subprocess, 'run', side_effect=subprocess.TimeoutExpired(argv, 3, output=private)):
+            with self.assertRaises(resume.CommandFailure) as caught:
+                radio.command(argv)
+        self.assertTrue(caught.exception.status['timed_out'])
+        self.assertNotIn(private, str(caught.exception))
 
     def test_uncertain_fixture_enable_restores_already_blocked_original_without_waiting_for_off(self):
         radio = resume.Radio.__new__(resume.Radio)
