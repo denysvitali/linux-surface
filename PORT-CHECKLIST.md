@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-07, DP: ordered desktop audio shutdown passes)
+## Status (2026-10-07, DR: desktop volume and mute controls pass)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
@@ -24,7 +24,8 @@ CF retains P01a actual charging pass; further battery tests are deferred.
 **CS closes B06a; CT closes B06b/B06c:** TPM commands, automatic startup and measured GRUB boot pass.
 **DO closes B06e:** TPM-generated ephemeral P256 signatures verify independently; changed messages reject, cleanup passes.
 **DO closes P03c:** normal login1/systemd AC suspend wakes on the PMIC alarm; network, motion streams and storage recover with audio disabled.
-**DP closes A03a:** two-minute default desktop stream and clean SoundWire shutdown through guarded trial return pass; arbitrary shutdown remains open.
+**DP closes A03a:** two-minute default desktop stream and ordered SoundWire shutdown pass.
+**DR closes A03f:** quiet default desktop attenuation, mute and unmute pass acoustically; arbitrary shutdown and useful listening range remain open.
 **D01a passes on CE:** two GNOME off/on cycles
 restore native2880×1920/60Hz scanout with fresh vblank and no new display faults.
 Visual quality remains open; DD proves post-sleep scanout. CG extends CE's power-cycle coverage to the attached dock. CA's earlier
@@ -57,7 +58,7 @@ awaits attribution for later observations.
 | Firmware TPM/security (B06) | **CT measured boot; DD sleep recovery; DO ephemeral P256 signing pass** | Secure Boot validation |
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
-| Speakers (A01) | **BY desktop playback; DF guarded-sleep startup; DP ordered shutdown pass** | Persistence, volume/mapping/balance, reopen and arbitrary shutdown |
+| Speakers (A01) | **BY desktop playback; DF guarded-sleep startup; DP shutdown; DR quiet controls pass** | Persistence, useful volume/mapping/balance, reopen and arbitrary shutdown |
 | Microphones (A02) | **DK native simultaneous array; DI default clients/native mono reopen pass** | Quality, physical mapping, availability and full lifecycle |
 | Cameras (C01–C05) | Rear sensor identifies | No frame captured |
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
@@ -105,7 +106,8 @@ physical replug, ports/orientations and visible output still need fixtures.
 4. **Audio (A01–A03):** preserve BY's working continuous quiet desktop setup.
    A03b reopen is parked after CB/DE/DG: first-cycle playback passes, reopened
    output fails despite successful clock writes and playback RUN/EOS callbacks.
-   A03a/guarded-return desktop shutdown now passes on DP; arbitrary shutdown stays open.
+   A03a/guarded-return shutdown passes on DP; A03f/quiet attenuation/mute/unmute passes on DR.
+   Arbitrary shutdown and useful listening range remain open.
    A03c/default clients and A03d/native capture reopen now pass on DI.
    A02c/native simultaneous array now passes on DK. Retained capture format and
    buffer admission passes on DM: incompatible reuse rejects, and the original
@@ -823,20 +825,21 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
     No admitted format change, same-handle reprepare or full lifecycle claim.
     [DM result](tools/spx/boot-diagnostics/RESULT-20261007dm.md).
 
-  - [ ] **A03f — Bounded default desktop volume and mute controls.** The same
-    retained native PCM responds acoustically to desktop sink attenuation, mute
-    and unmute. At the quiet1433 output cap/minimum PA gain, reduced and restored
-    playback must pass the existing tone/noise criteria. Reduced coherent levels
-    must be−6dB±3dB relative to both unity phases; restored levels within±3dB.
-    Muted full-scale input must complete with monitor output≤1 and at least20dB
-    coherent suppression across all predefined settled windows against both
-    unity phases. Insufficient signal/noise margin is inconclusive. Preserve
-    PCM ownership, discard raw capture and restore controls/graph on cleanup.
-    These engineering limits do not establish calibrated listening volume,
-    physical speaker balance or the full useful volume range.
-    DQ measures attenuation at−5.776/−6.009dB, but the muted client fails
-    routing readiness before tones; mute/restoration remain untested.
+  - [x] **A03f — Bounded default desktop volume and mute controls.** DR,
+    boot `100aa91e-7863-4a64-8b14-9065d029e3a2`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: ordinary default-sink clients verify
+    volume52016 attenuation, mute and restored65536 on the same native PCM/capture.
+    Quiet1433/minimum-PA audible phases pass existing tone/noise criteria;
+    reduction−5.857/−6.035dB meets−6±3dB, restoration within0.10dB meets±3dB.
+    Muted monitor peak0 and coherent suppression≥26.94/42.59dB across all
+    predefined settled windows meet≥20dB. Owners/triggers retain,99s raw capture
+    discarded before handoff; attached shutdown/FIFO0, parking, graph/PM restore
+    and closed PCMs pass. Actual known-good recovery verified.
+    [DR result](tools/spx/boot-diagnostics/RESULT-20261007dr.md).
+    DQ's failed muted-client route remains recorded with unresolved actual cause;
     [DQ result](tools/spx/boot-diagnostics/RESULT-20261007dq.md).
+    Scope is bounded quiet software controls. Calibrated/useful listening range,
+    physical balance, arbitrary shutdown, playback reopen and full A03 remain open.
 
 - [ ] **A04 — External audio.** Test applicable USB-C audio/dock and Bluetooth
   output/input devices, routing, hotplug and reconnect. The logical codec
