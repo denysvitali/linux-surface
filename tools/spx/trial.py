@@ -358,6 +358,9 @@ def install(args):
     helper = Path('/usr/local/lib/spx-boot-diagnostics/trial.py')
     shutil.copy2(__file__, helper)
     helper.chmod(493)
+    # Bluetooth is fitted and checked on every functional baseline.
+    shutil.copy2(HERE / 'bluetooth_power.py', helper.parent / 'bluetooth_power.py')
+    (helper.parent / 'bluetooth_power.py').chmod(0o644)
     if prepared.get('cdsp_capabilities'):
         cdsp_helpers = helper.parent / 'cdsp'
         cdsp_helpers.mkdir(parents=True, exist_ok=True)
@@ -1931,6 +1934,22 @@ def systemd_suspend(args):
         subprocess.run([lock, 'release', 'device', owner], check=True)
 
 
+def bluetooth_power(args):
+    from bluetooth_power import Live, exercise
+    assert os.geteuid() == 0
+    lock = str(REPO / 'tools/spx/spx-lock')
+    owner = 'bluetooth-power-' + ATTEMPT
+    subprocess.run([lock, 'acquire', 'device', owner], check=True, timeout=5)
+    try:
+        result = exercise(Live(OUT / 'bluetooth-power', ATTEMPT, RELEASE))
+        print(json.dumps(dict(complete=result['complete'], result=str(OUT / 'bluetooth-power/result.json'),
+                             error=result.get('error'), cleanup_error=result.get('cleanup_error'))), flush=True)
+        if not result['complete']:
+            raise RuntimeError(result.get('error', result.get('cleanup_error', 'Bluetooth power trial failed')))
+    finally:
+        subprocess.run([lock, 'release', 'device', owner], check=True, timeout=5)
+
+
 def cdsp_capabilities(args):
     import sys
 
@@ -1953,7 +1972,7 @@ def cdsp_capabilities(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend', 'audio', 'arm-audio', 'enable-desktop-audio', 'stop-audio', 'usbc-reload', 'wifi-band', 'display-power', 'srtc-timer', 'power-measure', 'sensors-lifecycle', 'thermal', 'cdsp-capabilities', 'tpm-sign', 'systemd-suspend'))
+    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend', 'audio', 'arm-audio', 'enable-desktop-audio', 'stop-audio', 'usbc-reload', 'wifi-band', 'display-power', 'srtc-timer', 'power-measure', 'sensors-lifecycle', 'thermal', 'cdsp-capabilities', 'tpm-sign', 'systemd-suspend', 'bluetooth-power'))
     parser.add_argument('attempt')
     parser.add_argument('--build', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bg/work-build'))
     parser.add_argument('--parent', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bf'))
@@ -2118,7 +2137,7 @@ def main():
             {'install': install, 'boot': boot, 'return': return_to_default,
              'extend': extend_window, 'audio': audio_check, 'arm-audio': arm_audio,
              'usbc-reload': usbc_reload, 'wifi-band': wifi_band, 'display-power': display_power,
-             'enable-desktop-audio': enable_desktop_audio, 'stop-audio': stop_desktop_audio, 'power-measure': power_measure, 'sensors-lifecycle': sensors_lifecycle, 'thermal': thermal_check, 'cdsp-capabilities': cdsp_capabilities, 'tpm-sign': tpm_sign, 'systemd-suspend': systemd_suspend}[args.command](args)
+             'enable-desktop-audio': enable_desktop_audio, 'stop-audio': stop_desktop_audio, 'power-measure': power_measure, 'sensors-lifecycle': sensors_lifecycle, 'thermal': thermal_check, 'cdsp-capabilities': cdsp_capabilities, 'tpm-sign': tpm_sign, 'systemd-suspend': systemd_suspend, 'bluetooth-power': bluetooth_power}[args.command](args)
 
 
 if __name__ == '__main__':
