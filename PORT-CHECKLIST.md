@@ -1326,6 +1326,14 @@ GPU runtime suspend works.
     recovery and permanent desktop sleep availability remain open.
     [DO result](tools/spx/boot-diagnostics/RESULT-20261007do.md).
 
+  - [ ] **P03d — Normal login1/systemd AC sleep with parked audio loaded.**
+    Require a same-boot direct PMIC prerequisite, then normal systemd sleep with
+    fresh powered-SLIM ownership proofs, closed playback/capture and unpowered
+    amplifiers. Verify retained motion services/streams, WLAN and storage, restore
+    temporary sleep shadows/runtime PM, then pass first quiet acoustic playback
+    after wake. This does not establish low-power or live audio-session resume.
+    [DS result](tools/spx/boot-diagnostics/RESULT-20261007ds.md).
+
 - [ ] **P04 — Hibernate applicability.** Establish whether the intended platform/
   storage/security setup supports hibernation; if supported, verify image restore
   and the same functional regression checks. An exposed `disk` state is not proof.
