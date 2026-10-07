@@ -1294,25 +1294,27 @@ class DesktopMicrophoneTests(unittest.TestCase):
                 if '--show-cursor' in command:
                     return SimpleNamespace(stdout='-- cursor: fixture\n')
                 return SimpleNamespace(stdout=audio.CAPTURE_CONTRACT_MARKER +
-                    '\nSPX: parking ASM capture session for DAI 1 across close\n')
+                    '\nq6asm-dai 17300000.remoteproc: ASoC error (-22): at snd_soc_pcm_component_hw_params() on MultiMedia2\n' +
+                    'SPX: parking ASM capture session for DAI 1 across close\n')
             self.assertEqual(kwargs['stdout'], audio.subprocess.DEVNULL)
             self.assertLessEqual(kwargs['timeout'], 2)
             self.assertIn('--fatal-errors', command)
             self.assertIn('hw:0,1', command)
             self.assertEqual(command[-2:], ['-d', '1'])
-            return SimpleNamespace(returncode=1, stderr='Unable to install hw params: Invalid argument')
+            return SimpleNamespace(returncode=1, stderr='arecord: set_params:1462: Unable to install hw params:\n'
+                'FORMAT: S16_LE\nCHANNELS: 2\nRATE: 48000\n')
         evidence = {}
         with patch.object(audio, 'read_text', return_value='closed'), \
                 patch.object(audio.subprocess, 'run', side_effect=run):
             audio.capture_contract_probes(capture, pcm, evidence)
         self.assertTrue(evidence['passed'])
         self.assertEqual([p['name'] for p in evidence['probes']], ['channels', 'rate', 'format', 'period'])
-        self.assertTrue(all(p['rejected_before_data'] and p['repark_evidence'] for p in evidence['probes']))
+        self.assertTrue(all(p['rejected_before_data'] and p['repark_evidence'] and p['hw_params_einval_evidence'] for p in evidence['probes']))
         self.assertIsNone(evidence['recording'])
         self.assertEqual(len([c for c in commands if c[0] == 'arecord']), 4)
 
     def test_contract_probe_timeout_success_missing_guard_or_open_pcm_aborts(self):
-        for failure in ('timeout', 'success', 'guard', 'repark', 'open'):
+        for failure in ('timeout', 'success', 'guard', 'einval', 'repark', 'open', 'stderr', 'xrun'):
             evidence, recordings, clock = {}, [], [100.0]
             def now():
                 clock[0] += 0.1
@@ -1322,11 +1324,15 @@ class DesktopMicrophoneTests(unittest.TestCase):
                     if '--show-cursor' in command:
                         return SimpleNamespace(stdout='-- cursor: fixture\n')
                     return SimpleNamespace(stdout=(audio.CAPTURE_CONTRACT_MARKER if failure != 'guard' else '') +
+                        ('\nq6asm-dai 17300000.remoteproc: ASoC error (-22): at snd_soc_pcm_component_hw_params() on MultiMedia2'
+                         if failure != 'einval' else '') +
                         ('\nSPX: parking ASM capture session for DAI 1 across close' if failure != 'repark' else ''))
                 recordings.append(command)
                 if failure == 'timeout':
                     raise audio.subprocess.TimeoutExpired(command, 2, stderr=b'failure')
-                return SimpleNamespace(returncode=0 if failure == 'success' else 1, stderr='Invalid argument')
+                return SimpleNamespace(returncode=0 if failure == 'success' else 1,
+                    stderr=('unrecognized failure' if failure == 'stderr' else
+                            'Unable to install hw params: XRUN' if failure == 'xrun' else 'Invalid argument'))
             with self.subTest(failure=failure), \
                     patch.object(audio, 'read_text', side_effect=['closed', 'RUNNING' if failure == 'open' else 'closed']), \
                     patch.object(audio.time, 'monotonic', side_effect=now), \
@@ -1338,6 +1344,13 @@ class DesktopMicrophoneTests(unittest.TestCase):
             self.assertFalse(evidence['passed'])
             self.assertEqual(len(recordings), 1)
             self.assertFalse(evidence['probes'][0]['passed'])
+            if failure not in ('timeout', 'guard'):
+                self.assertTrue(evidence['probes'][0]['kernel_evidence'])
+            if failure == 'einval':
+                self.assertFalse(evidence['probes'][0]['hw_params_einval_evidence'])
+            if failure in ('stderr', 'xrun'):
+                self.assertTrue(evidence['probes'][0]['hw_params_einval_evidence'])
+                self.assertTrue(evidence['probes'][0]['repark_evidence'])
 
     def test_capture_reopen_cli_rejects_other_actions_before_hardware(self):
         for action in ('plan', 'feedback', 'capture', 'reopen', 'serve'):

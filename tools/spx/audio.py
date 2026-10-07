@@ -1237,21 +1237,26 @@ def capture_contract_probes(capture, pcm, evidence):
                 raise RuntimeError('Native rejection probe timed out') from error
             row.update(returncode=result.returncode, error=result.stderr, timeout=False)
             row['capture_status_after'] = read_text(capture.status)
-            need(result.returncode != 0, 'Incompatible native capture contract unexpectedly succeeded')
-            need(row['capture_status_after'] == 'closed', 'Capture open after rejection probe')
-            need('Invalid argument' in result.stderr and
-                 not re.search(r'overrun|underrun|xrun', result.stderr, re.I),
-                 'Probe did not fail with hw_params EINVAL')
             while True:
                 messages = journal('--after-cursor=' + cursor[1], '-o', 'cat')
                 row['kernel_evidence'] = [line for line in messages.splitlines()
                                           if CAPTURE_CONTRACT_MARKER in line]
                 row['repark_evidence'] = [line for line in messages.splitlines()
                     if 'SPX: parking ASM capture session for DAI ' in line]
-                if row['kernel_evidence'] and row['repark_evidence']:
+                row['hw_params_einval_evidence'] = [line for line in messages.splitlines()
+                    if 'q6asm-dai' in line and 'ASoC error (-22)' in line
+                    and 'snd_soc_pcm_component_hw_params()' in line]
+                if (row['kernel_evidence'] and row['repark_evidence'] and
+                        row['hw_params_einval_evidence']):
                     break
-                need(time.monotonic() < deadline - 0.05, 'Missing fresh kernel contract guard marker')
+                need(time.monotonic() < deadline - 0.05, 'Missing fresh kernel contract guard, hw_params EINVAL or repark evidence')
                 time.sleep(0.05)
+            need(result.returncode != 0, 'Incompatible native capture contract unexpectedly succeeded')
+            need(row['capture_status_after'] == 'closed', 'Capture open after rejection probe')
+            need(('Unable to install hw params' in result.stderr or
+                  'Invalid argument' in result.stderr) and
+                 not re.search(r'overrun|underrun|xrun', result.stderr, re.I),
+                 'Probe lacks an ALSA hw_params rejection diagnostic or reports XRUN')
             row['rejected_before_data'] = True
             row['playback_status'] = pcm.healthy()
             for field in ('owner_pid', 'trigger_time'):
