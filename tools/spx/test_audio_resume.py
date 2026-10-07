@@ -220,7 +220,7 @@ class DefaultMicResume(unittest.TestCase):
         import json
         witness = self.witness()
         source = dict(index=17, name='owned-microphone', owner_module=41,
-                      monitor_source=None, sample_specification='s16le 1ch 48000Hz')
+                      monitor_source='', sample_specification='s16le 1ch 48000Hz', channel_map='mono')
         output = dict(index=29, source=17, client=52, corked=False,
                       properties={'application.name': witness.name, 'application.process.id': '124'})
         replies = {
@@ -244,11 +244,36 @@ class DefaultMicResume(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, 'identity changed'): witness.retained()
             replies['services'] = replies['services'].replace('Monotonic=11', 'Monotonic=10')
             replies['sources'] = json.dumps([{**source, 'sample_specification': 's16le 2ch 48000Hz'}])
-            with self.assertRaisesRegex(AssertionError, 'identity changed'): witness.retained()
+            with self.assertRaisesRegex(AssertionError, 'source geometry changed'): witness.retained()
             replies['sources'] = json.dumps([{**source, 'monitor_source': 'existing.monitor'}])
             with self.assertRaisesRegex(AssertionError, 'sink monitor'): witness.identity()
             replies['sources'] = json.dumps([{**source, 'owner_module': 42}])
             with self.assertRaisesRegex(AssertionError, 'module changed'): witness.identity()
+
+    def test_exact_dz_silent_fixture_source_metadata_admission(self):
+        # Copied from DZ virtual-source-schema.json, with only emitted fields.
+        source = dict(index=79, name='spx_microphone_test_3760', owner_module=536870917,
+                      sample_specification='s16le 1ch 48000Hz', channel_map='mono',
+                      monitor_source='')
+        row = ('536870917\tmodule-pipe-source\tfile=/run/user/1000/spx-mic-_rcf206j/capture '
+               'source_name=spx_microphone_test_3760 format=s16le rate=48000 channels=1 channel_map=mono')
+        report = {}
+        self.assertEqual(resume.source_admission(source, report), source)
+        module = resume.owned_module(row, str(source['owner_module']))
+        self.assertEqual(module['index'], source['owner_module'])
+        self.assertEqual(module['name'], 'module-pipe-source')
+        self.assertEqual(report['source_admission'], source)
+        for value in (None, 'n/a', 'existing.monitor', 4294967295, False):
+            changed = {**source, 'monitor_source': value}
+            with self.subTest(value=value), self.assertRaisesRegex(AssertionError, 'sink monitor'):
+                resume.source_admission(changed, report)
+            self.assertEqual(report['source_admission']['monitor_source'], value)
+        changed = {key: value for key, value in source.items() if key != 'monitor_source'}
+        with self.assertRaisesRegex(AssertionError, 'sentinel'): resume.source_admission(changed, report)
+        self.assertNotIn('monitor_source', report['source_admission'])
+        for key, value in (('sample_specification', 's16le 2ch 48000Hz'), ('channel_map', 'front-left')):
+            with self.subTest(key=key), self.assertRaisesRegex(AssertionError, 'geometry'):
+                resume.source_admission({**source, key: value}, report)
 
     def test_failed_start_closes_public_client_source_before_native_unwind(self):
         for cleanup_failed in (False, True):

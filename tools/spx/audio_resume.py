@@ -44,6 +44,19 @@ def owned_module(text, module_id):
     return matches[0]
 
 
+def source_admission(source, report):
+    fields = ('index', 'name', 'owner_module', 'sample_specification',
+              'channel_map', 'monitor_source', 'volume', 'mute')
+    metadata = {key: source[key] for key in fields if key in source}
+    # Preserve the owned endpoint observation even when admission rejects it.
+    report['source_admission'] = metadata
+    # DZ's silent real PipeWire/Pulse fixture reports the empty STRING for a
+    # pipe source; require its presence, not an absent key or inferred null.
+    assert 'monitor_source' in source and isinstance(source['monitor_source'], str) and source['monitor_source'] == '', 'Default microphone is a sink monitor or lacks the observed non-monitor sentinel'
+    assert source.get('sample_specification') == 's16le 1ch 48000Hz' and source.get('channel_map') == 'mono', 'Default microphone source geometry changed'
+    return metadata
+
+
 class DefaultMicrophone:
     """One public default client, scored from the existing quiet speaker tones."""
     def __init__(self, graph, capture, report, pcm=None):
@@ -85,9 +98,9 @@ class DefaultMicrophone:
         owned = [item for item in sources if item['name'] == self.source.name]
         assert len(owned) == 1, 'Owned default microphone source missing'
         source = owned[0]
+        metadata = source_admission(source, self.report)
         assert str(source['index']) == str(self.source.source_id), 'Default microphone source index changed'
         assert str(source['owner_module']) == str(self.source.module), 'Default microphone module changed'
-        assert source.get('monitor_source') is None, 'Default microphone became a sink monitor'
         module = owned_module(self.graph.run('pactl', '--format=text', 'list', 'short', 'modules'),
                               self.source.module)
         outputs = json.loads(self.graph.run('pactl', '--format=json', 'list', 'source-outputs'))
@@ -112,7 +125,7 @@ class DefaultMicrophone:
             for name, owner in (('playback', self.pcm), ('capture', self.capture))}
         return dict(native_processes=native, owner=process_identity(self.client.process.pid),
             recording_process=process_identity(client_pid), services=services,
-            source={key: source.get(key) for key in ('index', 'name', 'owner_module', 'sample_specification', 'channel_map', 'volume', 'mute')},
+            source=metadata,
             module=module,
             source_output={key: output.get(key) for key in ('index', 'source', 'client')})
 
