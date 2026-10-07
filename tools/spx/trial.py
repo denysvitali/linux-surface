@@ -1391,6 +1391,11 @@ def validate_capture_reopen(action, enabled):
         '--capture-reopen requires desktop-mic'
 
 
+def validate_capture_contract_check(action, reopen, enabled):
+    assert type(enabled) is bool and (not enabled or (action == 'desktop-mic' and reopen is True)), \
+        '--capture-contract-check requires desktop-mic --capture-reopen'
+
+
 def arm_audio(args):
     """Queue one authorized initialization or microphone-monitored audio test."""
     action = 'initialize' if args.audio_action == 'plan' else args.audio_action
@@ -1398,6 +1403,8 @@ def arm_audio(args):
     validate_microphone_source(action, source)
     validate_microphone_array(action, source, getattr(args, 'microphone_array', False))
     validate_capture_reopen(action, getattr(args, 'capture_reopen', False))
+    validate_capture_contract_check(action, getattr(args, 'capture_reopen', False),
+                                    getattr(args, 'capture_contract_check', False))
     require_source_boot()
     recovery()
     assert args.allow_amp_power, 'explicit amplifier-power authorization required'
@@ -1420,6 +1427,7 @@ def arm_audio(args):
         json.dump(dict(attempt=ATTEMPT, release=RELEASE, preboot_id=BOOT_ID,
                        desktop_user=account.pw_name, action=action,
                        microphone_source=source, microphone_array=getattr(args, 'microphone_array', False), capture_reopen=getattr(args, 'capture_reopen', False),
+                       capture_contract_check=getattr(args, 'capture_contract_check', False),
                        allow_amp_power=True, playback=action in ('feedback', 'desktop', 'serve', 'reopen', 'desktop-mic'),
                        capture=action in ('feedback', 'desktop', 'serve', 'reopen', 'desktop-mic'),
                        serve_seconds=args.serve_seconds if action == 'serve' else None,
@@ -1607,6 +1615,8 @@ def requested_audio(args):
     validate_microphone_source(record['action'], source)
     validate_microphone_array(record['action'], source, record.get('microphone_array', False))
     validate_capture_reopen(record['action'], record.get('capture_reopen', False))
+    validate_capture_contract_check(record['action'], record.get('capture_reopen', False),
+                                    record.get('capture_contract_check', False))
     words = Path('/proc/cmdline').read_text().split()
     boot_id = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
     assert record['attempt'] == ATTEMPT and record['release'] == os.uname().release
@@ -1631,6 +1641,7 @@ def requested_audio(args):
     args.microphone_source = source
     args.microphone_array = record.get('microphone_array', False)
     args.capture_reopen = record.get('capture_reopen', False)
+    args.capture_contract_check = record.get('capture_contract_check', False)
     args.allow_amp_power = True
     args.allow_playback = feedback
     args.allow_capture = feedback
@@ -1672,6 +1683,8 @@ def audio_check(args):
     validate_microphone_source(action, source)
     validate_microphone_array(action, source, getattr(args, 'microphone_array', False))
     validate_capture_reopen(action, getattr(args, 'capture_reopen', False))
+    validate_capture_contract_check(action, getattr(args, 'capture_reopen', False),
+                                    getattr(args, 'capture_contract_check', False))
     command = ['python3', '-B', str(HERE / 'audio.py'), action,
                '--output', str(OUT / 'audio'), '--microphone-source', source]
     if action == 'plan':
@@ -1715,6 +1728,8 @@ def audio_check(args):
                 command.append('--allow-capture')
             if getattr(args, 'microphone_array', False):
                 command.append('--microphone-array')
+            if getattr(args, 'capture_contract_check', False):
+                command.append('--capture-contract-check')
             if getattr(args, 'capture_reopen', False):
                 command.append('--capture-reopen')
             if action == 'reopen' and getattr(args, 'reopen_first_channel', None):
@@ -1893,6 +1908,8 @@ def main():
                         help='changed unloaded/blacklisted module to install while this release runs')
     parser.add_argument('--return-seconds', type=int, default=3600)
     parser.add_argument('--audio-action', choices=('plan', 'inspect', 'initialize', 'listen', 'recover', 'capture', 'feedback', 'desktop', 'serve', 'reopen', 'desktop-mic'), default='plan')
+    parser.add_argument('--capture-contract-check', action='store_true',
+                        help='desktop-mic capture-reopen only: bounded incompatible contract rejection probes')
     parser.add_argument('--capture-reopen', action='store_true',
                         help='desktop-mic-only native capture reopen with a third default client')
     parser.add_argument('--reopen-first-channel', choices=('left', 'right'),
@@ -1919,6 +1936,9 @@ def main():
     if args.microphone_array and (args.command not in ('audio', 'arm-audio') or
                                   args.audio_action != 'feedback' or args.microphone_source != 'DMIC1'):
         parser.error('--microphone-array requires audio/arm-audio feedback with primary DMIC1')
+    if args.capture_contract_check and (args.command not in ('audio', 'arm-audio') or
+                                        args.audio_action != 'desktop-mic' or not args.capture_reopen):
+        parser.error('--capture-contract-check requires audio/arm-audio desktop-mic --capture-reopen')
     if args.capture_reopen and (args.command not in ('audio', 'arm-audio') or args.audio_action != 'desktop-mic'):
         parser.error('--capture-reopen requires audio/arm-audio --audio-action desktop-mic')
     if args.reopen_first_channel is not None and (args.command != 'audio' or args.audio_action != 'reopen'):

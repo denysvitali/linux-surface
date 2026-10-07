@@ -259,6 +259,11 @@ def validate_microphone_array(action, source, enabled):
          '--microphone-array requires feedback with primary DMIC1')
 
 
+def validate_capture_contract_check(action, reopen, enabled):
+    need(type(enabled) is bool and (not enabled or (action == 'desktop-mic' and reopen is True)),
+         '--capture-contract-check requires desktop-mic --capture-reopen')
+
+
 def configure_microphone(card, report, saved, source='DMIC1', microphone_array=False):
     """Select one DMIC -> DEC0 -> MM2 route before capture; preserve controls."""
     need(source in ('DMIC0', 'DMIC1'), 'Unknown microphone source')
@@ -505,7 +510,7 @@ class OwnedCapture:
             self.report['capture']['baseline']['array_metrics'] = array_metrics(inputs)
         return samples
 
-    def reopen(self, evidence):
+    def reopen(self, evidence, before_reopen=None):
         """Replace the finite native stream in place, preserving outer cleanup ownership."""
         need(not self.retain_recording, 'Capture reopen must not retain private recordings')
         evidence['original_capture'] = self.report['capture']
@@ -515,6 +520,10 @@ class OwnedCapture:
         need(not self.report['capture'].get('error') and
              not re.search(r'overrun|underrun|error', self.report['capture']['log'], re.I),
              'Original capture reported an ALSA error')
+        if before_reopen is not None:
+            need(self.maximum_seconds - (time.monotonic() - self.started) >= 18,
+                 'Insufficient original capture budget for rejection probes and reopen')
+            before_reopen()
         remaining = int(self.maximum_seconds - (time.monotonic() - self.started))
         need(remaining >= 10, 'Insufficient time remaining for bounded capture reopen')
         self.__init__(self.card, self.report, self.directory,
@@ -1174,6 +1183,88 @@ class DesktopRecording(OwnedCapture):
              'Desktop recording client reported an error: ' + log)
 
 
+CAPTURE_CONTRACT_MARKER = ('SPX: capture contract mismatch: retained '
+                           'format/rate/channels/ring/DMA must remain unchanged')
+
+
+def capture_contract_probes(capture, pcm, evidence):
+    """Reject incompatible hw_params, then let the caller reopen the original contract.
+
+    All output is discarded. The kernel hw_params guard plus ALSA's EINVAL
+    establishes rejection before DSP setup/data; there is no output-byte claim.
+    """
+    evidence.update(passed=False, maximum_seconds=8, probes=[], recording=None,
+                    scope='incompatible native capture contracts rejected; no format-change support')
+    started = time.monotonic()
+    deadline = started + 8
+    playback_before = pcm.healthy()
+
+    def journal(*arguments):
+        remaining = deadline - time.monotonic()
+        need(remaining > 0, 'Capture contract probe deadline expired')
+        return subprocess.run(['journalctl', '-k', '-b', '--no-pager', *arguments],
+                              capture_output=True, text=True, check=True,
+                              timeout=min(2, remaining)).stdout
+
+    contracts = (
+        ('channels', 'S16_LE', 48000, 2, 960, 3840),
+        ('rate', 'S16_LE', 44100, 1, 1920, 7680),
+        ('format', 'S24_LE', 48000, 1, 960, 3840),
+        ('period', 'S16_LE', 48000, 1, 960, 7680),
+    )
+    try:
+        for name, fmt, rate, channels, period, buffer in contracts:
+            row = {'name': name, 'passed': False, 'requested': dict(
+                device=f'hw:{capture.card},1', format=fmt, rate=rate, channels=channels,
+                period_frames=period, buffer_frames=buffer), 'maximum_seconds': 2}
+            evidence['probes'].append(row)
+            row['capture_status_before'] = read_text(capture.status)
+            need(row['capture_status_before'] == 'closed', 'Capture open before rejection probe')
+            cursor = re.search(r'^-- cursor: (.+)$', journal('-n', '0', '--show-cursor'), re.M)
+            need(cursor is not None, 'No kernel journal cursor for capture rejection proof')
+            row['kernel_cursor'] = cursor[1]
+            command = ['arecord', '--fatal-errors', '-q', '-D', f'hw:{capture.card},1',
+                       '-t', 'raw', '-f', fmt, '-r', str(rate), '-c', str(channels),
+                       f'--period-size={period}', f'--buffer-size={buffer}', '-d', '1']
+            remaining = deadline - time.monotonic()
+            need(remaining > 0, 'Capture contract probe deadline expired')
+            try:
+                result = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                                        text=True, timeout=min(2, remaining))
+            except subprocess.TimeoutExpired as error:
+                row.update(timeout=True, error=(error.stderr or b'').decode(errors='replace')
+                           if isinstance(error.stderr, bytes) else (error.stderr or ''))
+                raise RuntimeError('Native rejection probe timed out') from error
+            row.update(returncode=result.returncode, error=result.stderr, timeout=False)
+            row['capture_status_after'] = read_text(capture.status)
+            need(result.returncode != 0, 'Incompatible native capture contract unexpectedly succeeded')
+            need(row['capture_status_after'] == 'closed', 'Capture open after rejection probe')
+            need('Invalid argument' in result.stderr and
+                 not re.search(r'overrun|underrun|xrun', result.stderr, re.I),
+                 'Probe did not fail with hw_params EINVAL')
+            while True:
+                messages = journal('--after-cursor=' + cursor[1], '-o', 'cat')
+                row['kernel_evidence'] = [line for line in messages.splitlines()
+                                          if CAPTURE_CONTRACT_MARKER in line]
+                row['repark_evidence'] = [line for line in messages.splitlines()
+                    if 'SPX: parking ASM capture session for DAI ' in line]
+                if row['kernel_evidence'] and row['repark_evidence']:
+                    break
+                need(time.monotonic() < deadline - 0.05, 'Missing fresh kernel contract guard marker')
+                time.sleep(0.05)
+            row['rejected_before_data'] = True
+            row['playback_status'] = pcm.healthy()
+            for field in ('owner_pid', 'trigger_time'):
+                old = re.search(r'^' + field + r'\s*:\s*(.+)$', playback_before, re.M)
+                new = re.search(r'^' + field + r'\s*:\s*(.+)$', row['playback_status'], re.M)
+                need(old and new and old[1] == new[1], 'Playback changed during capture rejection')
+            row['passed'] = True
+        need(time.monotonic() <= deadline, 'Capture contract probe deadline expired')
+        evidence['passed'] = True
+    finally:
+        evidence['seconds'] = time.monotonic() - started
+
+
 def desktop_microphone(args, report, pcm, paths, mapping, capture, holders):
     """Default clients, optionally followed by one bounded native capture reopen."""
     from acoustic import score_phase
@@ -1252,7 +1343,12 @@ def desktop_microphone(args, report, pcm, paths, mapping, capture, holders):
             try:
                 source.close()
                 graph.microphone = None
-                capture.reopen(reopened)
+                if getattr(args, 'capture_contract_check', False):
+                    contract = reopened['contract_check'] = {'passed': False}
+                    capture.reopen(reopened, before_reopen=lambda:
+                                   capture_contract_probes(capture, pcm, contract))
+                else:
+                    capture.reopen(reopened)
                 new_owners = {'capture': read_text(capture.status), 'playback': pcm.healthy()}
                 reopened['hardware_owners_after'] = new_owners
                 for field in ('owner_pid', 'trigger_time'):
@@ -1761,6 +1857,8 @@ def initialize(args, report):
     validate_microphone_source(args.action, source)
     microphone_array = getattr(args, 'microphone_array', False)
     validate_microphone_array(args.action, source, microphone_array)
+    validate_capture_contract_check(args.action, getattr(args, 'capture_reopen', False),
+                                    getattr(args, 'capture_contract_check', False))
     need(os.geteuid() == 0, 'initialize requires root')
     need(args.action in ('recover', 'capture') or args.allow_amp_power,
          'initialize/listen requires --allow-amp-power for this authorized run')
@@ -2045,6 +2143,8 @@ def main():
                         help='bounded capture/feedback/desktop-mic input (default: DMIC1)')
     parser.add_argument('--microphone-array', action='store_true',
                         help='feedback-only fresh native stereo DMIC1/DMIC0 capture')
+    parser.add_argument('--capture-contract-check', action='store_true',
+                        help='desktop-mic capture-reopen only: bounded incompatible contract rejection probes')
     parser.add_argument('--capture-reopen', action='store_true',
                         help='desktop-mic-only native capture reopen with a third default client')
     parser.add_argument('--reopen-first-channel', choices=('left', 'right'),
@@ -2056,6 +2156,8 @@ def main():
     args = parser.parse_args()
     if args.microphone_array and (args.action != 'feedback' or args.microphone_source != 'DMIC1'):
         parser.error('--microphone-array requires feedback with primary DMIC1')
+    if args.capture_contract_check and (args.action != 'desktop-mic' or not args.capture_reopen):
+        parser.error('--capture-contract-check requires desktop-mic --capture-reopen')
     if args.capture_reopen and args.action != 'desktop-mic':
         parser.error('--capture-reopen requires desktop-mic')
     if args.reopen_first_channel is not None and args.action != 'reopen':

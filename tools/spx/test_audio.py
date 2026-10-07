@@ -1241,6 +1241,104 @@ class DesktopMicrophoneTests(unittest.TestCase):
         self.assertTrue(report['desktop']['clients'][0]['passed'])
         self.assertFalse(report['desktop']['clients'][1]['passed'])
 
+    def test_contract_gate_precedes_hardware(self):
+        for action, reopen in (('feedback', True), ('desktop-mic', False)):
+            with self.subTest(action=action), patch.object(audio.os, 'geteuid') as hardware:
+                with self.assertRaisesRegex(RuntimeError, 'requires desktop-mic --capture-reopen'):
+                    audio.initialize(SimpleNamespace(action=action, capture_reopen=reopen,
+                                                     capture_contract_check=True), {})
+                hardware.assert_not_called()
+
+    def test_contract_callback_runs_after_close_and_before_same_object_reopen(self):
+        capture = audio.OwnedCapture.__new__(audio.OwnedCapture)
+        old = {'closed_status': 'closed', 'log': '', 'error': None}
+        capture.card, capture.directory, capture.report = 0, Path('/unused'), {'capture': old}
+        capture.maximum_seconds, capture.started, capture.retain_recording = 60, 100, False
+        events = []
+        def probes():
+            events.append('probes')
+        def initialize(same, card, report, directory, **kwargs):
+            self.assertIs(same, capture)
+            self.assertEqual(kwargs['maximum_seconds'], 20)
+            report['capture'] = {}
+            events.append('reopen')
+        with patch.object(capture, 'close', side_effect=lambda: events.append('close')), \
+                patch.object(audio.time, 'monotonic', side_effect=[132, 140]), \
+                patch.object(audio.OwnedCapture, '__init__', autospec=True, side_effect=initialize), \
+                patch.object(capture, 'baseline', side_effect=lambda: events.append('baseline')):
+            capture.reopen({}, before_reopen=probes)
+        self.assertEqual(events, ['close', 'probes', 'reopen', 'baseline'])
+
+    def test_contract_callback_failure_and_short_budget_never_reopens(self):
+        for elapsed, message in ((45, 'Insufficient original'), (30, 'probe failed')):
+            capture = audio.OwnedCapture.__new__(audio.OwnedCapture)
+            capture.report = {'capture': {'closed_status': 'closed', 'log': '', 'error': None}}
+            capture.maximum_seconds, capture.started, capture.retain_recording = 60, 100, False
+            probe = Mock(side_effect=RuntimeError('probe failed'))
+            with patch.object(capture, 'close'), \
+                    patch.object(audio.time, 'monotonic', return_value=100 + elapsed), \
+                    patch.object(audio.OwnedCapture, '__init__') as initialize:
+                with self.assertRaisesRegex(RuntimeError, message):
+                    capture.reopen({}, before_reopen=probe)
+                initialize.assert_not_called()
+            self.assertEqual(probe.call_count, 0 if elapsed == 45 else 1)
+
+    def test_contract_probes_require_native_rejection_and_fresh_guard_repark(self):
+        owners = 'owner_pid: 99\ntrigger_time: 1.0\n'
+        capture = SimpleNamespace(card=0, status=Path('/unused'))
+        pcm = Mock(); pcm.healthy.return_value = owners
+        commands = []
+        def run(command, **kwargs):
+            commands.append(command)
+            if command[0] == 'journalctl':
+                if '--show-cursor' in command:
+                    return SimpleNamespace(stdout='-- cursor: fixture\n')
+                return SimpleNamespace(stdout=audio.CAPTURE_CONTRACT_MARKER +
+                    '\nSPX: parking ASM capture session for DAI 1 across close\n')
+            self.assertEqual(kwargs['stdout'], audio.subprocess.DEVNULL)
+            self.assertLessEqual(kwargs['timeout'], 2)
+            self.assertIn('--fatal-errors', command)
+            self.assertIn('hw:0,1', command)
+            self.assertEqual(command[-2:], ['-d', '1'])
+            return SimpleNamespace(returncode=1, stderr='Unable to install hw params: Invalid argument')
+        evidence = {}
+        with patch.object(audio, 'read_text', return_value='closed'), \
+                patch.object(audio.subprocess, 'run', side_effect=run):
+            audio.capture_contract_probes(capture, pcm, evidence)
+        self.assertTrue(evidence['passed'])
+        self.assertEqual([p['name'] for p in evidence['probes']], ['channels', 'rate', 'format', 'period'])
+        self.assertTrue(all(p['rejected_before_data'] and p['repark_evidence'] for p in evidence['probes']))
+        self.assertIsNone(evidence['recording'])
+        self.assertEqual(len([c for c in commands if c[0] == 'arecord']), 4)
+
+    def test_contract_probe_timeout_success_missing_guard_or_open_pcm_aborts(self):
+        for failure in ('timeout', 'success', 'guard', 'repark', 'open'):
+            evidence, recordings, clock = {}, [], [100.0]
+            def now():
+                clock[0] += 0.1
+                return clock[0]
+            def run(command, **kwargs):
+                if command[0] == 'journalctl':
+                    if '--show-cursor' in command:
+                        return SimpleNamespace(stdout='-- cursor: fixture\n')
+                    return SimpleNamespace(stdout=(audio.CAPTURE_CONTRACT_MARKER if failure != 'guard' else '') +
+                        ('\nSPX: parking ASM capture session for DAI 1 across close' if failure != 'repark' else ''))
+                recordings.append(command)
+                if failure == 'timeout':
+                    raise audio.subprocess.TimeoutExpired(command, 2, stderr=b'failure')
+                return SimpleNamespace(returncode=0 if failure == 'success' else 1, stderr='Invalid argument')
+            with self.subTest(failure=failure), \
+                    patch.object(audio, 'read_text', side_effect=['closed', 'RUNNING' if failure == 'open' else 'closed']), \
+                    patch.object(audio.time, 'monotonic', side_effect=now), \
+                    patch.object(audio.time, 'sleep'), \
+                    patch.object(audio.subprocess, 'run', side_effect=run):
+                with self.assertRaises(RuntimeError):
+                    audio.capture_contract_probes(SimpleNamespace(card=0, status=Path('/unused')),
+                        Mock(healthy=Mock(return_value='owner_pid: 99\ntrigger_time: 1.0\n')), evidence)
+            self.assertFalse(evidence['passed'])
+            self.assertEqual(len(recordings), 1)
+            self.assertFalse(evidence['probes'][0]['passed'])
+
     def test_capture_reopen_cli_rejects_other_actions_before_hardware(self):
         for action in ('plan', 'feedback', 'capture', 'reopen', 'serve'):
             with self.subTest(action=action), \
@@ -1356,6 +1454,71 @@ class DesktopMicrophoneTests(unittest.TestCase):
                         audio.desktop_microphone(args, report, pcm, {}, {}, capture, holders)
                 evidence = report['desktop']
                 self.assertEqual(events, ['source-close', 'capture-reopen'])
+                self.assertTrue(evidence['initial_clients_passed'])
+                self.assertTrue(all(c['passed'] for c in evidence['clients'][:2]))
+                self.assertEqual(evidence['capture_reopen']['passed'], failure is None)
+                if failure:
+                    self.assertIn('error', evidence['capture_reopen'])
+                self.assertEqual(len(clients), 2 if failure == 'baseline' else 3)
+                for client in clients:
+                    client.close.assert_called_once()
+                capture.close.assert_not_called()  # Same object is left to outer cleanup.
+                pcm.close.assert_not_called()
+                self.assertIs(graph.microphone, None if failure == 'baseline' else second)
+                if failure != 'baseline':
+                    self.assertEqual(evidence['clients'][2]['source_index'], 91)
+
+    def test_contract_probes_precede_third_default_client_and_retain_outer_cleanup(self):
+        import acoustic
+        old = 'state: RUNNING\nowner_pid: 123\ntrigger_time: 14.567\n'
+        new = 'state: RUNNING\nowner_pid: 456\ntrigger_time: 44.567\n'
+        for failure in (None, 'baseline', 'third-tone'):
+            with self.subTest(failure=failure):
+                state, events, clients = {'reopened': False}, [], []
+                capture = Mock(status=Path('/unused-capture'))
+                def reopen(evidence, before_reopen=None):
+                    self.assertIsNotNone(before_reopen)
+                    before_reopen()
+                    events.append('capture-reopen')
+                    state['reopened'] = True
+                    evidence['original_capture'] = {'pid': 123}
+                    evidence['reopened_capture'] = {'pid': 456}
+                    if failure == 'baseline':
+                        raise RuntimeError('silent reopened capture')
+                capture.reopen.side_effect = reopen
+                pcm, graph, source, second = Mock(), Mock(), Mock(), Mock()
+                pcm.healthy.return_value = old
+                source.source_id, second.source_id = 79, 91
+                source.require_client_route.return_value = True
+                second.require_client_route.return_value = True
+                source.close.side_effect = lambda: events.append('source-close')
+                def recording(*args):
+                    client = Mock()
+                    client.process.pid = 200 + len(clients)
+                    client.mark.return_value = 144000
+                    client.samples.return_value = []
+                    clients.append(client)
+                    return client
+                scores = [{'passed': True, 'reason': ''}] * 2 + [
+                    {'passed': failure != 'third-tone', 'reason': 'missing third tone'}]
+                report, holders = {}, []
+                with patch.object(audio, 'DesktopGraph', return_value=graph), \
+                        patch.object(audio, 'DesktopMicSource', side_effect=[source, second]), \
+                        patch.object(audio, 'DesktopRecording', side_effect=recording), \
+                        patch.object(audio, 'read_text', side_effect=lambda _: new if state['reopened'] else old), \
+                        patch.object(audio, 'check_stereo'), \
+                        patch.object(audio, 'capture_contract_probes',
+                            side_effect=lambda *args: events.append('contract-probes')),  \
+                        patch.object(audio.threading, 'Timer'), \
+                        patch.object(acoustic, 'score_phase', side_effect=scores):
+                    args = SimpleNamespace(desktop_user='test', capture_reopen=True, capture_contract_check=True)
+                    if failure:
+                        with self.assertRaises(RuntimeError):
+                            audio.desktop_microphone(args, report, pcm, {}, {}, capture, holders)
+                    else:
+                        audio.desktop_microphone(args, report, pcm, {}, {}, capture, holders)
+                evidence = report['desktop']
+                self.assertEqual(events, ['source-close', 'contract-probes', 'capture-reopen'])
                 self.assertTrue(evidence['initial_clients_passed'])
                 self.assertTrue(all(c['passed'] for c in evidence['clients'][:2]))
                 self.assertEqual(evidence['capture_reopen']['passed'], failure is None)

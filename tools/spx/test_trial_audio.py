@@ -89,6 +89,48 @@ class AudioRequestTests(TrialAudioFixture):
             trial.requested_audio(SimpleNamespace())
         self.assertTrue(check.call_args.args[0].microphone_array)
 
+    def test_contract_cli_gate_and_request_gate_precede_hardware(self):
+        for command, action, reopen in (('prepare', 'desktop-mic', True),
+                                        ('audio', 'feedback', True), ('arm-audio', 'desktop-mic', False)):
+            argv = ['trial.py', command, '20261007dl', '--audio-action', action,
+                    '--capture-contract-check'] + (['--capture-reopen'] if reopen else [])
+            with self.subTest(command=command, action=action), \
+                    patch.object(sys, 'argv', argv), patch.object(sys, 'stderr', io.StringIO()), \
+                    patch.object(trial, 'audio_check') as hardware:
+                with self.assertRaises(SystemExit) as stopped:
+                    trial.main()
+                self.assertEqual(stopped.exception.code, 2)
+                hardware.assert_not_called()
+        self.request.update(capture_contract_check=True)
+        self.write_request()
+        with patch.object(trial, 'audio_check') as hardware:
+            with self.assertRaisesRegex(AssertionError, 'requires desktop-mic --capture-reopen'):
+                trial.requested_audio(self.args)
+            hardware.assert_not_called()
+        self.assertTrue((self.out / 'audio-request.json').exists())
+
+    def test_contract_recorded_and_forwarded_direct_and_armed(self):
+        (self.out / 'prepared.json').write_text(json.dumps(dict(audio_mode='parked')))
+        (self.out / 'installed.json').touch()
+        args = SimpleNamespace(audio_action='desktop-mic', capture_reopen=True,
+            capture_contract_check=True, allow_amp_power=True, allow_playback=True, allow_capture=True,
+            desktop_user='dvitali', return_after_audio_seconds=None)
+        account = SimpleNamespace(pw_uid=1000, pw_name='dvitali')
+        with patch.object(trial, 'require_source_boot'), patch.object(trial, 'recovery'), \
+                patch.object(trial.pwd, 'getpwnam', return_value=account):
+            trial.arm_audio(args)
+        self.assertTrue(json.loads((self.out / 'audio-request.json').read_text())['capture_contract_check'])
+        with patch.object(trial.os, 'geteuid', return_value=0), \
+                patch.object(trial.pwd, 'getpwnam', return_value=account), \
+                patch.object(trial.subprocess, 'Popen') as opened:
+            opened.return_value.wait.return_value = 0
+            trial.audio_check(args)
+        self.assertIn('--capture-contract-check', opened.call_args.args[0])
+        self.assertIn('--capture-reopen', opened.call_args.args[0])
+        with patch.object(trial, 'audio_check') as hardware:
+            trial.requested_audio(SimpleNamespace())
+        self.assertTrue(hardware.call_args.args[0].capture_contract_check)
+
     def test_capture_reopen_cli_rejects_other_actions_before_lock(self):
         for command, action in (('prepare', 'desktop-mic'), ('audio', 'feedback'),
                                 ('arm-audio', 'reopen'), ('check', 'desktop-mic')):
