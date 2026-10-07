@@ -374,6 +374,9 @@ def install(args):
     if prepared.get('pmic_rtc'):
         shutil.copy2(HERE / 'pmic_rtc.py', helper.parent / 'pmic_rtc.py')
     (helper.parent / 'thermal.py').chmod(0o644)
+    if prepared.get('pmic_rtc') and prepared.get('sensors_startup'):
+        shutil.copy2(HERE / 'systemd_sleep.py', helper.parent / 'systemd_sleep.py')
+        (helper.parent / 'systemd_sleep.py').chmod(0o644)
     if prepared.get('sensors_startup'):
         sensor_helpers = helper.parent / 'sensors'
         sensor_helpers.mkdir(parents=True, exist_ok=True)
