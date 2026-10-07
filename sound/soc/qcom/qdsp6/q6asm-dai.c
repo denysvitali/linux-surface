@@ -9,6 +9,7 @@
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
+#include <linux/soc/qcom/apr.h>
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
 #include <sound/pcm.h>
@@ -48,6 +49,7 @@ enum stream_state {
 	Q6ASM_STREAM_IDLE = 0,
 	Q6ASM_STREAM_STOPPED,
 	Q6ASM_STREAM_RUNNING,
+	Q6ASM_STREAM_PAUSED,
 };
 
 /* The retained SPX capture client keeps both its format and mapped ring. */
@@ -105,6 +107,13 @@ struct q6asm_dai_rtd {
 	unsigned int n_write_done;
 	unsigned int n_fallback;
 	unsigned int n_submitted;
+	/* Protected by lock; the DSP ring/session survives a retained pause. */
+	bool spx_started;
+	bool spx_run_pending;
+	unsigned int spx_pending_writes;
+	unsigned int spx_deferred_reads;
+	bool spx_deferred_elapsed;
+	int spx_pm_error;
 	bool client_reused;	/* SPX: audio_client was parked across a close */
 	struct spx_capture_contract capture_contract;
 };
@@ -356,27 +365,54 @@ static const struct snd_compr_codec_caps q6asm_compr_caps = {
 	.descriptor[0].formats = 0,
 };
 
+/* Called with prtd->lock held; neither operation waits for a DSP response. */
+static int spx_queue_write(struct q6asm_dai_rtd *prtd)
+{
+	int ret;
+
+	ret = q6asm_write_async(prtd->audio_client, prtd->stream_id,
+				prtd->pcm_count, 0, 0, 0);
+	if (ret) {
+		prtd->spx_pm_error = ret < 0 ? ret : -EIO;
+		dev_err(prtd->substream->pcm->card->dev,
+			"SPX: retained playback submit failed: %d\n", ret);
+		return prtd->spx_pm_error;
+	}
+	prtd->spx_pending_writes++;
+	prtd->n_submitted++;
+	return 0;
+}
+
+static void spx_arm_watchdog(struct q6asm_dai_rtd *prtd)
+{
+	mod_delayed_work(system_wq, &prtd->write_watchdog,
+			 max_t(unsigned long, 1, prtd->period_jiffies *
+			       (prtd->write_fallback ? 1 : 2)));
+}
+
 static void q6asm_write_watchdog(struct work_struct *work)
 {
 	struct q6asm_dai_rtd *prtd =
 		container_of(to_delayed_work(work), struct q6asm_dai_rtd,
 			     write_watchdog);
+	unsigned long flags;
+	bool elapsed = false;
 
-	if (prtd->state != Q6ASM_STREAM_RUNNING || !prtd->substream)
-		return;
+	spin_lock_irqsave(&prtd->lock, flags);
+	if (prtd->state == Q6ASM_STREAM_RUNNING && prtd->substream &&
+	    !prtd->spx_pm_error) {
+		prtd->write_fallback = true;
+		prtd->pcm_irq_pos += prtd->pcm_count;
+		prtd->n_fallback++;
+		elapsed = true;
+		if (!spx_queue_write(prtd))
+			spx_arm_watchdog(prtd);
+	}
+	spin_unlock_irqrestore(&prtd->lock, flags);
 
-	WRITE_ONCE(prtd->write_fallback, true);
-	prtd->pcm_irq_pos += prtd->pcm_count;
-	snd_pcm_period_elapsed(prtd->substream);
-	if (prtd->state != Q6ASM_STREAM_RUNNING)
-		return;
-	prtd->n_fallback++;
-	prtd->n_submitted++;
-	q6asm_write_async(prtd->audio_client, prtd->stream_id,
-			  prtd->pcm_count, 0, 0, 0);
-
-	mod_delayed_work(system_wq, &prtd->write_watchdog,
-			 max_t(unsigned long, 1, prtd->period_jiffies));
+	/* trigger() holds the ALSA stream lock: never take it under our lock. */
+	if (elapsed)
+		snd_pcm_period_elapsed(prtd->substream);
 }
 
 static void spx_event_handler(uint32_t opcode, uint32_t token,
@@ -384,83 +420,131 @@ static void spx_event_handler(uint32_t opcode, uint32_t token,
 {
 	struct q6asm_dai_rtd *prtd = priv;
 	struct snd_pcm_substream *substream = prtd->substream;
+	const struct aprv2_ibasic_rsp_result_t *result = payload;
+	unsigned long flags;
+	bool elapsed = false;
+	int i, ret;
 
+	spin_lock_irqsave(&prtd->lock, flags);
 	switch (opcode) {
+	case ASM_CLIENT_EVENT_CMD_PAUSE_DONE:
 	case ASM_CLIENT_EVENT_CMD_RUN_DONE:
+		if (result->status) {
+			prtd->spx_pm_error = -EIO;
+			prtd->spx_run_pending = false;
+			prtd->state = Q6ASM_STREAM_PAUSED;
+			cancel_delayed_work(&prtd->write_watchdog);
+			dev_err(substream->pcm->card->dev,
+				"SPX: retained ASM %s rejected: 0x%x\n",
+				opcode == ASM_CLIENT_EVENT_CMD_RUN_DONE ? "RUN" : "PAUSE",
+				result->status);
+			elapsed = true;
+			break;
+		}
+		if (opcode == ASM_CLIENT_EVENT_CMD_PAUSE_DONE) {
+			dev_info(substream->pcm->card->dev,
+				 "SPX: retained ASM pause acknowledged direction=%d\n",
+				 substream->stream);
+			break;
+		}
+		/* A duplicate or superseded RUN must not refill the mapped ring. */
+		if (!prtd->spx_run_pending || prtd->spx_pm_error) {
+			prtd->spx_run_pending = false;
+			break;
+		}
+		prtd->spx_run_pending = false;
+		prtd->state = Q6ASM_STREAM_RUNNING;
 		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) {
-			int i;
-
-			if (spx_force_timer_pacing) {
-				/* Fill the DSP queue before starting timer pacing. */
-				prtd->write_fallback = true;
-				prtd->n_submitted += prtd->periods;
-				for (i = 0; i < prtd->periods; i++)
-					q6asm_write_async(prtd->audio_client,
-							  prtd->stream_id,
-							  prtd->pcm_count, 0, 0, 0);
-				mod_delayed_work(system_wq,
-						 &prtd->write_watchdog,
-						 max_t(unsigned long, 1,
-						       prtd->period_jiffies));
-			} else {
-				/* Upstream-style one-buffer queue, paced by WRITE_DONE. */
-				prtd->write_fallback = false;
-				prtd->n_submitted++;
-				/* Arm before submit so an immediate completion can claim it. */
-				mod_delayed_work(system_wq,
-						 &prtd->write_watchdog,
-						 max_t(unsigned long, 1,
-						       prtd->period_jiffies * 2));
-				q6asm_write_async(prtd->audio_client,
-						  prtd->stream_id,
-						  prtd->pcm_count, 0, 0, 0);
+			if (!prtd->spx_started) {
+				prtd->write_fallback = spx_force_timer_pacing;
+				for (i = 0; i < (spx_force_timer_pacing ? prtd->periods : 1); i++)
+					if (spx_queue_write(prtd))
+						break;
+			} else if (!prtd->write_fallback && !prtd->spx_pending_writes) {
+				/* The last real completion arrived after PAUSE was sent. */
+				spx_queue_write(prtd);
+			}
+			if (!prtd->spx_pm_error)
+				spx_arm_watchdog(prtd);
+		} else {
+			/* Preserve existing reads; replace only the completed ones. */
+			while (prtd->spx_deferred_reads) {
+				ret = q6asm_read(prtd->audio_client, prtd->stream_id);
+				if (ret) {
+					prtd->spx_pm_error = ret < 0 ? ret : -EIO;
+					dev_err(substream->pcm->card->dev,
+						"SPX: retained capture resume submit failed: %d\n", ret);
+					break;
+				}
+				prtd->spx_deferred_reads--;
 			}
 		}
+		if (prtd->spx_started)
+			dev_info(substream->pcm->card->dev,
+				 "SPX: retained ASM resumed direction=%d pending-writes=%u deferred-reads=%u error=%d\n",
+				 substream->stream, prtd->spx_pending_writes,
+				 prtd->spx_deferred_reads, prtd->spx_pm_error);
+		prtd->spx_started = true;
+		elapsed = prtd->spx_deferred_elapsed || prtd->spx_pm_error;
+		prtd->spx_deferred_elapsed = false;
 		break;
 	case ASM_CLIENT_EVENT_CMD_EOS_DONE:
 		prtd->state = Q6ASM_STREAM_STOPPED;
 		break;
-	case ASM_CLIENT_EVENT_DATA_WRITE_DONE: {
+	case ASM_CLIENT_EVENT_DATA_WRITE_DONE:
 		prtd->n_write_done++;
-		if (READ_ONCE(prtd->write_fallback))
+		if (prtd->spx_pending_writes)
+			prtd->spx_pending_writes--;
+		/* Timer progress already accounts for these consumption events. */
+		if (prtd->write_fallback)
 			break;
-		/*
-		 * The completion and watchdog are competing producers.  Claim the
-		 * outstanding period by cancelling its pending watchdog before
-		 * advancing ALSA or submitting the replacement buffer.  If the
-		 * watchdog is already running, it owns this boundary and switches
-		 * the stream permanently to timer pacing; processing this completion
-		 * as well would double-elapse and double-submit one period.
-		 */
+		if (prtd->state == Q6ASM_STREAM_PAUSED) {
+			prtd->pcm_irq_pos += prtd->pcm_count;
+			prtd->spx_deferred_elapsed = true;
+			break;
+		}
+		if (prtd->state != Q6ASM_STREAM_RUNNING || prtd->spx_pm_error)
+			break;
+		/* The serialized watchdog owns this boundary if cancellation fails. */
 		if (!cancel_delayed_work(&prtd->write_watchdog)) {
-			WRITE_ONCE(prtd->write_fallback, true);
+			prtd->write_fallback = true;
 			break;
 		}
 		prtd->pcm_irq_pos += prtd->pcm_count;
-		snd_pcm_period_elapsed(substream);
-		if (prtd->state == Q6ASM_STREAM_RUNNING) {
-			prtd->n_submitted++;
-			/* Arm before submit so an immediate completion can claim it. */
-			mod_delayed_work(system_wq, &prtd->write_watchdog,
-					 max_t(unsigned long, 1,
-					       prtd->period_jiffies * 2));
-			q6asm_write_async(prtd->audio_client, prtd->stream_id,
-					   prtd->pcm_count, 0, 0, 0);
-		}
-
+		elapsed = true;
+		if (!spx_queue_write(prtd))
+			spx_arm_watchdog(prtd);
 		break;
-		}
 	case ASM_CLIENT_EVENT_DATA_READ_DONE:
-		prtd->n_write_done++;	/* SPX: real DSP progress, capture side */
+		prtd->n_write_done++;
 		prtd->pcm_irq_pos += prtd->pcm_count;
-		snd_pcm_period_elapsed(substream);
-		if (prtd->state == Q6ASM_STREAM_RUNNING)
-			q6asm_read(prtd->audio_client, prtd->stream_id);
-
+		if (prtd->state == Q6ASM_STREAM_PAUSED) {
+			prtd->spx_deferred_elapsed = true;
+			if (prtd->spx_deferred_reads < prtd->periods)
+				prtd->spx_deferred_reads++;
+			else {
+				prtd->spx_pm_error = -EOVERFLOW;
+				dev_err(substream->pcm->card->dev,
+					"SPX: retained capture completion exceeds mapped ring\n");
+			}
+		} else {
+			elapsed = true;
+			if (prtd->state == Q6ASM_STREAM_RUNNING && !prtd->spx_pm_error) {
+				ret = q6asm_read(prtd->audio_client, prtd->stream_id);
+				if (ret) {
+					prtd->spx_pm_error = ret < 0 ? ret : -EIO;
+					dev_err(substream->pcm->card->dev,
+						"SPX: retained capture submit failed: %d\n", ret);
+				}
+			}
+		}
 		break;
 	default:
 		break;
 	}
+	spin_unlock_irqrestore(&prtd->lock, flags);
+	if (elapsed)
+		snd_pcm_period_elapsed(substream);
 }
 
 static void event_handler(uint32_t opcode, uint32_t token,
@@ -712,39 +796,82 @@ static int q6asm_dai_ack(struct snd_soc_component *component, struct snd_pcm_sub
 	return ret;
 }
 
-static int q6asm_dai_trigger(struct snd_soc_component *component,
-			     struct snd_pcm_substream *substream, int cmd)
+static int spx_pcm_trigger(struct q6asm_dai_rtd *prtd, int cmd)
 {
+	unsigned long flags;
 	int ret = 0;
-	struct snd_pcm_runtime *runtime = substream->runtime;
-	struct q6asm_dai_rtd *prtd = runtime->private_data;
 
+	spin_lock_irqsave(&prtd->lock, flags);
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
 	case SNDRV_PCM_TRIGGER_RESUME:
 	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
-		ret = q6asm_run_nowait(prtd->audio_client, prtd->stream_id,
-				       0, 0, 0);
+		if (prtd->spx_pm_error) {
+			ret = prtd->spx_pm_error;
+			break;
+		}
+		prtd->spx_run_pending = true;
+		ret = q6asm_run_nowait(prtd->audio_client, prtd->stream_id, 0, 0, 0);
+		if (ret) {
+			prtd->spx_run_pending = false;
+			prtd->spx_pm_error = ret < 0 ? ret : -EIO;
+			ret = prtd->spx_pm_error;
+		}
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
-		if (prtd->spx_legacy) {
-			prtd->state = Q6ASM_STREAM_STOPPED;
-			cancel_delayed_work(&prtd->write_watchdog);
-		}
-		ret = q6asm_cmd_nowait(prtd->audio_client, prtd->stream_id,
-				       CMD_EOS);
+		prtd->state = Q6ASM_STREAM_STOPPED;
+		prtd->spx_run_pending = false;
+		cancel_delayed_work(&prtd->write_watchdog);
+		ret = q6asm_cmd_nowait(prtd->audio_client, prtd->stream_id, CMD_EOS);
 		break;
 	case SNDRV_PCM_TRIGGER_SUSPEND:
 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
-		ret = q6asm_cmd_nowait(prtd->audio_client, prtd->stream_id,
-				       CMD_PAUSE);
+		/* Stop every local producer before sending the retained DSP pause. */
+		prtd->state = Q6ASM_STREAM_PAUSED;
+		prtd->spx_run_pending = false;
+		cancel_delayed_work(&prtd->write_watchdog);
+		ret = q6asm_cmd_nowait(prtd->audio_client, prtd->stream_id, CMD_PAUSE);
+		if (ret < 0)
+			prtd->spx_pm_error = ret;
+		dev_info(prtd->substream->pcm->card->dev,
+			 "SPX: retained ASM pause sent direction=%d pending-writes=%u error=%d\n",
+			 prtd->substream->stream, prtd->spx_pending_writes,
+			 prtd->spx_pm_error);
 		break;
 	default:
 		ret = -EINVAL;
 		break;
 	}
+	if (ret < 0)
+		dev_err(prtd->substream->pcm->card->dev,
+			"SPX: retained PCM trigger %d failed: %d\n", cmd, ret);
+	spin_unlock_irqrestore(&prtd->lock, flags);
 
-	return ret;
+	/* CMD_* nowait returns the transmitted packet length on success. */
+	return ret < 0 ? ret : 0;
+}
+
+static int q6asm_dai_trigger(struct snd_soc_component *component,
+			     struct snd_pcm_substream *substream, int cmd)
+{
+	struct q6asm_dai_rtd *prtd = substream->runtime->private_data;
+
+	if (prtd->spx_legacy)
+		return spx_pcm_trigger(prtd, cmd);
+
+	switch (cmd) {
+	case SNDRV_PCM_TRIGGER_START:
+	case SNDRV_PCM_TRIGGER_RESUME:
+	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+		return q6asm_run_nowait(prtd->audio_client, prtd->stream_id, 0, 0, 0);
+	case SNDRV_PCM_TRIGGER_STOP:
+		return q6asm_cmd_nowait(prtd->audio_client, prtd->stream_id, CMD_EOS);
+	case SNDRV_PCM_TRIGGER_SUSPEND:
+	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
+		return q6asm_cmd_nowait(prtd->audio_client, prtd->stream_id, CMD_PAUSE);
+	default:
+		return -EINVAL;
+	}
 }
 
 static int q6asm_dai_open(struct snd_soc_component *component,
@@ -772,6 +899,7 @@ static int q6asm_dai_open(struct snd_soc_component *component,
 		return -ENOMEM;
 
 	prtd->substream = substream;
+	spin_lock_init(&prtd->lock);
 	INIT_DELAYED_WORK(&prtd->write_watchdog, q6asm_write_watchdog);
 	/*
 	 * SPX: the ADSP never ACKs ASM_STREAM_CMD_CLOSE, so the previous stream's
@@ -937,8 +1065,11 @@ static snd_pcm_uframes_t q6asm_dai_pointer(struct snd_soc_component *component,
 	struct q6asm_dai_rtd *prtd = runtime->private_data;
 	snd_pcm_uframes_t ptr;
 
-	if (prtd->spx_legacy)
-		return bytes_to_frames(runtime, prtd->pcm_irq_pos % prtd->pcm_size);
+	if (prtd->spx_legacy) {
+		if (READ_ONCE(prtd->spx_pm_error))
+			return SNDRV_PCM_POS_XRUN;
+		return bytes_to_frames(runtime, READ_ONCE(prtd->pcm_irq_pos) % prtd->pcm_size);
+	}
 
 	ptr = q6asm_get_hw_pointer(prtd->audio_client, substream->stream) * runtime->period_size;
 	if (ptr)

@@ -718,11 +718,40 @@ static const struct of_device_id sdm845_snd_device_id[]  = {
 };
 MODULE_DEVICE_TABLE(of, sdm845_snd_device_id);
 
+/* Quiesce SPX user PCMs before device PM, retaining every BE/DAPM route. */
+static int sdm845_spx_pm_prepare(struct device *dev)
+{
+	struct snd_soc_card *card = dev_get_drvdata(dev);
+	struct snd_soc_pcm_runtime *rtd;
+	unsigned int count = 0;
+	int ret;
+
+	if (!of_machine_is_compatible("microsoft,surface-pro-x") || !card ||
+	    !snd_soc_card_is_instantiated(card))
+		return 0;
+
+	for_each_card_rtds(card, rtd) {
+		if (!rtd->dai_link->dynamic || !rtd->pcm)
+			continue;
+		ret = snd_pcm_suspend_all(rtd->pcm);
+		if (ret < 0)
+			return ret;
+		count++;
+	}
+	dev_info(dev, "SPX: early PCM-only suspend prepared %u frontends\n", count);
+	return 0;
+}
+
+static const struct dev_pm_ops sdm845_spx_pm_ops = {
+	.prepare = sdm845_spx_pm_prepare,
+};
+
 static struct platform_driver sdm845_snd_driver = {
 	.probe = sdm845_snd_platform_probe,
 	.driver = {
 		.name = "msm-snd-sdm845",
 		.of_match_table = sdm845_snd_device_id,
+		.pm = pm_ptr(&sdm845_spx_pm_ops),
 	},
 };
 module_platform_driver(sdm845_snd_driver);
