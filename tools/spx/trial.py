@@ -1953,7 +1953,9 @@ def dispatch_live_audio_resume(args, prepared):
     assert prepared.get('audio_mode') == 'parked' and prepared.get('slim_s2idle_retain') is True
     assert prepared.get('pmic_rtc') is True and prepared.get('sensors_startup') is True
     baseline = json.loads((OUT / 'functional.json').read_text())
-    assert baseline.get('complete') is True and baseline['boot_id'] == BOOT_ID and baseline['release'] == RELEASE
+    current_boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    assert current_boot != prepared['preboot_id'], 'prepared boot has not run'
+    assert baseline.get('complete') is True and baseline['boot_id'] == current_boot and baseline['release'] == RELEASE
     subprocess.run(['systemd-run', '--unit=spx-systemd-suspend', '--collect', '--wait', '--pipe',
                     '--property=Type=exec', '--property=RuntimeMaxSec=200',
                     '/usr/bin/python3', '-B', '/usr/local/lib/spx-boot-diagnostics/trial.py',

@@ -18,7 +18,7 @@ def args():
 
 
 def prepared():
-    return dict(live_audio_resume=True, audio_mode='parked', slim_s2idle_retain=True,
+    return dict(preboot_id='old-boot', live_audio_resume=True, audio_mode='parked', slim_s2idle_retain=True,
                 pmic_rtc=True, sensors_startup=True)
 
 
@@ -142,9 +142,9 @@ class Dispatch(unittest.TestCase):
         with patch.object(trial, 'OUT', Path('/private'), create=True), \
              patch.object(trial, 'ATTEMPT', '20261007dw', create=True), \
              patch.object(trial, 'RELEASE', 'test-kernel', create=True), \
-             patch.object(trial, 'BOOT_ID', 'boot-id', create=True), \
+             patch.object(trial, 'BOOT_ID', 'old-boot', create=True), \
              patch.object(Path, 'exists', return_value=False), \
-             patch.object(Path, 'read_text', return_value=json.dumps(dict(complete=True, boot_id='boot-id', release='test-kernel'))), \
+             patch.object(Path, 'read_text', autospec=True, side_effect=lambda path: 'boot-id\n' if str(path) == '/proc/sys/kernel/random/boot_id' else json.dumps(dict(complete=True, boot_id='boot-id', release='test-kernel'))), \
              patch.object(trial.subprocess, 'run') as run:
             trial.dispatch_live_audio_resume(args(), prepared())
         argv = run.call_args.args[0]
