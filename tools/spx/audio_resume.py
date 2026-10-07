@@ -1,0 +1,183 @@
+#!/usr/bin/python3
+# SPDX-License-Identifier: GPL-2.0-only
+"""One quiet public playback/capture pair retained across normal AC s2idle."""
+from datetime import datetime, timezone
+import json
+from pathlib import Path
+import queue
+import re
+import sys
+import time
+import traceback
+from types import SimpleNamespace
+
+import audio
+import systemd_sleep as sleep
+
+
+def admission(prepared, args):
+    assert prepared.get('live_audio_resume') is True, 'live audio resume not prepared'
+    assert prepared.get('audio_mode') == 'parked'
+    assert prepared.get('slim_s2idle_retain') is True and prepared.get('pmic_rtc') is True
+    assert prepared.get('sensors_startup') is True
+    assert not args.parked_audio and not args.verify_sleep_return
+    assert args.allow_amp_power and args.allow_playback and args.allow_capture, 'explicit acoustic authorization required'
+    assert args.desktop_peak == 1433 and not args.desktop_controls, 'quiet peak1433 only'
+
+
+def sound_fds(pid):
+    result = {}
+    for fd in (Path('/proc') / str(pid) / 'fd').iterdir():
+        target = fd.readlink().as_posix()
+        if target.startswith('/dev/snd/'):
+            result[fd.name] = target
+    assert result, 'native audio file descriptors missing'
+    return result
+
+
+class LiveOwnedAudio:
+    """Observe only this runner's initialized live owners, never relax parked checks."""
+    def __init__(self, lease, pcm, graph, capture, paths, mapping):
+        self.lease, self.pcm, self.graph, self.capture = lease, pcm, graph, capture
+        self.paths, self.mapping = paths, mapping
+        self.report = dict(powered_retention=True, energy_saving_claim=False,
+                           playback_or_capture_opened=True, same_native_owners=False)
+        self.report['held'] = self.check()
+
+    def check(self):
+        self.pcm.healthy()
+        self.capture.healthy()
+        self.graph.monitor.healthy()
+        self.graph.require_public_idle()
+        assert self.pcm.source is None and not self.graph.monitor.forward, 'local digital silence required'
+        assert self.graph.monitor.blocks.empty(), 'public monitor queue not drained'
+        assert audio.read_text(self.lease.control) == 'on'
+        assert audio.read_text(self.lease.master / 'power/runtime_status') == 'active'
+        stereo = audio.check_stereo(self.mapping, self.paths, initialized=True)
+        processes = dict(playback=self.pcm.process.pid, capture=self.capture.process.pid,
+                         monitor=self.graph.monitor.process.pid)
+        statuses = {}
+        geometry = {}
+        for name, owner in (('playback', self.pcm), ('capture', self.capture)):
+            text = audio.read_text(owner.status)
+            assert re.search(r'^state:\s+RUNNING$', text, re.M), name + ' not running'
+            assert re.search(r'^owner_pid\s*:\s*' + str(owner.process.pid) + r'$', text, re.M), name + ' owner changed'
+            statuses[name] = dict(pid=owner.process.pid, state='RUNNING', fds=sound_fds(owner.process.pid))
+            geometry[name] = audio.read_text(owner.status.parent / 'hw_params')
+        # No unrelated native consumer may appear in this owned sleep window.
+        owned = {self.pcm.status, self.capture.status}
+        for path in Path('/proc/asound').glob('card*/pcm*/sub*/status'):
+            if path not in owned:
+                assert audio.read_text(path) == 'closed', 'unowned audio consumer appeared'
+        return dict(processes=processes, native_owners=statuses, geometry=geometry,
+                    initialized_counts={str(unit): state['LATE_INIT_COUNT']
+                                        for unit, state in stereo['codec_shadows'].items()},
+                    stereo=stereo, digital_zero=True)
+
+    def retained(self, before):
+        after = self.check()
+        for name in ('processes', 'native_owners', 'geometry', 'initialized_counts'):
+            assert after[name] == before[name], name + ' changed across suspend'
+        self.report['same_native_owners'] = True
+        self.report['after'] = after
+        return after
+
+
+def quiet(pcm, graph):
+    graph.require_public_idle()
+    graph.monitor.forward = False
+    pcm.set_source(None)
+    pcm.settle(.8)  # Drain pipe/ALSA ring before the freeze window.
+    while True:
+        try:
+            graph.monitor.blocks.get_nowait()
+        except queue.Empty:
+            break
+    graph.monitor.healthy()
+
+
+def retained_window(ops, result, report, pcm, graph, capture, paths, mapping):
+    result['pre_playback'] = report.pop('public_desktop')
+    quiet(pcm, graph)
+    contract = LiveOwnedAudio(ops.audio, pcm, graph, capture, paths, mapping)
+    ops.audio = contract
+    result['live_audio'] = contract.report
+    # The infrastructure snapshot was taken before PCM open. Replace only its
+    # separate audio observation with the strict live-owner contract.
+    result['before']['parked_audio'] = contract.report['held']
+    result['phase'] = 'owned-live-audio-before-normal-suspend'
+    ops.save(result)
+    graph.monitor.begin_suspend(60)
+    try:
+        ops.inhibit_idle()
+        ops.open_shadows()
+        result['sleep'] = ops.sleep()
+        assert sleep.sleep_proven(result['sleep']), 'normal-service/RTC/kernel/thaw proof incomplete'
+    finally:
+        failed = sys.exc_info()[0] is not None
+        try:
+            graph.monitor.end_suspend()
+        except Exception as error:
+            if not failed:
+                raise
+            result['monitor_window_cleanup_error'] = str(error)
+    result['after'] = ops.post(result['before'])
+    contract.retained(contract.report['held'])
+    # Fresh reference and fixed two tones, using the SAME monitor and native
+    # playback/capture descriptors. No connect_public, initialize or reopen.
+    audio.verify_public_playback(report, pcm, graph, capture, 1433, connected=True)
+    result['post_playback'] = report.pop('public_desktop')
+    quiet(pcm, graph)
+    contract.retained(contract.report['held'])
+    result['functional_pass'] = bool(result['pre_playback']['acoustic_passed'] and
+                                     result['post_playback']['acoustic_passed'])
+
+
+def exercise(ops, args, owner):
+    result = dict(complete=False, scope='same public playback and native capture owners across one normal30s AC s2idle',
+                  audio_tested=True, audio_mode='live-retention', full_suspend_acceptance=False)
+    lease = None
+    report = dict(utc=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'),
+                  remaining_prerequisites=list(audio.UNMET))
+    result['audio'] = report
+    try:
+        admission(json.loads((ops.output.parent / 'prepared.json').read_text()), args)
+        result['before'] = ops.gate()
+        ops.save(result)
+        result['direct_prerequisite'] = ops.direct()  # Still no PCM open.
+        ops.gate()
+        lease = ops.audio
+        configured = SimpleNamespace(action='serve', desktop_peak=1433, desktop_controls=False,
+                                     allow_amp_power=True, allow_playback=True, allow_capture=True,
+                                     owner=owner, desktop_user=args.desktop_user, output=ops.output,
+                                     microphone_source='DMIC1', microphone_array=False,
+                                     capture_reopen=False, capture_contract_check=False)
+        audio.initialize(configured, report,
+            live_resume=lambda *a: retained_window(ops, result, *a))
+        assert result.get('functional_pass'), 'pre/post acoustic proof incomplete'
+        assert not report['capture_deadline_expired'], '120s capture deadline expired'
+        assert report['capture']['recording'] is None and report['capture']['closed_status'] == 'closed'
+        assert report['capture']['ownership_wall_seconds'] <= 120, 'microphone ownership exceeded120s wall cap'
+        assert report['parked'] and report['runtime_pm']['restored']
+        for name in ('pcm', 'capture'):
+            assert not re.search(r'underrun|overrun|error|reprepare|recovering', report[name].get('log', ''), re.I), name + ' recovery/error'
+    except Exception as error:
+        result['error'] = type(error).__name__ + ': ' + str(error)
+        result['traceback'] = traceback.format_exc()
+        if hasattr(ops, 'sleep_result'):
+            result['sleep'] = ops.sleep_result
+    finally:
+        # initialize has attempted park/close on every path. Only now can the
+        # original parked lease enforce closed PCMs, FIFO/ports and restore PM.
+        if lease is not None:
+            ops.audio = lease
+        try:
+            result['cleanup'] = ops.cleanup()
+        except Exception as error:
+            result['cleanup_error'] = str(error)
+        result['complete'] = bool(result.get('functional_pass') and not result.get('error') and
+                                  not result.get('cleanup_error') and
+                                  result.get('cleanup', {}).get('masks_restored') and
+                                  not report.get('cleanup_errors'))
+        ops.save(result)
+    return result

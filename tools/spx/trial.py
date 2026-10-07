@@ -284,6 +284,7 @@ def prepare(args):
     prepared.update(desktop_controls=getattr(args, 'desktop_controls', False), sensors_close_debug=args.sensors_close_debug, sensors_crash_recovery=args.sensors_crash_recovery, sensors_startup=args.sensors, sensors_private_ssc=bool(args.sensors_ssc_library), audio_mode='parked' if args.audio else 'blocked',
                     pmic_rtc=args.pmic_rtc, slim_s2idle_retain=args.slim_s2idle_retain,
                     qca_setup_trace=args.qca_setup_trace,
+                    live_audio_resume=getattr(args, 'live_audio_resume', False),
                     cpu_passive_cooling=args.cpu_passive_cooling, cpu_passive_trip_mc=actual_cpu_trip,
                     thermal_combined=args.thermal_combined,
                     thermal_gpu_fixture=str(args.thermal_gpu_fixture),
@@ -386,6 +387,9 @@ def install(args):
     if prepared.get('pmic_rtc') and prepared.get('sensors_startup'):
         shutil.copy2(HERE / 'systemd_sleep.py', helper.parent / 'systemd_sleep.py')
         (helper.parent / 'systemd_sleep.py').chmod(0o644)
+        if prepared.get('live_audio_resume'):
+            shutil.copy2(HERE / 'audio_resume.py', helper.parent / 'audio_resume.py')
+            (helper.parent / 'audio_resume.py').chmod(0o644)
     if prepared.get('sensors_startup'):
         sensor_helpers = helper.parent / 'sensors'
         sensor_helpers.mkdir(parents=True, exist_ok=True)
@@ -1926,16 +1930,36 @@ def systemd_suspend(args):
     owner = 'systemd-suspend-' + ATTEMPT
     subprocess.run([lock, 'acquire', 'device', owner], check=True)
     try:
-        name = 'systemd-suspend-recovery' if args.verify_sleep_return else 'systemd-suspend'
-        live = Live(OUT / name, ATTEMPT, RELEASE, parked_audio=args.parked_audio,
+        name = 'audio-resume' if args.live_audio_resume else ('systemd-suspend-recovery' if args.verify_sleep_return else 'systemd-suspend')
+        live = Live(OUT / name, ATTEMPT, RELEASE, parked_audio=args.parked_audio or args.live_audio_resume,
                     desktop_user=args.desktop_user)
-        result = verify_returned(live, json.loads((OUT / 'systemd-suspend/result.json').read_text())) if args.verify_sleep_return else exercise(live)
+        if args.live_audio_resume:
+            from audio_resume import exercise as audio_resume
+            result = audio_resume(live, args, owner)
+        else:
+            result = verify_returned(live, json.loads((OUT / 'systemd-suspend/result.json').read_text())) if args.verify_sleep_return else exercise(live)
         print(json.dumps(dict(complete=result['complete'], result=str(OUT / name / 'result.json'),
                              error=result.get('error'), cleanup_error=result.get('cleanup_error'))), flush=True)
         if not result['complete']:
             raise RuntimeError(result.get('error', result.get('cleanup_error', 'normal suspend did not pass')))
     finally:
         subprocess.run([lock, 'release', 'device', owner], check=True)
+
+
+def dispatch_live_audio_resume(args, prepared):
+    """One explicit prepared opt-in; any output means consumed, including failure."""
+    if not prepared.get('live_audio_resume') or (OUT / 'audio-resume').exists():
+        return
+    assert prepared.get('audio_mode') == 'parked' and prepared.get('slim_s2idle_retain') is True
+    assert prepared.get('pmic_rtc') is True and prepared.get('sensors_startup') is True
+    baseline = json.loads((OUT / 'functional.json').read_text())
+    assert baseline.get('complete') is True and baseline['boot_id'] == BOOT_ID and baseline['release'] == RELEASE
+    subprocess.run(['systemd-run', '--unit=spx-systemd-suspend', '--collect', '--wait', '--pipe',
+                    '--property=Type=exec', '--property=RuntimeMaxSec=200',
+                    '/usr/bin/python3', '-B', '/usr/local/lib/spx-boot-diagnostics/trial.py',
+                    'systemd-suspend', ATTEMPT, '--live-audio-resume', '--allow-amp-power',
+                    '--allow-playback', '--allow-capture', '--desktop-user', args.desktop_user],
+                   check=True, timeout=205)
 
 
 def bluetooth_power(args):
@@ -1986,6 +2010,8 @@ def main():
     parser.add_argument('--pmic-rtc', action='store_true',
                         help='add upstream PMIC RTC as rtc1 and test one awake alarm; no suspend')
     parser.add_argument('--verify-sleep-return', action='store_true', help='systemd-suspend: verify a returned sleep from fresh journal evidence without sleeping again')
+    parser.add_argument('--live-audio-resume', action='store_true',
+                        help='prepare/systemd-suspend: quiet public audio before/after one normal sleep with the same native owners')
     parser.add_argument('--parked-audio', action='store_true', help='systemd-suspend: opt in to quiescent loaded-codec powered retention; no playback/capture')
     parser.add_argument('--tpm-sign', action='store_true', help='prepare-only opt in to one transient TPM signing test after baseline')
     parser.add_argument('--tpm-tools', type=Path, default=Path('/var/tmp/spx-tpm2-tools-5.8/usr/bin'), help='private tpm2-tools 5.8 executable directory')
@@ -2057,6 +2083,10 @@ def main():
                         help='after a queued audio test, use the existing return timer after this delay (61..900)')
     parser.add_argument('--desktop-user', default='dvitali')
     args = parser.parse_args()
+    if args.live_audio_resume and (args.command not in ('prepare', 'systemd-suspend') or args.parked_audio or args.verify_sleep_return):
+        parser.error('--live-audio-resume requires prepare/systemd-suspend and excludes parked/recovery modes')
+    if args.live_audio_resume and args.command == 'prepare' and not (args.audio and args.pmic_rtc and args.slim_s2idle_retain and args.sensors):
+        parser.error('--live-audio-resume preparation requires audio, PMIC RTC, retention and sensors')
     if args.qca_setup_trace and args.command != 'prepare':
         parser.error('--qca-setup-trace requires prepare')
     if args.parked_audio and args.command != 'systemd-suspend':
@@ -2140,8 +2170,9 @@ def main():
             dispatch_tpm_sign(args, record)
             dispatch_sensors_crash(args, record)
             dispatch_thermal(args, record)
+            dispatch_live_audio_resume(args, record)
             dispatch_audio(args)
-            if record.get('qca_setup_trace') and not (OUT / 'bluetooth-power').exists():
+            if record.get('qca_setup_trace') and not record.get('live_audio_resume') and not (OUT / 'bluetooth-power').exists():
                 bluetooth_power(args)
         else:
             {'install': install, 'boot': boot, 'return': return_to_default,

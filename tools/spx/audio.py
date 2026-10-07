@@ -388,6 +388,7 @@ class OwnedCapture:
         self.buffer_frames = 7680 // channels
         self.card = card
         self.started = time.monotonic()
+        self.started_boottime = time.clock_gettime(time.CLOCK_BOOTTIME)
         self.closed = True
         self.maximum_seconds = maximum_seconds
         self.retain_recording = retain_recording
@@ -426,6 +427,9 @@ class OwnedCapture:
         monitor = bytearray()
         try:
             while not self.stop.is_set():
+                wall_deadline = getattr(self, 'wall_deadline', None)
+                need(wall_deadline is None or time.clock_gettime(time.CLOCK_BOOTTIME) < wall_deadline,
+                     'Microphone wall-clock deadline exceeded')
                 if not select.select([self.process.stdout], [], [], 0.2)[0]:
                     need(time.monotonic() - last < 8, 'Microphone data stalled')
                     continue
@@ -553,6 +557,8 @@ class OwnedCapture:
         self.report['capture']['returncode'] = self.process.returncode
         samples = self.samples()
         self.report['capture']['frames'] = len(samples) // getattr(self, 'channels', 1)
+        if getattr(self, 'wall_deadline', None) is not None:
+            self.report['capture']['ownership_wall_seconds'] = time.clock_gettime(time.CLOCK_BOOTTIME) - self.started_boottime
         if getattr(self, 'retain_recording', True):
             path = self.directory / 'microphone.wav'
             with wave.open(str(path), 'wb') as output:
@@ -704,6 +710,39 @@ class DesktopMonitor:
         self.closed = False
         self.phase_lock = threading.Lock()
         self.phase_metrics = dict(frames=0, input_peak=0, output_peak=0)
+        self.suspend_until = None
+        self.stall_reset = time.monotonic()
+
+    def begin_suspend(self, seconds=60):
+        # Only the owned sleep runner may grant this finite silent window.
+        need(0 < seconds <= 60 and self.suspend_until is None,
+             'Invalid or overlapping desktop suspension window')
+        self.healthy()
+        need(not self.forward and self.blocks.empty(),
+             'Desktop suspension requires drained digital silence')
+        with self.phase_lock:
+            self.suspend_until = time.clock_gettime(time.CLOCK_BOOTTIME) + seconds
+
+    def end_suspend(self):
+        with self.phase_lock:
+            deadline = self.suspend_until
+            self.suspend_until = None
+            self.stall_reset = time.monotonic()
+        need(deadline is not None and time.clock_gettime(time.CLOCK_BOOTTIME) < deadline,
+             'Desktop suspension window expired or not owned')
+        self.healthy()
+
+    def check_stall(self, last):
+        self.healthy()  # Dead owners and existing errors always fail.
+        with self.phase_lock:
+            deadline, reset = self.suspend_until, self.stall_reset
+        if deadline is not None:
+            need(time.clock_gettime(time.CLOCK_BOOTTIME) < deadline,
+                 'Desktop suspension window expired')
+            need(not self.forward, 'Desktop forwarding enabled during suspension')
+        else:
+            need(time.monotonic() - max(last, reset) < 2,
+                 'Desktop monitor stalled')
 
     def begin_phase(self):
         with self.phase_lock:
@@ -719,10 +758,12 @@ class DesktopMonitor:
         try:
             while not self.stop.is_set():
                 if not select.select([self.process.stdout], [], [], 0.1)[0]:
-                    need(time.monotonic() - last < 2, 'Desktop monitor stalled')
+                    self.check_stall(last)
                     continue
                 block = os.read(self.process.stdout.fileno(), 4096)
                 need(block, 'Desktop monitor ended')
+                if self.suspend_until is not None:
+                    self.check_stall(time.monotonic())
                 now = time.monotonic()
                 self.max_interarrival_seconds = max(self.max_interarrival_seconds, now - last)
                 last = now
@@ -1549,7 +1590,7 @@ def finish_recording(capture, report, saved):
          'Microphone mixer restoration failed')
 
 
-def verify_public_playback(report, pcm, graph, capture, desktop_peak=1433):
+def verify_public_playback(report, pcm, graph, capture, desktop_peak=1433, *, connected=False):
     """Score the actual attenuated public route before ending microphone capture."""
     from acoustic import score_phase
 
@@ -1570,12 +1611,17 @@ def verify_public_playback(report, pcm, graph, capture, desktop_peak=1433):
         os.kill(os.getpid(), signal.SIGTERM)
 
     # Include Pulse setup and CPU-bound scoring under frequency scaling. This
-    # does not lengthen the two-second tone or the overall 90-second capture cap.
+    # does not lengthen the two-second tone or the outer capture cap.
     phase('connect')
     deadline = threading.Timer(evidence['maximum_seconds'], expire)
     deadline.start()
     try:
-        graph.connect_public(pcm, desktop_peak=desktop_peak)
+        if connected:
+            need(graph.monitor is not None and graph.sink == 'spx_speakers',
+                 'Retained public monitor missing')
+            pcm.set_source(graph.monitor)
+        else:
+            graph.connect_public(pcm, desktop_peak=desktop_peak)
         phase('settle')
         pcm.settle(0.5)
         graph.require_public_idle()
@@ -1729,7 +1775,7 @@ def check_stereo(mapping, paths, initialized=False, observations=None):
 
 
 def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder=None,
-           before_serve=None):
+           before_serve=None, live_resume=None):
     need(args.allow_playback, 'listen requires --allow-playback for this requested run')
     mapping = report['stages'][-1]['physical_units_to_addresses']
     paths = {s['unit']: Path('/sys/bus/soundwire/devices') / s['name'] for s in devices()}
@@ -1786,14 +1832,26 @@ def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder
         desktop_microphone(args, report, pcm, paths, mapping, capture, desktop_holder)
         return
     if args.action in ('desktop', 'serve'):
-        desktop_playback(args, report, pcm, paths, mapping, capture, desktop_holder)
+        if live_resume is None:
+            desktop_playback(args, report, pcm, paths, mapping, capture, desktop_holder)
+        else:
+            evidence = report['desktop'] = dict(applications=[], acoustic_passed=False)
+            graph = DesktopGraph(args.desktop_user, evidence)
+            desktop_holder.append(graph)
+            graph.start()
+            graph.monitor.close()
+            graph.monitor = None
         if args.action == 'serve':
             verify_public_playback(report, pcm, desktop_holder[-1], capture, args.desktop_peak)
             if getattr(args, "desktop_controls", False):
                 from desktop_controls import verify_controls
                 verify_controls(report, pcm, desktop_holder[-1], capture, tone, need)
-            before_serve()
-            serve_desktop(args, report, pcm, desktop_holder[-1], paths, mapping)
+            if live_resume is not None:
+                live_resume(report, pcm, desktop_holder[-1], capture, paths, mapping)
+                report['desktop']['acoustic_passed'] = True
+            before_serve()  # Close capture while attached, before playback teardown.
+            if live_resume is None:
+                serve_desktop(args, report, pcm, desktop_holder[-1], paths, mapping)
         # Orderly close while the native slaves can still receive mute and
         # disable/deprepare writes. Failures retain the outer park-first path.
         report['pcm']['log'] = pcm.close()
@@ -1934,7 +1992,10 @@ def cleanup_audio_consumers(report, pcms, graphs, capture, saved, signals, timer
             attempt('signal reset', signal.signal, signum, handler)
 
 
-def initialize(args, report):
+def initialize(args, report, *, live_resume=None):
+    need(live_resume is None or (callable(live_resume) and args.action == 'serve' and
+                                args.desktop_peak == 1433 and not getattr(args, 'desktop_controls', False)),
+         'Live resume requires quiet serve initialization without desktop controls')
     source = getattr(args, 'microphone_source', 'DMIC1')
     validate_microphone_source(args.action, source)
     microphone_array = getattr(args, 'microphone_array', False)
@@ -2071,8 +2132,18 @@ def initialize(args, report):
                 # Only the explicit recording action keeps a WAV. Automated
                 # acoustic tests retain scores and discard incidental audio.
                 capture = OwnedCapture(initial['internal_cards'][0], report, directory,
-                                       maximum_seconds=120 if getattr(args, 'desktop_controls', False) else 90,
+                                       maximum_seconds=120 if live_resume is not None or getattr(args, 'desktop_controls', False) else 90,
                                        retain_recording=args.action == 'capture')
+            if live_resume is not None:
+                report['capture_deadline_expired'] = False
+                def expire_live_capture():
+                    report['capture_deadline_expired'] = True
+                    os.kill(os.getpid(), signal.SIGTERM)
+                capture.wall_deadline = capture.started_boottime + 120
+                report['capture']['maximum_wall_seconds'] = 120
+                # Reserve the requested 30s real sleep within the wall cap.
+                capture_deadline = threading.Timer(90, expire_live_capture)
+                capture_deadline.start()
             baseline = capture.baseline()
             if args.action == 'capture':
                 report['capture_running'] = True
@@ -2113,7 +2184,7 @@ def initialize(args, report):
         if args.action == 'reopen':
             playback_reopen(args, report, pcm_holder, capture, baseline)
         elif args.action in ('listen', 'feedback', 'desktop', 'serve', 'desktop-mic'):
-            listen(args, report, pcm_holder, capture, baseline, desktop_holder, release_recording)
+            listen(args, report, pcm_holder, capture, baseline, desktop_holder, release_recording, live_resume)
         if args.action == 'feedback':
             # Control for electrical crosstalk: keep the identical capture/PCM
             # routes, disable the physical amps, then send the same digital tones.
