@@ -50,6 +50,20 @@ enum stream_state {
 	Q6ASM_STREAM_RUNNING,
 };
 
+/* The retained SPX capture client keeps both its format and mapped ring. */
+struct spx_capture_contract {
+	bool valid;
+	snd_pcm_format_t format;
+	unsigned int rate;
+	unsigned int channels;
+	unsigned int period_bytes;
+	unsigned int periods;
+	unsigned int buffer_bytes;
+	dma_addr_t dma_addr;
+	size_t dma_bytes;
+	phys_addr_t mapped_phys;
+};
+
 struct q6asm_dai_rtd {
 	bool spx_legacy;
 	unsigned int pcm_irq_pos;
@@ -92,6 +106,7 @@ struct q6asm_dai_rtd {
 	unsigned int n_fallback;
 	unsigned int n_submitted;
 	bool client_reused;	/* SPX: audio_client was parked across a close */
+	struct spx_capture_contract capture_contract;
 };
 
 struct q6asm_dai_data {
@@ -109,6 +124,7 @@ struct q6asm_dai_data {
 	 * killing the boot's playback too, so capture is parked as well.
 	 */
 	struct audio_client *parked[2][16];
+	struct spx_capture_contract parked_capture_contract[16];
 };
 
 static int spx_period_adjust_ms;
@@ -158,6 +174,34 @@ static phys_addr_t spx_map_addr(struct q6asm_dai_data *pdata, dma_addr_t iova)
 	if (pdata->sid < 0)
 		return iova;
 	return iova | ((phys_addr_t)pdata->sid << 32);
+}
+
+static bool spx_retained_capture(struct q6asm_dai_rtd *prtd,
+				 struct snd_pcm_substream *substream)
+{
+	return spx_keep_asm && prtd->spx_legacy &&
+	       substream->stream == SNDRV_PCM_STREAM_CAPTURE;
+}
+
+static bool spx_capture_contract_matches(const struct spx_capture_contract *a,
+					 const struct spx_capture_contract *b)
+{
+	return a->valid && a->format == b->format && a->rate == b->rate &&
+	       a->channels == b->channels && a->period_bytes == b->period_bytes &&
+	       a->periods == b->periods && a->buffer_bytes == b->buffer_bytes &&
+	       a->dma_addr == b->dma_addr && a->dma_bytes == b->dma_bytes &&
+	       a->mapped_phys == b->mapped_phys;
+}
+
+static int spx_capture_contract_guard(struct device *dev,
+				      const struct spx_capture_contract *cached,
+				      const struct spx_capture_contract *requested)
+{
+	if (spx_capture_contract_matches(cached, requested))
+		return 0;
+
+	dev_err(dev, "SPX: capture contract mismatch: retained format/rate/channels/ring/DMA must remain unchanged\n");
+	return -EINVAL;
 }
 
 /*
@@ -469,6 +513,42 @@ static int q6asm_dai_prepare(struct snd_soc_component *component,
 		return -EINVAL;
 	}
 
+	if (spx_retained_capture(prtd, substream)) {
+		struct snd_dma_buffer *buf = runtime->dma_buffer_p;
+		struct spx_capture_contract requested;
+
+		if (!buf)
+			return -ENOMEM;
+		requested = (struct spx_capture_contract) {
+			.format = runtime->format,
+			.rate = runtime->rate,
+			.channels = runtime->channels,
+			.period_bytes = snd_pcm_lib_period_bytes(substream),
+			.periods = runtime->periods,
+			.buffer_bytes = snd_pcm_lib_buffer_bytes(substream),
+			.dma_addr = buf->addr,
+			.dma_bytes = buf->bytes,
+			.mapped_phys = spx_map_addr(pdata, buf->addr),
+		};
+		if (prtd->client_reused || prtd->capture_contract.valid) {
+			ret = spx_capture_contract_guard(dev,
+							 &prtd->capture_contract, &requested);
+			if (ret)
+				return ret;
+		}
+		/*
+		 * A second prepare on this open would tear down a retained session
+		 * or queue the same read ring again. Recovery from XRUN/repeated
+		 * prepare is outside the close/reopen admission contract.
+		 */
+		if (prtd->state != Q6ASM_STREAM_IDLE) {
+			dev_err(dev, "SPX: repeated retained capture prepare is unsupported\n");
+			return -EBUSY;
+		}
+		if (!prtd->client_reused)
+			prtd->capture_contract = requested;
+	}
+
 	prtd->pcm_count = snd_pcm_lib_period_bytes(substream);
 	prtd->pcm_irq_pos = 0;
 	prtd->write_fallback = false;
@@ -572,19 +652,26 @@ static int q6asm_dai_prepare(struct snd_soc_component *component,
 							   runtime->channels,
 							   prtd->bits_per_sample);
 
-		/* Queue the buffers */
-		for (i = 0; i < runtime->periods; i++)
-			q6asm_read(prtd->audio_client, prtd->stream_id);
+		/* A failed SPX encoder format must not start reading the ring. */
+		if (ret >= 0 || !spx_retained_capture(prtd, substream))
+			for (i = 0; i < runtime->periods; i++)
+				q6asm_read(prtd->audio_client, prtd->stream_id);
 
 	}
-	if (ret < 0)
+	if (ret < 0) {
 		dev_info(dev, "%s: CMD Format block failed\n", __func__);
-	else
+	} else {
+		if (spx_retained_capture(prtd, substream))
+			prtd->capture_contract.valid = true;
 		prtd->state = Q6ASM_STREAM_RUNNING;
+	}
 
 	return ret;
 
 routing_err:
+	/* A reused capture still owns its DSP mapping; preserve it on failure. */
+	if (prtd->client_reused && spx_retained_capture(prtd, substream))
+		return ret;
 	q6asm_cmd(prtd->audio_client, prtd->stream_id,  CMD_CLOSE);
 open_err:
 	q6asm_unmap_memory_regions(substream->stream, prtd->audio_client);
@@ -692,6 +779,12 @@ static int q6asm_dai_open(struct snd_soc_component *component,
 		prtd->audio_client = pdata->parked[substream->stream][stream_id];
 		pdata->parked[substream->stream][stream_id] = NULL;
 		prtd->client_reused = true;
+		if (substream->stream == SNDRV_PCM_STREAM_CAPTURE) {
+			prtd->capture_contract =
+				pdata->parked_capture_contract[stream_id];
+			memset(&pdata->parked_capture_contract[stream_id], 0,
+			       sizeof(pdata->parked_capture_contract[stream_id]));
+		}
 		q6asm_audio_client_rebind(prtd->audio_client,
 					  (q6asm_cb)event_handler, prtd);
 		dev_info(dev, "SPX: reusing parked ASM %s session for DAI %d\n",
@@ -796,10 +889,14 @@ static int q6asm_dai_close(struct snd_soc_component *component,
 	 */
 	if (spx_keep_asm &&
 	    of_machine_is_compatible("microsoft,surface-pro-x") &&
-	    prtd->state && prtd->audio_client &&
+	    (prtd->state || (prtd->client_reused &&
+			    substream->stream == SNDRV_PCM_STREAM_CAPTURE)) &&
+	    prtd->audio_client &&
 	    fe_dai < ARRAY_SIZE(pdata->parked[0])) {
 		q6asm_audio_client_rebind(prtd->audio_client, NULL, NULL);
 		pdata->parked[substream->stream][fe_dai] = prtd->audio_client;
+		if (substream->stream == SNDRV_PCM_STREAM_CAPTURE)
+			pdata->parked_capture_contract[fe_dai] = prtd->capture_contract;
 		prtd->audio_client = NULL;
 		dev_info(component->dev,
 			 "SPX: parking ASM %s session for DAI %d across close\n",
@@ -851,6 +948,31 @@ static int q6asm_dai_hw_params(struct snd_soc_component *component,
 	struct q6asm_dai_rtd *prtd = runtime->private_data;
 	struct q6asm_dai_data *pdata = snd_soc_component_get_drvdata(component);
 	struct snd_dma_buffer *buf = runtime->dma_buffer_p;
+
+	if (spx_retained_capture(prtd, substream)) {
+		struct spx_capture_contract requested;
+		int ret;
+
+		if (!buf)
+			return -ENOMEM;
+		requested = (struct spx_capture_contract) {
+			.format = params_format(params),
+			.rate = params_rate(params),
+			.channels = params_channels(params),
+			.period_bytes = params_period_bytes(params),
+			.periods = params_periods(params),
+			.buffer_bytes = params_buffer_bytes(params),
+			.dma_addr = buf->addr,
+			.dma_bytes = buf->bytes,
+			.mapped_phys = spx_map_addr(pdata, buf->addr),
+		};
+		if (prtd->client_reused || prtd->capture_contract.valid) {
+			ret = spx_capture_contract_guard(component->dev,
+							 &prtd->capture_contract, &requested);
+			if (ret)
+				return ret;
+		}
+	}
 
 	prtd->pcm_size = params_buffer_bytes(params);
 	prtd->periods = params_periods(params);
