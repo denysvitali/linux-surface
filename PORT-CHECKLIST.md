@@ -834,6 +834,9 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
     PCM ownership, discard raw capture and restore controls/graph on cleanup.
     These engineering limits do not establish calibrated listening volume,
     physical speaker balance or the full useful volume range.
+    DQ measures attenuation at−5.776/−6.009dB, but the muted client fails
+    routing readiness before tones; mute/restoration remain untested.
+    [DQ result](tools/spx/boot-diagnostics/RESULT-20261007dq.md).
 
 - [ ] **A04 — External audio.** Test applicable USB-C audio/dock and Bluetooth
   output/input devices, routing, hotplug and reconnect. The logical codec
