@@ -1920,7 +1920,8 @@ def systemd_suspend(args):
     subprocess.run([lock, 'acquire', 'device', owner], check=True)
     try:
         name = 'systemd-suspend-recovery' if args.verify_sleep_return else 'systemd-suspend'
-        live = Live(OUT / name, ATTEMPT, RELEASE)
+        live = Live(OUT / name, ATTEMPT, RELEASE, parked_audio=args.parked_audio,
+                    desktop_user=args.desktop_user)
         result = verify_returned(live, json.loads((OUT / 'systemd-suspend/result.json').read_text())) if args.verify_sleep_return else exercise(live)
         print(json.dumps(dict(complete=result['complete'], result=str(OUT / name / 'result.json'),
                              error=result.get('error'), cleanup_error=result.get('cleanup_error'))), flush=True)
@@ -1962,6 +1963,7 @@ def main():
     parser.add_argument('--pmic-rtc', action='store_true',
                         help='add upstream PMIC RTC as rtc1 and test one awake alarm; no suspend')
     parser.add_argument('--verify-sleep-return', action='store_true', help='systemd-suspend: verify a returned sleep from fresh journal evidence without sleeping again')
+    parser.add_argument('--parked-audio', action='store_true', help='systemd-suspend: opt in to quiescent loaded-codec powered retention; no playback/capture')
     parser.add_argument('--tpm-sign', action='store_true', help='prepare-only opt in to one transient TPM signing test after baseline')
     parser.add_argument('--tpm-tools', type=Path, default=Path('/var/tmp/spx-tpm2-tools-5.8/usr/bin'), help='private tpm2-tools 5.8 executable directory')
     parser.add_argument('--wifi-profile', help='saved Wi-Fi profile ID to clone for the 2.4 GHz test')
@@ -2030,6 +2032,8 @@ def main():
                         help='after a queued audio test, use the existing return timer after this delay (61..900)')
     parser.add_argument('--desktop-user', default='dvitali')
     args = parser.parse_args()
+    if args.parked_audio and args.command != 'systemd-suspend':
+        parser.error('--parked-audio requires systemd-suspend')
     if args.desktop_controls and not ((args.command in ('audio', 'arm-audio') and args.audio_action == 'serve') or
                                      (args.command == 'prepare' and args.audio)):
         parser.error('--desktop-controls requires audio/arm-audio serve or prepare --audio')

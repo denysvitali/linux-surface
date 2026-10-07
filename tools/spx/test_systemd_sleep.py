@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Offline sequencing, normal-service evidence and owned cleanup tests."""
 import os
+import copy
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import systemd_sleep as sleep
@@ -141,6 +143,155 @@ class Gates(unittest.TestCase):
             uname.return_value.release = 'expected'
             with patch.object(sleep.Path, 'read_text', side_effect=[words, '0::/user.slice/user-1000.slice/session.scope']), patch.object(sleep.Path, 'exists', return_value=False):
                 with self.assertRaises(AssertionError): live.gate()
+
+
+class ParkedAudio(unittest.TestCase):
+    def test_mode_requires_all_explicit_preparation_and_default_stays_blocked(self):
+        # This is the actual trial.prepare schema; there is no "audio" boolean.
+        prepared = dict(audio_mode='parked', slim_s2idle_retain=True, pmic_rtc=True)
+        words = ['spx_audio=parked', 'slim_qcom_ngd_ctrl.spx_s2idle_retain=1']
+        sleep.audio_mode_gate(True, prepared, words, sleep.AUDIO, 'Y')
+        for key, value in [('audio_mode', 'blocked'),
+                           ('slim_s2idle_retain', 1), ('pmic_rtc', False)]:
+            with self.subTest(key=key), self.assertRaises(AssertionError):
+                sleep.audio_mode_gate(True, dict(prepared, **{key: value}), words, sleep.AUDIO, 'Y')
+        for bad_words, loaded, retain in [(words[:1], sleep.AUDIO, 'Y'),
+                                          (words, sleep.AUDIO - {'wcd934x'}, 'Y'),
+                                          (words, sleep.AUDIO, 'N')]:
+            with self.assertRaises(AssertionError):
+                sleep.audio_mode_gate(True, prepared, bad_words, loaded, retain)
+        blocked = ['module_blacklist=' + ','.join(sleep.AUDIO)]
+        sleep.audio_mode_gate(False, dict(audio_mode='blocked'), blocked, set(), None)
+        with self.assertRaises(AssertionError):
+            sleep.audio_mode_gate(False, prepared, words, sleep.AUDIO, 'Y')
+        f = Fake('sleep')
+        f.parked_audio = True
+        self.assertEqual(sleep.exercise(f)['audio_mode'], 'parked-retention')
+        self.assertEqual(f.events[-1], 'cleanup')
+
+    def test_fresh_retention_requires_ordered_callbacks_and_no_firmware_fault(self):
+        log = sleep.RETAIN_ENTRY + '\n' + sleep.RETAIN_EXIT
+        self.assertTrue(sleep.retention_proven(log)['complete'])
+        for bad in ['', sleep.RETAIN_ENTRY, sleep.RETAIN_EXIT + '\n' + sleep.RETAIN_ENTRY,
+                    log + '\nfatal error received', log + '\ns2idle retention lost controller invariants']:
+            with self.subTest(log=bad), self.assertRaises(AssertionError):
+                sleep.retention_proven(bad)
+
+    def test_historical_or_audio_off_direct_result_cannot_replace_loaded_prerequisite(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            output = root / 'pmic-rtc-suspend'
+            output.mkdir()
+            live = sleep.Live.__new__(sleep.Live)
+            live.output, live.boot, live.release, live.parked_audio = root / 'systemd-suspend', 'boot', 'release', True
+            import json
+            for boot in ('old-boot', 'boot'):
+                (output / 'result.json').write_text(json.dumps(dict(complete=True, boot_id=boot,
+                    release='release', requested_seconds=15, sleep_seconds=14.5)))
+                with self.subTest(boot=boot), patch.object(sleep.pmic_rtc, 'exercise') as exercise:
+                    with self.assertRaises(AssertionError): live.direct()
+                    exercise.assert_not_called()
+
+    def test_independent_recovery_cannot_change_original_audio_mode(self):
+        with tempfile.TemporaryDirectory() as d:
+            for parked in (False, True):
+                f = Fake()
+                f.parked_audio, f.boot, f.release, f.output = parked, 'boot', 'release', Path(d) / 'recovery'
+                original = dict(boot_id='boot', release='release',
+                                audio_mode='blocked' if parked else 'parked-retention')
+                r = sleep.verify_returned(f, original)
+                self.assertFalse(r['complete'])
+                self.assertIn('sleep audio mode mismatch', r['error'])
+                self.assertEqual(f.events, ['gate', 'cleanup'])
+
+    def fixture(self, root, *, control='auto', interrupt=False):
+        master = root / 'master'
+        (master / 'power').mkdir(parents=True)
+        policy = master / 'power/control'
+        policy.write_text(control + '\n')
+        (master / 'power/runtime_status').write_text('active\n')
+        statuses = [root / 'playback-status', root / 'capture-status']
+        for path in statuses: path.write_text('closed\n')
+        snapshot = dict(GPIO_DIR=0x1e, GPIO_VAL=0x80, SLV_STATUS=0,
+                        FIFO_STATUS=0, DP1_B0=263, DP1_B1=263, DP4_B0=1543, DP4_B1=1543)
+        writes = []
+        def write(text):
+            writes.append(text)
+            snapshot['GPIO_VAL'] = int(text.split()[1], 16)
+            if interrupt:
+                raise InterruptedError('signal after owned auxiliary write')
+        writer = SimpleNamespace(exists=lambda: True, write_text=write)
+        params = dict(spx_wsa_gpio_mask='0x1e', spx_wsa_gpio_dir='0x1e', spx_wsa_gpio_val='0x18',
+                      spx_wsa_en_pin='-1', spx_force_attach='0', spx_blind_attach='0',
+                      spx_core_enum='0', spx_watchdog='0', spx_exact_windows_init='N',
+                      spx_broadcast_audio='N', spx_enumerated_mode='Y', spx_write_only='N', spx_pio_mode='Y')
+        def inventory(_):
+            self.assertEqual(policy.read_text().strip(), 'on', 'hardware read without owned PM hold')
+            return dict(internal_cards=['0'], devices=[dict(unit=n, status='UNATTACHED',
+                        driver='wsa881x-codec', initialized=False) for n in (3, 4)], state=copy.deepcopy(snapshot))
+        ops = sleep.ParkedAudio(root, 'boot', 'dvitali')
+        ops.audio = SimpleNamespace(read_text=lambda p: Path(p).read_text().strip(),
+                    assert_desktop_paused=lambda user: None, parameter=lambda module, name: params[name],
+                    codec_paths=lambda: (writer, master), inventory=inventory)
+        return ops, policy, statuses, snapshot, writes
+
+    def test_cold_auxiliary_park_preserves_other_bits_and_each_pm_policy(self):
+        for control in ('auto', 'on'):
+            with self.subTest(control=control), tempfile.TemporaryDirectory() as d:
+                ops, policy, statuses, snapshot, writes = self.fixture(Path(d), control=control)
+                with patch.object(sleep.Path, 'glob', return_value=statuses):
+                    held = ops.establish()
+                    self.assertEqual(held['state']['GPIO_VAL'], 0x98)
+                    self.assertEqual(writes, ['43 98\n'])
+                    self.assertTrue(ops.cleanup()['restored'])
+                self.assertEqual(policy.read_text().strip(), control)
+                self.assertEqual(snapshot['GPIO_VAL'] & 0x1e, 0x18)
+                self.assertFalse(ops.report['playback_or_capture_opened'])
+                self.assertFalse(ops.report['firmware_sessions_proven_absent'])
+
+    def test_open_capture_or_audio_request_precedes_pm_or_gpio_mutation(self):
+        with tempfile.TemporaryDirectory() as d:
+            ops, policy, statuses, snapshot, writes = self.fixture(Path(d))
+            statuses[1].write_text('RUNNING\n')
+            with patch.object(sleep.Path, 'glob', return_value=statuses), self.assertRaises(AssertionError):
+                ops.establish()
+            statuses[1].write_text('closed\n')
+            (Path(d) / 'audio-request.json').write_text('{}')
+            with self.assertRaises(AssertionError): ops.establish()
+            self.assertEqual(policy.read_text().strip(), 'auto')
+            self.assertFalse(writes)
+
+    def test_active_slave_fifo_or_port_refuses_gpio_write_and_restores_pm(self):
+        for key, value in [('GPIO_DIR', 0), ('GPIO_VAL', 0x82), ('SLV_STATUS', 4),
+                           ('FIFO_STATUS', 0x100), ('DP4_B1', 0x1000000)]:
+            with self.subTest(key=key), tempfile.TemporaryDirectory() as d:
+                ops, policy, statuses, snapshot, writes = self.fixture(Path(d))
+                snapshot[key] = value
+                with patch.object(sleep.Path, 'glob', return_value=statuses):
+                    with self.assertRaises(AssertionError): ops.establish()
+                    self.assertTrue(ops.cleanup()['restored'])
+                self.assertFalse(writes)
+                self.assertEqual(policy.read_text().strip(), 'auto')
+
+    def test_signal_after_aux_write_still_verifies_park_and_restores_pm(self):
+        with tempfile.TemporaryDirectory() as d:
+            ops, policy, statuses, snapshot, writes = self.fixture(Path(d), interrupt=True)
+            with patch.object(sleep.Path, 'glob', return_value=statuses):
+                with self.assertRaises(InterruptedError): ops.establish()
+                self.assertTrue(ops.cleanup()['restored'])
+            self.assertEqual(policy.read_text().strip(), 'auto')
+            self.assertEqual(snapshot['GPIO_VAL'], 0x98)
+            self.assertIn('after', ops.report)
+
+    def test_post_wake_park_failure_still_restores_pm_and_fails(self):
+        with tempfile.TemporaryDirectory() as d:
+            ops, policy, statuses, snapshot, writes = self.fixture(Path(d))
+            with patch.object(sleep.Path, 'glob', return_value=statuses):
+                ops.establish()
+                snapshot['FIFO_STATUS'] = 0x100
+                with self.assertRaises(AssertionError): ops.cleanup()
+            self.assertEqual(policy.read_text().strip(), 'auto')
+            self.assertTrue(ops.report['restored'])
 
 
 class OwnedShadows(unittest.TestCase):

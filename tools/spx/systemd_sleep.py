@@ -24,6 +24,149 @@ WHO = 'spx-systemd-suspend'
 RUNTIME = Path('/run/systemd/system.control')
 PERSISTENT = Path('/etc/systemd/system')
 STOCK = Path('/usr/lib/systemd/system')
+RETAIN_ENTRY = 'SPX: WIP s2idle retention: keeping powered PIO core'
+RETAIN_EXIT = 'SPX: WIP s2idle retention: ownership preserved'
+FAULTS = re.compile(r'BUG:|Oops:|Call trace:|Kernel panic|blocked for more than|'
+                   r'SMMU.*fault|watchdog received|fatal error received|crash detected in|'
+                   r'firmware crashed|timeout waiting for shutdown response|'
+                   r's2idle retention refused|s2idle retention lost controller invariants', re.I)
+
+
+def audio_mode_gate(parked_audio, prepared, words, loaded, retention):
+    """The default remains audio-blocked; retention requires explicit preparation."""
+    assert type(parked_audio) is bool
+    blocked = {n for w in words if w.startswith('module_blacklist=')
+               for n in w.split('=', 1)[1].split(',')}
+    if not parked_audio:
+        assert AUDIO <= blocked and not AUDIO & loaded
+        assert prepared.get('audio_mode') == 'blocked'
+        return
+    assert prepared.get('audio_mode') == 'parked'
+    assert prepared.get('slim_s2idle_retain') is True and prepared.get('pmic_rtc') is True
+    assert 'spx_audio=parked' in words
+    assert 'slim_qcom_ngd_ctrl.spx_s2idle_retain=1' in words
+    assert AUDIO <= loaded and not AUDIO & blocked
+    assert retention == 'Y', 'readonly NGD powered-retention option not enabled'
+
+
+def retention_proven(log):
+    entries = [m.start() for m in re.finditer(re.escape(RETAIN_ENTRY), log)]
+    exits = [m.start() for m in re.finditer(re.escape(RETAIN_EXIT), log)]
+    faults = [line for line in log.splitlines() if FAULTS.search(line)]
+    assert not faults, 'fresh kernel faults: ' + '; '.join(faults)
+    assert entries and len(entries) == len(exits), 'fresh NGD retention callbacks missing'
+    assert all(a < b and (i + 1 == len(entries) or b < entries[i + 1])
+               for i, (a, b) in enumerate(zip(entries, exits))), 'NGD retention callback ordering'
+    return dict(complete=True, powered_retention=True, energy_saving_claim=False,
+                entry_count=len(entries), ownership_preserved_count=len(exits), new_kernel_faults=[])
+
+
+class ParkedAudio:
+    """Own an active SWR PM hold and only the safe auxiliary GPIO park write."""
+    def __init__(self, output, boot, desktop_user):
+        import audio
+        self.audio, self.output, self.boot = audio, output, boot
+        self.desktop_user = desktop_user
+        self.control = self.writer = self.master = self.saved_control = None
+        self.report = dict(powered_retention=True, energy_saving_claim=False,
+                           playback_or_capture_opened=False,
+                           firmware_sessions_proven_absent=False, restored=False)
+
+    def idle(self):
+        for name in ('audio-request.json', 'audio-started.json', 'desktop-audio.json'):
+            assert not (self.output / name).exists(), 'audio request/start/persistent policy present'
+        assert not (self.output / 'audio-started-boots' / (self.boot + '.json')).exists()
+        self.audio.assert_desktop_paused(self.desktop_user)
+        statuses = {str(p): self.audio.read_text(p)
+                    for p in Path('/proc/asound').glob('card*/pcm*/sub*/status')}
+        assert statuses and all(v == 'closed' for v in statuses.values()), 'playback/capture PCM open'
+        return statuses
+
+    @staticmethod
+    def parked(snapshot, auxiliary_required=True):
+        assert snapshot['GPIO_DIR'] & 0x1e == 0x1e, 'GPIO direction changed'
+        assert snapshot['GPIO_VAL'] & 0x06 == 0, 'speaker amplifier enabled'
+        assert snapshot['SLV_STATUS'] == 0, 'physical SoundWire slave attached'
+        assert snapshot['FIFO_STATUS'] & 0x1f1f00 == 0, 'SoundWire command FIFO nonempty'
+        assert all(snapshot[f'DP{p}_B{b}'] & 0xff000000 == 0
+                   for p in (1, 4) for b in (0, 1)), 'SoundWire port enabled'
+        if auxiliary_required:
+            assert snapshot['GPIO_VAL'] & 0x1e == 0x18, 'auxiliary GPIO park lost'
+
+    def check(self):
+        statuses = self.idle()
+        assert self.audio.read_text(self.control) == 'on'
+        assert self.audio.read_text(self.master / 'power/runtime_status') == 'active'
+        sample = self.audio.inventory(self.master)
+        assert len(sample['internal_cards']) == 1
+        assert len(sample['devices']) == 2 and {d['unit'] for d in sample['devices']} == {3, 4}
+        assert all(d['status'] == 'UNATTACHED' and d['driver'] == 'wsa881x-codec'
+                   for d in sample['devices']), 'native WSA codecs not unattached'
+        self.parked(sample['state'], auxiliary_required=False)
+        sample['pcm_statuses'] = statuses
+        return sample
+
+    def establish(self):
+        self.idle()
+        for name, expected in (('spx_wsa_gpio_mask', 0x1e), ('spx_wsa_gpio_dir', 0x1e),
+                               ('spx_wsa_gpio_val', 0x18), ('spx_wsa_en_pin', -1)):
+            assert int(self.audio.parameter('wcd934x', name), 0) == expected
+        for name in ('spx_force_attach', 'spx_blind_attach', 'spx_core_enum', 'spx_watchdog'):
+            assert self.audio.parameter('soundwire_qcom', name) == '0'
+        for module, name, expected in (
+                ('soundwire_qcom', 'spx_exact_windows_init', 'N'),
+                ('soundwire_qcom', 'spx_broadcast_audio', 'N'),
+                ('snd_soc_wsa881x', 'spx_enumerated_mode', 'Y'),
+                ('snd_soc_wsa881x', 'spx_write_only', 'N'),
+                ('slim_qcom_ngd_ctrl', 'spx_pio_mode', 'Y')):
+            assert self.audio.parameter(module, name) == expected
+        self.writer, self.master = self.audio.codec_paths()
+        assert self.writer.exists(), 'page-safe WCD GPIO writer missing'
+        self.control = self.master / 'power/control'
+        self.saved_control = self.audio.read_text(self.control)
+        assert self.saved_control in ('auto', 'on')
+        self.report.update(master=str(self.master), saved_control=self.saved_control)
+        self.control.write_text('on\n')
+        end = time.monotonic() + 2
+        while self.audio.read_text(self.master / 'power/runtime_status') != 'active':
+            assert time.monotonic() < end, 'SWR master failed to resume'
+            time.sleep(.05)
+        before = self.check()
+        self.report['before'] = before
+        # Exactly audio.initialize's cold-start repair: outputs 3/4 high while
+        # amp enables 1/2 stay low; preserve every unrelated GPIO bit.
+        value = before['state']['GPIO_VAL'] | 0x18
+        self.report['auxiliary_park_write_owned'] = value != before['state']['GPIO_VAL']
+        if self.report['auxiliary_park_write_owned']:
+            self.writer.write_text(f'43 {value:02x}\n')
+        after = self.check()
+        self.parked(after['state'])
+        assert after['state']['GPIO_VAL'] == value, 'auxiliary park readback mismatch'
+        self.report['held'] = after
+        return after
+
+    def retained(self, before):
+        after = self.check()
+        self.parked(after['state'])
+        assert after['state']['GPIO_VAL'] == before['state']['GPIO_VAL']
+        assert after['internal_cards'] == before['internal_cards']
+        assert after['devices'] == before['devices'], 'native codec ownership/status changed'
+        assert after['pcm_statuses'] == before['pcm_statuses']
+        return after
+
+    def cleanup(self):
+        try:
+            if 'held' in self.report:
+                self.report['after'] = self.retained(self.report['held'])
+            elif 'auxiliary_park_write_owned' in self.report:
+                self.report['after'] = self.check()
+                self.parked(self.report['after']['state'])
+        finally:
+            if self.saved_control in ('auto', 'on'):
+                self.control.write_text(self.saved_control + '\n')
+                assert self.audio.read_text(self.control) == self.saved_control
+                self.report['restored'] = True
+        return self.report
 
 
 def sleep_proven(r):
@@ -59,7 +202,8 @@ def service_completed(before, after, fresh_journal=False):
 
 def exercise(ops):
     result = dict(complete=False, scope='normal30s systemd s2idle on AC; retained network/sensors and disposable storage',
-                  full_suspend_acceptance=False, audio_tested=False)
+                  full_suspend_acceptance=False, audio_tested=False,
+                  audio_mode='parked-retention' if getattr(ops, 'parked_audio', False) else 'blocked')
     try:
         result['before'] = ops.gate()
         ops.save(result)
@@ -91,10 +235,12 @@ def verify_returned(ops, original):
     """Verify an already returned sleep independently, preserving its failed report."""
     result = dict(complete=False, scope='independent same-boot normal-suspend recovery verification',
                   full_suspend_acceptance=False, audio_tested=False,
+                  audio_mode='parked-retention' if getattr(ops, 'parked_audio', False) else 'blocked',
                   source_result=str(ops.output.parent / 'systemd-suspend/result.json'))
     try:
         ops.gate()
         assert original['boot_id'] == ops.boot and original['release'] == ops.release
+        assert original.get('audio_mode', 'blocked') == result['audio_mode'], 'sleep audio mode mismatch'
         assert original['attempt'] == ops.attempt and original['direct_prerequisite']['complete']
         assert all(original['cleanup'][k] for k in ('masks_restored', 'owned_files_removed', 'idle_inhibitor_reaped'))
         assert any(x['name'] == 'normal-suspend' and x['returncode'] == 0 for x in original['steps'])
@@ -110,6 +256,9 @@ def verify_returned(ops, original):
         finally:
             os.close(fd)
         result['verified_sleep'] = r
+        if getattr(ops, 'parked_audio', False):
+            result['audio_retention'] = ops.retention_evidence(cursor, 'verified-sleep-kernel')
+            assert original['direct_prerequisite']['audio_retention']['complete'] is True
         result['after'] = ops.post(original['before'])
         result['functional_pass'] = True
     except Exception as error:
@@ -126,8 +275,10 @@ def verify_returned(ops, original):
 
 
 class Live:
-    def __init__(self, output, attempt, release):
+    def __init__(self, output, attempt, release, *, parked_audio=False, desktop_user='dvitali'):
+        assert type(parked_audio) is bool
         self.output, self.attempt, self.release = output, attempt, release
+        self.parked_audio, self.desktop_user, self.audio = parked_audio, desktop_user, None
         output.mkdir(mode=0o700, exist_ok=False)
         self.boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
         self.started = time.monotonic()
@@ -155,6 +306,8 @@ class Live:
 
     def save(self, result):
         result.update(attempt=self.attempt, release=self.release, boot_id=self.boot, steps=self.steps)
+        if self.audio is not None:
+            result['parked_audio'] = self.audio.report
         tmp = self.output / 'result.json.new'
         tmp.write_text(json.dumps(result, indent=2) + '\n')
         os.replace(tmp, self.output / 'result.json')
@@ -210,14 +363,19 @@ class Live:
         words = Path('/proc/cmdline').read_text().split()
         assert [w for w in words if w.startswith('spx_attempt=')] == ['spx_attempt=' + self.attempt]
         assert 'spx_boot=mainline-functional' in words and 'spx_sensors=1' in words
-        blocked = {n for w in words if w.startswith('module_blacklist=') for n in w.split('=', 1)[1].split(',')}
-        assert AUDIO <= blocked and not any((Path('/sys/module') / n).exists() for n in AUDIO)
+        parked_audio = getattr(self, 'parked_audio', False)
+        if not parked_audio:
+            blocked = {n for w in words if w.startswith('module_blacklist=') for n in w.split('=', 1)[1].split(',')}
+            assert AUDIO <= blocked and not any((Path('/sys/module') / n).exists() for n in AUDIO)
         assert Path('/proc/self/cgroup').read_text().strip() == '0::/system.slice/spx-systemd-suspend.service', 'owned system.slice transient unit required'
         for name in ('functional', 'pmic-rtc/result'):
             data = json.loads((self.output.parent / (name + '.json')).read_text())
             assert data.get('complete') is True and data['boot_id'] == self.boot and data['release'] == self.release
         prepared = json.loads((self.output.parent / 'prepared.json').read_text())
-        assert prepared['release'] == self.release and not prepared.get('audio') and prepared.get('pmic_rtc')
+        assert prepared['release'] == self.release and prepared.get('pmic_rtc') is True
+        loaded = {n for n in AUDIO if (Path('/sys/module') / n).exists()}
+        retention = Path('/sys/module/slim_qcom_ngd_ctrl/parameters/spx_s2idle_retain').read_text().strip() if parked_audio else None
+        audio_mode_gate(parked_audio, prepared, words, loaded, retention)
         self.ac()
         assert Path('/sys/power/mem_sleep').read_text().strip() == '[s2idle]'
         assert '[none]' in Path('/sys/power/pm_test').read_text().split()
@@ -236,16 +394,52 @@ class Live:
             assert not os.path.lexists(RUNTIME / unit), 'existing runtime shadow'
         self.masks()
         self.original_verified = True
+        audio_before = None
+        if parked_audio:
+            if self.audio is None:
+                self.audio = ParkedAudio(self.output.parent, self.boot, self.desktop_user)
+                audio_before = self.audio.establish()
+            else:
+                audio_before = self.audio.retained(self.audio.report['held'])
         if self.sensor is None:
             self.sensor = lifecycle.Live(self.output / 'sensor-observations', self.attempt, self.release)
-        return dict(services=self.services(), network=self.connected_network(), streams=self.streams('before'))
+        before = dict(services=self.services(), network=self.connected_network(), streams=self.streams('before'))
+        if audio_before is not None:
+            before['parked_audio'] = audio_before
+        return before
+
+    def journal_cursor(self, name):
+        return re.search(r'-- cursor: (\S+)', self.run(name, ['journalctl', '-b', '--show-cursor', '-n', '0', '--no-pager']))[1]
+
+    def retention_evidence(self, cursor, name):
+        log = self.run(name, ['journalctl', '-b', '-k', '--after-cursor=' + cursor, '--no-pager', '-o', 'short-monotonic'])
+        (self.output / (name + '.log')).write_text(log)
+        evidence = retention_proven(log)
+        assert 'PM: suspend entry (s2idle)' in log and 'PM: suspend exit' in log
+        evidence.update(journal_cursor=cursor, after=self.audio.retained(self.audio.report['held']))
+        return evidence
 
     def direct(self):
         output = self.output.parent / 'pmic-rtc-suspend'
-        r = json.loads((output / 'result.json').read_text()) if output.exists() else pmic_rtc.exercise(output, self.attempt, self.release, suspend=True)
+        if output.exists():
+            r = json.loads((output / 'result.json').read_text())
+            assert r.get('complete') is True and r['boot_id'] == self.boot and r['release'] == self.release
+            if self.parked_audio:
+                proof = r.get('audio_retention', {})
+                assert proof.get('complete') is True, 'same-boot parked-audio direct prerequisite missing'
+                r['audio_retention'] = self.retention_evidence(proof['journal_cursor'], 'direct-kernel')
+        else:
+            cursor = self.journal_cursor('direct-cursor') if self.parked_audio else None
+            r = pmic_rtc.exercise(output, self.attempt, self.release, suspend=True)
+            if self.parked_audio and r.get('complete') is True:
+                r['audio_retention'] = self.retention_evidence(cursor, 'direct-kernel')
+                (output / 'result.json').write_text(json.dumps(r, indent=2) + '\n')
         assert r.get('complete') is True and r['boot_id'] == self.boot and r['release'] == self.release
         assert r['requested_seconds'] == 15 and r['sleep_seconds'] >= 10
-        return dict(complete=True, result=str(output / 'result.json'))
+        result = dict(complete=True, result=str(output / 'result.json'))
+        if self.parked_audio:
+            result['audio_retention'] = r['audio_retention']
+        return result
 
     def inhibit_idle(self):
         assert WHO not in self.run('initial-inhibitors', ['systemd-inhibit', '--list', '--no-pager'])
@@ -299,7 +493,7 @@ class Live:
         assert pmic_rtc.alarm(self.fd)[:2] == (0, 0), 'preexisting alarm left untouched'
         r = dict(requested_alarm_seconds=30, minimum_real_sleep_seconds=15, irq_before=pmic_rtc.irq_count())
         self.sleep_result = r
-        cursor = re.search(r'-- cursor: (\S+)', self.run('cursor', ['journalctl', '-b', '--show-cursor', '-n', '0', '--no-pager']))[1]
+        cursor = self.journal_cursor('cursor')
         r['journal_cursor'] = cursor
         before = self.properties('systemd-suspend.service', 'ExecMainExitTimestampMonotonic', 'ActiveState')
         assert before['ActiveState'] == 'inactive', 'sleep service already running/failed'
@@ -342,6 +536,8 @@ class Live:
         r['kernel_exited'] = 'PM: suspend exit' in log and log.find('PM: suspend exit') > log.find('PM: suspend entry (s2idle)')
         r['boot_unchanged'] = Path('/proc/sys/kernel/random/boot_id').read_text().strip() == self.boot
         r['user_thawed'] = 'frozen 0' in Path('/sys/fs/cgroup/user.slice/cgroup.events').read_text().splitlines()
+        if self.parked_audio:
+            r['audio_retention'] = self.retention_evidence(cursor, 'normal-retention-kernel')
         return r
 
     def post(self, before):
@@ -370,6 +566,8 @@ class Live:
             stream.seek(0)
             assert stream.read() == data
         after['fsync_readback_bytes'] = len(data)
+        if self.parked_audio:
+            after['parked_audio'] = self.audio.retained(before['parked_audio'])
         return after
 
     def cleanup(self):
@@ -377,6 +575,12 @@ class Live:
         for sig in self.handlers:
             signal.signal(sig, signal.SIG_IGN)
         errors = []
+        audio_cleanup = None
+        if getattr(self, 'audio', None) is not None:
+            try:
+                audio_cleanup = self.audio.cleanup()
+            except Exception as error:
+                errors.append('audio PM restoration/park: ' + str(error))
         if self.fd is not None:
             try:
                 if self.armed:
@@ -425,5 +629,8 @@ class Live:
             for sig, handler in self.handlers.items():
                 signal.signal(sig, handler)
         assert not errors, '; '.join(errors)
-        return dict(masks_restored=self.original_verified, owned_files_removed=not self.owned,
-                    idle_inhibitor_reaped=self.idle is None or self.idle.poll() is not None)
+        result = dict(masks_restored=self.original_verified, owned_files_removed=not self.owned,
+                      idle_inhibitor_reaped=self.idle is None or self.idle.poll() is not None)
+        if audio_cleanup is not None:
+            result['parked_audio'] = audio_cleanup
+        return result
