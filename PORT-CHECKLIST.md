@@ -1367,6 +1367,8 @@ GPU runtime suspend works.
     repeated reliability, battery and full P03 remain separate.
     DW normal28.0528s sleep completes, but playback underrun/capture overrun
     end both owners; no post-wake pass. Full cleanup leaves FIFO pending.
+    DX stages early native PCM suspension and retained ASM queues; test pending.
+    [DX result](tools/spx/boot-diagnostics/RESULT-20261008dx.md).
     [DW result](tools/spx/boot-diagnostics/RESULT-20261007dw.md).
 
 - [ ] **P04 — Hibernate applicability.** Establish whether the intended platform/
