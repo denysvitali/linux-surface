@@ -153,4 +153,130 @@ class Dispatch(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs, dict(check=True, timeout=205))
 
 
+class DefaultMicResume(unittest.TestCase):
+    def witness(self):
+        graph = Mock()
+        capture = Mock(wall_deadline=200, started_boottime=80)
+        report = dict(phases=[])
+        witness = resume.DefaultMicrophone(graph, capture, report)
+        witness.source = Mock(name='source')
+        witness.source.name = 'owned-microphone'
+        witness.source.source_id = 17
+        witness.source.module = '41'
+        witness.source.report = {'restored': True}
+        witness.client = Mock()
+        witness.client.process.pid = 123
+        witness.client.process.poll.return_value = None
+        return witness
+
+    def test_optin_must_match_preparation_and_cli_requires_live_mode(self):
+        import io, sys
+        changed = args(); changed.default_mic_resume = True
+        with self.assertRaisesRegex(AssertionError, 'differs from preparation'):
+            resume.admission(prepared(), changed)
+        record = prepared(); record['default_mic_resume'] = True
+        resume.admission(record, changed)
+        with patch.object(sys, 'argv', ['trial.py', 'systemd-suspend', '20261008dy', '--default-mic-resume']), \
+             patch.object(sys, 'stderr', io.StringIO()), patch.object(trial, 'systemd_suspend') as hardware:
+            with self.assertRaises(SystemExit) as error: trial.main()
+        self.assertEqual(error.exception.code, 2)
+        hardware.assert_not_called()
+
+    def test_prepared_flag_forwarded_only_when_explicit(self):
+        import json
+        for enabled in (False, True):
+            record = prepared(); record['default_mic_resume'] = enabled
+            with patch.object(trial, 'OUT', Path('/private'), create=True), \
+                 patch.object(trial, 'ATTEMPT', '20261008dy', create=True), \
+                 patch.object(trial, 'RELEASE', 'test-kernel', create=True), \
+                 patch.object(Path, 'exists', return_value=False), \
+                 patch.object(Path, 'read_text', autospec=True, side_effect=lambda path: 'boot-id\n' if str(path) == '/proc/sys/kernel/random/boot_id' else json.dumps(dict(complete=True, boot_id='boot-id', release='test-kernel'))), \
+                 patch.object(trial.subprocess, 'run') as run:
+                trial.dispatch_live_audio_resume(args(), record)
+            self.assertEqual('--default-mic-resume' in run.call_args.args[0], enabled)
+
+    def test_extended_client_budget_requires_same_bounded_wall_fence(self):
+        graph = Mock()
+        for seconds, deadline in ((121, 200), (120, None), (120, 221), (120, 99)):
+            with self.subTest(seconds=seconds, deadline=deadline), \
+                 patch.object(audio.time, 'clock_gettime', return_value=100), \
+                 patch.object(audio.subprocess, 'Popen') as child:
+                with self.assertRaises(RuntimeError):
+                    audio.DesktopRecording(graph, 'owned', maximum_seconds=seconds, wall_deadline=deadline)
+                child.assert_not_called()
+
+    def test_actual_client_frames_score_same_tones_and_reject_failed_proof(self):
+        witness = self.witness()
+        witness.client.mark.side_effect = [100, 100 + 96000, 100 + 96000, 100 + 240000]
+        witness.client.samples.side_effect = ['actual-reference', 'actual-client-tone']
+        witness.reference_begin(); witness.reference_end(); witness.tone_begin()
+        with patch('acoustic.score_phase', return_value={'passed': False, 'reason': 'missing tone'}) as score:
+            with self.assertRaisesRegex(AssertionError, 'client acoustic proof failed'): witness.tone_end()
+        score.assert_called_once_with('actual-client-tone', 'actual-reference', [440, 660])
+        self.assertFalse(witness.report['phases'][0]['score']['passed'])
+        self.assertIsNone(witness.reference)
+
+    def test_identity_requires_single_owned_route_and_retained_services(self):
+        import json
+        witness = self.witness()
+        source = dict(index=17, name='owned-microphone', owner_module=41,
+                      monitor_of_sink=4294967295, sample_spec='s16le 1ch 48000Hz')
+        output = dict(index=29, source=17, client=52, corked=False,
+                      properties={'application.name': witness.name, 'application.process.id': '124'})
+        replies = {
+            'get-default-source': witness.source.name,
+            'sources': json.dumps([source]),
+            'modules': json.dumps([dict(index=41, name='module-pipe-source', argument='owned fifo')]),
+            'source-outputs': json.dumps([output]),
+            'services': '\n\n'.join('Id='+unit+'\nActiveState=active\nSubState=running\nMainPID='+str(pid)+'\nExecMainStartTimestampMonotonic=10' for pid, unit in enumerate(('pipewire.service', 'pipewire-pulse.service', 'wireplumber.service'), 200))}
+        def command(*argv):
+            return replies['services' if argv[0] == 'systemctl' else argv[-1]]
+        witness.graph.run.side_effect = command
+        with patch.object(resume, 'process_identity', side_effect=lambda pid: dict(pid=int(pid), start_ticks='10')):
+            witness.report['held'] = witness.identity(); witness.retained()
+            replies['source-outputs'] = json.dumps([output, output])
+            with self.assertRaisesRegex(AssertionError, 'Unexpected'): witness.identity()
+            replies['source-outputs'] = json.dumps([{**output, 'index': 30}])
+            with self.assertRaisesRegex(AssertionError, 'identity changed'): witness.retained()
+            replies['source-outputs'] = json.dumps([output])
+            replies['services'] = replies['services'].replace('Monotonic=10', 'Monotonic=11')
+            with self.assertRaisesRegex(AssertionError, 'identity changed'): witness.retained()
+            replies['sources'] = json.dumps([{**source, 'owner_module': 42}])
+            with self.assertRaisesRegex(AssertionError, 'module changed'): witness.identity()
+
+    def test_cleanup_closes_client_then_restores_source_even_if_client_fails(self):
+        for failed in (False, True):
+            witness = self.witness(); events = []
+            def close_client():
+                self.assertFalse(witness.source.forward)
+                events.append('client')
+                witness.client.process.poll.return_value = 0
+                if failed: raise RuntimeError('client close error')
+            witness.client.close.side_effect = close_client
+            witness.source.close.side_effect = lambda: events.append('source-exact-preference-restore')
+            if failed:
+                with self.assertRaisesRegex(AssertionError, 'client close error'): witness.close()
+            else:
+                witness.close()
+                self.assertTrue(witness.report['default_source_restored'])
+            self.assertEqual(events, ['client', 'source-exact-preference-restore'])
+            self.assertIsNone(witness.graph.microphone)
+            witness.close()
+            self.assertEqual(len(events), 2)
+
+    def test_resume_window_cleans_before_native_close_and_requires_restoration(self):
+        events = []; result = {}; window = resume.ResumeWindow(Mock(), result, True)
+        witness = window.microphone = Mock(report={'client_closed': True, 'default_source_restored': False})
+        def retained(*a, **kwargs):
+            result['functional_pass'] = True; events.append('proof')
+        witness.close.side_effect = lambda: events.append('public-client-source-close')
+        with patch.object(resume, 'retained_window', side_effect=retained): window()
+        events.append('native-capture-close')
+        self.assertEqual(events, ['proof', 'public-client-source-close', 'native-capture-close'])
+        self.assertFalse(result['functional_pass'])
+        witness.report['default_source_restored'] = True
+        with patch.object(resume, 'retained_window', side_effect=retained): window()
+        self.assertTrue(result['functional_pass'])
+
+
 if __name__ == '__main__': unittest.main()

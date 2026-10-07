@@ -285,6 +285,7 @@ def prepare(args):
                     pmic_rtc=args.pmic_rtc, slim_s2idle_retain=args.slim_s2idle_retain,
                     qca_setup_trace=args.qca_setup_trace,
                     live_audio_resume=getattr(args, 'live_audio_resume', False),
+                    default_mic_resume=getattr(args, 'default_mic_resume', False),
                     cpu_passive_cooling=args.cpu_passive_cooling, cpu_passive_trip_mc=actual_cpu_trip,
                     thermal_combined=args.thermal_combined,
                     thermal_gpu_fixture=str(args.thermal_gpu_fixture),
@@ -1965,7 +1966,9 @@ def dispatch_live_audio_resume(args, prepared):
                     '--property=Type=exec', '--property=RuntimeMaxSec=200',
                     '/usr/bin/python3', '-B', '/usr/local/lib/spx-boot-diagnostics/trial.py',
                     'systemd-suspend', ATTEMPT, '--live-audio-resume', '--allow-amp-power',
-                    '--allow-playback', '--allow-capture', '--desktop-user', args.desktop_user],
+                    '--allow-playback', '--allow-capture',
+                    *(['--default-mic-resume'] if prepared.get('default_mic_resume') else []),
+                    '--desktop-user', args.desktop_user],
                    check=True, timeout=205)
 
 
@@ -2019,6 +2022,8 @@ def main():
     parser.add_argument('--verify-sleep-return', action='store_true', help='systemd-suspend: verify a returned sleep from fresh journal evidence without sleeping again')
     parser.add_argument('--live-audio-resume', action='store_true',
                         help='prepare/systemd-suspend: quiet public audio before/after one normal sleep with the same native owners')
+    parser.add_argument('--default-mic-resume', action='store_true',
+                        help='live-audio-resume only: retain one ordinary default-source recording client across normal sleep')
     parser.add_argument('--allow-radio-on', action='store_true',
                         help='Bluetooth-resume-only: temporarily enable an initially off/softblocked fitted radio and restore it')
     parser.add_argument('--bluetooth-resume', action='store_true',
@@ -2094,6 +2099,8 @@ def main():
                         help='after a queued audio test, use the existing return timer after this delay (61..900)')
     parser.add_argument('--desktop-user', default='dvitali')
     args = parser.parse_args()
+    if args.default_mic_resume and not args.live_audio_resume:
+        parser.error('--default-mic-resume requires --live-audio-resume')
     if args.allow_radio_on and not args.bluetooth_resume:
         parser.error('--allow-radio-on requires --bluetooth-resume')
     if args.bluetooth_resume and (args.command != 'systemd-suspend' or args.live_audio_resume or args.verify_sleep_return):

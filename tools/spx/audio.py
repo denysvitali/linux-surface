@@ -1035,6 +1035,10 @@ class DesktopGraph:
             except Exception as error:
                 errors.append(type(error).__name__ + ': ' + str(error))
 
+        witness = getattr(self, 'live_resume_microphone', None)
+        if witness is not None:
+            attempt(witness.close)
+            self.live_resume_microphone = None
         for recording in getattr(self, 'recordings', []):
             attempt(recording.close)
         if getattr(self, 'microphone', None) is not None:
@@ -1262,8 +1266,17 @@ class DesktopMicSource:
 class DesktopRecording(OwnedCapture):
     """Ordinary default-source client; no device selection or ALSA ownership."""
 
-    def __init__(self, graph, name):
-        self.maximum_seconds = 60
+    def __init__(self, graph, name, *, maximum_seconds=60, wall_deadline=None):
+        need(isinstance(maximum_seconds, int) and 0 < maximum_seconds <= 120,
+             'Invalid desktop recording frame budget')
+        need(maximum_seconds <= 60 or wall_deadline is not None,
+             'Extended desktop recording requires a wall deadline')
+        need(wall_deadline is None or
+             time.clock_gettime(time.CLOCK_BOOTTIME) < wall_deadline <=
+             time.clock_gettime(time.CLOCK_BOOTTIME) + 120,
+             'Desktop recording wall deadline exceeds120s')
+        self.wall_deadline = wall_deadline
+        self.maximum_seconds = maximum_seconds
         self.raw = bytearray()
         self.mutex = threading.Lock()
         self.stop = threading.Event()
@@ -1590,7 +1603,7 @@ def finish_recording(capture, report, saved):
          'Microphone mixer restoration failed')
 
 
-def verify_public_playback(report, pcm, graph, capture, desktop_peak=1433, *, connected=False):
+def verify_public_playback(report, pcm, graph, capture, desktop_peak=1433, *, connected=False, microphone=None):
     """Score the actual attenuated public route before ending microphone capture."""
     from acoustic import score_phase
 
@@ -1628,6 +1641,8 @@ def verify_public_playback(report, pcm, graph, capture, desktop_peak=1433, *, co
         graph.monitor.forward = False
         graph.monitor.input_peak = 0
         phase('reference')
+        if microphone is not None:
+            microphone.reference_begin()
         quiet_begin = capture.mark()
         pcm.settle(2)
         capture.wait_frames(quiet_begin + 2 * 48000)
@@ -1638,9 +1653,13 @@ def verify_public_playback(report, pcm, graph, capture, desktop_peak=1433, *, co
         graph.require_public_idle()
         need(graph.monitor.input_peak <= 1,
              'Public monitor was not silent during its acoustic reference')
+        if microphone is not None:
+            microphone.reference_end()
         begin = capture.mark()
         evidence['start_frame'] = begin
         phase('playback')
+        if microphone is not None:
+            microphone.tone_begin()
         graph.play(tone({0, 1}, amplitude=32767), 'public-both')
         phase('drain')
         pcm.settle(0.8)
@@ -1654,6 +1673,8 @@ def verify_public_playback(report, pcm, graph, capture, desktop_peak=1433, *, co
         # Leave this mode in place through microphone close and mixer restore.
         graph.monitor.forward = False
         evidence.update(input_peak=graph.monitor.input_peak, output_peak=graph.monitor.peak)
+        if microphone is not None:
+            microphone.tone_end()
         phase('scoring')
         scored = score_phase(capture.samples(begin, end), reference, [440, 660])
         evidence['score'] = scored
@@ -1838,11 +1859,15 @@ def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder
             evidence = report['desktop'] = dict(applications=[], acoustic_passed=False)
             graph = DesktopGraph(args.desktop_user, evidence)
             desktop_holder.append(graph)
+            graph.preserve_default_source = getattr(args, 'default_mic_resume', False)
             graph.start()
+            if hasattr(live_resume, 'prepare'):
+                live_resume.prepare(graph, capture, pcm)
             graph.monitor.close()
             graph.monitor = None
         if args.action == 'serve':
-            verify_public_playback(report, pcm, desktop_holder[-1], capture, args.desktop_peak)
+            verify_public_playback(report, pcm, desktop_holder[-1], capture, args.desktop_peak,
+                                   microphone=getattr(live_resume, 'microphone', None))
             if getattr(args, "desktop_controls", False):
                 from desktop_controls import verify_controls
                 verify_controls(report, pcm, desktop_holder[-1], capture, tone, need)
