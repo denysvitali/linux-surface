@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-07, DS: normal sleep with parked audio passes)
+## Status (2026-10-07, DT: native Bluetooth radio cycling passes)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
@@ -64,7 +64,7 @@ awaits attribution for later observations.
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
 | Keyboard, touchpad (I04, I05) | **BI keyboard works**; recovery keyboard restored after SSAM timeout | Startup reliability, full keys/gestures and resume |
 | Buttons (I06) | User: short power press opens shutdown prompt, boot pending | Volume/posture and intended wake |
-| Bluetooth (N02) | **User confirms Bluetooth works on BI** | Device-specific pairing/reconnect and resume |
+| Bluetooth (N02) | **BI user confirmation; DT: N02a native radio cycling/discovery pass** | Transition framing/vendor errors, peripheral pairing/reconnect and resume |
 | USB data (U01) | Untested | Both ports/orientations, fixtures |
 | USB-C PD, DisplayPort, dock (U02–U04) | **CG: external off/on scanout restoration passes; normal orientation API works** | Visible output, physical replug, roles/PD, ports/orientations/resume |
 | Battery and charging (P01) | **CF: P01a actual charging passes, +1.26Wh/120s** | Charge-policy explanation, discharge/transitions and charger coverage |
@@ -902,11 +902,14 @@ host datapath; that is not current cellular service verification.
   pairing/reconnect and resume details were not reported.
   [BI result](tools/spx/boot-diagnostics/RESULT-20261004bi.md).
   [Follow-up](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md).
-  - [ ] **N02a — Native Bluetooth radio power cycling.** Through normal BlueZ
-    APIs, two off/on cycles retain the installation address and restore policy;
-    bounded discovery after each reports fresh radio observations and ends
-    cleanly. Preserve connected peripherals and WLAN; no pairing, audio or
-    full peripheral-resume claim.
+  - [x] **N02a — Native Bluetooth radio power cycling.** DT boot
+    `829df486-71dd-4ef6-af74-36bcd416a400`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: two normal BlueZ off/on cycles settle,
+    retain address/policy/rfkill and produce12/11 fresh peers in owned5s discovery
+    windows. Scans stop/clients reap, original power/policy and WLAN1MB restore;
+    bounded15.927s result passes. One UART reassembly error during second firmware
+    setup and44 malformed MSFT vendor events remain unresolved despite subsequent
+    fresh traffic. No error-free transport, pairing/use/reconnect/resume claim.
     [DT result](tools/spx/boot-diagnostics/RESULT-20261007dt.md).
 
 - [ ] **N03 — Cellular control/data.** Stable modem startup and discovery, correct
