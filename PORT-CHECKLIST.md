@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-07, DI: microphone clients and native capture reopen pass)
+## Status (2026-10-07, DK: native simultaneous microphone array passes)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
@@ -26,8 +26,8 @@ CF retains P01a actual charging pass; further battery tests are deferred.
 restore native2880×1920/60Hz scanout with fresh vblank and no new display faults.
 Visual quality remains open; DD proves post-sleep scanout. CG extends CE's power-cycle coverage to the attached dock. CA's earlier
 DP0 startup/reload result remains scoped to its attached dock.
-CC closes A02b: both fitted microphone inputs record known stimuli; quality,
-simultaneous mapping and lifecycle remain open. CB left and DE/DG right playback reopen fail after first-cycle passes; A03b parked.
+CC closes A02b; **DK closes A02c:** both inputs simultaneously record known tones
+as native stereo with distinct transfer evidence. Quality and lifecycle remain open. CB left and DE/DG right playback reopen fail after first-cycle passes; A03b parked.
 **CM closes P05a:** both CPU clusters and GPU enforce/release cooling limits.
 **CX closes P05b:** five-minute simultaneous CPU/FD680 load and cleanup pass,
 peak69.8C. CY extends this to verified native FP, peak66.3C; automatic responses remain open.
@@ -54,7 +54,7 @@ awaits attribution for later observations.
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
 | Speakers (A01) | **BY desktop playback; DF quiet startup after guarded sleep passes** | Persistence, volume/mapping/balance, reopen and lifecycle |
-| Microphones (A02) | **Both inputs record known tones; DI default clients/native mono capture reopen pass** | Quality, simultaneous array mapping, availability and full lifecycle |
+| Microphones (A02) | **DK native simultaneous array; DI default clients/native mono reopen pass** | Quality, physical mapping, availability and full lifecycle |
 | Cameras (C01–C05) | Rear sensor identifies | No frame captured |
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
 | Keyboard, touchpad (I04, I05) | **BI keyboard works**; recovery keyboard restored after SSAM timeout | Startup reliability, full keys/gestures and resume |
@@ -731,6 +731,16 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
     amplifier power off. Both fitted inputs now have known-stimulus evidence.
     Quality, simultaneous channel mapping and full lifecycle remain open.
     [CC result](tools/spx/boot-diagnostics/RESULT-20261005cc.md).
+
+  - [x] **A02c — Simultaneous native fitted microphone inputs.** DK, boot
+    `58a3bbf5-2c0d-4f59-8933-29deacf79462`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: hw:0,1 S16LE/48kHz/two channels,
+    DEC0/DMIC1 and DEC1/DMIC0, TX0/TX1→128/129. Both inputs pass quiet
+    left/right/both known tones and lose them with amps off. Distinct samples
+    and4.466dB transfer contrast support independent inputs. Capture closed,
+    controls restored, all PCMs closed/raw discarded. No physical position,
+    voice quality or full lifecycle claim.
+    [DK result](tools/spx/boot-diagnostics/RESULT-20261007dk.md).
 
 - [ ] **A03 — Audio lifecycle/userspace.** Normal PipeWire/ALSA/UCM playback and
   capture, simultaneous use, volume/mute controls and repeated open/close work
