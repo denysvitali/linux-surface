@@ -405,14 +405,19 @@ static void q6asm_write_watchdog(struct work_struct *work)
 		prtd->pcm_irq_pos += prtd->pcm_count;
 		prtd->n_fallback++;
 		elapsed = true;
-		if (!spx_queue_write(prtd))
-			spx_arm_watchdog(prtd);
 	}
 	spin_unlock_irqrestore(&prtd->lock, flags);
 
 	/* trigger() holds the ALSA stream lock: never take it under our lock. */
-	if (elapsed)
+	if (elapsed) {
 		snd_pcm_period_elapsed(prtd->substream);
+		spin_lock_irqsave(&prtd->lock, flags);
+		/* period_elapsed() may have stopped the PCM on an XRUN. */
+		if (prtd->state == Q6ASM_STREAM_RUNNING && !prtd->spx_pm_error &&
+		    !spx_queue_write(prtd))
+			spx_arm_watchdog(prtd);
+		spin_unlock_irqrestore(&prtd->lock, flags);
+	}
 }
 
 static void spx_event_handler(uint32_t opcode, uint32_t token,
@@ -422,7 +427,7 @@ static void spx_event_handler(uint32_t opcode, uint32_t token,
 	struct snd_pcm_substream *substream = prtd->substream;
 	const struct aprv2_ibasic_rsp_result_t *result = payload;
 	unsigned long flags;
-	bool elapsed = false;
+	bool elapsed = false, requeue_write = false, requeue_read = false;
 	int i, ret;
 
 	spin_lock_irqsave(&prtd->lock, flags);
@@ -512,31 +517,24 @@ static void spx_event_handler(uint32_t opcode, uint32_t token,
 		}
 		prtd->pcm_irq_pos += prtd->pcm_count;
 		elapsed = true;
-		if (!spx_queue_write(prtd))
-			spx_arm_watchdog(prtd);
+		requeue_write = true;
 		break;
 	case ASM_CLIENT_EVENT_DATA_READ_DONE:
 		prtd->n_write_done++;
 		prtd->pcm_irq_pos += prtd->pcm_count;
+		/* Record the replacement before dropping our lock for ALSA. */
+		if (prtd->spx_deferred_reads < prtd->periods)
+			prtd->spx_deferred_reads++;
+		else {
+			prtd->spx_pm_error = -EOVERFLOW;
+			dev_err(substream->pcm->card->dev,
+				"SPX: retained capture completion exceeds mapped ring\n");
+		}
 		if (prtd->state == Q6ASM_STREAM_PAUSED) {
 			prtd->spx_deferred_elapsed = true;
-			if (prtd->spx_deferred_reads < prtd->periods)
-				prtd->spx_deferred_reads++;
-			else {
-				prtd->spx_pm_error = -EOVERFLOW;
-				dev_err(substream->pcm->card->dev,
-					"SPX: retained capture completion exceeds mapped ring\n");
-			}
 		} else {
 			elapsed = true;
-			if (prtd->state == Q6ASM_STREAM_RUNNING && !prtd->spx_pm_error) {
-				ret = q6asm_read(prtd->audio_client, prtd->stream_id);
-				if (ret) {
-					prtd->spx_pm_error = ret < 0 ? ret : -EIO;
-					dev_err(substream->pcm->card->dev,
-						"SPX: retained capture submit failed: %d\n", ret);
-				}
-			}
+			requeue_read = prtd->state == Q6ASM_STREAM_RUNNING;
 		}
 		break;
 	default:
@@ -545,6 +543,30 @@ static void spx_event_handler(uint32_t opcode, uint32_t token,
 	spin_unlock_irqrestore(&prtd->lock, flags);
 	if (elapsed)
 		snd_pcm_period_elapsed(substream);
+
+	if (requeue_write || requeue_read) {
+		spin_lock_irqsave(&prtd->lock, flags);
+		if (prtd->state == Q6ASM_STREAM_RUNNING && !prtd->spx_pm_error) {
+			/* A resumed RUN may already have filled the empty write slot. */
+			if (requeue_write && !prtd->spx_pending_writes &&
+			    !spx_queue_write(prtd))
+				spx_arm_watchdog(prtd);
+			if (requeue_read && prtd->spx_deferred_reads) {
+				ret = q6asm_read(prtd->audio_client, prtd->stream_id);
+				if (ret) {
+					prtd->spx_pm_error = ret < 0 ? ret : -EIO;
+					dev_err(substream->pcm->card->dev,
+						"SPX: retained capture submit failed: %d\n", ret);
+				} else {
+					prtd->spx_deferred_reads--;
+				}
+			}
+		} else if (prtd->state == Q6ASM_STREAM_PAUSED) {
+			/* PAUSE won the gap after progress but before replacement. */
+			prtd->spx_deferred_elapsed = true;
+		}
+		spin_unlock_irqrestore(&prtd->lock, flags);
+	}
 }
 
 static void event_handler(uint32_t opcode, uint32_t token,
