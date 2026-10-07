@@ -702,6 +702,16 @@ class DesktopMonitor:
         self.max_interarrival_seconds = 0.0
         self.thread = threading.Thread(target=self.consume, daemon=True)
         self.closed = False
+        self.phase_lock = threading.Lock()
+        self.phase_metrics = dict(frames=0, input_peak=0, output_peak=0)
+
+    def begin_phase(self):
+        with self.phase_lock:
+            self.phase_metrics = dict(frames=0, input_peak=0, output_peak=0)
+
+    def phase_snapshot(self):
+        with self.phase_lock:
+            return dict(self.phase_metrics)
 
     def consume(self):
         pending = bytearray()
@@ -722,6 +732,7 @@ class DesktopMonitor:
                     del pending[:960]
                     peak = max(abs(v[0]) for v in struct.iter_unpack('<h', frame))
                     self.input_peak = max(self.input_peak, peak)
+                    input_peak = peak
                     if self.ordinary:
                         # Fixed attenuation preserves channels and dynamics.
                         # Even -32768 stays within the selected limit; full-scale audio
@@ -730,6 +741,10 @@ class DesktopMonitor:
                             for value, in struct.iter_unpack('<h', frame)))
                         peak = max(abs(v[0]) for v in struct.iter_unpack('<h', frame))
                     self.peak = max(self.peak, peak)
+                    with self.phase_lock:
+                        self.phase_metrics["frames"] += 240
+                        self.phase_metrics["input_peak"] = max(self.phase_metrics["input_peak"], input_peak)
+                        self.phase_metrics["output_peak"] = max(self.phase_metrics["output_peak"], peak)
                     need(peak <= self.peak_limit,
                          f'Desktop monitor exceeds peak limit {self.peak_limit}')
                     need(self.forward or peak <= 1, 'Unexpected desktop audio outside owned playback')
@@ -857,20 +872,42 @@ class DesktopGraph:
         self.report.update(sink=self.sink, default_sink_changed=False,
                            gain=1, peak_limit=1433)
 
-    def play(self, data, name):
+    def play(self, data, name, default_sink=False):
         self.monitor.healthy()
+        if default_sink:
+            need(self.run("pactl", "get-default-sink") == self.sink, "Default playback sink changed")
         self.monitor.forward = True
         process = subprocess.Popen(self.command + [
-            'pacat', '--playback', '--raw', '--device=' + self.sink,
+            'pacat', '--playback', '--raw',
+            *([] if default_sink else ['--device=' + self.sink]),
             '--format=s16le', '--rate=48000', '--channels=2',
             '--channel-map=front-left,front-right', '--volume=65536',
             '--latency-msec=20', '--process-time-msec=5',
             '--client-name=spx-desktop-' + name], stdin=subprocess.PIPE,
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, start_new_session=True)
         self.processes.append(process)
+        routing = None
+        if default_sink:
+            deadline = time.monotonic() + 3
+            while routing is None:
+                inputs = json.loads(self.run('pactl', '--format=json', 'list', 'sink-inputs'))
+                matches = [item for item in inputs if item.get('properties', {}).get('application.name') ==
+                           'spx-desktop-' + name]
+                need(len(matches) <= 1, 'Duplicate owned default playback client')
+                if matches:
+                    need(str(matches[0]['sink']) == str(self.public_sink_id),
+                         'Default client is routed to a different sink')
+                    routing = {'input_index': matches[0]['index'], 'sink_index': matches[0]['sink'],
+                               'default_sink': self.sink, 'explicit_device': False}
+                else:
+                    need(process.poll() is None and time.monotonic() < deadline,
+                         'Owned default playback client did not appear')
+                    time.sleep(0.05)
         _, error = process.communicate(data, timeout=6)
         entry = {'name': name, 'pid': process.pid, 'exit_code': process.returncode,
                  'stderr': error.decode(errors='replace')}
+        if routing is not None:
+            entry['routing'] = routing
         self.report['applications'].append(entry)
         need(process.returncode == 0, f'Desktop application failed: {entry}')
 
@@ -1718,6 +1755,9 @@ def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder
         desktop_playback(args, report, pcm, paths, mapping, capture, desktop_holder)
         if args.action == 'serve':
             verify_public_playback(report, pcm, desktop_holder[-1], capture, args.desktop_peak)
+            if getattr(args, "desktop_controls", False):
+                from desktop_controls import verify_controls
+                verify_controls(report, pcm, desktop_holder[-1], capture, tone, need)
             before_serve()
             serve_desktop(args, report, pcm, desktop_holder[-1], paths, mapping)
         # Orderly close while the native slaves can still receive mute and
@@ -1867,6 +1907,9 @@ def initialize(args, report):
     validate_microphone_array(args.action, source, microphone_array)
     validate_capture_contract_check(args.action, getattr(args, 'capture_reopen', False),
                                     getattr(args, 'capture_contract_check', False))
+    need(type(getattr(args, "desktop_controls", False)) is bool and
+         (not getattr(args, "desktop_controls", False) or args.action == "serve"),
+         "--desktop-controls requires serve")
     need(os.geteuid() == 0, 'initialize requires root')
     need(args.action in ('recover', 'capture') or args.allow_amp_power,
          'initialize/listen requires --allow-amp-power for this authorized run')
@@ -1994,6 +2037,7 @@ def initialize(args, report):
                 # Only the explicit recording action keeps a WAV. Automated
                 # acoustic tests retain scores and discard incidental audio.
                 capture = OwnedCapture(initial['internal_cards'][0], report, directory,
+                                       maximum_seconds=120 if getattr(args, 'desktop_controls', False) else 90,
                                        retain_recording=args.action == 'capture')
             baseline = capture.baseline()
             if args.action == 'capture':
@@ -2164,7 +2208,11 @@ def main():
                         help='ordinary desktop session duration, 0 until stopped or 1..86400 seconds (default: 3600)')
     parser.add_argument('--desktop-peak', type=desktop_peak_limit,
                         help='serve-only ordinary PCM peak, 1433..12000 (default: 1433)')
+    parser.add_argument('--desktop-controls', action='store_true',
+                        help='serve-only bounded acoustic software volume/mute/restoration test')
     args = parser.parse_args()
+    if args.desktop_controls and args.action != 'serve':
+        parser.error('--desktop-controls requires serve')
     if args.microphone_array and (args.action != 'feedback' or args.microphone_source != 'DMIC1'):
         parser.error('--microphone-array requires feedback with primary DMIC1')
     if args.capture_contract_check and (args.action != 'desktop-mic' or not args.capture_reopen):

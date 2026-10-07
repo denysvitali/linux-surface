@@ -278,7 +278,7 @@ def prepare(args):
     (OUT / 'entry.cfg').write_text(entry)
     run('grub-syntax', ['grub-script-check', str(OUT / 'entry.cfg')])
     prepared = dict(utc=datetime.now(timezone.utc).isoformat(), preboot_id=BOOT_ID, release=RELEASE, attempt=ATTEMPT, entry='spx-trial-' + ATTEMPT, cmdline=cmdline, source_commit=subprocess.check_output(['git', '-c', 'safe.directory=' + str(REPO), 'rev-parse', 'HEAD'], cwd=REPO, text=True).strip(), build_directory=str(BUILD), private_config=str(OUT / 'kernel.config'), bluetooth_address=args.address, address_is_per_installation=True, venus_trial=False, speaker_drivers_blocked=True, hardware_acceptance_closed=False, installed=False, boot_selected=False, boot_payloads=dict(vmlinuz=sha(OUT / 'vmlinuz'), initramfs=sha(OUT / 'initramfs.img'), dtb=sha(OUT / 'spx.dtb')))
-    prepared.update(sensors_close_debug=args.sensors_close_debug, sensors_crash_recovery=args.sensors_crash_recovery, sensors_startup=args.sensors, sensors_private_ssc=bool(args.sensors_ssc_library), audio_mode='parked' if args.audio else 'blocked',
+    prepared.update(desktop_controls=getattr(args, 'desktop_controls', False), sensors_close_debug=args.sensors_close_debug, sensors_crash_recovery=args.sensors_crash_recovery, sensors_startup=args.sensors, sensors_private_ssc=bool(args.sensors_ssc_library), audio_mode='parked' if args.audio else 'blocked',
                     pmic_rtc=args.pmic_rtc, slim_s2idle_retain=args.slim_s2idle_retain,
                     cpu_passive_cooling=args.cpu_passive_cooling, cpu_passive_trip_mc=actual_cpu_trip,
                     thermal_combined=args.thermal_combined,
@@ -389,6 +389,7 @@ def install(args):
         from audio import UNITS as audio_units
 
         shutil.copy2(HERE / 'audio.py', helper.parent / 'audio.py')
+        shutil.copy2(HERE / 'desktop_controls.py', helper.parent / 'desktop_controls.py')
         if (HERE / 'acoustic.py').exists():
             shutil.copy2(HERE / 'acoustic.py', helper.parent / 'acoustic.py')
         account = pwd.getpwuid(REPO.stat().st_uid)
@@ -1415,10 +1416,16 @@ def validate_capture_contract_check(action, reopen, enabled):
         '--capture-contract-check requires desktop-mic --capture-reopen'
 
 
+def validate_desktop_controls(action, enabled):
+    assert type(enabled) is bool and (not enabled or action == "serve"), \
+        "--desktop-controls requires serve"
+
+
 def arm_audio(args):
     """Queue one authorized initialization or microphone-monitored audio test."""
     action = 'initialize' if args.audio_action == 'plan' else args.audio_action
     source = getattr(args, 'microphone_source', 'DMIC1')
+    validate_desktop_controls(action, getattr(args, 'desktop_controls', False))
     validate_microphone_source(action, source)
     validate_microphone_array(action, source, getattr(args, 'microphone_array', False))
     validate_capture_reopen(action, getattr(args, 'capture_reopen', False))
@@ -1451,6 +1458,7 @@ def arm_audio(args):
                        capture=action in ('feedback', 'desktop', 'serve', 'reopen', 'desktop-mic'),
                        serve_seconds=args.serve_seconds if action == 'serve' else None,
                        desktop_peak=args.desktop_peak if action == 'serve' else None,
+                       desktop_controls=getattr(args, 'desktop_controls', False),
                        return_after_audio_seconds=args.return_after_audio_seconds,
                        utc=datetime.now(timezone.utc).isoformat()), stream, indent=2)
         stream.write('\n')
@@ -1644,6 +1652,7 @@ def requested_audio(args):
         return
     record = json.loads(request.read_text())
     source = record.get('microphone_source', 'DMIC1')
+    validate_desktop_controls(record['action'], record.get('desktop_controls', False))
     validate_microphone_source(record['action'], source)
     validate_microphone_array(record['action'], source, record.get('microphone_array', False))
     validate_capture_reopen(record['action'], record.get('capture_reopen', False))
@@ -1670,6 +1679,7 @@ def requested_audio(args):
     archive_audio_result(boot_id)
     (OUT / 'audio/serve-ready.json').unlink(missing_ok=True)
     args.audio_action = record['action']
+    args.desktop_controls = record.get('desktop_controls', False)
     args.microphone_source = source
     args.microphone_array = record.get('microphone_array', False)
     args.capture_reopen = record.get('capture_reopen', False)
@@ -1712,6 +1722,7 @@ def requested_audio(args):
 def audio_check(args):
     action = args.audio_action
     source = getattr(args, 'microphone_source', 'DMIC1')
+    validate_desktop_controls(action, getattr(args, 'desktop_controls', False))
     validate_microphone_source(action, source)
     validate_microphone_array(action, source, getattr(args, 'microphone_array', False))
     validate_capture_reopen(action, getattr(args, 'capture_reopen', False))
@@ -1766,6 +1777,8 @@ def audio_check(args):
                 command.append('--capture-reopen')
             if action == 'reopen' and getattr(args, 'reopen_first_channel', None):
                 command += ['--reopen-first-channel', args.reopen_first_channel]
+            if getattr(args, 'desktop_controls', False):
+                command.append('--desktop-controls')
             if action == 'serve':
                 assert 0 <= args.serve_seconds <= 82800
                 assert 1433 <= args.desktop_peak <= 12000
@@ -1773,7 +1786,7 @@ def audio_check(args):
                             '--desktop-peak', str(args.desktop_peak)]
         process = subprocess.Popen(command)
         try:
-            status = process.wait(timeout=(args.serve_seconds + 120 if args.serve_seconds else None) if action == 'serve' else
+            status = process.wait(timeout=(args.serve_seconds + (180 if getattr(args, 'desktop_controls', False) else 120) if args.serve_seconds else None) if action == 'serve' else
                                   120 if action in ('feedback', 'desktop', 'reopen', 'desktop-mic') else 90 if action == 'listen' else 40)
         except subprocess.TimeoutExpired:
             # Allow the initializer's signal handler/finally block to park.
@@ -2002,6 +2015,8 @@ def main():
                         help='ordinary desktop playback after acoustic verification (0 until stopped, or 1..82800 seconds)')
     parser.add_argument('--desktop-peak', type=int, default=1433,
                         help='ordinary desktop digital peak cap (1433..12000); minimum PA gain remains fixed')
+    parser.add_argument('--desktop-controls', action='store_true',
+                        help='serve-only acoustic software volume/mute/restoration test')
     parser.add_argument('--allow-amp-power', action='store_true')
     parser.add_argument('--allow-playback', action='store_true')
     parser.add_argument('--allow-capture', action='store_true')
@@ -2015,6 +2030,9 @@ def main():
                         help='after a queued audio test, use the existing return timer after this delay (61..900)')
     parser.add_argument('--desktop-user', default='dvitali')
     args = parser.parse_args()
+    if args.desktop_controls and not ((args.command in ('audio', 'arm-audio') and args.audio_action == 'serve') or
+                                     (args.command == 'prepare' and args.audio)):
+        parser.error('--desktop-controls requires audio/arm-audio serve or prepare --audio')
     if args.tpm_sign and (args.command != 'prepare' or args.audio or args.cdsp or args.thermal_combined or args.sensors_crash_recovery):
         parser.error('--tpm-sign requires prepare and excludes audio/CDSP/thermal/sensor-crash experiments')
     if args.slim_s2idle_retain and (args.command != 'prepare' or not args.audio or not args.pmic_rtc):

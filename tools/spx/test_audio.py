@@ -416,6 +416,12 @@ class AudioTests(unittest.TestCase):
                         self.assertEqual(list(struct.iter_unpack('<hh', received)), expected)
                         self.assertEqual(monitor.input_peak, 32768)
                         self.assertEqual(monitor.peak, limit)
+                        self.assertEqual(monitor.phase_snapshot(), dict(
+                            frames=240, input_peak=32768, output_peak=limit))
+                        monitor.begin_phase()
+                        self.assertEqual(monitor.phase_snapshot(), dict(
+                            frames=0, input_peak=0, output_peak=0))
+                        self.assertEqual(monitor.peak, limit)  # Global safety history survives reset.
                         self.assertIsNone(monitor.error)
                         abort.assert_not_called()
                     finally:
