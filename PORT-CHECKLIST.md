@@ -31,7 +31,8 @@ simultaneous mapping and lifecycle remain open. CB left and DE/DG right playback
 **CM closes P05a:** both CPU clusters and GPU enforce/release cooling limits.
 **CX closes P05b:** five-minute simultaneous CPU/FD680 load and cleanup pass,
 peak69.8C. CY extends this to verified native FP, peak66.3C; automatic responses remain open.
-Default microphone clients remain unverified after helper failure and level abort.
+**DH closes A03c:** two default microphone clients pass acoustically; absent-default
+cleanup is fixed and real virtual-source restoration verified separately.
 B05a early RTC and N01a IPv6 VPN retain prior passes. **N01b is accepted by user
 assumption from working5GHz; no2.4GHz functional pass was measured.** Light
 response needs physical stimulus. Input/BT confirmations belong to BI; the
@@ -758,13 +759,18 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
     [DG result](tools/spx/boot-diagnostics/RESULT-20261007dg.md). **Parked** after
     three changed boots without gain; no supported causal fix.
 
-  - [ ] **A03c — Default desktop microphone clients.** Two ordinary recording
+  - [x] **A03c — Default desktop microphone clients.** Two ordinary recording
     clients use the selected fitted microphone through the default desktop
     source and record known quiet speaker tones. Source-output routing and the
     retained hardware PCM owners must match across client close/idle/reopen.
     Restore the previous source and park the amplifiers; retain no private raw
     recording. CM reaches client idle, then helper cleanup crashes and loses
     the scores; no acceptance. [CM result](tools/spx/boot-diagnostics/RESULT-20261006cm.md).
+    DH boot `a11fcea8-5272-4314-9328-211d486aac49`, fixed mainline release:
+    both ordinary DMIC1 clients pass known tones and retain hardware owners/routes.
+    Separate real silent-source tests verify corrected absent/named/unavailable
+    preference restoration and owned-source cleanup; original failed report retained.
+    [DH result](tools/spx/boot-diagnostics/RESULT-20261007dh.md).
     Persistent availability, hardware capture reopen and full teardown stay open.
 
 - [ ] **A04 — External audio.** Test applicable USB-C audio/dock and Bluetooth
