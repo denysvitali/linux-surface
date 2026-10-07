@@ -102,7 +102,7 @@ class Discovery:
                 return
         raise RuntimeError('owned discovery start/stop not confirmed within5s')
 
-    def run(self):
+    def start(self):
         end = time.monotonic() + .5
         while time.monotonic() < end:
             self.pump()
@@ -112,23 +112,85 @@ class Discovery:
                        for i in objects.values() if 'org.bluez.Device1' in i}
         self.send('scan on')
         self.wait()
-        end = time.monotonic() + 5
+
+    def observe(self, seconds=5):
+        assert seconds == 5 and self.started and not self.stopped
+        end = time.monotonic() + seconds
         while time.monotonic() < end:
             self.pump(min(.1, end - time.monotonic()))
         idle(self.live.objects(), discovering=True)
-        self.send('scan off')
-        self.wait(stopped=True)
-        return dict(observation_seconds=5, discovery_start_confirmed=True,
-                    discovery_stop_confirmed=True, fresh_new_events=self.new_count,
+        return dict(observation_seconds=seconds, discovery_start_confirmed=True,
+                    discovery_active_confirmed=True, fresh_new_events=self.new_count,
                     fresh_rssi_events=self.rssi_count,
                     fresh_peer_count=len(self.new_peers | self.rssi_peers))
+
+    def stop(self):
+        if not self.stopped:
+            self.send('scan off')
+            self.wait(stopped=True)
+
+    def run(self):
+        self.start()
+        result = self.observe()
+        self.stop()
+        result.pop('discovery_active_confirmed')
+        result['discovery_stop_confirmed'] = True
+        return result
+
+    def identity(self):
+        assert self.process.poll() is None, 'owned discovery client exited'
+        proc = Path('/proc') / str(self.process.pid)
+        ticks = int((proc / 'stat').read_text().rsplit(')', 1)[1].split()[19])
+        return dict(pid=self.process.pid, process_start_ticks=ticks,
+                    child_pipes={str(fd): (proc / 'fd' / str(fd)).readlink().as_posix()
+                                 for fd in (0, 1)},
+                    parent_pipes={name: dict(fd=stream.fileno(), inode=os.fstat(stream.fileno()).st_ino)
+                                  for name, stream in (('stdin', self.process.stdin), ('stdout', self.process.stdout))})
+
+    def drain_after_thaw(self):
+        """Discard queued deliveries, not a claim about radio transmission time."""
+        end = time.monotonic() + 2
+        discarded = 0
+
+        def drain():
+            nonlocal discarded
+            while True:
+                assert time.monotonic() < end, 'queued discovery drain exceeded2s'
+                assert self.process.poll() is None, 'owned discovery client exited'
+                try:
+                    chunk = os.read(self.process.stdout.fileno(), 16384)
+                except BlockingIOError:
+                    return
+                assert chunk, 'owned discovery client pipe closed'
+                discarded += len(chunk)
+                assert discarded <= 524288, 'queued discovery output exceeded bound'
+        saved_deadline = self.live.deadline
+        self.live.deadline = min(end, saved_deadline) if saved_deadline is not None else end
+        try:
+            drain()
+            objects = self.live.objects()
+            idle(objects, discovering=True)
+            self.cached = {i['org.bluez.Device1']['Address'].upper()
+                           for i in objects.values() if 'org.bluez.Device1' in i}
+            drain()  # Also discard deliveries queued during the cache observation.
+            self.buffer = b''
+            self.new_peers.clear()
+            self.rssi_peers.clear()
+            self.new_count = self.rssi_count = 0
+            assert self.started and not self.stopped, 'owned discovery lifecycle changed'
+            return dict(queued_bytes_discarded=discarded, drain_reached_eagain=True,
+                        partial_and_event_counters_cleared=True, cached_addresses_refreshed=True,
+                        transmission_timestamps_proven=False)
+        finally:
+            self.live.deadline = saved_deadline
 
     def close(self):
         try:
             if self.process.poll() is None:
                 try:
-                    self.send('scan off')
-                    self.wait(stopped=True, seconds=2)
+                    if not self.stopped:
+                        self.send('scan off')
+                        self.wait(stopped=True, seconds=2)
                     self.send('quit')
                 except (AssertionError, RuntimeError, OSError, ValueError):
                     pass

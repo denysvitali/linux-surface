@@ -107,6 +107,47 @@ class Sleep:
         return self.action('cleanup', result)
 
 
+class RetainedScanner:
+    def __init__(self, radio):
+        self.radio, self.phase, self.stopped = radio, 0, False
+        self.commands = []
+        self.radio.scanner = self
+
+    def start(self):
+        self.commands.append('scan on')
+        self.radio.events.append('scanner-start')
+        self.radio.data[resume.power.ADAPTER][resume.power.INTERFACE]['Discovering'] = True
+
+    def observe(self):
+        self.phase += 1
+        self.radio.events.append('observe' + str(self.phase))
+        no_peer = self.phase == 2 and self.radio.failure == 'no-after'
+        return dict(observation_seconds=5, discovery_start_confirmed=True,
+                    discovery_active_confirmed=True, fresh_peer_count=0 if no_peer else 2,
+                    fresh_new_events=0, fresh_rssi_events=0 if no_peer else 3)
+
+    def identity(self):
+        return dict(pid=18, process_start_ticks=124 if self.radio.failure == 'scanner-identity' and 'sleep' in self.radio.events else 123,
+                    child_pipes={'0': 'pipe:1', '1': 'pipe:2'})
+
+    def drain_after_thaw(self):
+        self.radio.events.append('drain')
+        if self.radio.failure == 'drain': raise RuntimeError('queued output did not drain')
+        return dict(drain_reached_eagain=True, transmission_timestamps_proven=False)
+
+    def stop(self):
+        if not self.stopped:
+            self.commands.append('scan off')
+            self.radio.events.append('scanner-stop')
+            self.radio.data[resume.power.ADAPTER][resume.power.INTERFACE]['Discovering'] = False
+            self.stopped = True
+
+    def close(self):
+        self.stop()
+        self.radio.events.append('scanner-close')
+
+
+
 class Resume(unittest.TestCase):
     def run_case(self, failure=None):
         live = Sleep('/not-written', failure)
@@ -312,6 +353,71 @@ class Resume(unittest.TestCase):
         stat = '17 (bluez name) ' + ' '.join(['S'] + ['0'] * 18 + ['123'] + ['0'] * 5)
         with patch.object(resume.Path, 'read_text', return_value=stat):
             self.assertEqual(radio.identity()['process_start_ticks'], 123)
+
+    def test_retained_client_survives_sleep_and_stops_before_infrastructure_post(self):
+        live = Sleep('/not-written')
+        live.radio.soft = '1'
+        live.radio.data[resume.power.ADAPTER][resume.power.INTERFACE].update(Powered=False, PowerState='off-blocked')
+        with patch.object(resume.signal, 'setitimer'), patch.object(resume.power, 'Discovery', RetainedScanner):
+            result = resume.exercise(live, live.radio, allow_radio_on=True, retain_discovery=True)
+        self.assertTrue(result['complete'])
+        self.assertTrue(result['same_scanner_process_and_pipes'])
+        self.assertEqual(result['scanner_before'], result['scanner_after'])
+        self.assertIn('same active native discovery client', result['scope'])
+        self.assertEqual(live.radio.scanner.commands, ['scan on', 'scan off'])
+        self.assertEqual(live.radio.writes, [True, False])
+        self.assertEqual(live.events, ['gate', 'fixture-enable', 'direct', 'gate', 'scanner-start', 'observe1',
+                                     'idle', 'shadows', 'sleep', 'drain', 'observe2', 'scanner-stop', 'scanner-close',
+                                     'post', 'fixture-restore', 'cleanup'])
+        self.assertFalse(result['post_thaw_drain']['transmission_timestamps_proven'])
+
+    def test_retained_discovery_errors_stop_owned_client_and_restore_without_resume_writes(self):
+        for failure in ('sleep', 'proof', 'scanner-identity', 'drain', 'no-after'):
+            with self.subTest(failure=failure):
+                live = Sleep('/not-written', failure)
+                live.radio.soft = '1'
+                live.radio.data[resume.power.ADAPTER][resume.power.INTERFACE].update(Powered=False, PowerState='off-blocked')
+                with patch.object(resume.signal, 'setitimer'), patch.object(resume.power, 'Discovery', RetainedScanner):
+                    result = resume.exercise(live, live.radio, allow_radio_on=True, retain_discovery=True)
+                self.assertFalse(result['complete'])
+                self.assertEqual(live.radio.scanner.commands, ['scan on', 'scan off'])
+                self.assertLess(live.events.index('scanner-close'), live.events.index('fixture-restore'))
+                self.assertEqual(live.radio.writes, [True, False])
+                self.assertTrue(result['radio_fixture']['restored'])
+                if failure == 'no-after': self.assertTrue(result['fixture_inconclusive'])
+
+    def test_actual_drain_discards_queued_and_partial_private_events_before_new_counts(self):
+        client = resume.power.Discovery.__new__(resume.power.Discovery)
+        client.live = Mock()
+        client.live.deadline = None
+        client.live.objects.return_value = {resume.power.ADAPTER: {resume.power.INTERFACE: dict(Discovering=True, Discoverable=False)}}
+        client.process = Mock()
+        client.process.poll.return_value = None
+        client.buffer = b'[CHG] Device PRIVATE-PARTIAL'
+        client.cached, client.new_peers, client.rssi_peers = set(), {'private-old'}, {'private-old'}
+        client.new_count, client.rssi_count, client.started, client.stopped = 9, 8, True, False
+        queued = b'[CHG] Device 10:20:30:40:50:60 RSSI: -40\n'
+        with patch.object(resume.power.os, 'read', side_effect=[queued, BlockingIOError(), queued, BlockingIOError()]):
+            result = client.drain_after_thaw()
+        self.assertTrue(result['drain_reached_eagain'])
+        self.assertEqual(result['queued_bytes_discarded'], len(queued) * 2)
+        self.assertEqual(client.buffer, b'')
+        self.assertEqual((client.new_count, client.rssi_count), (0, 0))
+        self.assertFalse(client.new_peers | client.rssi_peers)
+        self.assertIsNone(client.live.deadline)
+        client.line('[CHG] Device 20:30:40:50:60:70 RSSI: -45')
+        self.assertEqual(client.rssi_count, 1)
+
+    def test_actual_drain_deadline_failure_restores_command_deadline(self):
+        client = resume.power.Discovery.__new__(resume.power.Discovery)
+        client.live = Mock()
+        client.live.deadline = 90
+        client.process = Mock()
+        client.process.poll.return_value = None
+        with patch.object(resume.power.time, 'monotonic', side_effect=[0, 3]):
+            with self.assertRaisesRegex(AssertionError, 'exceeded2s'):
+                client.drain_after_thaw()
+        self.assertEqual(client.live.deadline, 90)
 
     def test_cli_refuses_incompatible_modes_before_execution(self):
         trial = Path(__file__).with_name('trial.py')

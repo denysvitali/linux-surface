@@ -143,28 +143,32 @@ class Radio(power.Live):
             time.sleep(.1)
 
 
-def scan_proven(result):
+def scan_proven(result, *, retained=False):
     return bool(result.get('observation_seconds') == 5 and
                 result.get('discovery_start_confirmed') is True and
-                result.get('discovery_stop_confirmed') is True and
+                result.get('discovery_active_confirmed' if retained else 'discovery_stop_confirmed') is True and
                 result.get('fresh_peer_count', 0) > 0 and
                 result.get('fresh_new_events', 0) + result.get('fresh_rssi_events', 0) > 0)
 
 
-def require_same(radio, before, identity):
-    power.unchanged(before, radio.snapshot())
+def require_same(radio, before, identity, *, discovering=False):
+    power.unchanged(before, radio.snapshot(discovering=discovering))
     assert radio.identity() == identity, 'native BlueZ PID/start time changed'
 
 
-def exercise(ops, radio=None, *, allow_radio_on=False):
+def exercise(ops, radio=None, *, allow_radio_on=False, retain_discovery=False):
     result = dict(complete=False, scope='fresh Bluetooth discovery before/after one normal30s AC s2idle',
                   audio_tested=False, audio_mode='parked-retention',
                   full_suspend_acceptance=False, pairing_reconnect_acceptance=False,
                   fixture_inconclusive=False, scans={}, resume_radio_power_written=False,
+                  retained_discovery=retain_discovery, same_scanner_process_and_pipes=False,
                   radio_fixture=dict(authorized=allow_radio_on, changed=False, restored=False))
+    if retain_discovery:
+        result['scope'] = 'same active native discovery client across normal30s AC s2idle; fresh delivered reports after queue drain'
     radio = radio or Radio(ops.output, ops.attempt, ops.release)
     before = identity = original = None
     fixture_changed = False
+    scanner_identity = None
     started = time.clock_gettime(time.CLOCK_BOOTTIME)
     try:
         assert ops.parked_audio is True, 'loaded parked-audio sleep contract required'
@@ -191,23 +195,51 @@ def exercise(ops, radio=None, *, allow_radio_on=False):
         ops.gate()  # Original native sleep gates and 360s return reserve.
         assert radio.gate() == address, 'prepared controller address changed'
         require_same(radio, before, identity)
-        result['scans']['before'] = radio.scan()
-        if not scan_proven(result['scans']['before']):
+        if retain_discovery:
+            radio.client = power.Discovery(radio)
+            radio.client.start()
+            scanner_identity = radio.client.identity()
+            result['scanner_before'] = scanner_identity
+            result['scans']['before'] = radio.client.observe()
+        else:
+            result['scans']['before'] = radio.scan()
+        if not scan_proven(result['scans']['before'], retained=retain_discovery):
             result['fixture_inconclusive'] = result['scans']['before'].get('fresh_peer_count', 0) == 0
             raise RuntimeError('fresh pre-sleep discovery proof missing')
-        require_same(radio, before, identity)
+        require_same(radio, before, identity, discovering=retain_discovery)
+        if retain_discovery:
+            assert radio.client.identity() == scanner_identity, 'owned scanner identity changed before sleep'
         result['phase'] = 'fresh-discovery-before-normal-suspend'
         ops.save(result)
         ops.inhibit_idle()
         ops.open_shadows()
         result['sleep'] = ops.sleep()
         assert sleep.sleep_proven(result['sleep']), 'normal-service/RTC/kernel/thaw proof incomplete'
-        result['after'] = ops.post(result['before'])
-        require_same(radio, before, identity)
-        result['scans']['after'] = radio.scan()
-        if not scan_proven(result['scans']['after']):
-            result['fixture_inconclusive'] = result['scans']['after'].get('fresh_peer_count', 0) == 0
-            raise RuntimeError('fresh post-sleep discovery proof missing')
+        if retain_discovery:
+            assert radio.client.identity() == scanner_identity, 'owned scanner identity changed across sleep'
+            # Drain BEFORE slower WLAN/sensor/storage observations. The result
+            # proves newly delivered reports after EAGAIN, not radio timestamps.
+            result['post_thaw_drain'] = radio.client.drain_after_thaw()
+            result['scans']['after'] = radio.client.observe()
+            result['scanner_after'] = radio.client.identity()
+            assert result['scanner_after'] == scanner_identity, 'owned scanner pipes changed after thaw'
+            require_same(radio, before, identity, discovering=True)
+            if not scan_proven(result['scans']['after'], retained=True):
+                result['fixture_inconclusive'] = result['scans']['after'].get('fresh_peer_count', 0) == 0
+                raise RuntimeError('fresh post-thaw delivered discovery proof missing')
+            radio.client.stop()
+            radio.client.close()
+            radio.client = None
+            result['same_scanner_process_and_pipes'] = True
+            result['retained_discovery_stopped_and_reaped'] = True
+            result['after'] = ops.post(result['before'])
+        else:
+            result['after'] = ops.post(result['before'])
+            require_same(radio, before, identity)
+            result['scans']['after'] = radio.scan()
+            if not scan_proven(result['scans']['after']):
+                result['fixture_inconclusive'] = result['scans']['after'].get('fresh_peer_count', 0) == 0
+                raise RuntimeError('fresh post-sleep discovery proof missing')
         require_same(radio, before, identity)
         result['same_controller_policy_rfkill_network'] = True
         result['same_native_bluez_process'] = True

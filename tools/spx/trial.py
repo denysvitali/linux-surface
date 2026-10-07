@@ -1933,12 +1933,13 @@ def systemd_suspend(args):
     owner = 'systemd-suspend-' + ATTEMPT
     subprocess.run([lock, 'acquire', 'device', owner], check=True)
     try:
-        name = 'bluetooth-resume' if args.bluetooth_resume else ('audio-resume' if args.live_audio_resume else ('systemd-suspend-recovery' if args.verify_sleep_return else 'systemd-suspend'))
+        name = 'bluetooth-discovery-resume' if args.retain_bluetooth_discovery else ('bluetooth-resume' if args.bluetooth_resume else ('audio-resume' if args.live_audio_resume else ('systemd-suspend-recovery' if args.verify_sleep_return else 'systemd-suspend')))
         live = Live(OUT / name, ATTEMPT, RELEASE, parked_audio=args.parked_audio or args.live_audio_resume or args.bluetooth_resume,
                     desktop_user=args.desktop_user)
         if args.bluetooth_resume:
             from bluetooth_resume import exercise as bluetooth_resume
-            result = bluetooth_resume(live, allow_radio_on=args.allow_radio_on)
+            result = bluetooth_resume(live, allow_radio_on=args.allow_radio_on,
+                                      retain_discovery=args.retain_bluetooth_discovery)
         elif args.live_audio_resume:
             from audio_resume import exercise as audio_resume
             result = audio_resume(live, args, owner)
@@ -2024,6 +2025,8 @@ def main():
                         help='prepare/systemd-suspend: quiet public audio before/after one normal sleep with the same native owners')
     parser.add_argument('--default-mic-resume', action='store_true',
                         help='live-audio-resume only: retain one ordinary default-source recording client across normal sleep')
+    parser.add_argument('--retain-bluetooth-discovery', action='store_true',
+                        help='Bluetooth-resume-only: retain one active native discovery client through sleep')
     parser.add_argument('--allow-radio-on', action='store_true',
                         help='Bluetooth-resume-only: temporarily enable an initially off/softblocked fitted radio and restore it')
     parser.add_argument('--bluetooth-resume', action='store_true',
@@ -2101,6 +2104,8 @@ def main():
     args = parser.parse_args()
     if args.default_mic_resume and not args.live_audio_resume:
         parser.error('--default-mic-resume requires --live-audio-resume')
+    if args.retain_bluetooth_discovery and not args.bluetooth_resume:
+        parser.error('--retain-bluetooth-discovery requires --bluetooth-resume')
     if args.allow_radio_on and not args.bluetooth_resume:
         parser.error('--allow-radio-on requires --bluetooth-resume')
     if args.bluetooth_resume and (args.command != 'systemd-suspend' or args.live_audio_resume or args.verify_sleep_return):
