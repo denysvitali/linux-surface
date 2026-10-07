@@ -13,6 +13,7 @@ import struct
 import subprocess
 import tempfile
 import time
+import traceback
 
 import pmic_rtc
 from sensors import lifecycle
@@ -54,7 +55,8 @@ def exercise(ops):
         result['after'] = ops.post(result['before'])
         result['functional_pass'] = True
     except Exception as error:
-        result['error'] = str(error)
+        result['error'] = type(error).__name__ + ': ' + str(error)
+        result['traceback'] = traceback.format_exc()
         if hasattr(ops, 'sleep_result'):
             result['sleep'] = ops.sleep_result
     finally:
@@ -133,8 +135,18 @@ class Live:
     def network(self):
         state = self.run('network', ['nmcli', '-g', 'GENERAL.STATE,GENERAL.CONNECTION', 'device', 'show', 'wlan0'])
         assert state.splitlines()[0].startswith('100'), 'wlan0 not connected'
-        assert Path('/sys/class/net/wlan0/carrier').read_text().strip() == '1'
+        assert Path('/sys/class/net/wlan0/carrier').read_text().strip() == '1', 'wlan0 carrier absent'
         return state
+
+    def connected_network(self):
+        end = time.monotonic() + 20
+        while True:
+            try:
+                return self.network()
+            except AssertionError:
+                if time.monotonic() >= end:
+                    raise
+                time.sleep(.5)
 
     def gate(self):
         assert os.geteuid() == 0 and os.uname().release == self.release
@@ -170,7 +182,7 @@ class Live:
         self.original_verified = True
         if self.sensor is None:
             self.sensor = lifecycle.Live(self.output / 'sensor-observations', self.attempt, self.release)
-        return dict(services=self.services(), network=self.network(), streams=self.streams('before'))
+        return dict(services=self.services(), network=self.connected_network(), streams=self.streams('before'))
 
     def direct(self):
         output = self.output.parent / 'pmic-rtc-suspend'
