@@ -369,6 +369,8 @@ def install(args):
         for name in ('check.py', 'sign.py'):
             shutil.copy2(HERE / 'tpm' / name, tpm_helpers / name)
             (tpm_helpers / name).chmod(0o644)
+    shutil.copy2(HERE / 'audio_stop.py', helper.parent / 'audio_stop.py')
+    (helper.parent / 'audio_stop.py').chmod(0o644)
     # The retained board DTB already contains this policy in later trials.
     shutil.copy2(HERE / 'thermal.py', helper.parent / 'thermal.py')
     if prepared.get('pmic_rtc'):
@@ -1360,11 +1362,12 @@ def return_to_default(args):
     assert 'saved_entry=spx-known-good' in env.splitlines()
     assert not any((l.startswith('next_entry=') and l != 'next_entry=' for l in env.splitlines()))
     assert 'BootNext:' not in subprocess.check_output(['efibootmgr'], text=True)
+    audio_stop = stop_desktop_audio(args)
     for label, args in [('kernel.log', ['journalctl', '-b', '-k', '--no-pager', '-o', 'short-monotonic']), ('journal.log', ['journalctl', '-b', '--no-pager', '-o', 'short-monotonic'])]:
         with (out / label).open('wb') as stream:
             subprocess.run(args, stdout=stream, stderr=subprocess.STDOUT, check=True, timeout=30)
     # This record precedes shutdown; only the next boot can establish recovery.
-    (out / 'return.json').write_text(json.dumps(dict(utc=datetime.now(timezone.utc).isoformat(), boot_id=boot, release=os.uname().release, uptime=Path('/proc/uptime').read_text().strip(), phase='reboot-request', shutdown_completion_verified=False, known_good_payloads_intact=True, persistent_default='spx-known-good', next_entry_empty=True), indent=2) + '\n')
+    (out / 'return.json').write_text(json.dumps(dict(utc=datetime.now(timezone.utc).isoformat(), boot_id=boot, release=os.uname().release, uptime=Path('/proc/uptime').read_text().strip(), phase='reboot-request', shutdown_completion_verified=False, audio_stop_complete=audio_stop['complete'], audio_stop_result=str(out / 'audio-stop.json'), known_good_payloads_intact=True, persistent_default='spx-known-good', next_entry_empty=True), indent=2) + '\n')
     assert Path('/proc/sys/kernel/random/boot_id').read_text().strip() == boot
     env = dict((line.split('=', 1) for line in subprocess.check_output(['grub-editenv', '/boot/grub/grubenv', 'list'], text=True).splitlines()))
     assert env['saved_entry'] == 'spx-known-good' and (not env.get('next_entry'))
@@ -1521,6 +1524,19 @@ def archive_audio_result(boot):
             target = directory / name
             if not target.exists():
                 shutil.copy2(source, target)
+
+
+def stop_desktop_audio(args):
+    """Orderly owner-only stop; failure prevents the guarded return reboot."""
+    from audio_stop import Live, exercise
+    os.umask(0o077)
+    boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    live = Live(OUT, ATTEMPT, RELEASE, boot, HERE, args.desktop_user, args.desktop_peak)
+    result = exercise(live)
+    print(json.dumps(dict(audio_stop_complete=result['complete'],
+                         result=str(OUT / 'audio-stop.json'),
+                         no_active_audio=result.get('no_active_audio', False))), flush=True)
+    return result
 
 
 def enable_desktop_audio(args):
@@ -1923,7 +1939,7 @@ def cdsp_capabilities(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend', 'audio', 'arm-audio', 'enable-desktop-audio', 'usbc-reload', 'wifi-band', 'display-power', 'srtc-timer', 'power-measure', 'sensors-lifecycle', 'thermal', 'cdsp-capabilities', 'tpm-sign', 'systemd-suspend'))
+    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend', 'audio', 'arm-audio', 'enable-desktop-audio', 'stop-audio', 'usbc-reload', 'wifi-band', 'display-power', 'srtc-timer', 'power-measure', 'sensors-lifecycle', 'thermal', 'cdsp-capabilities', 'tpm-sign', 'systemd-suspend'))
     parser.add_argument('attempt')
     parser.add_argument('--build', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bg/work-build'))
     parser.add_argument('--parent', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bf'))
@@ -2080,7 +2096,7 @@ def main():
             {'install': install, 'boot': boot, 'return': return_to_default,
              'extend': extend_window, 'audio': audio_check, 'arm-audio': arm_audio,
              'usbc-reload': usbc_reload, 'wifi-band': wifi_band, 'display-power': display_power,
-             'enable-desktop-audio': enable_desktop_audio, 'power-measure': power_measure, 'sensors-lifecycle': sensors_lifecycle, 'thermal': thermal_check, 'cdsp-capabilities': cdsp_capabilities, 'tpm-sign': tpm_sign, 'systemd-suspend': systemd_suspend}[args.command](args)
+             'enable-desktop-audio': enable_desktop_audio, 'stop-audio': stop_desktop_audio, 'power-measure': power_measure, 'sensors-lifecycle': sensors_lifecycle, 'thermal': thermal_check, 'cdsp-capabilities': cdsp_capabilities, 'tpm-sign': tpm_sign, 'systemd-suspend': systemd_suspend}[args.command](args)
 
 
 if __name__ == '__main__':
