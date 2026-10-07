@@ -911,9 +911,9 @@ host datapath; that is not current cellular service verification.
     setup and44 malformed MSFT vendor events remain unresolved despite subsequent
     fresh traffic. No error-free transport, pairing/use/reconnect/resume claim.
     [DT result](tools/spx/boot-diagnostics/RESULT-20261007dt.md).
-    **DU pending:** one bounded setup-only UART parser trace, exact rejected
-    type/offset/phase; same native power test queued automatically after baseline.
-    No transport fix or new acceptance claim yet.
+    **DU:** same native cycles pass with16/13 fresh peers; enabled setup trace
+    sees no UART error, so intermittent framing remains unresolved.44 MSFT
+    warnings reproduce. No new acceptance or corrected-transport claim.
     [DU result](tools/spx/boot-diagnostics/RESULT-20261007du.md).
 
 - [ ] **N03 — Cellular control/data.** Stable modem startup and discovery, correct
