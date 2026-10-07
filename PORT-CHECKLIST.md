@@ -823,6 +823,18 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
     No admitted format change, same-handle reprepare or full lifecycle claim.
     [DM result](tools/spx/boot-diagnostics/RESULT-20261007dm.md).
 
+  - [ ] **A03f — Bounded default desktop volume and mute controls.** The same
+    retained native PCM responds acoustically to desktop sink attenuation, mute
+    and unmute. At the quiet1433 output cap/minimum PA gain, reduced and restored
+    playback must pass the existing tone/noise criteria. Reduced coherent levels
+    must be−6dB±3dB relative to both unity phases; restored levels within±3dB.
+    Muted full-scale input must complete with monitor output≤1 and at least20dB
+    coherent suppression across all predefined settled windows against both
+    unity phases. Insufficient signal/noise margin is inconclusive. Preserve
+    PCM ownership, discard raw capture and restore controls/graph on cleanup.
+    These engineering limits do not establish calibrated listening volume,
+    physical speaker balance or the full useful volume range.
+
 - [ ] **A04 — External audio.** Test applicable USB-C audio/dock and Bluetooth
   output/input devices, routing, hotplug and reconnect. The logical codec
   "Headset Jack" node does not establish a physical analog jack on this device.
