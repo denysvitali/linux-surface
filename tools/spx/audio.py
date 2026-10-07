@@ -377,6 +377,10 @@ class OwnedCapture:
         need(channels == 1 or (maximum_seconds <= 50 and not retain_recording),
              'Stereo capture requires a <=50 second bound and discarded recording')
         self.channels = channels
+        # Q6ASM capture periods are at most 4096 bytes and multiples of 480 frames.
+        # Keep the established 3840-byte period for both native stereo and mono.
+        self.period_frames = 1920 // channels
+        self.buffer_frames = 7680 // channels
         self.card = card
         self.started = time.monotonic()
         self.closed = True
@@ -396,7 +400,8 @@ class OwnedCapture:
             self.process = subprocess.Popen(
                 ['arecord', '--fatal-errors', '-q', '-D', f'{"hw" if channels == 2 else "plughw"}:{card},1',
                  '-t', 'raw', '-f', 'S16_LE', '-r', '48000', '-c', str(channels),
-                 '--period-size=1920', '--buffer-size=7680', '-d', str(maximum_seconds)],
+                 f'--period-size={self.period_frames}', f'--buffer-size={self.buffer_frames}',
+                 '-d', str(maximum_seconds)],
                 stdout=subprocess.PIPE, stderr=self.log, bufsize=0)
         except Exception:
             self.log.close()
@@ -406,7 +411,7 @@ class OwnedCapture:
         report['microphone_capture'] = True
         report['capture'] = {'pid': self.process.pid, 'device': f'{"hw" if channels == 2 else "plughw"}:{card},1',
                              'source': source, 'rate': 48000, 'channels': channels,
-                             'period_frames': 1920, 'buffer_frames': 7680,
+                             'period_frames': self.period_frames, 'buffer_frames': self.buffer_frames,
                              'maximum_seconds': maximum_seconds, 'phases': []}
         self.thread = threading.Thread(target=self.consume, daemon=True)
         self.thread.start()
@@ -488,11 +493,11 @@ class OwnedCapture:
         need(re.search(r'^owner_pid\s*:\s*' + str(self.process.pid) + r'$', status, re.M),
              'Capture ownership changed')
         hw_params = read_text(self.status.with_name('hw_params'))
-        for expression in (r'^format: S16_LE$', rf'^channels: {self.channels}$',
-                           r'^rate: 48000(?: |$)', r'^period_size: 1920$',
-                           r'^buffer_size: 7680$'):
-            need(re.search(expression, hw_params, re.M), 'Capture geometry changed')
         self.report['capture']['hw_params'] = hw_params
+        for expression in (r'^format: S16_LE$', rf'^channels: {self.channels}$',
+                           r'^rate: 48000(?: |$)', rf'^period_size: {self.period_frames}$',
+                           rf'^buffer_size: {self.buffer_frames}$'):
+            need(re.search(expression, hw_params, re.M), 'Capture geometry changed')
         self.report['capture']['baseline'] = {'start_frame': 48000, 'end_frame': 144000,
             'rms': rms, 'peak': max(abs(v) for v in samples),
             'abort_rms': self.limit, 'status': status, 'input_rms': rms_inputs}

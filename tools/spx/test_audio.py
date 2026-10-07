@@ -83,9 +83,34 @@ class AudioTests(unittest.TestCase):
             capture.log.close()
         command = opened.call_args.args[0]
         self.assertIn('hw:0,1', command)
+        self.assertIn('--period-size=960', command)
+        self.assertIn('--buffer-size=3840', command)
+        self.assertLessEqual(report['capture']['period_frames'] * 4, 4096)
+        self.assertEqual(report['capture']['period_frames'] % 480, 0)
         self.assertEqual(command[command.index('-c') + 1], '2')
         self.assertEqual(command[-2:], ['-d', '50'])
         self.assertFalse(capture.retain_recording)
+
+    def test_stereo_baseline_verifies_native_geometry_and_keeps_rejected_params(self):
+        from array import array
+        for period in (960, 1920):
+            with self.subTest(period=period):
+                capture = audio.OwnedCapture.__new__(audio.OwnedCapture)
+                capture.channels, capture.period_frames, capture.buffer_frames = 2, 960, 3840
+                capture.report = {'capture': {}}
+                capture.process = SimpleNamespace(pid=123)
+                capture.status = Path('/capture/status')
+                capture.wait_frames = Mock()
+                capture.samples = Mock(return_value=array('h', [1, 2] * 100))
+                params = f'format: S16_LE\nchannels: 2\nrate: 48000\nperiod_size: {period}\nbuffer_size: 3840\n'
+                with patch.object(audio, 'read_text', side_effect=['state: RUNNING\nowner_pid: 123\n', params]):
+                    if period == 960:
+                        capture.baseline()
+                        self.assertEqual(capture.report['capture']['baseline']['input_rms'], [1, 2])
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, 'Capture geometry changed'):
+                            capture.baseline()
+                self.assertEqual(capture.report['capture']['hw_params'], params)
 
     def test_array_scorer_rejects_missing_input_and_exact_duplicate(self):
         from array import array
@@ -207,6 +232,8 @@ class AudioTests(unittest.TestCase):
                     self.assertEqual(report['microphone_source'], source)
                     self.assertEqual(report['microphone_mixer'][-1]['selected'], source)
                     self.assertEqual(command[-2:], ['-d', '90'])
+                    self.assertIn('--period-size=1920', command)
+                    self.assertIn('--buffer-size=7680', command)
                     return SimpleNamespace(pid=2345)
 
                 with patch.object(audio, 'parameter', return_value='Y'), \
