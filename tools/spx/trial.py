@@ -1381,6 +1381,11 @@ def validate_microphone_source(action, source):
     assert source == 'DMIC1' or action in ('capture', 'feedback', 'desktop-mic'), 'DMIC0 requires capture or feedback or desktop-mic'
 
 
+def validate_microphone_array(action, source, enabled):
+    assert type(enabled) is bool and (not enabled or (action == 'feedback' and source == 'DMIC1')), \
+        '--microphone-array requires feedback with primary DMIC1'
+
+
 def validate_capture_reopen(action, enabled):
     assert type(enabled) is bool and (not enabled or action == 'desktop-mic'), \
         '--capture-reopen requires desktop-mic'
@@ -1391,6 +1396,7 @@ def arm_audio(args):
     action = 'initialize' if args.audio_action == 'plan' else args.audio_action
     source = getattr(args, 'microphone_source', 'DMIC1')
     validate_microphone_source(action, source)
+    validate_microphone_array(action, source, getattr(args, 'microphone_array', False))
     validate_capture_reopen(action, getattr(args, 'capture_reopen', False))
     require_source_boot()
     recovery()
@@ -1413,7 +1419,7 @@ def arm_audio(args):
     with (OUT / 'audio-request.json').open('x') as stream:
         json.dump(dict(attempt=ATTEMPT, release=RELEASE, preboot_id=BOOT_ID,
                        desktop_user=account.pw_name, action=action,
-                       microphone_source=source, capture_reopen=getattr(args, 'capture_reopen', False),
+                       microphone_source=source, microphone_array=getattr(args, 'microphone_array', False), capture_reopen=getattr(args, 'capture_reopen', False),
                        allow_amp_power=True, playback=action in ('feedback', 'desktop', 'serve', 'reopen', 'desktop-mic'),
                        capture=action in ('feedback', 'desktop', 'serve', 'reopen', 'desktop-mic'),
                        serve_seconds=args.serve_seconds if action == 'serve' else None,
@@ -1599,6 +1605,7 @@ def requested_audio(args):
     record = json.loads(request.read_text())
     source = record.get('microphone_source', 'DMIC1')
     validate_microphone_source(record['action'], source)
+    validate_microphone_array(record['action'], source, record.get('microphone_array', False))
     validate_capture_reopen(record['action'], record.get('capture_reopen', False))
     words = Path('/proc/cmdline').read_text().split()
     boot_id = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
@@ -1622,6 +1629,7 @@ def requested_audio(args):
     (OUT / 'audio/serve-ready.json').unlink(missing_ok=True)
     args.audio_action = record['action']
     args.microphone_source = source
+    args.microphone_array = record.get('microphone_array', False)
     args.capture_reopen = record.get('capture_reopen', False)
     args.allow_amp_power = True
     args.allow_playback = feedback
@@ -1662,6 +1670,7 @@ def audio_check(args):
     action = args.audio_action
     source = getattr(args, 'microphone_source', 'DMIC1')
     validate_microphone_source(action, source)
+    validate_microphone_array(action, source, getattr(args, 'microphone_array', False))
     validate_capture_reopen(action, getattr(args, 'capture_reopen', False))
     command = ['python3', '-B', str(HERE / 'audio.py'), action,
                '--output', str(OUT / 'audio'), '--microphone-source', source]
@@ -1704,6 +1713,8 @@ def audio_check(args):
                 command.append('--allow-playback')
             if action in ('capture', 'feedback', 'desktop', 'serve', 'reopen', 'desktop-mic'):
                 command.append('--allow-capture')
+            if getattr(args, 'microphone_array', False):
+                command.append('--microphone-array')
             if getattr(args, 'capture_reopen', False):
                 command.append('--capture-reopen')
             if action == 'reopen' and getattr(args, 'reopen_first_channel', None):
@@ -1893,6 +1904,8 @@ def main():
     parser.add_argument('--allow-amp-power', action='store_true')
     parser.add_argument('--allow-playback', action='store_true')
     parser.add_argument('--allow-capture', action='store_true')
+    parser.add_argument('--microphone-array', action='store_true',
+                        help='feedback-only fresh native stereo DMIC1/DMIC0 capture')
     parser.add_argument('--microphone-source', choices=('DMIC0', 'DMIC1'), default='DMIC1',
                         help='bounded capture/feedback/desktop-mic input (default: DMIC1)')
     parser.add_argument('--reuse-installed-modules', action='store_true',
@@ -1903,6 +1916,9 @@ def main():
     args = parser.parse_args()
     if args.slim_s2idle_retain and (args.command != 'prepare' or not args.audio or not args.pmic_rtc):
         parser.error('--slim-s2idle-retain requires prepare --audio --pmic-rtc')
+    if args.microphone_array and (args.command not in ('audio', 'arm-audio') or
+                                  args.audio_action != 'feedback' or args.microphone_source != 'DMIC1'):
+        parser.error('--microphone-array requires audio/arm-audio feedback with primary DMIC1')
     if args.capture_reopen and (args.command not in ('audio', 'arm-audio') or args.audio_action != 'desktop-mic'):
         parser.error('--capture-reopen requires audio/arm-audio --audio-action desktop-mic')
     if args.reopen_first_channel is not None and (args.command != 'audio' or args.audio_action != 'reopen'):

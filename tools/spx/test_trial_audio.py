@@ -54,6 +54,41 @@ class TrialAudioFixture(unittest.TestCase):
 
 
 class AudioRequestTests(TrialAudioFixture):
+    def test_array_cli_rejects_wrong_actions_before_hardware(self):
+        for command, action, source in (('prepare', 'feedback', 'DMIC1'),
+                                        ('audio', 'desktop-mic', 'DMIC1'),
+                                        ('arm-audio', 'feedback', 'DMIC0')):
+            with self.subTest(command=command, action=action), \
+                    patch.object(sys, 'argv', ['trial.py', command, '20261007dj',
+                        '--audio-action', action, '--microphone-source', source, '--microphone-array']), \
+                    patch.object(sys, 'stderr', io.StringIO()), \
+                    patch.object(trial, 'audio_check') as check:
+                with self.assertRaises(SystemExit) as stopped:
+                    trial.main()
+                self.assertEqual(stopped.exception.code, 2)
+                check.assert_not_called()
+
+    def test_array_recorded_and_forwarded_direct_and_armed(self):
+        (self.out / 'prepared.json').write_text(json.dumps(dict(audio_mode='parked')))
+        (self.out / 'installed.json').touch()
+        args = SimpleNamespace(audio_action='feedback', microphone_source='DMIC1',
+            microphone_array=True, allow_amp_power=True, allow_playback=True, allow_capture=True,
+            desktop_user='dvitali', return_after_audio_seconds=None)
+        account = SimpleNamespace(pw_uid=1000, pw_name='dvitali')
+        with patch.object(trial, 'require_source_boot'), patch.object(trial, 'recovery'), \
+                patch.object(trial.pwd, 'getpwnam', return_value=account):
+            trial.arm_audio(args)
+        self.assertTrue(json.loads((self.out / 'audio-request.json').read_text())['microphone_array'])
+        with patch.object(trial.os, 'geteuid', return_value=0), \
+                patch.object(trial.pwd, 'getpwnam', return_value=account), \
+                patch.object(trial.subprocess, 'Popen') as opened:
+            opened.return_value.wait.return_value = 0
+            trial.audio_check(args)
+        self.assertIn('--microphone-array', opened.call_args.args[0])
+        with patch.object(trial, 'audio_check') as check:
+            trial.requested_audio(SimpleNamespace())
+        self.assertTrue(check.call_args.args[0].microphone_array)
+
     def test_capture_reopen_cli_rejects_other_actions_before_lock(self):
         for command, action in (('prepare', 'desktop-mic'), ('audio', 'feedback'),
                                 ('arm-audio', 'reopen'), ('check', 'desktop-mic')):

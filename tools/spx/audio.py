@@ -254,7 +254,12 @@ def validate_microphone_source(action, source):
          'DMIC0 is only supported for capture or feedback or desktop-mic')
 
 
-def configure_microphone(card, report, saved, source='DMIC1'):
+def validate_microphone_array(action, source, enabled):
+    need(type(enabled) is bool and (not enabled or (action == 'feedback' and source == 'DMIC1')),
+         '--microphone-array requires feedback with primary DMIC1')
+
+
+def configure_microphone(card, report, saved, source='DMIC1', microphone_array=False):
     """Select one DMIC -> DEC0 -> MM2 route before capture; preserve controls."""
     need(source in ('DMIC0', 'DMIC1'), 'Unknown microphone source')
     need(parameter('q6asm_dai', 'spx_keep_asm') == 'Y',
@@ -263,35 +268,115 @@ def configure_microphone(card, report, saved, source='DMIC1'):
         need(read_text(path) == 'closed', f'Capture already open: {path}')
     base = ['amixer', '-c', str(card)]
     report['microphone_mixer'] = []
-    for name, value in (
-            ('MultiMedia2 Mixer SLIMBUS_0_TX', '1'),
-            ('AIF1_CAP Mixer SLIM TX0', '1'), ('CDC_IF TX0 MUX', 'DEC0'),
-            ('DEC0 Volume', '84'), ('ADC MUX0', 'DMIC'), ('DMIC MUX0', source)):
+    controls = [('MultiMedia2 Mixer SLIMBUS_0_TX', '1'),
+                ('AIF1_CAP Mixer SLIM TX0', '1'), ('CDC_IF TX0 MUX', 'DEC0'),
+                ('DEC0 Volume', '84'), ('ADC MUX0', 'DMIC'), ('DMIC MUX0', source)]
+    if microphone_array:
+        listing = subprocess.run(base + ['controls'], capture_output=True, text=True,
+                                 check=True, timeout=5).stdout
+        routes = re.findall(r"name='(AIF1_CAP Mixer SLIM TX\d+)'", listing)
+        need('AIF1_CAP Mixer SLIM TX0' in routes and 'AIF1_CAP Mixer SLIM TX1' in routes,
+             'Both native capture routes are required')
+        controls = [('MultiMedia2 Mixer SLIMBUS_0_TX', '1')]
+        controls += [(name, '0') for name in sorted(set(routes))]
+        controls += [('CDC_IF TX0 MUX', 'DEC0'), ('CDC_IF TX1 MUX', 'DEC1'),
+                     ('DEC0 Volume', '84'), ('DEC1 Volume', '84'),
+                     ('ADC MUX0', 'DMIC'), ('ADC MUX1', 'DMIC'),
+                     ('DMIC MUX0', 'DMIC1'), ('DMIC MUX1', 'DMIC0'),
+                     ('AIF1_CAP Mixer SLIM TX0', '1'), ('AIF1_CAP Mixer SLIM TX1', '1')]
+    preserved = set()
+    for name, value in controls:
         key = 'name=' + name
         before = subprocess.run(base + ['cget', key], capture_output=True,
                                 text=True, check=True, timeout=5)
         match = re.search(r'^\s*: values=(.+)$', before.stdout, re.M)
         need(match is not None, f'Cannot preserve microphone control {name}')
-        saved.append((base + ['cset', key, match[1]], name))
+        if name not in preserved:
+            saved.append((base + ['cset', key, match[1]], name))
+            preserved.add(name)
         result = subprocess.run(base + ['cset', key, value], capture_output=True,
                                 text=True, timeout=5)
         report['microphone_mixer'].append({'name': name, 'requested': value,
             'returncode': result.returncode, 'readback': result.stdout,
             'stderr': result.stderr})
         need(result.returncode == 0, f'Microphone route {name}: {result.stderr}')
-        if name == 'DMIC MUX0':
-            item = re.search(r"^\s*; Item #(\d+) '" + source + r"'$", result.stdout, re.M)
+        expected = value
+        if name in ('DMIC MUX0', 'DMIC MUX1', 'ADC MUX0', 'ADC MUX1',
+                    'CDC_IF TX0 MUX', 'CDC_IF TX1 MUX') and (microphone_array or name == 'DMIC MUX0'):
+            item = re.search(r"^\s*; Item #(\d+) '" + expected + r"'$", result.stdout, re.M)
             selected = re.search(r'^\s*: values=(\d+)$', result.stdout, re.M)
             need(item and selected and item[1] == selected[1],
-                 f'Microphone source readback did not select {source}')
-            report['microphone_mixer'][-1]['selected'] = source
-            report['microphone_source'] = source
+                 f'Microphone mux {name} readback did not select {expected}')
+            report['microphone_mixer'][-1]['selected'] = expected
+        elif microphone_array:
+            readback_value = ('(?:1|on)' if value == '1' else '(?:0|off)' if value == '0'
+                              else re.escape(value))
+            need(re.search(r'^\s*: values=' + readback_value + r'$', result.stdout, re.M),
+                 f'Microphone control {name} readback mismatch')
+    report['microphone_source'] = source
+    if microphone_array:
+        report['microphone_array'] = {'sources': ['DMIC1', 'DMIC0'],
+            'linux_slim_channels': [128, 129], 'milestone_passed': False}
+
+
+def deinterleave(samples, channels):
+    need(channels in (1, 2) and len(samples) % channels == 0, 'Incomplete capture frame')
+    return [samples[index::channels] for index in range(channels)]
+
+
+def array_metrics(inputs):
+    need(len(inputs) == 2 and len(inputs[0]) == len(inputs[1]) and inputs[0],
+         'Two nonempty microphone inputs required')
+    means = [sum(values) / len(values) for values in inputs]
+    variance = [sum((v - mean) ** 2 for v in values) / len(values)
+                for values, mean in zip(inputs, means)]
+    covariance = sum((a - means[0]) * (b - means[1]) for a, b in zip(*inputs)) / len(inputs[0])
+    denominator = math.sqrt(variance[0] * variance[1])
+    return {'variance': variance, 'correlation': covariance / denominator if denominator else None,
+            'exact_duplicate': inputs[0] == inputs[1]}
+
+
+def score_array_phase(samples, baseline, expected):
+    from acoustic import score_phase
+    inputs, quiet = deinterleave(samples, 2), deinterleave(baseline, 2)
+    metrics = array_metrics(inputs)
+    scores = [score_phase(values, reference, expected) for values, reference in zip(inputs, quiet)]
+    passed = all(score['passed'] for score in scores) and not metrics['exact_duplicate']
+    return {'passed': passed, 'reason': 'passed' if passed else
+            ('duplicated mono inputs' if metrics['exact_duplicate'] else
+             '; '.join(score['reason'] for score in scores if not score['passed'])),
+            'inputs': scores, **metrics}
+
+
+def array_independence(phases):
+    ratios = {}
+    for phase in phases:
+        score = phase['score']
+        for frequency in (440, 660):
+            targets = [item['targets'].get(str(frequency)) for item in score['inputs']]
+            if all(targets):
+                ratios[phase['name'] + '-' + str(frequency)] = targets[0]['rms'] / max(targets[1]['rms'], 1e-9)
+    # Different samples alone do not exclude a scaled copy. Require distinct
+    # transfer ratios for the two separate physical playback stimuli as well.
+    left, right = ratios.get('left-440'), ratios.get('right-660')
+    contrast = abs(20 * math.log10(max(left, 1e-9) / max(right, 1e-9))) if left and right else None
+    independent = (contrast is not None and contrast >= 3 and
+                   all(phase['score']['passed'] and not phase['score']['exact_duplicate']
+                       for phase in phases))
+    return {'transfer_ratios_input0_over_input1': ratios, 'transfer_contrast_db': contrast,
+            'milestone_passed': independent,
+            'interpretation': 'distinct transfer evidence' if independent else 'independence inconclusive',
+            'limitations': 'No physical microphone position, SPL or beamforming claim.'}
 
 
 class OwnedCapture:
     """One finite MM2 capture, consumed continuously without XRUN recovery."""
 
-    def __init__(self, card, report, directory, maximum_seconds=90, retain_recording=True):
+    def __init__(self, card, report, directory, maximum_seconds=90, retain_recording=True, channels=1):
+        need(channels in (1, 2), 'Capture channel count must be one or two')
+        need(channels == 1 or (maximum_seconds <= 50 and not retain_recording),
+             'Stereo capture requires a <=50 second bound and discarded recording')
+        self.channels = channels
         self.card = card
         self.started = time.monotonic()
         self.closed = True
@@ -309,8 +394,8 @@ class OwnedCapture:
         self.log = tempfile.TemporaryFile()
         try:
             self.process = subprocess.Popen(
-                ['arecord', '--fatal-errors', '-q', '-D', f'plughw:{card},1',
-                 '-t', 'raw', '-f', 'S16_LE', '-r', '48000', '-c', '1',
+                ['arecord', '--fatal-errors', '-q', '-D', f'{"hw" if channels == 2 else "plughw"}:{card},1',
+                 '-t', 'raw', '-f', 'S16_LE', '-r', '48000', '-c', str(channels),
                  '--period-size=1920', '--buffer-size=7680', '-d', str(maximum_seconds)],
                 stdout=subprocess.PIPE, stderr=self.log, bufsize=0)
         except Exception:
@@ -319,8 +404,8 @@ class OwnedCapture:
         self.closed = False
         self.status = Path(f'/proc/asound/card{card}/pcm1c/sub0/status')
         report['microphone_capture'] = True
-        report['capture'] = {'pid': self.process.pid, 'device': f'plughw:{card},1',
-                             'source': source, 'rate': 48000, 'channels': 1,
+        report['capture'] = {'pid': self.process.pid, 'device': f'{"hw" if channels == 2 else "plughw"}:{card},1',
+                             'source': source, 'rate': 48000, 'channels': channels,
                              'period_frames': 1920, 'buffer_frames': 7680,
                              'maximum_seconds': maximum_seconds, 'phases': []}
         self.thread = threading.Thread(target=self.consume, daemon=True)
@@ -339,16 +424,19 @@ class OwnedCapture:
                 last = time.monotonic()
                 with self.mutex:
                     self.raw.extend(block)
-                    need(len(self.raw) <= getattr(self, 'maximum_seconds', 90) * 48000 * 2, 'Capture duration limit exceeded')
+                    need(len(self.raw) <= getattr(self, 'maximum_seconds', 90) * 48000 * 2 * getattr(self, 'channels', 1), 'Capture duration limit exceeded')
                 monitor.extend(block)
-                while len(monitor) >= 9600:
-                    samples = array('h', monitor[:9600])
-                    del monitor[:9600]
-                    peak = max(abs(v) for v in samples)
-                    rms = math.sqrt(sum(v*v for v in samples) / len(samples))
-                    need(peak < 32000, 'Microphone clipping: automatic abort')
-                    if self.limit is not None:
-                        need(rms <= self.limit, 'Microphone noise/level limit exceeded')
+                while len(monitor) >= 9600 * getattr(self, 'channels', 1):
+                    size = 9600 * getattr(self, 'channels', 1)
+                    samples = array('h', monitor[:size])
+                    del monitor[:size]
+                    for index, values in enumerate(deinterleave(samples, getattr(self, 'channels', 1))):
+                        peak = max(abs(v) for v in values)
+                        rms = math.sqrt(sum(v*v for v in values) / len(values))
+                        need(peak < 32000, 'Microphone clipping: automatic abort')
+                        if self.limit is not None:
+                            limit = self.limit[index] if isinstance(self.limit, list) else self.limit
+                            need(rms <= limit, 'Microphone noise/level limit exceeded')
         except (OSError, RuntimeError) as error:
             if not self.stop.is_set():
                 self.error = str(error)
@@ -359,12 +447,13 @@ class OwnedCapture:
     def mark(self):
         self.healthy()
         with self.mutex:
-            return len(self.raw) // 2
+            return len(self.raw) // (2 * getattr(self, 'channels', 1))
 
     def samples(self, start=0, end=None):
         with self.mutex:
-            data = bytes(self.raw[start * 2:None if end is None else end * 2])
-        return array('h', data[:len(data) // 2 * 2])
+            width = 2 * getattr(self, 'channels', 1)
+            data = bytes(self.raw[start * width:None if end is None else end * width])
+        return array('h', data[:len(data) // width * width])
 
     def healthy(self):
         need(self.error is None, self.error or 'Capture failed')
@@ -375,7 +464,7 @@ class OwnedCapture:
         while True:
             self.healthy()
             with self.mutex:
-                if len(self.raw) >= frames * 2:
+                if len(self.raw) >= frames * 2 * getattr(self, 'channels', 1):
                     return
             need(time.monotonic() < deadline, 'Capture did not deliver requested frames')
             time.sleep(0.05)
@@ -385,22 +474,30 @@ class OwnedCapture:
         samples = self.samples(48000, 3 * 48000)
         need(sum(v != 0 for v in samples) > len(samples) // 100,
              'Microphone returned silence; cannot use it as acoustic feedback')
-        rms = math.sqrt(sum(v*v for v in samples) / len(samples))
-        need(rms < 1000, 'Ambient level too high for bounded speaker test')
-        self.limit = max(300, rms * 12)
+        inputs = deinterleave(samples, self.channels)
+        rms_inputs = []
+        for values in inputs:
+            need(sum(v != 0 for v in values) > len(values) // 100, 'Microphone input returned silence')
+            rms_inputs.append(math.sqrt(sum(v*v for v in values) / len(values)))
+        need(all(math.isfinite(rms) and 0 < rms < 1000 for rms in rms_inputs),
+             'Ambient level too high or missing for bounded speaker test')
+        rms = rms_inputs[0]
+        self.limit = [max(300, v * 12) for v in rms_inputs] if self.channels == 2 else max(300, rms * 12)
         status = read_text(self.status)
         need(re.search(r'^state:\s+RUNNING$', status, re.M), 'Capture PCM is not RUNNING')
         need(re.search(r'^owner_pid\s*:\s*' + str(self.process.pid) + r'$', status, re.M),
              'Capture ownership changed')
         hw_params = read_text(self.status.with_name('hw_params'))
-        for expression in (r'^format: S16_LE$', r'^channels: 1$',
+        for expression in (r'^format: S16_LE$', rf'^channels: {self.channels}$',
                            r'^rate: 48000(?: |$)', r'^period_size: 1920$',
                            r'^buffer_size: 7680$'):
             need(re.search(expression, hw_params, re.M), 'Capture geometry changed')
         self.report['capture']['hw_params'] = hw_params
         self.report['capture']['baseline'] = {'start_frame': 48000, 'end_frame': 144000,
             'rms': rms, 'peak': max(abs(v) for v in samples),
-            'abort_rms': self.limit, 'status': status}
+            'abort_rms': self.limit, 'status': status, 'input_rms': rms_inputs}
+        if self.channels == 2:
+            self.report['capture']['baseline']['array_metrics'] = array_metrics(inputs)
         return samples
 
     def reopen(self, evidence):
@@ -441,11 +538,11 @@ class OwnedCapture:
         self.report['capture']['error'] = self.error
         self.report['capture']['returncode'] = self.process.returncode
         samples = self.samples()
-        self.report['capture']['frames'] = len(samples)
+        self.report['capture']['frames'] = len(samples) // getattr(self, 'channels', 1)
         if getattr(self, 'retain_recording', True):
             path = self.directory / 'microphone.wav'
             with wave.open(str(path), 'wb') as output:
-                output.setparams((1, 2, 48000, 0, 'NONE', 'not compressed'))
+                output.setparams((getattr(self, 'channels', 1), 2, 48000, 0, 'NONE', 'not compressed'))
                 output.writeframes(samples.tobytes())
             self.report['capture']['recording'] = str(path)
         else:
@@ -1547,8 +1644,9 @@ def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder
             from acoustic import score_phase
             capture.wait_frames(start + 3 * 48000)
             end = capture.mark()
-            result = score_phase(capture.samples(start, end), baseline,
-                                 [440 if channel == 0 else 660 for channel in sorted(channels)])
+            scorer = score_array_phase if getattr(args, 'microphone_array', False) else score_phase
+            result = scorer(capture.samples(start, end), baseline,
+                            [440 if channel == 0 else 660 for channel in sorted(channels)])
             phase_name = f'cycle-{report["reopen_cycle"]}-{name}' if args.action == 'reopen' else name
             report['capture']['phases'].append({'name': phase_name, 'start_frame': start,
                                                'end_frame': end, 'score': result})
@@ -1656,6 +1754,8 @@ def cleanup_audio_consumers(report, pcms, graphs, capture, saved, signals, timer
 def initialize(args, report):
     source = getattr(args, 'microphone_source', 'DMIC1')
     validate_microphone_source(args.action, source)
+    microphone_array = getattr(args, 'microphone_array', False)
+    validate_microphone_array(args.action, source, microphone_array)
     need(os.geteuid() == 0, 'initialize requires root')
     need(args.action in ('recover', 'capture') or args.allow_amp_power,
          'initialize/listen requires --allow-amp-power for this authorized run')
@@ -1766,17 +1866,19 @@ def initialize(args, report):
             need(args.output is not None, 'Capture requires a private result directory')
             directory = args.output / ('capture-' + report['utc'])
             directory.mkdir(mode=0o700)
-            configure_microphone(initial['internal_cards'][0], report, saved_mixer, source)
-            if args.action == 'desktop-mic':
+            configure_microphone(initial['internal_cards'][0], report, saved_mixer, source, microphone_array)
+            if args.action == 'desktop-mic' or microphone_array:
                 def expire_capture():
                     report['capture_deadline_expired'] = True
                     os.kill(os.getpid(), signal.SIGTERM)
 
                 report['capture_deadline_expired'] = False
-                capture_deadline = threading.Timer(60, expire_capture)
+                # Reserve ten seconds for bounded termination/close in array mode.
+                capture_seconds = 50 if microphone_array else 60
+                capture_deadline = threading.Timer(capture_seconds, expire_capture)
                 capture_deadline.start()
                 capture = OwnedCapture(initial['internal_cards'][0], report, directory,
-                                       maximum_seconds=60, retain_recording=False)
+                                       maximum_seconds=capture_seconds, retain_recording=False, channels=2 if microphone_array else 1)
             else:
                 capture = OwnedCapture(initial['internal_cards'][0], report, directory)
             baseline = capture.baseline()
@@ -1833,16 +1935,25 @@ def initialize(args, report):
             pcm_holder[0].play(tone({0, 1}))
             capture.wait_frames(start + 3 * 48000)
             end = capture.mark()
-            controls = [score_phase(capture.samples(start, end), baseline, [hz])
-                        for hz in (440, 660)]
+            inputs = deinterleave(capture.samples(start, end), capture.channels)
+            quiet_inputs = deinterleave(baseline, capture.channels)
+            controls = [score_phase(values, quiet, [hz])
+                        for values, quiet in zip(inputs, quiet_inputs) for hz in (440, 660)]
             report['capture']['amps_off_control'] = {'start_frame': start,
                 'end_frame': end, 'scores': controls}
+            if microphone_array:
+                report['capture']['amps_off_control']['inputs'] = [
+                    {'source': source, 'scores': controls[index * 2:index * 2 + 2]}
+                    for index, source in enumerate(('DMIC1', 'DMIC0'))]
             for result in controls:
                 for target in result['targets'].values():
                     need(target['rms'] < 1 or target['baseline_rise_db'] < 10 or
                          target['neighbor_rise_db'] < 10,
                          'Test tone persists with amps off: acoustic result inconclusive')
             report['acoustic_passed'] = True
+            if microphone_array:
+                evidence = array_independence(report['capture']['phases'])
+                report['microphone_array'].update(evidence)
     finally:
         report['background_errors'] = {
             'capture': getattr(capture, 'error', None),
@@ -1887,6 +1998,9 @@ def initialize(args, report):
         finally:
             cleanup_audio_consumers(report, pcm_holder, desktop_holder, capture,
                                     saved_mixer, signals, capture_deadline)
+    if microphone_array and (report.get('cleanup_errors') or report['capture'].get('error') or
+                             re.search(r'underrun|overrun|error', report['capture'].get('log', ''), re.I)):
+        report['microphone_array']['milestone_passed'] = False
     need(not report.get('cleanup_errors'), 'Audio cleanup failed; see cleanup_errors')
     if 'pcm' in report:
         need(not re.search(r'underrun|overrun|error', report['pcm']['log'], re.I),
@@ -1924,6 +2038,8 @@ def main():
                         help='authorize bounded internal microphone recording')
     parser.add_argument('--microphone-source', choices=('DMIC0', 'DMIC1'), default='DMIC1',
                         help='bounded capture/feedback/desktop-mic input (default: DMIC1)')
+    parser.add_argument('--microphone-array', action='store_true',
+                        help='feedback-only fresh native stereo DMIC1/DMIC0 capture')
     parser.add_argument('--capture-reopen', action='store_true',
                         help='desktop-mic-only native capture reopen with a third default client')
     parser.add_argument('--reopen-first-channel', choices=('left', 'right'),
@@ -1933,6 +2049,8 @@ def main():
     parser.add_argument('--desktop-peak', type=desktop_peak_limit,
                         help='serve-only ordinary PCM peak, 1433..12000 (default: 1433)')
     args = parser.parse_args()
+    if args.microphone_array and (args.action != 'feedback' or args.microphone_source != 'DMIC1'):
+        parser.error('--microphone-array requires feedback with primary DMIC1')
     if args.capture_reopen and args.action != 'desktop-mic':
         parser.error('--capture-reopen requires desktop-mic')
     if args.reopen_first_channel is not None and args.action != 'reopen':
@@ -2000,6 +2118,8 @@ def main():
         report['error'] = str(error)
         report['error_type'] = type(error).__name__
         result = 1
+    if args.microphone_array and not report['success'] and 'microphone_array' in report:
+        report['microphone_array']['milestone_passed'] = False
     text = json.dumps(report, indent=2) + '\n'
     if args.output:
         (args.output / f'audio-{args.action}-{stamp}.json').write_text(text)

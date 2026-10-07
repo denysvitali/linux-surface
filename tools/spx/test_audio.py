@@ -23,6 +23,94 @@ spec.loader.exec_module(audio)
 
 
 class AudioTests(unittest.TestCase):
+    def test_array_gate_precedes_hardware(self):
+        for action, source in (('capture', 'DMIC1'), ('desktop-mic', 'DMIC1'), ('feedback', 'DMIC0')):
+            with self.subTest(action=action), patch.object(audio.os, 'geteuid') as hardware:
+                with self.assertRaisesRegex(RuntimeError, 'microphone-array requires feedback'):
+                    audio.initialize(SimpleNamespace(action=action, microphone_source=source,
+                                                     microphone_array=True), {})
+                hardware.assert_not_called()
+
+    def test_array_routes_preserved_disabled_then_enabled_in_native_order(self):
+        report, saved, writes = {}, [], []
+        routes = ['AIF1_CAP Mixer SLIM TX' + str(i) for i in range(4)]
+        def mixer(command, **kwargs):
+            if command[-1] == 'controls':
+                output = '\n'.join("numid=1,name='" + name + "'" for name in routes)
+            elif command[-2] == 'cget':
+                output = ': values=on\n'
+            else:
+                name, value = command[-2][5:], command[-1]
+                writes.append((name, value))
+                if 'MUX' in name:
+                    output = "; Item #1 '" + value + "'\n: values=1\n"
+                else:
+                    output = ': values=' + ('on' if value == '1' else 'off' if value == '0' else value) + '\n'
+            return SimpleNamespace(returncode=0, stdout=output, stderr='')
+        with patch.object(audio, 'parameter', return_value='Y'), \
+                patch.object(audio, 'Path') as paths, \
+                patch.object(audio.subprocess, 'run', side_effect=mixer):
+            paths.return_value.glob.return_value = []
+            audio.configure_microphone(0, report, saved, 'DMIC1', True)
+        self.assertEqual(writes[1:5], [(name, '0') for name in routes])
+        self.assertEqual(writes[-2:], [(routes[0], '1'), (routes[1], '1')])
+        self.assertEqual(len(saved), len(set(name for _, name in saved)))
+        self.assertEqual(report['microphone_array']['sources'], ['DMIC1', 'DMIC0'])
+        selected = {item['name']: item.get('selected') for item in report['microphone_mixer']}
+        self.assertEqual(selected['DMIC MUX1'], 'DMIC0')
+
+    def test_stereo_frame_accounting_and_deinterleave(self):
+        capture = audio.OwnedCapture.__new__(audio.OwnedCapture)
+        capture.channels = 2
+        capture.raw = bytearray(struct.pack('<6h', 1, 11, 2, 12, 3, 13) + b'\x00')
+        capture.mutex = threading.Lock()
+        capture.healthy = Mock()
+        self.assertEqual(capture.mark(), 3)
+        self.assertEqual(list(capture.samples(1, 3)), [2, 12, 3, 13])
+        self.assertEqual([list(v) for v in audio.deinterleave(capture.samples(), 2)],
+                         [[1, 2, 3], [11, 12, 13]])
+        capture.channels = 1
+        self.assertEqual(capture.mark(), 6)
+        self.assertEqual(list(capture.samples(1, 3)), [11, 2])
+
+    def test_stereo_capture_is_native_bounded_and_discards_raw(self):
+        report = {'microphone_source': 'DMIC1'}
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(audio.subprocess, 'Popen', return_value=SimpleNamespace(pid=123)) as opened, \
+                patch.object(audio.threading, 'Thread'):
+            capture = audio.OwnedCapture(0, report, Path(directory), maximum_seconds=50,
+                                         retain_recording=False, channels=2)
+            capture.log.close()
+        command = opened.call_args.args[0]
+        self.assertIn('hw:0,1', command)
+        self.assertEqual(command[command.index('-c') + 1], '2')
+        self.assertEqual(command[-2:], ['-d', '50'])
+        self.assertFalse(capture.retain_recording)
+
+    def test_array_scorer_rejects_missing_input_and_exact_duplicate(self):
+        from array import array
+        import math
+        n = 48000
+        quiet = [int(2 * math.sin(i * .123)) for i in range(n)]
+        tone = [int(100 * math.sin(2 * math.pi * 440 * i / 48000)) for i in range(n)]
+        def interleave(a, b):
+            return array('h', [v for pair in zip(a, b) for v in pair])
+        duplicate = audio.score_array_phase(interleave(tone, tone), interleave(quiet, quiet), [440])
+        self.assertFalse(duplicate['passed'])
+        self.assertTrue(duplicate['exact_duplicate'])
+        missing = audio.score_array_phase(interleave(tone, [0] * n), interleave(quiet, quiet), [440])
+        self.assertFalse(missing['passed'])
+        self.assertFalse(missing['inputs'][1]['passed'])
+
+    def test_array_independence_requires_distinct_transfer(self):
+        def phases(right):
+            return [{'name': name, 'score': {'passed': True, 'exact_duplicate': False,
+                    'inputs': [{'targets': {str(hz): {'rms': a}}},
+                               {'targets': {str(hz): {'rms': b}}}]}}
+                    for name, hz, a, b in [('left', 440, 20, 10), ('right', 660, right, 10)]]
+        self.assertFalse(audio.array_independence(phases(20))['milestone_passed'])
+        self.assertTrue(audio.array_independence(phases(5))['milestone_passed'])
+
     def test_right_first_only_changes_reopened_cycle(self):
         expected = [('left', {0}), ('right', {1}), ('both', {0, 1})]
         self.assertEqual(list(audio.playback_tones('reopen', 1, 'right')), expected)
