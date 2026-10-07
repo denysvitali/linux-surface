@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-07, DR: desktop volume and mute controls pass)
+## Status (2026-10-07, DS: normal sleep with parked audio passes)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
@@ -23,7 +23,7 @@ reverse plugs, visible output and hotplug remain unverified.
 CF retains P01a actual charging pass; further battery tests are deferred.
 **CS closes B06a; CT closes B06b/B06c:** TPM commands, automatic startup and measured GRUB boot pass.
 **DO closes B06e:** TPM-generated ephemeral P256 signatures verify independently; changed messages reject, cleanup passes.
-**DO closes P03c:** normal login1/systemd AC suspend wakes on the PMIC alarm; network, motion streams and storage recover with audio disabled.
+**DO closes P03c; DS closes P03d:** normal login1/systemd AC suspend wakes on the PMIC alarm, retains network/motion/storage, and DS passes first quiet playback with parked audio loaded.
 **DP closes A03a:** two-minute default desktop stream and ordered SoundWire shutdown pass.
 **DR closes A03f:** quiet default desktop attenuation, mute and unmute pass acoustically; arbitrary shutdown and useful listening range remain open.
 **D01a passes on CE:** two GNOME off/on cycles
@@ -68,7 +68,7 @@ awaits attribution for later observations.
 | USB data (U01) | Untested | Both ports/orientations, fixtures |
 | USB-C PD, DisplayPort, dock (U02–U04) | **CG: external off/on scanout restoration passes; normal orientation API works** | Visible output, physical replug, roles/PD, ports/orientations/resume |
 | Battery and charging (P01) | **CF: P01a actual charging passes, +1.26Wh/120s** | Charge-policy explanation, discharge/transitions and charger coverage |
-| Suspend/resume (P03) | **DD13 direct wakes; DF2 guarded audio-loaded sleeps; DO normal systemd AC sleep passes**; targets masked | Full device recovery, battery sleep and physical wakes |
+| Suspend/resume (P03) | **DD13 direct wakes; DF2 guarded audio-loaded sleeps; DO/DS normal systemd AC sleep passes**; targets masked | Full device recovery, battery sleep and physical wakes |
 | Thermal (P05) | **CM cooling limits; CX/CY combined load/cleanup; DN below temporary55C, automatic testing parked** | Real automatic response, longer envelope and enclosure behavior |
 | Idle power (P02) | BU: CPU scales down; GPU runtime-suspends | **Battery tests deferred by user**; remaining forced-on devices |
 | Sensors (S01, S02) | **DD backend/desktop clients survive repeated/30-minute AC sleep** | Light/axes/calibration; DA fault; final regression |
@@ -1326,12 +1326,16 @@ GPU runtime suspend works.
     recovery and permanent desktop sleep availability remain open.
     [DO result](tools/spx/boot-diagnostics/RESULT-20261007do.md).
 
-  - [ ] **P03d — Normal login1/systemd AC sleep with parked audio loaded.**
-    Require a same-boot direct PMIC prerequisite, then normal systemd sleep with
-    fresh powered-SLIM ownership proofs, closed playback/capture and unpowered
-    amplifiers. Verify retained motion services/streams, WLAN and storage, restore
-    temporary sleep shadows/runtime PM, then pass first quiet acoustic playback
-    after wake. This does not establish low-power or live audio-session resume.
+  - [x] **P03d — Normal login1/systemd AC sleep with parked audio loaded.**
+    DS boot `f9a45f0d-6d45-47d1-b2aa-932fa9246fc5`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: direct13.717s prerequisite and
+    normal28.673s sleep each preserve powered-SLIM ownership, PCMs closed and
+    amps unpowered. Normal freeze/suspend/return/thaw/job, same sensor owners/
+    three streams, WLAN1MB and64KiB fsync/readback pass; masks/runtime PM restore.
+    First quiet1433/PA0 playback after wake passes left/right/both acoustic tests;
+    raw mic samples discarded, all PCMs closed/owners gone and amps parked.
+    Feedback cleanup leaves FIFO0x3e00100e pending: full audio shutdown, live
+    session resume, low-power and permanent desktop sleep remain unverified.
     [DS result](tools/spx/boot-diagnostics/RESULT-20261007ds.md).
 
 - [ ] **P04 — Hibernate applicability.** Establish whether the intended platform/
