@@ -513,6 +513,13 @@ static int q6asm_dai_prepare(struct snd_soc_component *component,
 		return -EINVAL;
 	}
 
+	/* A retained SPX playback session cannot take the generic CLOSE path. */
+	if (prtd->spx_legacy && substream->stream == SNDRV_PCM_STREAM_PLAYBACK &&
+	    prtd->state != Q6ASM_STREAM_IDLE) {
+		dev_err(dev, "SPX: repeated retained playback prepare is unsupported\n");
+		return -EBUSY;
+	}
+
 	if (spx_retained_capture(prtd, substream)) {
 		struct snd_dma_buffer *buf = runtime->dma_buffer_p;
 		struct spx_capture_contract requested;
