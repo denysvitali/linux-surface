@@ -690,7 +690,7 @@ class DesktopGraph:
              'PipeWire exposed an ALSA hardware sink')
         default_sink = self.run('pactl', 'get-default-sink')
         if getattr(self, 'preserve_default_source', False):
-            self.default_source_before_test = self.run('pactl', 'get-default-source')
+            self.default_source_before_test = configured_default_source(self)
         # This is a real public Pulse sink, but never the default. Other
         # desktop applications remain routed to their existing sink.
         self.module = self.run('pactl', 'load-module', 'module-null-sink',
@@ -839,10 +839,45 @@ def check_desktop_teardown(paths, report):
         time.sleep(0.1)
 
 
+DEFAULT_SOURCE_KEY = 'default.configured.audio.source'
+_UNSET_DEFAULT_SOURCE = object()
+
+
+def configured_default_source(graph):
+    """Read the explicit preference, including an unavailable source or absence."""
+    objects = json.loads(graph.run('pw-dump'))
+    entries = [entry for obj in objects
+               if obj.get('type') == 'PipeWire:Interface:Metadata' and
+               obj.get('props', {}).get('metadata.name') == 'default'
+               for entry in obj.get('metadata', [])
+               if entry.get('subject') == 0 and entry.get('key') == DEFAULT_SOURCE_KEY]
+    need(len(entries) <= 1, 'Duplicate configured default microphone metadata')
+    if not entries:
+        return None
+    entry = entries[0]
+    need(isinstance(entry.get('type'), str) and isinstance(entry.get('value'), dict),
+         'Invalid configured default microphone metadata')
+    return {'type': entry['type'], 'value': entry['value']}
+
+
+def restore_default_source(graph, previous):
+    # Effective pactl names may be @DEFAULT_SOURCE@ or a fallback monitor.
+    # Restore the explicit preference instead, without touching sink metadata.
+    if previous is None:
+        graph.run('pw-metadata', '-n', 'default', '-d', '0', DEFAULT_SOURCE_KEY)
+    else:
+        graph.run('pw-metadata', '-n', 'default', '0', DEFAULT_SOURCE_KEY,
+                  json.dumps(previous['value']), previous['type'])
+    deadline = time.monotonic() + 3
+    while configured_default_source(graph) != previous:
+        need(time.monotonic() < deadline, 'Configured default microphone was not restored')
+        time.sleep(0.05)
+
+
 class DesktopMicSource:
     """Owned default source for one finite retained hardware capture."""
 
-    def __init__(self, graph, capture, report, previous_default=None):
+    def __init__(self, graph, capture, report, previous_default=_UNSET_DEFAULT_SOURCE):
         self.graph, self.capture, self.report = graph, capture, report
         self.module = self.previous = self.directory = self.fifo = self.fd = None
         self.stop = threading.Event()
@@ -853,8 +888,8 @@ class DesktopMicSource:
         self.previous = previous_default
 
     def start(self):
-        if self.previous is None:
-            self.previous = self.graph.run('pactl', 'get-default-source')
+        if self.previous is _UNSET_DEFAULT_SOURCE:
+            self.previous = configured_default_source(self.graph)
         self.directory = Path(tempfile.mkdtemp(prefix='spx-mic-', dir=self.graph.runtime))
         account = self.graph.account
         os.chown(self.directory, account.pw_uid, account.pw_gid)
@@ -949,21 +984,23 @@ class DesktopMicSource:
         if self.fd is not None:
             os.close(self.fd)
             self.fd = None
-        # Restoration failure must not prevent unloading our source/FIFO.
-        for command in ([('pactl', 'set-default-source', self.previous)] if self.previous else []) + \
-                       ([('pactl', 'unload-module', self.module)] if self.module else []):
+        # Unload first: failed preference restoration must never retain our source.
+        if self.module:
             try:
-                self.graph.run(*command)
-                if command[1] == 'set-default-source':
-                    need(self.graph.run('pactl', 'get-default-source') == self.previous,
-                         'Original default microphone was not restored')
+                self.graph.run('pactl', 'unload-module', self.module)
+            except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+                errors.append(str(error))
+        if self.previous is not _UNSET_DEFAULT_SOURCE:
+            try:
+                restore_default_source(self.graph, self.previous)
             except (OSError, RuntimeError, subprocess.SubprocessError) as error:
                 errors.append(str(error))
         if self.fifo:
             self.fifo.unlink(missing_ok=True)
         if self.directory:
             self.directory.rmdir()
-        self.module = self.previous = self.directory = self.fifo = None
+        self.module = self.directory = self.fifo = None
+        self.previous = _UNSET_DEFAULT_SOURCE
         self.report.update(restored=not errors, adapter_error=self.error, cleanup_errors=errors)
         need(not errors, 'Desktop microphone cleanup failed: ' + '; '.join(errors))
 

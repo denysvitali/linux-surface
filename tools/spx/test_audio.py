@@ -1019,17 +1019,73 @@ class DesktopMicrophoneTests(unittest.TestCase):
             source.directory.mkdir()
             source.fifo = source.directory / 'capture'
             os.mkfifo(source.fifo, 0o600)
-            source.previous, source.module = 'original', '41'
+            source.previous, source.module = {'type': 'Spa:String:JSON', 'value': {'name': 'original'}}, '41'
             def run(*command):
-                if command[1] == 'set-default-source':
+                if command[0] == 'pw-metadata':
                     raise RuntimeError('restore failed')
             graph.run.side_effect = run
             with self.assertRaisesRegex(RuntimeError, 'restore failed'):
                 source.close()
-            self.assertEqual(graph.run.call_args_list[-1].args,
+            self.assertEqual(graph.run.call_args_list[0].args,
                              ('pactl', 'unload-module', '41'))
             self.assertEqual(list(Path(directory).iterdir()), [])
             self.assertFalse(report['restored'])
+
+    def test_configured_source_snapshot_preserves_absence_and_unavailable_preference(self):
+        graph = Mock()
+        def dump(entries):
+            return json.dumps([{'type': 'PipeWire:Interface:Metadata',
+                                'props': {'metadata.name': 'default'}, 'metadata': entries}])
+        sink = {'subject': 0, 'key': 'default.configured.audio.sink',
+                'type': 'Spa:String:JSON', 'value': {'name': 'existing_sink'}}
+        graph.run.return_value = dump([sink])
+        self.assertIsNone(audio.configured_default_source(graph))
+        for name in ('existing_source', 'unavailable_source'):
+            value = {'name': name, 'retained': 'exact preference'}
+            graph.run.return_value = dump([sink, {'subject': 0,
+                'key': audio.DEFAULT_SOURCE_KEY, 'type': 'Spa:String:JSON', 'value': value}])
+            self.assertEqual(audio.configured_default_source(graph),
+                             {'type': 'Spa:String:JSON', 'value': value})
+        graph.run.assert_called_with('pw-dump')
+
+    def test_source_cleanup_restores_metadata_after_unloading_without_effective_name_check(self):
+        for previous in (None, {'type': 'Spa:String:JSON', 'value': {'name': 'existing'}},
+                         {'type': 'Spa:String:JSON', 'value': {'name': 'unavailable'}}):
+            with self.subTest(previous=previous):
+                graph = Mock()
+                entries = [] if previous is None else [dict(subject=0,
+                    key=audio.DEFAULT_SOURCE_KEY, **previous)]
+                dump = json.dumps([{'type': 'PipeWire:Interface:Metadata',
+                    'props': {'metadata.name': 'default'}, 'metadata': entries}])
+                graph.run.return_value = dump
+                report = {}
+                source = audio.DesktopMicSource(graph, Mock(), report, previous)
+                source.module = '41'
+                source.close()
+                calls = [call.args for call in graph.run.call_args_list]
+                self.assertEqual(calls[0], ('pactl', 'unload-module', '41'))
+                if previous is None:
+                    self.assertEqual(calls[1], ('pw-metadata', '-n', 'default', '-d',
+                                               '0', audio.DEFAULT_SOURCE_KEY))
+                else:
+                    self.assertEqual(calls[1], ('pw-metadata', '-n', 'default', '0',
+                        audio.DEFAULT_SOURCE_KEY, json.dumps(previous['value']), previous['type']))
+                self.assertEqual(calls[2:], [('pw-dump',)])
+                self.assertTrue(report['restored'])
+                source.close()  # No second restoration after successful cleanup.
+                self.assertEqual(len(graph.run.call_args_list), 3)
+
+    def test_source_restore_waits_for_metadata_and_times_out_if_not_restored(self):
+        graph = Mock()
+        previous = {'type': 'Spa:String:JSON', 'value': {'name': 'unavailable'}}
+        with patch.object(audio, 'configured_default_source', side_effect=[None, previous]), \
+                patch.object(audio.time, 'sleep') as sleep:
+            audio.restore_default_source(graph, previous)
+        sleep.assert_called_once_with(0.05)
+        with patch.object(audio, 'configured_default_source', return_value=None), \
+                patch.object(audio.time, 'monotonic', side_effect=[0, 4]):
+            with self.assertRaisesRegex(RuntimeError, 'not restored'):
+                audio.restore_default_source(graph, previous)
 
     def test_two_clients_keep_hardware_owners_open_even_on_second_failure(self):
         import acoustic
