@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-07, DN: automatic thermal testing parked)
+## Status (2026-10-07, DO: firmware TPM signing passes)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
@@ -22,6 +22,7 @@ restore3440×1440/50Hz external scanout. CC0 normal Type-C callback succeeds;
 reverse plugs, visible output and hotplug remain unverified.
 CF retains P01a actual charging pass; further battery tests are deferred.
 **CS closes B06a; CT closes B06b/B06c:** TPM commands, automatic startup and measured GRUB boot pass.
+**DO closes B06e:** TPM-generated ephemeral P256 signatures verify independently; changed messages reject, cleanup passes.
 **D01a passes on CE:** two GNOME off/on cycles
 restore native2880×1920/60Hz scanout with fresh vblank and no new display faults.
 Visual quality remains open; DD proves post-sleep scanout. CG extends CE's power-cycle coverage to the attached dock. CA's earlier
@@ -51,7 +52,7 @@ awaits attribution for later observations.
 | Internal panel (D01) | **CE: D01a GNOME off/on scanout passes**; user reports display/brightness working | Visual attribution/quality, brightness range and physical wake |
 | Wi-Fi (N01) | 5 GHz/reconnect and IPv6 VPN pass; 2.4 GHz accepted by user assumption | Native WAN IPv6, roaming and sustained use |
 | RTC (B05) | **BX early boot time; DD RTC/alarm/sleep checks pass** | Cold power-off retention |
-| Firmware TPM/security (B06) | **CT measured boot; DD public TPM survives30-minute sleep** | Signing/Secure Boot |
+| Firmware TPM/security (B06) | **CT measured boot; DD sleep recovery; DO ephemeral P256 signing pass** | Secure Boot validation |
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
 | Speakers (A01) | **BY desktop playback; DF quiet startup after guarded sleep passes** | Persistence, volume/mapping/balance, reopen and lifecycle |
@@ -292,6 +293,14 @@ reconciled. [Inventory](tools/spx/boot-diagnostics/HARDWARE-INVENTORY-20261002.m
     distinct nonzero32-byte GetRandom responses pass before/after one timed
     sleep following ten earlier sleeps; PCR0 remains unchanged. No provisioning,
     objects or PCR writes. [DD result](tools/spx/boot-diagnostics/RESULT-20261006dd.md).
+  - [x] **B06e — Firmware TPM ephemeral key generation and signing.** DO, boot
+    `58c31e46-c008-4903-9fc0-95db8ebc5abf`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: NULL-hierarchy unrestricted P256
+    sign-only key signs a fresh boot-bound SHA256 challenge. Independent OpenSSL
+    verification passes; a one-byte changed message fails. PCR0/update and all
+    raw object/NV inventories remain unchanged, transient handles empty, saved
+    context removed. No enrollment or persistent state writes. Secure Boot and
+    full B06 remain open. [DO result](tools/spx/boot-diagnostics/RESULT-20261007do.md).
 - [ ] **B07 — Additional accelerators.** Inventory fitted DSP/NPU/other compute
   capabilities and available interfaces; validate a real supported workload or
   document the specific missing support. A thermal-zone name is not a working NPU.
