@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-07, DK: native simultaneous microphone array passes)
+## Status (2026-10-07, DM: valid capture survives incompatible requests)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
@@ -34,7 +34,8 @@ peak69.8C. CY extends this to verified native FP, peak66.3C; automatic responses
 **DH closes A03c:** two default microphone clients pass acoustically; absent-default
 cleanup is fixed and real virtual-source restoration verified separately.
 **DI closes A03d:** native microphone PCM close/reopen and third client pass;
-whole-run source restoration/cleanup now passes directly.
+whole-run source restoration/cleanup now passes directly. **DM closes A03e:**
+four incompatible native requests reject; third original-contract client passes.
 B05a early RTC and N01a IPv6 VPN retain prior passes. **N01b is accepted by user
 assumption from working5GHz; no2.4GHz functional pass was measured.** Light
 response needs physical stimulus. Input/BT confirmations belong to BI; the
@@ -102,8 +103,8 @@ physical replug, ports/orientations and visible output still need fixtures.
    output fails despite successful clock writes and playback RUN/EOS callbacks.
    A03c/default clients and A03d/native capture reopen now pass on DI. Next
    A02c/native simultaneous array now passes on DK. Retained capture format and
-   buffer admission must be honest: reject incompatible reuse before mutation,
-   then prove the original contract still captures. Avoid unchanged playback
+   buffer admission passes on DM: incompatible reuse rejects, and the original
+   contract still captures through a default client. Avoid unchanged playback
    reopen retries or destroying parked DSP sessions.
    The user authorized bounded speaker/microphone testing; announce capture and
    park the amps afterwards. WCD/ADM lifecycle and persistence remain open.
@@ -796,6 +797,17 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
     all three clients pass and source/graph/mixer cleanup parks the amps.
     [DI result](tools/spx/boot-diagnostics/RESULT-20261007di.md).
     Scope excludes DSP destruction, playback reopen, resume and availability.
+
+  - [x] **A03e — Original capture survives incompatible native requests.**
+    DM boot `8b24fab9-d0b5-4356-bcd6-674e2f5a2272`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: channel/rate/format/period changes
+    reject with kernel hw_params EINVAL and preserve/repark the retained client.
+    Original S16LE/48kHz/mono/1920/7680 then reopens; third ordinary default
+    client records known440/660 tones with retained playback. Controls/source
+    restored and all PCMs closed. Capture safety timer fires during teardown;
+    function passes before that fence, which is not a clean deadline pass.
+    No admitted format change, same-handle reprepare or full lifecycle claim.
+    [DM result](tools/spx/boot-diagnostics/RESULT-20261007dm.md).
 
 - [ ] **A04 — External audio.** Test applicable USB-C audio/dock and Bluetooth
   output/input devices, routing, hotplug and reconnect. The logical codec
