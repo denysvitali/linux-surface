@@ -64,7 +64,7 @@ awaits attribution for later observations.
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
 | Keyboard, touchpad (I04, I05) | **BI keyboard works**; recovery keyboard restored after SSAM timeout | Startup reliability, full keys/gestures and resume |
 | Buttons (I06) | User: short power press opens shutdown prompt, boot pending | Volume/posture and intended wake |
-| Bluetooth (N02) | **BI user confirmation; DT: N02a native radio cycling/discovery pass** | Transition framing/vendor errors, peripheral pairing/reconnect and resume |
+| Bluetooth (N02) | **DT: N02a radio cycling/discovery; DU live MSFT warning fix passes** | Intermittent framing error, peripheral pairing/reconnect and resume |
 | USB data (U01) | Untested | Both ports/orientations, fixtures |
 | USB-C PD, DisplayPort, dock (U02–U04) | **CG: external off/on scanout restoration passes; normal orientation API works** | Visible output, physical replug, roles/PD, ports/orientations/resume |
 | Battery and charging (P01) | **CF: P01a actual charging passes, +1.26Wh/120s** | Charge-policy explanation, discharge/transitions and charger coverage |
@@ -913,8 +913,11 @@ host datapath; that is not current cellular service verification.
     [DT result](tools/spx/boot-diagnostics/RESULT-20261007dt.md).
     **DU:** same native cycles pass with16/13 fresh peers; enabled setup trace
     sees no UART error, so intermittent framing remains unresolved.44 MSFT
-    warnings reproduce. No new acceptance or corrected-transport claim.
-    [DU result](tools/spx/boot-diagnostics/RESULT-20261007du.md).
+    warnings reproduce initially; live prefix-admission fix then passes two
+    further cycles14/15 peers with zero new MSFT warnings. Intermittent UART
+    cause remains unresolved; no new acceptance/pairing/resume claim.
+    [DU result](tools/spx/boot-diagnostics/RESULT-20261007du.md),
+    [live MSFT fix](tools/spx/boot-diagnostics/RESULT-20261007du-msft.md).
 
 - [ ] **N03 — Cellular control/data.** Stable modem startup and discovery, correct
   SIM/eSIM applicability, network registration and actual bidirectional data with
