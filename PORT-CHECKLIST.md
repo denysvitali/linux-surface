@@ -1365,7 +1365,8 @@ GPU runtime suspend works.
     post-wake acoustic evidence, original sleep-mask/runtime-PM restoration,
     closed PCMs and parked amplifiers. Default desktop microphone clients,
     repeated reliability, battery and full P03 remain separate.
-    DW is prepared for this bounded test; no functional pass yet.
+    DW normal28.0528s sleep completes, but playback underrun/capture overrun
+    end both owners; no post-wake pass. Full cleanup leaves FIFO pending.
     [DW result](tools/spx/boot-diagnostics/RESULT-20261007dw.md).
 
 - [ ] **P04 — Hibernate applicability.** Establish whether the intended platform/
