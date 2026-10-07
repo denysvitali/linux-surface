@@ -16,6 +16,7 @@
  */
 
 #include <linux/kernel.h>
+#include <linux/atomic.h>
 #include <linux/clk.h>
 #include <linux/completion.h>
 #include <linux/debugfs.h>
@@ -39,6 +40,12 @@
 
 #include "hci_uart.h"
 #include "btqca.h"
+
+/* Diagnostic only: no receive payloads or peer identifiers are recorded. */
+static bool spx_qca_setup_trace;
+module_param(spx_qca_setup_trace, bool, 0400);
+MODULE_PARM_DESC(spx_qca_setup_trace,
+		"Bounded Surface Pro X QCA setup receive-parser metadata");
 
 /* HCI_IBS protocol messages */
 #define HCI_IBS_SLEEP_IND	0xFE
@@ -140,6 +147,8 @@ struct qca_dump_size {
 struct qca_data {
 	struct hci_uart *hu;
 	struct sk_buff *rx_skb;
+	atomic_t spx_setup_trace_errors;
+	const char *spx_setup_phase;
 	struct sk_buff_head txq;
 	struct sk_buff_head tx_wait_q;	/* HCI_IBS wait queue	*/
 	struct sk_buff_head rx_memdump_q;	/* Memdump wait queue	*/
@@ -185,6 +194,32 @@ struct qca_data {
 	u64 votes_on;
 	u64 votes_off;
 };
+
+void qca_spx_setup_trace(struct hci_uart *hu, const char *reason, int type,
+			 int offset, int remaining, int partial_type,
+			 unsigned int partial_len, unsigned int partial_expect)
+{
+	struct qca_data *qca;
+
+	if (!spx_qca_setup_trace || !hu->proto ||
+	    hu->proto->id != HCI_UART_QCA || !hu->hdev ||
+	    !test_bit(HCI_INIT, &hu->hdev->flags) ||
+	    !of_machine_is_compatible("microsoft,surface-pro-x"))
+		return;
+
+	qca = hu->priv;
+	if (!qca || !atomic_add_unless(&qca->spx_setup_trace_errors, 1, 8))
+		return;
+
+	bt_dev_info(hu->hdev,
+		    "SPX QCA setup RX reason=%s type=%d offset=%d remaining=%d "
+		    "partial_type=%d partial_len=%u partial_expect=%u "
+		    "phase=%s flags=%lx tx_ibs=%u rx_ibs=%u",
+		    reason, type, offset, remaining, partial_type, partial_len,
+		    partial_expect, READ_ONCE(qca->spx_setup_phase),
+		    READ_ONCE(qca->flags), READ_ONCE(qca->tx_ibs_state),
+		    READ_ONCE(qca->rx_ibs_state));
+}
 
 enum qca_speed_type {
 	QCA_INIT_SPEED = 1,
@@ -585,6 +620,9 @@ static int qca_open(struct hci_uart *hu)
 	qca = kzalloc_obj(*qca);
 	if (!qca)
 		return -ENOMEM;
+
+	atomic_set(&qca->spx_setup_trace_errors, 0);
+	WRITE_ONCE(qca->spx_setup_phase, "idle");
 
 	skb_queue_head_init(&qca->txq);
 	skb_queue_head_init(&qca->tx_wait_q);
@@ -1925,9 +1963,12 @@ static int qca_setup(struct hci_uart *hu)
 	if (hu->serdev)
 		qcadev = serdev_device_get_drvdata(hu->serdev);
 
+	WRITE_ONCE(qca->spx_setup_phase, "check-speeds");
 	ret = qca_check_speeds(hu);
-	if (ret)
+	if (ret) {
+		WRITE_ONCE(qca->spx_setup_phase, "failed");
 		return ret;
+	}
 
 	clear_bit(QCA_ROM_FW, &qca->flags);
 	/* Patch downloading has to be done without IBS mode */
@@ -1971,6 +2012,7 @@ static int qca_setup(struct hci_uart *hu)
 	qca->memdump_state = QCA_MEMDUMP_IDLE;
 
 retry:
+	WRITE_ONCE(qca->spx_setup_phase, "power-on");
 	ret = qca_power_on(hdev);
 	if (ret)
 		goto out;
@@ -1993,6 +2035,7 @@ retry:
 
 		hci_set_aosp_capable(hdev);
 
+		WRITE_ONCE(qca->spx_setup_phase, "soc-version");
 		ret = qca_read_soc_version(hdev, &ver, soc_type);
 		if (ret)
 			goto out;
@@ -2003,6 +2046,7 @@ retry:
 	}
 
 	/* Setup user speed if needed */
+	WRITE_ONCE(qca->spx_setup_phase, "oper-speed");
 	speed = qca_get_speed(hu, QCA_OPER_SPEED);
 	if (speed) {
 		ret = qca_set_speed(hu, QCA_OPER_SPEED);
@@ -2025,12 +2069,14 @@ retry:
 
 	default:
 		/* Get QCA version information */
+		WRITE_ONCE(qca->spx_setup_phase, "soc-version");
 		ret = qca_read_soc_version(hdev, &ver, soc_type);
 		if (ret)
 			goto out;
 	}
 
 	/* Setup patch / NVM configurations */
+	WRITE_ONCE(qca->spx_setup_phase, "firmware");
 	ret = qca_uart_setup(hdev, qca_baudrate, soc_type, ver,
 			firmware_name, rampatch_name);
 	if (!ret) {
@@ -2057,6 +2103,7 @@ retry:
 
 out:
 	if (ret) {
+		WRITE_ONCE(qca->spx_setup_phase, "power-off");
 		qca_power_off(hu);
 
 		if (retries < MAX_INIT_RETRIES) {
@@ -2066,12 +2113,14 @@ out:
 				ret = serdev_device_open(hu->serdev);
 				if (ret) {
 					bt_dev_err(hdev, "failed to open port");
+					WRITE_ONCE(qca->spx_setup_phase, "failed");
 					return ret;
 				}
 			}
 			retries++;
 			goto retry;
 		}
+		WRITE_ONCE(qca->spx_setup_phase, "failed");
 		return ret;
 	}
 
@@ -2088,6 +2137,7 @@ out:
 	qca->controller_id = le16_to_cpu(ver.rom_ver);
 	hci_devcd_register(hdev, hci_coredump_qca, qca_dmp_hdr, NULL);
 
+	WRITE_ONCE(qca->spx_setup_phase, "done");
 	return ret;
 }
 

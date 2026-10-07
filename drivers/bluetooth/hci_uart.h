@@ -200,6 +200,16 @@ int bcm_deinit(void);
 #ifdef CONFIG_BT_HCIUART_QCA
 int qca_init(void);
 int qca_deinit(void);
+void qca_spx_setup_trace(struct hci_uart *hu, const char *reason, int type,
+			 int offset, int remaining, int partial_type,
+			 unsigned int partial_len, unsigned int partial_expect);
+#else
+static inline void qca_spx_setup_trace(struct hci_uart *hu, const char *reason,
+				       int type, int offset, int remaining,
+				       int partial_type, unsigned int partial_len,
+				       unsigned int partial_expect)
+{
+}
 #endif
 
 #ifdef CONFIG_BT_HCIUART_AG6XX

@@ -157,10 +157,18 @@ struct sk_buff *h4_recv_buf(struct hci_uart *hu, struct sk_buff *skb,
 {
 	u8 alignment = hu->alignment ? hu->alignment : 1;
 	struct hci_dev *hdev = hu->hdev;
+	int initial_count = count, partial_type = -1;
+	unsigned int partial_len = 0, partial_expect = 0;
 
 	/* Check for error from previous call */
 	if (IS_ERR(skb))
 		skb = NULL;
+
+	if (skb) {
+		partial_type = hci_skb_pkt_type(skb);
+		partial_len = skb->len;
+		partial_expect = hci_skb_expect(skb);
+	}
 
 	while (count) {
 		int i, len;
@@ -189,8 +197,12 @@ struct sk_buff *h4_recv_buf(struct hci_uart *hu, struct sk_buff *skb,
 			}
 
 			/* Check for invalid packet type */
-			if (!skb)
+			if (!skb) {
+				qca_spx_setup_trace(hu, "packet-type", buffer[0],
+					initial_count - count, count, partial_type,
+					partial_len, partial_expect);
 				return ERR_PTR(-EILSEQ);
+			}
 
 			count -= 1;
 			buffer += 1;
@@ -212,6 +224,9 @@ struct sk_buff *h4_recv_buf(struct hci_uart *hu, struct sk_buff *skb,
 		}
 
 		if (i >= pkts_count) {
+			qca_spx_setup_trace(hu, "partial-type", -1,
+				initial_count - count, count, partial_type,
+				partial_len, partial_expect);
 			kfree_skb(skb);
 			return ERR_PTR(-EILSEQ);
 		}
@@ -247,6 +262,9 @@ struct sk_buff *h4_recv_buf(struct hci_uart *hu, struct sk_buff *skb,
 				break;
 			default:
 				/* Unsupported variable length */
+				qca_spx_setup_trace(hu, "length-size", -1,
+					initial_count - count, count, partial_type,
+					partial_len, partial_expect);
 				kfree_skb(skb);
 				return ERR_PTR(-EILSEQ);
 			}

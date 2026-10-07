@@ -251,6 +251,9 @@ def prepare(args):
                     'q6asm_dai.spx_force_timer_pacing=0']
     else:
         cmdline.append('module_blacklist=wcd934x,soundwire_qcom,snd_soc_wsa881x,snd_soc_wcd934x')
+    cmdline = [word for word in cmdline if not word.startswith('hci_uart.spx_qca_setup_trace=')]
+    if args.qca_setup_trace:
+        cmdline.append('hci_uart.spx_qca_setup_trace=1')
     if args.slim_s2idle_retain:
         cmdline.append('slim_qcom_ngd_ctrl.spx_s2idle_retain=1')
     if args.usbc_phy_orientation:
@@ -280,6 +283,7 @@ def prepare(args):
     prepared = dict(utc=datetime.now(timezone.utc).isoformat(), preboot_id=BOOT_ID, release=RELEASE, attempt=ATTEMPT, entry='spx-trial-' + ATTEMPT, cmdline=cmdline, source_commit=subprocess.check_output(['git', '-c', 'safe.directory=' + str(REPO), 'rev-parse', 'HEAD'], cwd=REPO, text=True).strip(), build_directory=str(BUILD), private_config=str(OUT / 'kernel.config'), bluetooth_address=args.address, address_is_per_installation=True, venus_trial=False, speaker_drivers_blocked=True, hardware_acceptance_closed=False, installed=False, boot_selected=False, boot_payloads=dict(vmlinuz=sha(OUT / 'vmlinuz'), initramfs=sha(OUT / 'initramfs.img'), dtb=sha(OUT / 'spx.dtb')))
     prepared.update(desktop_controls=getattr(args, 'desktop_controls', False), sensors_close_debug=args.sensors_close_debug, sensors_crash_recovery=args.sensors_crash_recovery, sensors_startup=args.sensors, sensors_private_ssc=bool(args.sensors_ssc_library), audio_mode='parked' if args.audio else 'blocked',
                     pmic_rtc=args.pmic_rtc, slim_s2idle_retain=args.slim_s2idle_retain,
+                    qca_setup_trace=args.qca_setup_trace,
                     cpu_passive_cooling=args.cpu_passive_cooling, cpu_passive_trip_mc=actual_cpu_trip,
                     thermal_combined=args.thermal_combined,
                     thermal_gpu_fixture=str(args.thermal_gpu_fixture),
@@ -2015,6 +2019,8 @@ def main():
                         help='opt in to private stress-ng verified doublemul workers for combined thermal test')
     parser.add_argument('--cdsp', action='store_true',
                         help='enable the guarded CDSP translated capability-only transport')
+    parser.add_argument('--qca-setup-trace', action='store_true',
+                        help='prepare-only opt in to bounded Surface QCA firmware-setup parser metadata')
     parser.add_argument('--audio', action='store_true', help='enable codecs with both amplifiers parked; no playback')
     parser.add_argument('--slim-s2idle-retain', action='store_true',
                         help='opt in to WIP powered-PIO retention during guarded s2idle; no energy claim')
@@ -2051,6 +2057,8 @@ def main():
                         help='after a queued audio test, use the existing return timer after this delay (61..900)')
     parser.add_argument('--desktop-user', default='dvitali')
     args = parser.parse_args()
+    if args.qca_setup_trace and args.command != 'prepare':
+        parser.error('--qca-setup-trace requires prepare')
     if args.parked_audio and args.command != 'systemd-suspend':
         parser.error('--parked-audio requires systemd-suspend')
     if args.desktop_controls and not ((args.command in ('audio', 'arm-audio') and args.audio_action == 'serve') or
@@ -2133,6 +2141,8 @@ def main():
             dispatch_sensors_crash(args, record)
             dispatch_thermal(args, record)
             dispatch_audio(args)
+            if record.get('qca_setup_trace') and not (OUT / 'bluetooth-power').exists():
+                bluetooth_power(args)
         else:
             {'install': install, 'boot': boot, 'return': return_to_default,
              'extend': extend_window, 'audio': audio_check, 'arm-audio': arm_audio,
