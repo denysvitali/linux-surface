@@ -2,6 +2,8 @@
 """Exercise consumed-once audio requests and automatic return on failure."""
 import importlib.util
 import json
+import io
+import sys
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
@@ -52,6 +54,58 @@ class TrialAudioFixture(unittest.TestCase):
 
 
 class AudioRequestTests(TrialAudioFixture):
+    def test_capture_reopen_cli_rejects_other_actions_before_lock(self):
+        for command, action in (('prepare', 'desktop-mic'), ('audio', 'feedback'),
+                                ('arm-audio', 'reopen'), ('check', 'desktop-mic')):
+            with self.subTest(command=command, action=action), \
+                    patch.object(sys, 'argv', ['trial.py', command, '20261007di',
+                                               '--audio-action', action, '--capture-reopen']), \
+                    patch.object(sys, 'stderr', io.StringIO()), \
+                    patch.object(trial, 'audio_check') as check, \
+                    patch.object(trial, 'require_source_boot') as boot:
+                with self.assertRaises(SystemExit) as stopped:
+                    trial.main()
+                self.assertEqual(stopped.exception.code, 2)
+                check.assert_not_called()
+                boot.assert_not_called()
+
+    def test_capture_reopen_is_recorded_and_passed_to_native_helper(self):
+        (self.out / 'prepared.json').write_text(json.dumps(dict(audio_mode='parked')))
+        (self.out / 'installed.json').touch()
+        args = SimpleNamespace(audio_action='desktop-mic', microphone_source='DMIC1',
+                               capture_reopen=True, allow_amp_power=True, allow_playback=True,
+                               allow_capture=True, desktop_user='dvitali',
+                               return_after_audio_seconds=None, serve_seconds=3600, desktop_peak=1433)
+        account = SimpleNamespace(pw_uid=1000, pw_name='dvitali')
+        with patch.object(trial, 'require_source_boot'), patch.object(trial, 'recovery'), \
+                patch.object(trial.pwd, 'getpwnam', return_value=account):
+            trial.arm_audio(args)
+        self.assertTrue(json.loads((self.out / 'audio-request.json').read_text())['capture_reopen'])
+        with patch.object(trial.os, 'geteuid', return_value=0), \
+                patch.object(trial.pwd, 'getpwnam', return_value=account), \
+                patch.object(trial.subprocess, 'Popen') as opened:
+            opened.return_value.wait.return_value = 0
+            trial.audio_check(args)
+        self.assertIn('--capture-reopen', opened.call_args.args[0])
+        args.audio_action = 'feedback'
+        trial.subprocess.run.reset_mock()
+        with self.assertRaisesRegex(AssertionError, 'requires desktop-mic'):
+            trial.arm_audio(args)
+        with self.assertRaisesRegex(AssertionError, 'requires desktop-mic'):
+            trial.audio_check(args)
+        trial.subprocess.run.assert_not_called()
+
+    def test_capture_reopen_request_forwarded_and_invalid_action_rejected(self):
+        self.request.update(action='desktop-mic', capture_reopen=True,
+                            playback=True, capture=True, serve_seconds=None)
+        self.write_request()
+        with patch.object(trial, 'audio_check') as check:
+            trial.requested_audio(self.args)
+        self.assertTrue(check.call_args.args[0].capture_reopen)
+        for action in ('plan', 'feedback', 'capture', 'reopen', 'serve'):
+            with self.subTest(action=action), self.assertRaisesRegex(AssertionError, 'requires desktop-mic'):
+                trial.validate_capture_reopen(action, True)
+
     def test_serve_is_consumed_before_hardware_and_failure_keeps_return(self):
         self.write_request()
 

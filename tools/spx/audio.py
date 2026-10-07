@@ -292,6 +292,9 @@ class OwnedCapture:
     """One finite MM2 capture, consumed continuously without XRUN recovery."""
 
     def __init__(self, card, report, directory, maximum_seconds=90, retain_recording=True):
+        self.card = card
+        self.started = time.monotonic()
+        self.closed = True
         self.maximum_seconds = maximum_seconds
         self.retain_recording = retain_recording
         source = report['microphone_source']
@@ -304,11 +307,16 @@ class OwnedCapture:
         self.error = None
         self.limit = None
         self.log = tempfile.TemporaryFile()
-        self.process = subprocess.Popen(
-            ['arecord', '--fatal-errors', '-q', '-D', f'plughw:{card},1',
-             '-t', 'raw', '-f', 'S16_LE', '-r', '48000', '-c', '1',
-             '--period-size=1920', '--buffer-size=7680', '-d', str(maximum_seconds)],
-            stdout=subprocess.PIPE, stderr=self.log, bufsize=0)
+        try:
+            self.process = subprocess.Popen(
+                ['arecord', '--fatal-errors', '-q', '-D', f'plughw:{card},1',
+                 '-t', 'raw', '-f', 'S16_LE', '-r', '48000', '-c', '1',
+                 '--period-size=1920', '--buffer-size=7680', '-d', str(maximum_seconds)],
+                stdout=subprocess.PIPE, stderr=self.log, bufsize=0)
+        except Exception:
+            self.log.close()
+            raise
+        self.closed = False
         self.status = Path(f'/proc/asound/card{card}/pcm1c/sub0/status')
         report['microphone_capture'] = True
         report['capture'] = {'pid': self.process.pid, 'device': f'plughw:{card},1',
@@ -395,7 +403,26 @@ class OwnedCapture:
             'abort_rms': self.limit, 'status': status}
         return samples
 
+    def reopen(self, evidence):
+        """Replace the finite native stream in place, preserving outer cleanup ownership."""
+        need(not self.retain_recording, 'Capture reopen must not retain private recordings')
+        evidence['original_capture'] = self.report['capture']
+        self.close()
+        need(self.report['capture'].get('closed_status') == 'closed',
+             'Original capture PCM remains open')
+        need(not self.report['capture'].get('error') and
+             not re.search(r'overrun|underrun|error', self.report['capture']['log'], re.I),
+             'Original capture reported an ALSA error')
+        remaining = int(self.maximum_seconds - (time.monotonic() - self.started))
+        need(remaining >= 10, 'Insufficient time remaining for bounded capture reopen')
+        self.__init__(self.card, self.report, self.directory,
+                      maximum_seconds=remaining, retain_recording=False)
+        evidence['reopened_capture'] = self.report['capture']
+        self.baseline()
+
     def close(self):
+        if getattr(self, 'closed', False):
+            return
         self.stop.set()
         self.report['capture']['stop_requested'] = self.process.poll() is None
         if self.process.poll() is None:
@@ -410,6 +437,7 @@ class OwnedCapture:
         self.log.seek(0)
         self.report['capture']['log'] = self.log.read().decode(errors='replace')
         self.log.close()
+        self.closed = True
         self.report['capture']['error'] = self.error
         self.report['capture']['returncode'] = self.process.returncode
         samples = self.samples()
@@ -1045,11 +1073,14 @@ class DesktopRecording(OwnedCapture):
 
 
 def desktop_microphone(args, report, pcm, paths, mapping, capture, holders):
-    """Two default desktop clients over one retained capture/playback pair."""
+    """Default clients, optionally followed by one bounded native capture reopen."""
     from acoustic import score_phase
 
     evidence = report['desktop'] = {'microphone_client_passed': False,
-        'maximum_seconds': 60, 'clients': [], 'scope': 'default client path only'}
+        'maximum_seconds': 60, 'clients': [],
+        'capture_reopen_requested': getattr(args, 'capture_reopen', False),
+        'scope': ('default clients and native capture reopen' if getattr(args, 'capture_reopen', False)
+                  else 'default client path only')}
     graph = DesktopGraph(args.desktop_user, evidence)
     holders.append(graph)
     started = time.monotonic()
@@ -1068,10 +1099,11 @@ def desktop_microphone(args, report, pcm, paths, mapping, capture, holders):
         source.start()
         owners = {'capture': read_text(capture.status), 'playback': pcm.healthy()}
         evidence['hardware_owners_before'] = owners
-        for index in range(2):
+        def test_client(index, source, owners):
             name = f'spx-default-microphone-{os.getpid()}-{index}'
             client = DesktopRecording(graph, name)
-            entry = {'name': name, 'pid': client.process.pid, 'passed': False}
+            entry = {'name': name, 'pid': client.process.pid, 'passed': False,
+                     'source_index': source.source_id, 'hardware_owners': owners}
             evidence['clients'].append(entry)
             try:
                 deadline = time.monotonic() + 5
@@ -1109,13 +1141,44 @@ def desktop_microphone(args, report, pcm, paths, mapping, capture, holders):
                 client.close()
             # Hardware remains open on silence between distinct client owners.
             pcm.settle(1)
-        need(len({c['pid'] for c in evidence['clients']}) == 2,
-             'Expected two distinct default-source clients')
+        for index in range(2):
+            test_client(index, source, owners)
+        evidence['initial_clients_passed'] = True
+        if getattr(args, 'capture_reopen', False):
+            reopened = evidence['capture_reopen'] = {'passed': False}
+            # Stop forwarding and restore/unload the old source before closing ALSA.
+            try:
+                source.close()
+                graph.microphone = None
+                capture.reopen(reopened)
+                new_owners = {'capture': read_text(capture.status), 'playback': pcm.healthy()}
+                reopened['hardware_owners_after'] = new_owners
+                for field in ('owner_pid', 'trigger_time'):
+                    old = re.search(r'^' + field + r'\s*:\s*(.+)$', owners['capture'], re.M)
+                    new = re.search(r'^' + field + r'\s*:\s*(.+)$', new_owners['capture'], re.M)
+                    need(old and new and old[1] != new[1],
+                         'Capture reopen did not change owner/trigger')
+                    old = re.search(r'^' + field + r'\s*:\s*(.+)$', owners['playback'], re.M)
+                    new = re.search(r'^' + field + r'\s*:\s*(.+)$', new_owners['playback'], re.M)
+                    need(old and new and old[1] == new[1],
+                         'Playback owner/trigger changed during capture reopen')
+                source = graph.microphone = DesktopMicSource(
+                    graph, capture, reopened, graph.default_source_before_test)
+                source.start()
+                test_client(2, source, new_owners)
+                reopened['passed'] = True
+            except Exception as error:
+                reopened['error'] = type(error).__name__ + ': ' + str(error)
+                raise
+        expected = 3 if getattr(args, 'capture_reopen', False) else 2
+        need(len({c['pid'] for c in evidence['clients']}) == expected,
+             'Expected distinct default-source clients')
         evidence['microphone_client_passed'] = True
         report['acoustic_passed'] = True
         report['remaining_prerequisites'] = [
             'A02 quality, simultaneous mic mapping, persistent/on-demand availability, '
-            'hardware capture reopen and full A03 teardown/resume remain open.']
+            + ('full A03 teardown/resume remain open.' if getattr(args, 'capture_reopen', False)
+               else 'hardware capture reopen and full A03 teardown/resume remain open.')]
     finally:
         timer.cancel()
         evidence['seconds'] = time.monotonic() - started
@@ -1861,6 +1924,8 @@ def main():
                         help='authorize bounded internal microphone recording')
     parser.add_argument('--microphone-source', choices=('DMIC0', 'DMIC1'), default='DMIC1',
                         help='bounded capture/feedback/desktop-mic input (default: DMIC1)')
+    parser.add_argument('--capture-reopen', action='store_true',
+                        help='desktop-mic-only native capture reopen with a third default client')
     parser.add_argument('--reopen-first-channel', choices=('left', 'right'),
                         help='reopen-only second-cycle first channel; first cycle remains left/right/both')
     parser.add_argument('--serve-seconds', type=serve_duration, default=3600,
@@ -1868,6 +1933,8 @@ def main():
     parser.add_argument('--desktop-peak', type=desktop_peak_limit,
                         help='serve-only ordinary PCM peak, 1433..12000 (default: 1433)')
     args = parser.parse_args()
+    if args.capture_reopen and args.action != 'desktop-mic':
+        parser.error('--capture-reopen requires desktop-mic')
     if args.reopen_first_channel is not None and args.action != 'reopen':
         parser.error('--reopen-first-channel requires reopen')
     if args.microphone_source != 'DMIC1' and args.action not in ('capture', 'feedback', 'desktop-mic'):

@@ -1126,6 +1126,135 @@ class DesktopMicrophoneTests(unittest.TestCase):
         self.assertTrue(report['desktop']['clients'][0]['passed'])
         self.assertFalse(report['desktop']['clients'][1]['passed'])
 
+    def test_capture_reopen_cli_rejects_other_actions_before_hardware(self):
+        for action in ('plan', 'feedback', 'capture', 'reopen', 'serve'):
+            with self.subTest(action=action), \
+                    patch.object(audio.sys, 'argv', ['audio.py', action, '--capture-reopen']), \
+                    patch.object(audio.sys, 'stderr', io.StringIO()), \
+                    patch.object(audio, 'initialize') as initialize:
+                with self.assertRaises(SystemExit) as stopped:
+                    audio.main()
+                self.assertEqual(stopped.exception.code, 2)
+                initialize.assert_not_called()
+
+    def test_owned_capture_reopen_keeps_identity_evidence_and_remaining_budget(self):
+        capture = audio.OwnedCapture.__new__(audio.OwnedCapture)
+        old = {'pid': 123, 'closed_status': 'closed', 'log': '', 'error': None}
+        capture.card, capture.directory = 0, Path('/unused')
+        capture.report = {'capture': old}
+        capture.maximum_seconds, capture.started, capture.retain_recording = 60, 100, False
+        reopened = {'pid': 456}
+        def initialize(same, card, report, directory, **kwargs):
+            self.assertIs(same, capture)
+            self.assertEqual(kwargs, dict(maximum_seconds=35, retain_recording=False))
+            report['capture'] = reopened
+        evidence = {}
+        with patch.object(audio.time, 'monotonic', return_value=125), \
+                patch.object(capture, 'close') as close, \
+                patch.object(capture, 'baseline', side_effect=RuntimeError('silent baseline')), \
+                patch.object(audio.OwnedCapture, '__init__', autospec=True, side_effect=initialize):
+            with self.assertRaisesRegex(RuntimeError, 'silent baseline'):
+                capture.reopen(evidence)
+        close.assert_called_once()
+        self.assertIs(evidence['original_capture'], old)
+        self.assertIs(evidence['reopened_capture'], reopened)
+        self.assertIs(capture.report['capture'], reopened)
+
+    def test_reopen_start_failure_closes_log_without_reclosing_old_process(self):
+        capture = audio.OwnedCapture.__new__(audio.OwnedCapture)
+        old_process = Mock()
+        capture.process = old_process
+        log = io.BytesIO()
+        with patch.object(audio.tempfile, 'TemporaryFile', return_value=log), \
+                patch.object(audio.subprocess, 'Popen', side_effect=OSError('arecord failed')):
+            with self.assertRaisesRegex(OSError, 'arecord failed'):
+                capture.__init__(0, {'microphone_source': 'DMIC1'}, Path('/unused'),
+                                 maximum_seconds=20, retain_recording=False)
+        self.assertTrue(log.closed)
+        capture.close()
+        old_process.terminate.assert_not_called()
+        old_process.stdout.close.assert_not_called()
+
+    def test_capture_close_is_idempotent_after_successful_stop(self):
+        capture = audio.OwnedCapture.__new__(audio.OwnedCapture)
+        capture.closed = False
+        capture.stop, capture.thread, capture.process = Mock(), Mock(), Mock()
+        capture.process.poll.return_value = None
+        capture.process.returncode = -15
+        capture.log = io.BytesIO(b'')
+        capture.report, capture.error = {'capture': {}}, None
+        capture.mutex, capture.raw = threading.Lock(), bytearray()
+        capture.samples = Mock(return_value=audio.array('h'))
+        capture.retain_recording, capture.status = False, Path('/unused')
+        with patch.object(audio, 'read_text', return_value='closed'):
+            capture.close()
+            capture.close()
+        capture.process.terminate.assert_called_once()
+        capture.process.stdout.close.assert_called_once()
+        self.assertEqual(capture.report['capture']['frames'], 0)
+        self.assertIsNone(capture.report['capture']['recording'])
+
+    def test_third_default_client_reopens_capture_only_and_retains_failures(self):
+        import acoustic
+        old = 'state: RUNNING\nowner_pid: 123\ntrigger_time: 14.567\n'
+        new = 'state: RUNNING\nowner_pid: 456\ntrigger_time: 44.567\n'
+        for failure in (None, 'baseline', 'third-tone'):
+            with self.subTest(failure=failure):
+                state, events, clients = {'reopened': False}, [], []
+                capture = Mock(status=Path('/unused-capture'))
+                def reopen(evidence):
+                    events.append('capture-reopen')
+                    state['reopened'] = True
+                    evidence['original_capture'] = {'pid': 123}
+                    evidence['reopened_capture'] = {'pid': 456}
+                    if failure == 'baseline':
+                        raise RuntimeError('silent reopened capture')
+                capture.reopen.side_effect = reopen
+                pcm, graph, source, second = Mock(), Mock(), Mock(), Mock()
+                pcm.healthy.return_value = old
+                source.source_id, second.source_id = 79, 91
+                source.require_client_route.return_value = True
+                second.require_client_route.return_value = True
+                source.close.side_effect = lambda: events.append('source-close')
+                def recording(*args):
+                    client = Mock()
+                    client.process.pid = 200 + len(clients)
+                    client.mark.return_value = 144000
+                    client.samples.return_value = []
+                    clients.append(client)
+                    return client
+                scores = [{'passed': True, 'reason': ''}] * 2 + [
+                    {'passed': failure != 'third-tone', 'reason': 'missing third tone'}]
+                report, holders = {}, []
+                with patch.object(audio, 'DesktopGraph', return_value=graph), \
+                        patch.object(audio, 'DesktopMicSource', side_effect=[source, second]), \
+                        patch.object(audio, 'DesktopRecording', side_effect=recording), \
+                        patch.object(audio, 'read_text', side_effect=lambda _: new if state['reopened'] else old), \
+                        patch.object(audio, 'check_stereo'), \
+                        patch.object(audio.threading, 'Timer'), \
+                        patch.object(acoustic, 'score_phase', side_effect=scores):
+                    args = SimpleNamespace(desktop_user='test', capture_reopen=True)
+                    if failure:
+                        with self.assertRaises(RuntimeError):
+                            audio.desktop_microphone(args, report, pcm, {}, {}, capture, holders)
+                    else:
+                        audio.desktop_microphone(args, report, pcm, {}, {}, capture, holders)
+                evidence = report['desktop']
+                self.assertEqual(events, ['source-close', 'capture-reopen'])
+                self.assertTrue(evidence['initial_clients_passed'])
+                self.assertTrue(all(c['passed'] for c in evidence['clients'][:2]))
+                self.assertEqual(evidence['capture_reopen']['passed'], failure is None)
+                if failure:
+                    self.assertIn('error', evidence['capture_reopen'])
+                self.assertEqual(len(clients), 2 if failure == 'baseline' else 3)
+                for client in clients:
+                    client.close.assert_called_once()
+                capture.close.assert_not_called()  # Same object is left to outer cleanup.
+                pcm.close.assert_not_called()
+                self.assertIs(graph.microphone, None if failure == 'baseline' else second)
+                if failure != 'baseline':
+                    self.assertEqual(evidence['clients'][2]['source_index'], 91)
+
     def test_desktop_mic_requires_capture_before_any_hardware(self):
         args = SimpleNamespace(action='desktop-mic', microphone_source='DMIC0',
                                allow_amp_power=True, allow_playback=True, allow_capture=False)
