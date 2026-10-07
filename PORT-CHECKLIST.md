@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-07, DM: valid capture survives incompatible requests)
+## Status (2026-10-07, DN: automatic thermal testing parked)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
@@ -30,7 +30,7 @@ CC closes A02b; **DK closes A02c:** both inputs simultaneously record known tone
 as native stereo with distinct transfer evidence. Quality and lifecycle remain open. CB left and DE/DG right playback reopen fail after first-cycle passes; A03b parked.
 **CM closes P05a:** both CPU clusters and GPU enforce/release cooling limits.
 **CX closes P05b:** five-minute simultaneous CPU/FD680 load and cleanup pass,
-peak69.8C. CY extends this to verified native FP, peak66.3C; automatic responses remain open.
+peak69.8C. CY extends this to verified native FP. DN stays below temporary55C; automatic response testing is parked.
 **DH closes A03c:** two default microphone clients pass acoustically; absent-default
 cleanup is fixed and real virtual-source restoration verified separately.
 **DI closes A03d:** native microphone PCM close/reopen and third client pass;
@@ -65,7 +65,7 @@ awaits attribution for later observations.
 | USB-C PD, DisplayPort, dock (U02–U04) | **CG: external off/on scanout restoration passes; normal orientation API works** | Visible output, physical replug, roles/PD, ports/orientations/resume |
 | Battery and charging (P01) | **CF: P01a actual charging passes, +1.26Wh/120s** | Charge-policy explanation, discharge/transitions and charger coverage |
 | Suspend/resume (P03) | **DD13 wakes; DF2 audio-loaded retained-core sleeps**; targets masked | Full device recovery, battery sleep and physical wakes |
-| Thermal (P05) | **CM cooling limits; CX/CY combined load/cleanup, CY native FP verification pass** | Real automatic response, longer envelope and enclosure behavior |
+| Thermal (P05) | **CM cooling limits; CX/CY combined load/cleanup; DN below temporary55C, automatic testing parked** | Real automatic response, longer envelope and enclosure behavior |
 | Idle power (P02) | BU: CPU scales down; GPU runtime-suspends | **Battery tests deferred by user**; remaining forced-on devices |
 | Sensors (S01, S02) | **DD backend/desktop clients survive repeated/30-minute AC sleep** | Light/axes/calibration; DA fault; final regression |
 | Cellular, GNSS (N03, N04) | Recovery: GNSS starts/stops but no fix; modem rejects online mode | Real modem provisioning, IPA datapath, SIM; actual GNSS fix |
@@ -78,7 +78,8 @@ boots without a usable accelerator result. CW stops before its recorded query;
 CV's return stalls in shutdown ramdisk generation. CX prepares that ramdisk
 during runtime, passes five-minute combined CPU/GPU load and reaches actual
 known-good recovery. CY verifies native FP during combined load and also
-returns to known-good; neither run reaches the cooling trips. Full thermal/
+returns to known-good; neither run reaches the cooling trips. DN also stays
+below temporary55C; automatic thermal testing is parked after no functional gain. Full thermal/
 accelerator acceptance remains open. Do not repeat those workloads unchanged.
 See [CDSP prerequisites](tools/spx/boot-diagnostics/RESULT-20261006cdsp.md).
 USB-C switching and external scanout restoration already have scoped passes;
@@ -1315,6 +1316,10 @@ GPU runtime suspend works.
     peak66.3C, all groups stop and limits recover without new kernel faults.
     A userspace launch-directory failure is retained before the corrected
     same-boot run. [CY result](tools/spx/boot-diagnostics/RESULT-20261006cy.md).
+    DN boot `4ae7f5f5-56e8-4fbb-868c-1b8a896083c7`, same kernel, stays below
+    a temporary55C trip (clusters53.1/54.3C); cleanup passes, both automatic
+    responses false. No box closes; park automatic thermal retries.
+    [DN result](tools/spx/boot-diagnostics/RESULT-20261007dn.md).
 
 ## Diagnostic integrity and final acceptance
 
