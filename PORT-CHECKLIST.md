@@ -1358,6 +1358,16 @@ GPU runtime suspend works.
     session resume, low-power and permanent desktop sleep remain unverified.
     [DS result](tools/spx/boot-diagnostics/RESULT-20261007ds.md).
 
+  - [ ] **P03e — Retained public playback and native capture across normal AC sleep.**
+    Verify quiet public playback acoustically before and after one normal
+    login1/systemd sleep with the same native playback/capture owner PIDs,
+    sound FDs, stream geometry and codec initialization counts. Require fresh
+    post-wake acoustic evidence, original sleep-mask/runtime-PM restoration,
+    closed PCMs and parked amplifiers. Default desktop microphone clients,
+    repeated reliability, battery and full P03 remain separate.
+    DW is prepared for this bounded test; no functional pass yet.
+    [DW result](tools/spx/boot-diagnostics/RESULT-20261007dw.md).
+
 - [ ] **P04 — Hibernate applicability.** Establish whether the intended platform/
   storage/security setup supports hibernation; if supported, verify image restore
   and the same functional regression checks. An exposed `disk` state is not proof.
