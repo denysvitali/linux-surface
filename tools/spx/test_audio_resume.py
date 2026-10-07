@@ -250,6 +250,23 @@ class DefaultMicResume(unittest.TestCase):
             replies['sources'] = json.dumps([{**source, 'owner_module': 42}])
             with self.assertRaisesRegex(AssertionError, 'module changed'): witness.identity()
 
+    def test_dz_noisy_module_response_admits_only_exact_owned_row(self):
+        # Exact owned row and diagnostic shapes from virtual-module-schema.json.
+        owned = ('536870917\tmodule-pipe-source\tfile=/run/user/1000/spx-mic-usra8luo/capture '
+                 'source_name=spx_microphone_test_5082 format=s16le rate=48000 channels=1 channel_map=mono')
+        columns = [1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 1, 1, 2, 1, 2, 1, 1, 1, 1, 1, 1, 2, 1, 3]
+        diagnostics = ['nonnumeric prefix' + '\tdiagnostic' * (count - 1) for count in columns]
+        # Unrelated numeric rows can also lose empty argument columns to strip.
+        reply = '\n'.join([*diagnostics, '7\tunrelated', owned, '8']).strip()
+        module = resume.owned_module(reply, '536870917')
+        self.assertEqual(module, dict(index=536870917, name='module-pipe-source', argument=owned.split('\t')[2]))
+        for rejected in ('\n'.join(diagnostics), reply.replace('536870917\t', '536870918\t'),
+                         reply + '\n' + owned, '536870917\tmodule-pipe-source',
+                         '536870917\tmodule-pipe-source\t', '536870917\tmodule-pipe-source\t   ',
+                         reply.replace('module-pipe-source\tfile=', 'module-null-sink\tfile=')):
+            with self.subTest(reply=rejected), self.assertRaises(AssertionError):
+                resume.owned_module(rejected, '536870917')
+
     def test_exact_dz_silent_fixture_source_metadata_admission(self):
         # Copied from DZ virtual-source-schema.json, with only emitted fields.
         source = dict(index=79, name='spx_microphone_test_3760', owner_module=536870917,

@@ -37,9 +37,12 @@ def owned_module(text, module_id):
     matches = []
     for line in text.splitlines():
         fields = line.split('\t', 3)
-        assert len(fields) >= 3 and fields[0].isdigit(), 'Invalid Pulse module index row'
-        if int(fields[0]) == int(module_id):
-            matches.append(dict(index=int(fields[0]), name=fields[1], argument=fields[2]))
+        # Replies may include unrelated nonnumeric diagnostics. Admit only
+        # the actual module ID already owned by this source, never a substitute.
+        if not fields[0].isdigit() or int(fields[0]) != int(module_id):
+            continue
+        assert len(fields) >= 3 and fields[2].strip(), 'Invalid owned Pulse module row'
+        matches.append(dict(index=int(fields[0]), name=fields[1], argument=fields[2]))
     assert len(matches) == 1 and matches[0]['name'] == 'module-pipe-source', 'Owned microphone module missing'
     return matches[0]
 
