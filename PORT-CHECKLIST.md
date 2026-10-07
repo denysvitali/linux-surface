@@ -902,6 +902,13 @@ host datapath; that is not current cellular service verification.
   pairing/reconnect and resume details were not reported.
   [BI result](tools/spx/boot-diagnostics/RESULT-20261004bi.md).
   [Follow-up](tools/spx/boot-diagnostics/PHYSICAL-FOLLOWUP-20261004.md).
+  - [ ] **N02a — Native Bluetooth radio power cycling.** Through normal BlueZ
+    APIs, two off/on cycles retain the installation address and restore policy;
+    bounded discovery after each reports fresh radio observations and ends
+    cleanly. Preserve connected peripherals and WLAN; no pairing, audio or
+    full peripheral-resume claim.
+    [DT result](tools/spx/boot-diagnostics/RESULT-20261007dt.md).
+
 - [ ] **N03 — Cellular control/data.** Stable modem startup and discovery, correct
   SIM/eSIM applicability, network registration and actual bidirectional data with
   service; disconnect/reconnect, radio control and resume. Resolve mode and
