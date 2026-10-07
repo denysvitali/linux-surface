@@ -77,6 +77,9 @@ awaits attribution for later observations.
 ## Next work, in order
 
 User cannot provide physical assistance (October6); continue autonomous work.
+Default desktop microphone resume is parked after DY/DZ/EA: EA pre-sleep
+client acoustics pass, but its FIFO adapter stalls during normal sleep and
+no post-wake proof is obtained. [EA result](tools/spx/boot-diagnostics/RESULT-20261008ea.md).
 Physical observations remain unverified. CDSP is parked after three changed
 boots without a usable accelerator result. CW stops before its recorded query;
 CV's return stalls in shutdown ramdisk generation. CX prepares that ramdisk
