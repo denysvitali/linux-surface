@@ -561,10 +561,13 @@ class OwnedCapture:
             self.report['capture']['recording'] = str(path)
         else:
             self.report['capture']['recording'] = None
-            self.report['capture']['closed_status'] = read_text(self.status)
             self.report['capture']['clean_dsp_teardown_verified'] = False
-            with self.mutex:
-                self.raw.clear()
+            try:
+                self.report['capture']['closed_status'] = read_text(self.status)
+            finally:
+                # Diagnostic read failures must not retain incidental samples.
+                with self.mutex:
+                    self.raw.clear()
 
 
 class OwnedPCM:
@@ -1988,7 +1991,10 @@ def initialize(args, report):
                 capture = OwnedCapture(initial['internal_cards'][0], report, directory,
                                        maximum_seconds=capture_seconds, retain_recording=False, channels=2 if microphone_array else 1)
             else:
-                capture = OwnedCapture(initial['internal_cards'][0], report, directory)
+                # Only the explicit recording action keeps a WAV. Automated
+                # acoustic tests retain scores and discard incidental audio.
+                capture = OwnedCapture(initial['internal_cards'][0], report, directory,
+                                       retain_recording=args.action == 'capture')
             baseline = capture.baseline()
             if args.action == 'capture':
                 report['capture_running'] = True

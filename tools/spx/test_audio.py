@@ -1557,3 +1557,28 @@ class DesktopMicrophoneTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class DiscardedRecording(unittest.TestCase):
+    def test_close_discards_samples_even_when_status_capture_fails(self):
+        for failed in (False, True):
+            with self.subTest(failed=failed), tempfile.TemporaryDirectory() as directory:
+                capture = audio.OwnedCapture.__new__(audio.OwnedCapture)
+                capture.closed, capture.retain_recording = False, False
+                capture.raw = bytearray(struct.pack('<3h', 1, 2, 3))
+                capture.mutex, capture.stop = threading.Lock(), threading.Event()
+                capture.process = SimpleNamespace(poll=lambda: None, terminate=Mock(), wait=Mock(), stdout=SimpleNamespace(close=Mock()), returncode=1)
+                capture.thread, capture.error = Mock(), None
+                capture.log, capture.directory = tempfile.TemporaryFile(), Path(directory)
+                capture.status, capture.report = Path('/unused/status'), {'capture': {}}
+                with patch.object(audio, 'read_text', side_effect=OSError('status missing') if failed else None, return_value='closed'), patch.object(audio.wave, 'open') as wav:
+                    if failed:
+                        with self.assertRaises(OSError): capture.close()
+                    else:
+                        capture.close()
+                    wav.assert_not_called()
+                self.assertFalse(capture.raw)
+                self.assertIsNone(capture.report['capture']['recording'])
+                self.assertTrue(capture.closed)
+                self.assertEqual(capture.report['capture']['frames'], 3)
+                self.assertFalse(list(Path(directory).glob('*.wav')))
