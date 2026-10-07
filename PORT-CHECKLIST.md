@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-07, DO: TPM signing and normal AC suspend pass)
+## Status (2026-10-07, DP: ordered desktop audio shutdown passes)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
@@ -24,6 +24,7 @@ CF retains P01a actual charging pass; further battery tests are deferred.
 **CS closes B06a; CT closes B06b/B06c:** TPM commands, automatic startup and measured GRUB boot pass.
 **DO closes B06e:** TPM-generated ephemeral P256 signatures verify independently; changed messages reject, cleanup passes.
 **DO closes P03c:** normal login1/systemd AC suspend wakes on the PMIC alarm; network, motion streams and storage recover with audio disabled.
+**DP closes A03a:** two-minute default desktop stream and clean SoundWire shutdown through guarded trial return pass; arbitrary shutdown remains open.
 **D01a passes on CE:** two GNOME off/on cycles
 restore native2880×1920/60Hz scanout with fresh vblank and no new display faults.
 Visual quality remains open; DD proves post-sleep scanout. CG extends CE's power-cycle coverage to the attached dock. CA's earlier
@@ -56,7 +57,7 @@ awaits attribution for later observations.
 | Firmware TPM/security (B06) | **CT measured boot; DD sleep recovery; DO ephemeral P256 signing pass** | Secure Boot validation |
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
-| Speakers (A01) | **BY desktop playback; DF quiet startup after guarded sleep passes** | Persistence, volume/mapping/balance, reopen and lifecycle |
+| Speakers (A01) | **BY desktop playback; DF guarded-sleep startup; DP ordered shutdown pass** | Persistence, volume/mapping/balance, reopen and arbitrary shutdown |
 | Microphones (A02) | **DK native simultaneous array; DI default clients/native mono reopen pass** | Quality, physical mapping, availability and full lifecycle |
 | Cameras (C01–C05) | Rear sensor identifies | No frame captured |
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
@@ -104,7 +105,8 @@ physical replug, ports/orientations and visible output still need fixtures.
 4. **Audio (A01–A03):** preserve BY's working continuous quiet desktop setup.
    A03b reopen is parked after CB/DE/DG: first-cycle playback passes, reopened
    output fails despite successful clock writes and playback RUN/EOS callbacks.
-   A03c/default clients and A03d/native capture reopen now pass on DI. Next
+   A03a/guarded-return desktop shutdown now passes on DP; arbitrary shutdown stays open.
+   A03c/default clients and A03d/native capture reopen now pass on DI.
    A02c/native simultaneous array now passes on DK. Retained capture format and
    buffer admission passes on DM: incompatible reuse rejects, and the original
    contract still captures through a default client. Avoid unchanged playback
@@ -761,17 +763,18 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
   after reboot/resume without manual mixer setup or ad-hoc repair. Resolve or
   explicitly validate the parked-session workaround and its resource lifetime.
 
-  - [ ] **A03a — Bounded desktop applications and SoundWire shutdown.** BU
-    passes left/right/both and another application after idle; the actual
-    default desktop sink passes acoustically. A two-minute ordinary desktop
-    stream completes with the same PCM owner and capture closed.
-    [BU result](tools/spx/boot-diagnostics/RESULT-20261005bu.md). Clean shutdown
-    failed with a shutdown XRUN on BU after reboot/session stop began. BW
-    restores quiet desktop handoff; keep its working stream open.
-    BP previously verified empty SoundWire FIFO after stream close on boot
-    `a208387a-004a-4e7b-98f4-8c8a7945cde6`, same kernel release.
-    [BP result](tools/spx/boot-diagnostics/RESULT-20261004bp.md). Hardware reopen,
-    WCD/ADM lifecycle and reboot/resume persistence remain unresolved.
+  - [x] **A03a — Bounded desktop applications and SoundWire shutdown.** DP,
+    boot `5837349e-ee57-4725-bdc6-0b0985594d7d`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: quiet left/right/both and public
+    default-sink acoustic checks pass. An ordinary 120s desktop client completes
+    with the same running PCM owner and capture closed. Guarded trial return
+    stops the verified owner before session shutdown: attached SoundWire ports,
+    DACs and PAs disable, FIFO empties, graph/runtime PM restore, amplifiers park,
+    all PCMs close and device ownership releases, without a playback XRUN.
+    Actual known-good recovery is verified. [DP result](tools/spx/boot-diagnostics/RESULT-20261007dp.md).
+    Earlier BU shutdown XRUN remains recorded in the [BU result](tools/spx/boot-diagnostics/RESULT-20261005bu.md).
+    Scope is ordered guarded return; arbitrary OS/session shutdown, playback
+    reopen, WCD/ADM lifecycle and reboot/resume persistence remain open.
 
   - [ ] **A03b — Linux playback PCM closes and reopens with parked ASM.**
     Two distinct PCM owners each produce microphone-verified quiet left/right/

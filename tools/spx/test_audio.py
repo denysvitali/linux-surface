@@ -1555,10 +1555,6 @@ class DesktopMicrophoneTests(unittest.TestCase):
                 audio.initialize(args, {})
 
 
-if __name__ == '__main__':
-    unittest.main()
-
-
 class DiscardedRecording(unittest.TestCase):
     def test_close_discards_samples_even_when_status_capture_fails(self):
         for failed in (False, True):
@@ -1582,3 +1578,7 @@ class DiscardedRecording(unittest.TestCase):
                 self.assertTrue(capture.closed)
                 self.assertEqual(capture.report['capture']['frames'], 3)
                 self.assertFalse(list(Path(directory).glob('*.wav')))
+
+
+if __name__ == '__main__':
+    unittest.main()
