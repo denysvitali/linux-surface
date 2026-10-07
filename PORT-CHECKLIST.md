@@ -918,6 +918,7 @@ host datapath; that is not current cellular service verification.
     cause remains unresolved; no new acceptance/pairing/resume claim.
     [DU result](tools/spx/boot-diagnostics/RESULT-20261007du.md),
     [live MSFT fix](tools/spx/boot-diagnostics/RESULT-20261007du-msft.md).
+    [DV boot validation pending](tools/spx/boot-diagnostics/RESULT-20261007dv.md).
 
 - [ ] **N03 — Cellular control/data.** Stable modem startup and discovery, correct
   SIM/eSIM applicability, network registration and actual bidirectional data with

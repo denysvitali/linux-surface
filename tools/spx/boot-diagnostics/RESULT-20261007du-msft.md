@@ -23,8 +23,9 @@ microphone/camera capture, sleep or battery test.
 **Scope/next:** spurious MSFT classification warnings fixed on live hardware;
 no peripheral pairing/reconnect/resume or advertisement-monitor validation.
 DT's intermittent UART-84 did not reproduce before/after and remains unresolved.
-N02a prior pass retained; no new box. Next candidate must include rebuilt core
-in its initramfs for boot persistence; DU boot payload itself predates live fix.
+N02a prior pass retained; no new box. Bluetooth modules are absent from DU's
+initramfs and load from real root; installed fixed core persists. Automatic
+startup/power cycling with this core still needs boot validation.
 
 **Evidence/recovery:** functional/20261007du/msft-module-reload.json,
 bluetooth-power-msft/result.json, msft-result.json/msft-after-kernel.log and
