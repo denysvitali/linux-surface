@@ -284,6 +284,7 @@ def prepare(args):
                     thermal_combined=args.thermal_combined,
                     thermal_gpu_fixture=str(args.thermal_gpu_fixture),
                     thermal_cpu_stress_ng=str(args.thermal_cpu_stress_ng.resolve()) if args.thermal_cpu_stress_ng else None,
+                    tpm_sign=args.tpm_sign, tpm_tools=str(args.tpm_tools.resolve()),
                     cdsp_capabilities=args.cdsp,
                     usbc_early_load=args.usbc,
                     usbc_phy_orientation=args.usbc_phy_orientation,
@@ -362,6 +363,12 @@ def install(args):
         cdsp_helpers.mkdir(parents=True, exist_ok=True)
         shutil.copy2(HERE / 'cdsp/capabilities.py', cdsp_helpers / 'capabilities.py')
         (cdsp_helpers / 'capabilities.py').chmod(0o644)
+    if prepared.get('tpm_sign'):
+        tpm_helpers = helper.parent / 'tpm'
+        tpm_helpers.mkdir(parents=True, exist_ok=True)
+        for name in ('check.py', 'sign.py'):
+            shutil.copy2(HERE / 'tpm' / name, tpm_helpers / name)
+            (tpm_helpers / name).chmod(0o644)
     # The retained board DTB already contains this policy in later trials.
     shutil.copy2(HERE / 'thermal.py', helper.parent / 'thermal.py')
     if prepared.get('pmic_rtc'):
@@ -1846,6 +1853,33 @@ def thermal_check(args):
         subprocess.run([lock, 'release', 'device', owner], check=True)
 
 
+def dispatch_tpm_sign(args, prepared):
+    """Consume one explicit signing request after completed baseline/PMIC checks."""
+    if not prepared.get('tpm_sign') or (OUT / 'tpm-sign').exists():
+        return
+    args.tpm_tools = Path(prepared['tpm_tools'])
+    tpm_sign(args)
+
+
+def tpm_sign(args):
+    import importlib.util
+    assert os.geteuid() == 0
+    spec = importlib.util.spec_from_file_location('spx_tpm_sign', HERE / 'tpm/sign.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    lock = str(REPO / 'tools/spx/spx-lock')
+    owner = 'tpm-sign-' + ATTEMPT
+    subprocess.run([lock, 'acquire', 'device', owner], check=True)
+    try:
+        result = module.exercise(module.Live(OUT / 'tpm-sign', ATTEMPT, RELEASE, args.tpm_tools))
+        print(json.dumps(dict(complete=result['complete'], result=str(OUT / 'tpm-sign/result.json'),
+                             error=result.get('error'), cleanup_error=result.get('cleanup_error'))), flush=True)
+        if not result['complete']:
+            raise RuntimeError(result.get('error', result.get('cleanup_error', 'TPM signing failed')))
+    finally:
+        subprocess.run([lock, 'release', 'device', owner], check=True)
+
+
 def cdsp_capabilities(args):
     import sys
 
@@ -1868,7 +1902,7 @@ def cdsp_capabilities(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend', 'audio', 'arm-audio', 'enable-desktop-audio', 'usbc-reload', 'wifi-band', 'display-power', 'srtc-timer', 'power-measure', 'sensors-lifecycle', 'thermal', 'cdsp-capabilities'))
+    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend', 'audio', 'arm-audio', 'enable-desktop-audio', 'usbc-reload', 'wifi-band', 'display-power', 'srtc-timer', 'power-measure', 'sensors-lifecycle', 'thermal', 'cdsp-capabilities', 'tpm-sign'))
     parser.add_argument('attempt')
     parser.add_argument('--build', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bg/work-build'))
     parser.add_argument('--parent', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bf'))
@@ -1877,6 +1911,8 @@ def main():
     parser.add_argument('--address')
     parser.add_argument('--pmic-rtc', action='store_true',
                         help='add upstream PMIC RTC as rtc1 and test one awake alarm; no suspend')
+    parser.add_argument('--tpm-sign', action='store_true', help='prepare-only opt in to one transient TPM signing test after baseline')
+    parser.add_argument('--tpm-tools', type=Path, default=Path('/var/tmp/spx-tpm2-tools-5.8/usr/bin'), help='private tpm2-tools 5.8 executable directory')
     parser.add_argument('--wifi-profile', help='saved Wi-Fi profile ID to clone for the 2.4 GHz test')
     parser.add_argument('--srtc-observe-expiry', action='store_true',
                         help='observe one 30s AC/DC timer expiry while awake; no suspend or wake-policy change')
@@ -1941,6 +1977,8 @@ def main():
                         help='after a queued audio test, use the existing return timer after this delay (61..900)')
     parser.add_argument('--desktop-user', default='dvitali')
     args = parser.parse_args()
+    if args.tpm_sign and (args.command != 'prepare' or args.audio or args.cdsp or args.thermal_combined or args.sensors_crash_recovery):
+        parser.error('--tpm-sign requires prepare and excludes audio/CDSP/thermal/sensor-crash experiments')
     if args.slim_s2idle_retain and (args.command != 'prepare' or not args.audio or not args.pmic_rtc):
         parser.error('--slim-s2idle-retain requires prepare --audio --pmic-rtc')
     if args.microphone_array and (args.command not in ('audio', 'arm-audio') or
@@ -2012,6 +2050,7 @@ def main():
                     subprocess.run([lock, 'release', 'device', 'pmic-rtc-' + ATTEMPT], check=True)
             if record.get('cdsp_capabilities') and not (OUT / 'cdsp-capabilities').exists():
                 cdsp_capabilities(args)
+            dispatch_tpm_sign(args, record)
             dispatch_sensors_crash(args, record)
             dispatch_thermal(args, record)
             dispatch_audio(args)
@@ -2019,7 +2058,7 @@ def main():
             {'install': install, 'boot': boot, 'return': return_to_default,
              'extend': extend_window, 'audio': audio_check, 'arm-audio': arm_audio,
              'usbc-reload': usbc_reload, 'wifi-band': wifi_band, 'display-power': display_power,
-             'enable-desktop-audio': enable_desktop_audio, 'power-measure': power_measure, 'sensors-lifecycle': sensors_lifecycle, 'thermal': thermal_check, 'cdsp-capabilities': cdsp_capabilities}[args.command](args)
+             'enable-desktop-audio': enable_desktop_audio, 'power-measure': power_measure, 'sensors-lifecycle': sensors_lifecycle, 'thermal': thermal_check, 'cdsp-capabilities': cdsp_capabilities, 'tpm-sign': tpm_sign}[args.command](args)
 
 
 if __name__ == '__main__':
