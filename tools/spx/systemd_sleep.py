@@ -251,7 +251,11 @@ class Live:
         assert pmic_rtc.alarm(self.fd)[0] == 1
         self.save(dict(complete=False, phase='verified-shadows-alarm-armed-before-normal-suspend', sleep=r))
         boot, mono = time.clock_gettime(time.CLOCK_BOOTTIME), time.monotonic()
-        self.run('normal-suspend', ['systemctl', '--check-inhibitors=yes', 'suspend'], 10)
+        # login1 avoids systemctl's separate logged-in-user veto. Flag1
+        # honours block and block-weak inhibitors; delay locks remain active.
+        self.run('normal-suspend', ['busctl', 'call', 'org.freedesktop.login1',
+            '/org/freedesktop/login1', 'org.freedesktop.login1.Manager',
+            'SuspendWithFlags', 't', '1'], 10)
         # The command queues asynchronously; only the service's fresh completion counts.
         end = time.clock_gettime(time.CLOCK_BOOTTIME) + 45
         completed = False

@@ -76,6 +76,29 @@ class Effects(unittest.TestCase):
         self.assertFalse(sleep.service_completed(before, after))
 
 
+class Recovery(unittest.TestCase):
+    def test_empty_assertion_retains_exception_and_location(self):
+        f = Fake()
+        f.gate = lambda: (_ for _ in ()).throw(AssertionError())
+        r = sleep.exercise(f)
+        self.assertFalse(r['complete'])
+        self.assertIn('AssertionError', r['error'])
+        self.assertIn('Traceback', r['traceback'])
+        self.assertEqual(f.events, ['cleanup'])
+
+    def test_reconnect_wait_returns_only_after_carrier_proof(self):
+        live = sleep.Live.__new__(sleep.Live)
+        values = iter([AssertionError('wlan0 carrier absent'), 'connected'])
+        def network():
+            value = next(values)
+            if isinstance(value, Exception):
+                raise value
+            return value
+        live.network = network
+        with patch.object(sleep.time, 'sleep'):
+            self.assertEqual(live.connected_network(), 'connected')
+
+
 class Gates(unittest.TestCase):
     def test_root_release_and_attempt_mismatch_precede_any_effect(self):
         live = sleep.Live.__new__(sleep.Live)
