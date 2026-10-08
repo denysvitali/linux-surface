@@ -1450,6 +1450,7 @@ class DesktopMicrophoneTests(unittest.TestCase):
     def test_capture_close_is_idempotent_after_successful_stop(self):
         capture = audio.OwnedCapture.__new__(audio.OwnedCapture)
         capture.closed = False
+        capture.started_boottime = audio.time.clock_gettime(audio.time.CLOCK_BOOTTIME)
         capture.stop, capture.thread, capture.process = Mock(), Mock(), Mock()
         capture.process.poll.return_value = None
         capture.process.returncode = -15
@@ -1607,6 +1608,7 @@ class DiscardedRecording(unittest.TestCase):
             with self.subTest(failed=failed), tempfile.TemporaryDirectory() as directory:
                 capture = audio.OwnedCapture.__new__(audio.OwnedCapture)
                 capture.closed, capture.retain_recording = False, False
+                capture.started_boottime = audio.time.clock_gettime(audio.time.CLOCK_BOOTTIME)
                 capture.raw = bytearray(struct.pack('<3h', 1, 2, 3))
                 capture.mutex, capture.stop = threading.Lock(), threading.Event()
                 capture.process = SimpleNamespace(poll=lambda: None, terminate=Mock(), wait=Mock(), stdout=SimpleNamespace(close=Mock()), returncode=1)
@@ -2169,6 +2171,74 @@ class DesktopMicrophoneServingTests(unittest.TestCase):
         source, report = self.run_serve(default_selected=False)
         self.assertIn('verification_fixture_rejected', source.report)
         self.assertFalse(report['serve']['microphone']['bounded_clients_passed'])
+
+
+
+class CaptureOwnershipWallClockTests(unittest.TestCase):
+    def test_real_helper_process_close_reports_elapsed_ownership_without_deadline(self):
+        import sys
+        original_popen = audio.subprocess.Popen
+        def helper_process(*arguments, **keywords):
+            return original_popen([sys.executable, '-c',
+                "import os,time; os.write(1, bytes([1,0])*1920); time.sleep(10)"],
+                stdout=audio.subprocess.PIPE, stderr=keywords['stderr'], bufsize=0)
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(audio.subprocess, 'Popen', side_effect=helper_process), \
+             patch.object(audio, 'read_text', return_value='closed'):
+            report = {'microphone_source': 'DMIC1'}
+            capture = audio.OwnedCapture(0, report, Path(directory), retain_recording=False)
+            try:
+                deadline = time.monotonic() + 2
+                while not capture.raw and time.monotonic() < deadline:
+                    time.sleep(.01)
+                self.assertTrue(capture.raw)
+                before = audio.time.clock_gettime(audio.time.CLOCK_BOOTTIME)
+            finally:
+                capture.close()
+            after = audio.time.clock_gettime(audio.time.CLOCK_BOOTTIME)
+            self.assertIsNone(capture.wall_deadline)
+            self.assertIsNotNone(capture.process.poll())
+            duration = report['capture']['ownership_wall_seconds']
+            self.assertGreaterEqual(duration, before - capture.started_boottime)
+            self.assertLessEqual(duration, after - capture.started_boottime)
+            self.assertIsNone(report['capture']['recording']); self.assertFalse(capture.raw)
+            self.assertFalse(list(Path(directory).glob('*.wav')))
+            capture.close()
+            self.assertEqual(report['capture']['ownership_wall_seconds'], duration)
+
+    def test_reporting_measures_reaping_instead_of_frame_duration(self):
+        capture = audio.OwnedCapture.__new__(audio.OwnedCapture)
+        capture.closed, capture.started_boottime, capture.wall_deadline = False, 100, None
+        capture.stop, capture.thread, capture.process = Mock(), Mock(), Mock()
+        capture.process.poll.return_value = None; capture.process.returncode = -15
+        capture.log = io.BytesIO(); capture.report, capture.error = {'capture': {}}, None
+        capture.mutex, capture.raw = threading.Lock(), bytearray()
+        capture.samples = Mock(return_value=audio.array('h', [1, 2, 3]))
+        capture.retain_recording, capture.status = False, Path('/unused')
+        events = []
+        capture.process.wait.side_effect = lambda **keywords: events.append('reaped')
+        def clock(which):
+            self.assertEqual(events, ['reaped']); self.assertEqual(which, audio.time.CLOCK_BOOTTIME)
+            return 137
+        with patch.object(audio.time, 'clock_gettime', side_effect=clock), patch.object(audio, 'read_text', return_value='closed'):
+            capture.close()
+        self.assertEqual(capture.report['capture']['ownership_wall_seconds'], 37)
+        self.assertEqual(capture.report['capture']['frames'], 3)
+
+    def test_native_oracle_fixed_deadline_expires_without_renewal(self):
+        capture = audio.OwnedCapture.__new__(audio.OwnedCapture)
+        capture.stop = threading.Event(); capture.wall_deadline = 190; capture.error = None
+        with patch.object(audio.time, 'clock_gettime', return_value=190), \
+             patch.object(audio.time, 'monotonic', return_value=100), patch.object(audio.os, 'kill') as abort:
+            capture.consume()
+        self.assertIn('wall-clock deadline', capture.error); abort.assert_called_once()
+        self.assertEqual(capture.wall_deadline, 190)
+        for deadline in (100, 190.01):
+            with patch.object(audio.time, 'clock_gettime', return_value=100), \
+                 patch.object(audio.subprocess, 'Popen') as process, \
+                 self.assertRaisesRegex(RuntimeError, 'wall budget expired or extended'):
+                audio.OwnedCapture(0, {}, Path('/unused'), maximum_seconds=90, wall_deadline=deadline)
+            process.assert_not_called()
 
 
 if __name__ == '__main__':

@@ -578,6 +578,9 @@ class OwnedCapture:
         except subprocess.TimeoutExpired:
             self.process.kill()
             self.process.wait(timeout=2)
+        # Ownership ends when the actual capture process has been reaped.
+        self.report['capture']['ownership_wall_seconds'] = (
+            time.clock_gettime(time.CLOCK_BOOTTIME) - self.started_boottime)
         self.thread.join(timeout=2)
         self.process.stdout.close()
         self.log.seek(0)
@@ -588,8 +591,6 @@ class OwnedCapture:
         self.report['capture']['returncode'] = self.process.returncode
         samples = self.samples()
         self.report['capture']['frames'] = len(samples) // getattr(self, 'channels', 1)
-        if getattr(self, 'wall_deadline', None) is not None:
-            self.report['capture']['ownership_wall_seconds'] = time.clock_gettime(time.CLOCK_BOOTTIME) - self.started_boottime
         if getattr(self, 'retain_recording', True):
             path = self.directory / 'microphone.wav'
             with wave.open(str(path), 'wb') as output:
@@ -2837,11 +2838,16 @@ def initialize(args, report, *, live_resume=None):
                                        wall_deadline=wall_deadline)
             else:
                 live_capture = live_resume is not None and not getattr(live_resume, 'after_recording', False)
+                native_oracle = live_resume is not None and getattr(live_resume, 'after_recording', False)
                 # Only the explicit recording action keeps a WAV. Automated
                 # acoustic tests retain scores and discard incidental audio.
                 capture = OwnedCapture(initial['internal_cards'][0], report, directory,
                                        maximum_seconds=120 if live_capture or getattr(args, 'desktop_controls', False) else 90,
-                                       retain_recording=args.action == 'capture')
+                                       retain_recording=args.action == 'capture',
+                                       wall_deadline=(time.clock_gettime(time.CLOCK_BOOTTIME) + 90
+                                                      if native_oracle else None))
+                if native_oracle:
+                    report['capture']['maximum_wall_seconds'] = 90
             if live_resume is not None:
                 report['capture_deadline_expired'] = False
             if live_resume is not None and not getattr(live_resume, 'after_recording', False):

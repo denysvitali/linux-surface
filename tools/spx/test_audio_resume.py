@@ -702,6 +702,20 @@ class NativeMicResume(unittest.TestCase):
             result = resume.exercise(ops, self.arguments(), 'owner')
         self.assertTrue(result['complete']); self.assertEqual(events[-1], 'infrastructure')
 
+    def test_native_exercise_rejects_measured_oracle_over_90_seconds(self):
+        ops = Mock(output=Path('/private/audio-resume')); ops.audio = object()
+        ops.gate.return_value = {'parked_audio': object()}; ops.cleanup.return_value = {'masks_restored': True}
+        def initialize(configured, report, *, live_resume):
+            live_resume.result.update(functional_pass=True, native_microphone={'passed': True, 'source': {'restored': True}})
+            report.update(capture_deadline_expired=False, capture={'recording': None, 'closed_status': 'closed',
+                'ownership_wall_seconds': 90.01}, pcm={'log': ''}, parked=True, runtime_pm={'restored': True})
+        with patch.object(Path, 'read_text', return_value='{}'), patch.object(resume, 'admission'), \
+             patch.object(audio, 'initialize', side_effect=initialize):
+            result = resume.exercise(ops, self.arguments(), 'owner')
+        self.assertTrue(result['functional_pass']); self.assertFalse(result['complete'])
+        self.assertIn('ownership exceeded bounded wall cap', result['error'])
+        ops.post.assert_not_called(); ops.cleanup.assert_called_once()
+
     def test_listen_callback_closes_oracle_first_only_for_native_mode(self):
         for native in (False, True):
             events = []; pcm = Mock(feed_stats={}); pcm.process.pid = 10
