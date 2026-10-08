@@ -3,6 +3,9 @@
 import json
 import math
 import random
+import struct
+
+import audio
 import unittest
 
 from acoustic import quick_metrics, score_phase
@@ -103,6 +106,59 @@ class AcousticTests(unittest.TestCase):
         self.assertEqual(result['peak'], 4)
         self.assertEqual(result['clipped'], 0)
         self.assertEqual(quick_metrics([])['samples'], 0)
+
+
+
+class AlternatePairTests(unittest.TestCase):
+    pair = [880, 1320]
+
+    def test_actual_quiet_stereo_waveform_downmixed_to_mono_scores_end_to_end(self):
+        waveform = audio.tone({0, 1}, frequencies=(880, 1320))
+        samples = [(left + right) // 2 for left, right in struct.iter_unpack('<hh', waveform)]
+        self.assertLessEqual(max(abs(sample) for sample in samples), 1433)
+        result = score_phase(samples, silence(), self.pair)
+        self.assertTrue(result['passed'], result)
+        self.assertEqual(set(result['targets']), {'880', '1320'})
+        for target in result['targets'].values():
+            self.assertTrue(target['sustained'])
+            self.assertGreaterEqual(target['baseline_rise_db'], 10)
+            self.assertGreaterEqual(target['neighbor_rise_db'], 10)
+        json.dumps(result, allow_nan=False)
+
+    def test_alternate_admission_remains_exact_pair_only(self):
+        for expected in ([880], [1320], [880, 660], [440, 1320], [440, 660, 880, 1320],
+                         [880, 880], [880, 1760], [1320, 880], [880.0, 1320]):
+            with self.subTest(expected=expected):
+                result = score_phase(tone(self.pair), silence(), expected)
+                self.assertFalse(result['passed'])
+                self.assertEqual(result['reason'], 'invalid sample rate or expected frequencies')
+        # Legacy single, paired and reversed contracts stay available.
+        for expected in ([440], [660], [440, 660], [660, 440]):
+            with self.subTest(expected=expected):
+                self.assertTrue(score_phase(tone(expected), silence(), expected)['passed'])
+
+    def test_missing_and_sequential_alternate_targets_fail(self):
+        sequential = tone([880], seconds=.6) + tone([1320], seconds=.6)
+        for samples in (tone([880]), tone([1320]), sequential):
+            result = score_phase(samples, silence(), self.pair)
+            self.assertFalse(result['passed'])
+            self.assertNotIn('invalid sample rate', result['reason'])
+
+    def test_ambient_pair_and_wrong_targets_do_not_pass(self):
+        result = score_phase(tone(self.pair, peak=40), tone(self.pair, peak=20), self.pair)
+        self.assertFalse(result['passed'])
+        self.assertIn('spectral contrast', result['reason'])
+        for expected, actual in ((self.pair, [440, 660]), ([440, 660], self.pair)):
+            result = score_phase(tone(actual), silence(), expected)
+            self.assertFalse(result['passed'])
+
+    def test_clipping_and_excess_noise_reject_alternate_pair(self):
+        for samples, baseline in ((tone(self.pair) + [32767], silence()),
+                                  (tone(self.pair), silence() + [-32768])):
+            result = score_phase(samples, baseline, self.pair)
+            self.assertFalse(result['passed']); self.assertIn('clipping', result['reason'])
+        result = score_phase(mix(tone(self.pair), noise(100, seed=2)), noise(), self.pair)
+        self.assertFalse(result['passed']); self.assertIn('residual noise', result['reason'])
 
 
 if __name__ == '__main__':

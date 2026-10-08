@@ -1,4 +1,4 @@
-"""Bounded, uncalibrated acoustic checks for the SPX 440/660 Hz speaker test.
+"""Bounded, uncalibrated SPX 440/660 Hz or paired 880/1320 Hz acoustic checks.
 
 Input is mono signed 16-bit PCM. A quiet reference must use the same microphone,
 gain and sample rate as the phase. The search tolerates leading/trailing silence
@@ -19,7 +19,7 @@ CLIP_LEVEL = 32760
 LIMITATIONS = [
     'PCM levels are not calibrated sound pressure or a listening-quality rating.',
     'Tone identity does not establish physical speaker placement or stereo balance.',
-    'Uses nominal 440/660 Hz; clock or pitch errors can make output inconclusive.',
+    'Uses nominal 440/660 Hz or the exact 880/1320 Hz pair; clock or pitch errors can make output inconclusive.',
     'Noise is checked in the sustained window and by the phase median; brief '
     'noise bursts outside that window need separate monitoring.',
 ]
@@ -92,7 +92,8 @@ def score_phase(samples, baseline, expected, rate=48000):
               'baseline_metrics': {}, 'limitations': list(LIMITATIONS)}
     if (not isinstance(rate, int) or rate < 2000 or not expected or
             len(expected) != len(set(expected)) or
-            any(f not in (440, 660) for f in expected)):
+            (any(f not in (440, 660) for f in expected) and
+             not (tuple(expected) == (880, 1320) and all(type(f) is int for f in expected)))):
         result['reason'] = 'invalid sample rate or expected frequencies'
         return result
     if any(not isinstance(x, int) or not -32768 <= x <= 32767
