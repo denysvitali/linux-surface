@@ -2119,6 +2119,8 @@ class DesktopMicrophoneServingTests(unittest.TestCase):
         client.log = tempfile.TemporaryFile()
         client.stop, client.mutex = threading.Event(), threading.Lock()
         client.process, client.thread = Mock(), Mock()
+        client.started_boottime = 0
+        client.process.poll.return_value = None
         client.thread.is_alive.return_value = False
         client.error = None
         client.raw = bytearray(b'incidental samples')
@@ -2129,6 +2131,8 @@ class DesktopMicrophoneServingTests(unittest.TestCase):
         client.process.stdout.close.assert_called_once()
         self.assertTrue(client.log.closed)
         self.assertFalse(client.raw)
+        self.assertFalse(client.process_reaped)
+        self.assertIsNone(client.ownership_wall_seconds)
 
     def run_serve(self, *, default_selected=True):
         report = dict(action='serve', desktop=dict(acoustic_passed=True),
@@ -2239,6 +2243,218 @@ class CaptureOwnershipWallClockTests(unittest.TestCase):
                  self.assertRaisesRegex(RuntimeError, 'wall budget expired or extended'):
                 audio.OwnedCapture(0, {}, Path('/unused'), maximum_seconds=90, wall_deadline=deadline)
             process.assert_not_called()
+
+
+class MicrophoneApplicationFormatTests(unittest.TestCase):
+    client_class = audio.DesktopRecording
+    def test_admission_rejects_wrong_modes_and_types_before_hardware(self):
+        cases = [('feedback', True, True), ('serve', False, True),
+                 ('serve', 1, True), ('serve', True, 1), ('serve', True, 'yes')]
+        for action, microphone, enabled in cases:
+            with self.subTest(case=(action, microphone, enabled)), patch.object(audio, 'parameter') as hardware:
+                with self.assertRaisesRegex(RuntimeError, 'native-mic-app-formats'):
+                    audio.initialize(SimpleNamespace(action=action, desktop_microphone=microphone,
+                        native_mic_app_formats=enabled), {})
+                hardware.assert_not_called()
+        for arguments in (['inspect', '--native-mic-app-formats'], ['serve', '--native-mic-app-formats']):
+            with patch.object(audio.sys, 'argv', ['audio.py', *arguments]), \
+                 patch.object(audio, 'inventory') as hardware, contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    audio.main()
+                hardware.assert_not_called()
+
+    def make_client(self, graph, rate, channels, name='client'):
+        process = Mock(pid=100 + len(graph.recordings))
+        process.poll.return_value = -15
+        with patch.object(audio.subprocess, 'Popen', return_value=process) as opened, \
+             patch.object(audio.threading, 'Thread') as thread, \
+             patch.object(audio.time, 'clock_gettime', return_value=0):
+            thread.return_value.is_alive.return_value = False
+            client = self.client_class(graph, name, wall_deadline=60, rate=rate, channels=channels)
+        self.addCleanup(lambda: client.close() if not client.log.closed else None)
+        return client, opened.call_args.args[0]
+
+    def graph(self):
+        graph = Mock(command=['user-env'])
+        graph.processes, graph.recordings = [], []
+        return graph
+
+    def test_exact_client_arguments_default_unchanged_and_partial_frame_decode(self):
+        graph = self.graph()
+        for rate, channels, channel_map in ((44100, 1, 'mono'), (48000, 2, 'front-left,front-right'),
+                                            (48000, 1, None)):
+            client, command = self.make_client(graph, rate, channels)
+            with self.subTest(rate=rate, channels=channels):
+                self.assertIn(f'--rate={rate}', command); self.assertIn(f'--channels={channels}', command)
+                self.assertIn('--format=s16le', command); self.assertIn('--raw', command)
+                self.assertFalse(any(value.startswith(('--device', '--fix-', '--no-remix')) for value in command))
+                self.assertEqual([value for value in command if value.startswith('--channel-map=')],
+                                 [] if channel_map is None else ['--channel-map=' + channel_map])
+                samples = [1, 11, 2, 12, 3, 13] if channels == 2 else [1, 2, 3]
+                client.raw = bytearray(struct.pack('<' + 'h' * len(samples), *samples) + b'\x00')
+                client.healthy = Mock()
+                self.assertEqual(client.mark(), 3)
+                self.assertEqual(list(client.samples(1, 3)), samples[channels:])
+                with patch.object(audio, 'stop_desktop_process'), \
+                     patch.object(audio.time, 'clock_gettime', return_value=6):
+                    client.close()
+                self.assertEqual(client.closed_frames, 3); self.assertEqual(client.closed_partial_bytes, 1)
+                self.assertEqual(client.ownership_wall_seconds, 6)
+                self.assertFalse(client.raw); self.assertTrue(client.recording_discarded)
+
+    def test_invalid_profile_budget_or_spawn_failure_never_leaves_a_log_or_process(self):
+        graph = self.graph()
+        for options in (dict(rate=True), dict(channels=True), dict(rate=96000),
+                        dict(rate=44100, wall_deadline=61), dict(channels=2, wall_deadline=None)):
+            with self.subTest(options=options), patch.object(audio.time, 'clock_gettime', return_value=0), \
+                 patch.object(audio.subprocess, 'Popen') as opened:
+                with self.assertRaises(RuntimeError):
+                    audio.DesktopRecording(graph, 'client', **options)
+                opened.assert_not_called()
+        log = tempfile.TemporaryFile()
+        with patch.object(audio.tempfile, 'TemporaryFile', return_value=log), \
+             patch.object(audio.subprocess, 'Popen', side_effect=OSError('spawn failed')):
+            with self.assertRaisesRegex(OSError, 'spawn failed'):
+                audio.DesktopRecording(graph, 'client')
+        self.assertTrue(log.closed); self.assertFalse(graph.processes); self.assertFalse(graph.recordings)
+
+    def test_client_wait_timeout_uses_requested_rate(self):
+        client = audio.DesktopRecording.__new__(audio.DesktopRecording)
+        client.rate, client.channels = 44100, 1
+        client.raw, client.mutex, client.healthy = bytearray(), threading.Lock(), Mock()
+        with patch.object(audio.time, 'monotonic', side_effect=[0, 8.95, 9.1]), patch.object(audio.time, 'sleep'):
+            with self.assertRaisesRegex(RuntimeError, 'did not deliver'):
+                client.wait_frames(44100)
+        self.assertEqual(client.healthy.call_count, 2)
+
+    def test_actual_consumer_enforces_client_rate_byte_cap_and_each_stereo_channel(self):
+        for rate, channels, maximum, block, message in (
+            (44100, 1, 1, bytes(44100 * 2 + 2), 'duration limit'),
+            (48000, 2, 60, struct.pack('<hh', 1, 32767) * 4800, 'clipping')):
+            client = audio.DesktopRecording.__new__(audio.DesktopRecording)
+            client.rate, client.channels, client.maximum_seconds = rate, channels, maximum
+            client.raw, client.mutex, client.stop = bytearray(), threading.Lock(), threading.Event()
+            client.error, client.limit = None, None
+            client.process = Mock()
+            with self.subTest(rate=rate, channels=channels), \
+                 patch.object(audio.select, 'select', return_value=([client.process.stdout], [], [])), \
+                 patch.object(audio.os, 'read', return_value=block), patch.object(audio.os, 'kill') as abort:
+                client.consume()
+            self.assertIn(message, client.error); abort.assert_called_once()
+            self.assertEqual(client.raw, block)
+
+    def test_source_output_contract_mismatch_is_recorded_and_rejected(self):
+        graph = self.graph()
+        source = audio.NativeMicSource(graph, 0, {}, 60, None, desktop=True)
+        source.source_id = 99
+        requested = dict(sample_specification='s16le 2ch 48000Hz', channel_map='front-left,front-right')
+        original = dict(source=99, index=7, sample_specification=requested['sample_specification'],
+                        channel_map=requested['channel_map'], properties={'application.name': 'client'})
+        for mutation in ({}, dict(sample_specification='s16le 1ch 48000Hz'),
+                         dict(sample_specification='s16le 2ch 44100Hz'), dict(channel_map='mono'),
+                         dict(source=12)):
+            observed = dict(original, **mutation)
+            graph.run.side_effect = [source.name, json.dumps([observed])]
+            with self.subTest(mutation=mutation):
+                if mutation:
+                    with self.assertRaisesRegex(RuntimeError, 'another source|format or channel map'):
+                        source.require_client_route('client', requested)
+                else:
+                    self.assertTrue(source.require_client_route('client', requested))
+        self.assertTrue(source.report['routes'])
+        self.assertEqual(source.report['routes'][-1]['channel_map'], 'mono')
+
+    def test_start_failure_survives_an_early_close_failure_without_fabricated_observations(self):
+        source, pcm = Mock(), Mock()
+        source.wall_deadline = 60
+        source.begin_client.side_effect = RuntimeError('original start failure')
+        source.end_client.side_effect = RuntimeError('watcher close failure')
+        pcm.healthy.return_value = 'owner_pid : 42\ntrigger_time : stable'
+        client = SimpleNamespace(process=SimpleNamespace(pid=1),
+            requested_contract=dict(sample_specification='s16le 1ch 44100Hz', channel_map='mono'),
+            close=Mock(side_effect=RuntimeError('early close failure')))
+        evidence = dict(clients=[])
+        with patch.object(audio, 'DesktopRecording', return_value=client), \
+             patch.object(audio.time, 'clock_gettime', return_value=0):
+            with self.assertRaisesRegex(RuntimeError, 'original start failure'):
+                audio.verify_native_microphone_clients(source, self.graph(), evidence, pcm, {}, {}, app_formats=True)
+        client.close.assert_called_once()
+        self.assertFalse(evidence['clients'][0]['passed'])
+        self.assertIsNone(evidence['clients'][0]['ownership_wall_seconds'])
+        self.assertFalse(evidence['clients'][0]['recording_discarded'])
+        self.assertEqual(len(evidence['clients'][0]['cleanup_errors']), 2)
+
+    def verify_waveforms(self, defect=None):
+        import math
+        from array import array
+        graph, pcm, source = self.graph(), Mock(), Mock()
+        source.wall_deadline, source.report = 60, dict(routes=[])
+        pcm.healthy.return_value = 'owner_pid : 42\ntrigger_time : stable'
+        clients, commands = [], []
+        def recording(graph, name, **options):
+            rate, channels = options['rate'], options['channels']
+            client, command = self.make_client(graph, rate, channels, name)
+            quiet = [int(3 * math.sin(2 * math.pi * 130 * i / rate)) for i in range(3 * rate)]
+            phase = [int(25 * math.sin(2 * math.pi * 440 * i / rate) +
+                         45 * math.sin(2 * math.pi * 660 * i / rate) + quiet[i]) for i in range(3 * rate)]
+            inputs = [phase[:] for _ in range(channels)]
+            if channels == 2 and defect == 'missing-tone':
+                inputs[1] = quiet[:]
+            if channels == 2 and defect == 'clipped-channel':
+                inputs[1][0] = 32767
+            client.raw = bytearray(array('h', [value for v in quiet for value in [v] * channels]).tobytes() +
+                                   array('h', [value for frame in zip(*inputs) for value in frame]).tobytes())
+            client.mark = Mock(side_effect=[3 * rate, 3 * rate, 6 * rate])
+            client.wait_frames = Mock()
+            clients.append(client); commands.append(command)
+            return client
+        def begin(client, name, contract):
+            source.report['routes'].append(dict(client=name, source=99, source_output=len(clients),
+                sample_specification=contract['sample_specification'], channel_map=contract['channel_map']))
+            return dict(trigger_time=str(client.process.pid), hw_params='unchanged native mono contract')
+        source.begin_client.side_effect = begin
+        evidence = dict(clients=[])
+        with patch.object(audio, 'DesktopRecording', side_effect=recording), \
+             patch.object(audio, 'check_stereo'), patch.object(audio, 'stop_desktop_process'), \
+             patch.object(audio.time, 'clock_gettime', return_value=0):
+            if defect:
+                with self.assertRaisesRegex(RuntimeError, 'acoustic test failed'):
+                    audio.verify_native_microphone_clients(source, graph, evidence, pcm, {}, {}, app_formats=True)
+            else:
+                audio.verify_native_microphone_clients(source, graph, evidence, pcm, {}, {}, app_formats=True)
+        for client in clients:
+            self.assertFalse(client.raw); self.assertTrue(client.log.closed)
+            client.thread.join.assert_called_once_with(timeout=2)
+        self.assertEqual(source.end_client.call_count, 2)
+        return evidence, clients
+
+    def test_real_decoder_and_scores_accept_both_formats_and_duplicated_mono(self):
+        evidence, clients = self.verify_waveforms()
+        self.assertTrue(evidence['application_formats_passed'])
+        self.assertEqual([(entry['requested_contract']['rate'], entry['requested_contract']['channels'])
+                          for entry in evidence['clients']], [(44100, 1), (48000, 2)])
+        self.assertEqual([entry['frames'] for entry in evidence['clients']], [6 * 44100, 6 * 48000])
+        self.assertTrue(all(entry['recording_discarded'] for entry in evidence['clients']))
+        self.assertTrue(all(score['passed'] for score in evidence['clients'][1]['score']['inputs']))
+        self.assertEqual(clients[0].wait_frames.call_args_list[0].args, (3 * 44100,))
+
+    def test_stereo_missing_tone_or_clipping_one_channel_cannot_pass(self):
+        for defect in ('missing-tone', 'clipped-channel'):
+            with self.subTest(defect=defect):
+                evidence, clients = self.verify_waveforms(defect)
+                self.assertNotIn('application_formats_passed', evidence)
+                self.assertTrue(evidence['clients'][0]['passed'])
+                self.assertFalse(evidence['clients'][1]['passed'])
+
+    def test_44100_waveform_requires_the_actual_client_rate(self):
+        import math
+        from acoustic import score_phase
+        rate = 44100
+        quiet = [int(3 * math.sin(2 * math.pi * 130 * i / rate)) for i in range(rate)]
+        phase = [int(25 * math.sin(2 * math.pi * 440 * i / rate) +
+                     45 * math.sin(2 * math.pi * 660 * i / rate) + quiet[i]) for i in range(rate)]
+        self.assertTrue(score_phase(phase, quiet, [440, 660], rate=rate)['passed'])
+        self.assertFalse(score_phase(phase, quiet, [440, 660])['passed'])
 
 
 if __name__ == '__main__':

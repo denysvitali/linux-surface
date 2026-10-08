@@ -687,12 +687,14 @@ class DesktopOptInTests(TrialAudioFixture):
     def test_microphone_policy_runs_each_boot_once_with_fresh_identity_and_archive(self):
         self.microphone_fixture()
         trial.enable_desktop_audio(self.args)
+        self.args.native_mic_app_formats = True
         self.microphone_result(completed=True)  # Orderly stop before the next boot.
         self.next_boot()
         trial.subprocess.run.reset_mock()
 
         def started(args):
             self.assertIs(args.desktop_microphone, True)
+            self.assertIs(args.native_mic_app_formats, False)
             self.assertEqual((args.audio_action, args.serve_seconds), ('serve', 0))
             self.assertFalse((self.out / 'audio/serve-ready.json').exists())
             self.assertTrue((self.out / ('audio-started-boots/' +
@@ -793,9 +795,11 @@ class DesktopOptInTests(TrialAudioFixture):
         policy.pop('desktop_microphone')
         self.save('desktop-audio.json', policy)
         self.args.desktop_microphone = True
+        self.args.native_mic_app_formats = True
         self.next_boot()
         trial.dispatch_audio(self.args)
         self.assertIs(self.audio.call_args.args[0].desktop_microphone, False)
+        self.assertIs(self.audio.call_args.args[0].native_mic_app_formats, False)
 
     def test_microphone_policy_queued_request_wins_and_restart_does_not_fall_through(self):
         self.microphone_fixture()
@@ -975,6 +979,74 @@ class DesktopMicrophoneRequestTests(TrialAudioFixture):
             with self.assertRaises(SystemExit):
                 trial.main()
         hardware.assert_not_called()
+
+
+class NativeMicrophoneAppFormatRequestTests(TrialAudioFixture):
+    def test_invalid_flag_types_or_modes_reject_before_hardware_and_consumption(self):
+        for action, microphone, enabled in [('feedback', True, True), ('serve', False, True),
+                                            ('serve', 1, True), ('serve', True, 1), ('serve', True, 'yes')]:
+            args = SimpleNamespace(audio_action=action, desktop_microphone=microphone,
+                                   native_mic_app_formats=enabled)
+            with self.subTest(case=(action, microphone, enabled)), \
+                 patch.object(trial, 'require_source_boot') as boot:
+                with self.assertRaisesRegex(AssertionError, 'native-mic-app-formats'):
+                    trial.arm_audio(args)
+                boot.assert_not_called()
+                trial.subprocess.run.reset_mock()
+                with self.assertRaisesRegex(AssertionError, 'native-mic-app-formats'):
+                    trial.audio_check(args)
+                trial.subprocess.run.assert_not_called()
+                self.request.update(action=action, desktop_microphone=microphone,
+                                    native_mic_app_formats=enabled)
+                self.write_request()
+                with self.assertRaisesRegex(AssertionError, 'native-mic-app-formats'):
+                    trial.requested_audio(self.args)
+                self.assertTrue((self.out / 'audio-request.json').exists())
+                self.assertFalse((self.out / 'audio-started.json').exists())
+
+    def test_parser_rejects_non_audio_or_missing_microphone_before_dispatch(self):
+        for command, action, microphone in [('prepare', 'serve', True), ('audio', 'serve', False),
+                                             ('arm-audio', 'feedback', False)]:
+            argv = ['trial.py', command, '20261004bq', '--audio-action', action, '--native-mic-app-formats']
+            if microphone:
+                argv.append('--desktop-microphone')
+            with self.subTest(command=command), patch.object(sys, 'argv', argv), \
+                 patch.object(sys, 'stderr', io.StringIO()), patch.object(trial, 'arm_audio') as arm, \
+                 patch.object(trial, 'audio_check') as check, patch.object(trial, 'prepare') as prepare:
+                with self.assertRaises(SystemExit):
+                    trial.main()
+                arm.assert_not_called(); check.assert_not_called(); prepare.assert_not_called()
+
+    def test_app_formats_flag_is_armed_consumed_once_and_forwarded_directly(self):
+        (self.out / 'prepared.json').write_text(json.dumps(dict(audio_mode='parked')))
+        args = SimpleNamespace(audio_action='serve', desktop_microphone=True, native_mic_app_formats=True,
+            allow_amp_power=True, allow_playback=True, allow_capture=True, desktop_user='dvitali',
+            return_after_audio_seconds=None, serve_seconds=30, desktop_peak=1433)
+        account = SimpleNamespace(pw_uid=1000, pw_name='dvitali')
+        with patch.object(trial, 'require_source_boot'), patch.object(trial, 'recovery'), \
+             patch.object(trial.pwd, 'getpwnam', return_value=account):
+            trial.arm_audio(args)
+        record = json.loads((self.out / 'audio-request.json').read_text())
+        self.assertIs(record['native_mic_app_formats'], True)
+        with patch.object(trial.os, 'geteuid', return_value=0), \
+             patch.object(trial.pwd, 'getpwnam', return_value=account), \
+             patch.object(trial.subprocess, 'Popen') as opened:
+            opened.return_value.wait.return_value = 0
+            trial.audio_check(args)
+        self.assertEqual(opened.call_args.args[0].count('--native-mic-app-formats'), 1)
+        self.assertIn('--desktop-microphone', opened.call_args.args[0])
+        with patch.object(trial, 'audio_check') as check:
+            trial.requested_audio(SimpleNamespace())
+            trial.requested_audio(SimpleNamespace())
+        check.assert_called_once()
+        self.assertIs(check.call_args.args[0].native_mic_app_formats, True)
+
+    def test_missing_legacy_flag_defaults_to_false_when_request_is_consumed(self):
+        self.write_request()
+        args = SimpleNamespace(native_mic_app_formats=True)
+        with patch.object(trial, 'audio_check') as check:
+            trial.requested_audio(args)
+        self.assertIs(check.call_args.args[0].native_mic_app_formats, False)
 
 
 if __name__ == '__main__':

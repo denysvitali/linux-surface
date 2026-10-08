@@ -275,6 +275,12 @@ def validate_desktop_microphone(action, enabled):
          '--desktop-microphone requires serve')
 
 
+def validate_native_mic_app_formats(action, microphone, enabled):
+    need(type(enabled) is bool and (not enabled or
+         (action == 'serve' and microphone is True)),
+         '--native-mic-app-formats requires serve --desktop-microphone')
+
+
 def validate_native_mic_on_demand(action, enabled, reopen=False, contract=False):
     need(type(enabled) is bool and (not enabled or
          (action == 'desktop-mic' and not reopen and not contract)),
@@ -410,6 +416,7 @@ class OwnedCapture:
         need(channels == 1 or (maximum_seconds <= 50 and not retain_recording),
              'Stereo capture requires a <=50 second bound and discarded recording')
         self.channels = channels
+        self.rate = 48000
         # Q6ASM capture periods are at most 4096 bytes and multiples of 480 frames.
         # Keep the established 3840-byte period for both native stereo and mono.
         self.period_frames = 1920 // channels
@@ -469,10 +476,10 @@ class OwnedCapture:
                 last = time.monotonic()
                 with self.mutex:
                     self.raw.extend(block)
-                    need(len(self.raw) <= getattr(self, 'maximum_seconds', 90) * 48000 * 2 * getattr(self, 'channels', 1), 'Capture duration limit exceeded')
+                    need(len(self.raw) <= getattr(self, 'maximum_seconds', 90) * getattr(self, 'rate', 48000) * 2 * getattr(self, 'channels', 1), 'Capture duration limit exceeded')
                 monitor.extend(block)
-                while len(monitor) >= 9600 * getattr(self, 'channels', 1):
-                    size = 9600 * getattr(self, 'channels', 1)
+                size = (getattr(self, 'rate', 48000) // 10) * 2 * getattr(self, 'channels', 1)
+                while len(monitor) >= size:
                     samples = array('h', monitor[:size])
                     del monitor[:size]
                     for index, values in enumerate(deinterleave(samples, getattr(self, 'channels', 1))):
@@ -505,7 +512,7 @@ class OwnedCapture:
         need(self.process.poll() is None, 'Capture process exited')
 
     def wait_frames(self, frames):
-        deadline = time.monotonic() + frames / 48000 + 8
+        deadline = time.monotonic() + frames / getattr(self, 'rate', 48000) + 8
         while True:
             self.healthy()
             with self.mutex:
@@ -1551,7 +1558,7 @@ class NativeMicSource:
                 self.error = type(error).__name__ + ': ' + str(error)
                 os.kill(os.getpid(), signal.SIGTERM)
 
-    def require_client_route(self, name):
+    def require_client_route(self, name, requested_contract=None):
         need(self.graph.run('pactl', 'get-default-source') == self.name,
              'Native default microphone changed')
         outputs = json.loads(self.graph.run('pactl', '--format=json', 'list', 'source-outputs'))
@@ -1561,13 +1568,19 @@ class NativeMicSource:
             return False  # Only the explicit SPA invalid sentinel may await linking.
         need(str(owned[0].get('source')) == str(self.source_id),
              'Native default recording client selected another source')
-        self.report.setdefault('routes', []).append(dict(client=name, source=owned[0]['source'],
-                                                        source_output=owned[0]['index']))
+        observed = dict(client=name, source=owned[0]['source'], source_output=owned[0]['index'],
+                        sample_specification=owned[0].get('sample_specification'),
+                        channel_map=owned[0].get('channel_map'))
+        self.report.setdefault('routes', []).append(observed)
+        if requested_contract is not None:
+            need(observed['sample_specification'] == requested_contract['sample_specification'] and
+                 observed['channel_map'] == requested_contract['channel_map'],
+                 'Native default recording client format or channel map changed')
         return True
 
-    def begin_client(self, client, name):
+    def begin_client(self, client, name, requested_contract=None):
         deadline = time.monotonic() + 3
-        while not self.require_client_route(name):
+        while not self.require_client_route(name, requested_contract):
             client.healthy()
             need(time.monotonic() < deadline, 'Native default microphone client did not attach in3s')
             time.sleep(.05)
@@ -1655,7 +1668,10 @@ class NativeMicSource:
 class DesktopRecording(OwnedCapture):
     """Ordinary default-source client; no device selection or ALSA ownership."""
 
-    def __init__(self, graph, name, *, maximum_seconds=60, wall_deadline=None):
+    def __init__(self, graph, name, *, maximum_seconds=60, wall_deadline=None, rate=48000, channels=1):
+        need(type(rate) is int and rate in (44100, 48000) and
+             type(channels) is int and channels in (1, 2),
+             'Invalid desktop recording rate or channels')
         need(isinstance(maximum_seconds, int) and 0 < maximum_seconds <= 120,
              'Invalid desktop recording frame budget')
         need(maximum_seconds <= 60 or wall_deadline is not None,
@@ -1664,17 +1680,35 @@ class DesktopRecording(OwnedCapture):
              time.clock_gettime(time.CLOCK_BOOTTIME) < wall_deadline <=
              time.clock_gettime(time.CLOCK_BOOTTIME) + 120,
              'Desktop recording wall deadline exceeds120s')
+        need((rate, channels) == (48000, 1) or
+             (maximum_seconds <= 60 and wall_deadline is not None and
+              wall_deadline <= time.clock_gettime(time.CLOCK_BOOTTIME) + 60),
+             'Application-format recording requires a fixed <=60s wall budget')
         self.wall_deadline = wall_deadline
         self.maximum_seconds = maximum_seconds
+        self.rate, self.channels = rate, channels
+        self.started_boottime = time.clock_gettime(time.CLOCK_BOOTTIME)
+        self.ownership_wall_seconds = self.closed_frames = self.closed_partial_bytes = None
+        self.recording_discarded = self.process_reaped = False
+        self.requested_contract = dict(format='s16le', rate=rate, channels=channels,
+            sample_specification=f's16le {channels}ch {rate}Hz',
+            channel_map='mono' if channels == 1 else 'front-left,front-right')
         self.raw = bytearray()
         self.mutex = threading.Lock()
         self.stop = threading.Event()
         self.error = self.limit = None
         self.log = tempfile.TemporaryFile()
-        self.process = subprocess.Popen(graph.command + [
-            'parec', '--raw', '--format=s16le', '--rate=48000', '--channels=1',
-            '--latency-msec=20', '--process-time-msec=10', '--client-name=' + name],
-            stdout=subprocess.PIPE, stderr=self.log, bufsize=0, start_new_session=True)
+        command = graph.command + [
+            'parec', '--raw', '--format=s16le', f'--rate={rate}', f'--channels={channels}',
+            '--latency-msec=20', '--process-time-msec=10', '--client-name=' + name]
+        if (rate, channels) != (48000, 1):
+            command.append('--channel-map=' + self.requested_contract['channel_map'])
+        try:
+            self.process = subprocess.Popen(command,
+                stdout=subprocess.PIPE, stderr=self.log, bufsize=0, start_new_session=True)
+        except Exception:
+            self.log.close()
+            raise
         graph.processes.append(self.process)
         if not hasattr(graph, 'recordings'):
             graph.recordings = []
@@ -1693,6 +1727,10 @@ class DesktopRecording(OwnedCapture):
                 errors.append(error)
         self.stop.set()
         attempt(stop_desktop_process, self.process)
+        reaped_boottime = time.clock_gettime(time.CLOCK_BOOTTIME)
+        self.process_reaped = self.process.poll() is not None
+        self.ownership_wall_seconds = (reaped_boottime - self.started_boottime
+                                       if self.process_reaped else None)
         attempt(self.thread.join, timeout=2)
         attempt(self.process.stdout.close)
         def read_log():
@@ -1701,9 +1739,13 @@ class DesktopRecording(OwnedCapture):
         log = attempt(read_log)
         attempt(self.log.close)
         with self.mutex:
+            self.closed_frames = len(self.raw) // (2 * getattr(self, 'channels', 1))
+            self.closed_partial_bytes = len(self.raw) % (2 * getattr(self, 'channels', 1))
             self.raw.clear()  # A failed client stop must still discard incidental audio.
+            self.recording_discarded = True
         attempt(need, not self.thread.is_alive() and not self.error,
                 self.error or 'Desktop recording thread did not stop')
+        attempt(need, self.process_reaped, 'Desktop recording process was not reaped')
         if log is not None:
             attempt(need, not re.search(r'error|overrun|underrun', log, re.I),
                     'Desktop recording client reported an error: ' + log)
@@ -1886,10 +1928,11 @@ def cold_native_microphone_start(args, report, card, wall_deadline, holders):
     evidence['passed'] = True
 
 
-def verify_native_microphone_clients(source, graph, evidence, pcm, paths, mapping, *, frequencies=(440, 660), previous_trigger=None):
+def verify_native_microphone_clients(source, graph, evidence, pcm, paths, mapping, *, frequencies=(440, 660), previous_trigger=None, app_formats=False):
     """Two bounded ordinary default clients; discard all client raw buffers."""
     from acoustic import score_phase
     validate_tone_frequencies(frequencies)
+    need(type(app_formats) is bool, 'Invalid native microphone application-format flag')
     need(time.clock_gettime(time.CLOCK_BOOTTIME) < source.wall_deadline <=
          time.clock_gettime(time.CLOCK_BOOTTIME) + 60,
          'Native microphone verification deadline exceeds60s or expired')
@@ -1902,13 +1945,20 @@ def verify_native_microphone_clients(source, graph, evidence, pcm, paths, mappin
     # on its ALSA-paced silence branch rather than the desktop monitor queue.
     pcm.set_source(None)
     previous_owner = None
-    for index in range(2):
+    profiles = ((44100, 1), (48000, 2)) if app_formats else ((48000, 1), (48000, 1))
+    for index, (rate, channels) in enumerate(profiles):
         name = f'spx-native-default-microphone-{os.getpid()}-{index}'
-        client = DesktopRecording(graph, name, wall_deadline=source.wall_deadline)
+        options = dict(rate=rate, channels=channels) if app_formats else {}
+        client = DesktopRecording(graph, name, wall_deadline=source.wall_deadline, **options)
         entry = dict(name=name, pid=client.process.pid, passed=False, frequencies_hz=list(frequencies))
         evidence['clients'].append(entry)
         try:
-            owner = source.begin_client(client, name)
+            if app_formats:
+                entry['requested_contract'] = dict(client.requested_contract)
+                owner = source.begin_client(client, name, client.requested_contract)
+                entry['source_output'] = dict(source.report['routes'][-1])
+            else:
+                owner = source.begin_client(client, name)
             entry['native_owner'] = owner
             if index == 0 and previous_trigger is not None:
                 need(owner['trigger_time'] != previous_trigger,
@@ -1916,22 +1966,33 @@ def verify_native_microphone_clients(source, graph, evidence, pcm, paths, mappin
             if previous_owner is not None:
                 need(owner['trigger_time'] != previous_owner['trigger_time'],
                      'Second native microphone client did not restart capture')
-            client.wait_frames(3 * 48000)
+            client.wait_frames(3 * rate)
             end = client.mark()
-            reference = client.samples(end - 2 * 48000, end)
-            values = [v for v in reference if v]
-            need(len(values) > len(reference) // 100, 'Native default microphone returned silence')
-            rms = math.sqrt(sum(v*v for v in reference) / len(reference))
-            need(0 < rms < 1000, 'Native default microphone ambient level invalid')
-            client.limit = max(300, rms * 12)
+            reference = client.samples(end - 2 * rate, end)
+            references = deinterleave(reference, channels)
+            limits = []
+            for values in references:
+                need(sum(v != 0 for v in values) > len(values) // 100,
+                     'Native default microphone returned silence')
+                rms = math.sqrt(sum(v*v for v in values) / len(values))
+                need(0 < rms < 1000, 'Native default microphone ambient level invalid')
+                limits.append(max(300, rms * 12))
+            client.limit = limits if channels == 2 else limits[0]
             source.healthy()
             check_stereo(mapping, paths, initialized=True)
             begin = client.mark()
             pcm.play(tone({0, 1}, frequencies=frequencies))
-            client.wait_frames(begin + 3 * 48000)
+            client.wait_frames(begin + 3 * rate)
             end = client.mark()
-            entry.update(start_frame=begin, end_frame=end,
-                         score=score_phase(client.samples(begin, end), reference, list(frequencies)))
+            inputs = deinterleave(client.samples(begin, end), channels)
+            score_options = dict(rate=rate) if app_formats else {}
+            scores = [score_phase(values, quiet, list(frequencies), **score_options)
+                      for values, quiet in zip(inputs, references)]
+            score = scores[0] if channels == 1 else dict(
+                passed=all(item['passed'] for item in scores), inputs=scores,
+                reason='; '.join(item['reason'] for item in scores if not item['passed']) or 'passed',
+                scope='mono source converted to stereo application channels')
+            entry.update(start_frame=begin, end_frame=end, score=score)
             need(entry['score']['passed'], 'Native default microphone acoustic test failed: ' +
                  entry['score']['reason'])
             source.healthy()
@@ -1939,7 +2000,6 @@ def verify_native_microphone_clients(source, graph, evidence, pcm, paths, mappin
             for field, expected in held.items():
                 current = re.search(r'^' + field + r'\s*:\s*(.+)$', pcm.healthy(), re.M)
                 need(current and current[1] == expected, 'Playback owner/trigger changed')
-            entry['passed'] = True
             previous_owner = owner
         finally:
             # Preserve the scoring/start failure while still closing the client.
@@ -1950,15 +2010,36 @@ def verify_native_microphone_clients(source, graph, evidence, pcm, paths, mappin
                     function()
                 except Exception as error:
                     errors.append(type(error).__name__ + ': ' + str(error))
+            if app_formats:
+                entry.update(frames=getattr(client, 'closed_frames', None),
+                             partial_bytes_discarded=getattr(client, 'closed_partial_bytes', None),
+                             ownership_wall_seconds=getattr(client, 'ownership_wall_seconds', None),
+                             recording_discarded=getattr(client, 'recording_discarded', False),
+                             process_reaped=getattr(client, 'process_reaped', False))
+                if original is None and not errors:
+                    if not (entry['recording_discarded'] is True and entry['process_reaped'] is True):
+                        errors.append('Native microphone client cleanup remains incomplete')
+                    duration = entry['ownership_wall_seconds']
+                    if (not isinstance(duration, (int, float)) or not 0 <= duration <= 60 or
+                            time.clock_gettime(time.CLOCK_BOOTTIME) > source.wall_deadline):
+                        errors.append('Native microphone client exceeded fixed60s phase deadline')
             if errors:
                 entry['cleanup_errors'] = errors
                 if original is None:
                     raise RuntimeError('Native microphone client cleanup failed: ' + '; '.join(errors))
         source.require_closed('between-clients' if index == 0 else 'after-second-client')
         source.endpoint()
+        if app_formats:
+            need(time.clock_gettime(time.CLOCK_BOOTTIME) <= source.wall_deadline,
+                 'Native microphone application-format phase exceeded fixed60s deadline')
+        entry['passed'] = True
     need(len({row['pid'] for row in evidence['clients']}) == 2,
          'Expected distinct ordinary default recording clients')
     evidence['microphone_client_passed'] = True
+    if app_formats:
+        evidence['application_formats_passed'] = True
+        evidence['application_formats_scope'] = (
+            'default S16LE 44100Hz mono and 48000Hz stereo clients; hardware remains 48000Hz mono')
 
 
 def native_microphone_on_demand(args, report, pcm, paths, mapping, capture, holders):
@@ -2311,10 +2392,13 @@ def serve_desktop(args, report, pcm, graph, paths, mapping):
     check_stereo(mapping, paths, initialized=True)
     microphone = getattr(graph, 'microphone', None) if getattr(args, 'desktop_microphone', False) else None
     if microphone is not None:
+        need(not getattr(args, 'native_mic_app_formats', False) or microphone.default_selected,
+             'Application-format verification requires the fitted microphone as default')
         microphone.require_closed('before-ordinary-handoff')
         if microphone.default_selected:
             graph.monitor.forward = False
-            verify_native_microphone_clients(microphone, graph, microphone.report, pcm, paths, mapping)
+            verify_native_microphone_clients(microphone, graph, microphone.report, pcm, paths, mapping,
+                                            app_formats=getattr(args, 'native_mic_app_formats', False))
             graph.monitor.healthy()
             pcm.set_source(graph.monitor)
             graph.monitor.forward = True
@@ -2536,6 +2620,8 @@ def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder
                     evidence = report['desktop_microphone'] = dict(microphone_client_passed=False,
                         clients=[], recording=None, maximum_seconds=60,
                         scope='stock microphone available for serve; bounded client verification')
+                    if getattr(args, 'native_mic_app_formats', False):
+                        evidence['application_formats_passed'] = False
                     graph.microphone = NativeMicSource(graph, card, evidence,
                         time.clock_gettime(time.CLOCK_BOOTTIME) + 60,
                         graph.default_source_before_test, desktop=True)
@@ -2682,6 +2768,8 @@ def cleanup_audio_consumers(report, pcms, graphs, capture, saved, signals, timer
 
 
 def initialize(args, report, *, live_resume=None):
+    validate_native_mic_app_formats(args.action, getattr(args, 'desktop_microphone', False),
+                                   getattr(args, 'native_mic_app_formats', False))
     need(live_resume is None or (callable(live_resume) and args.action == 'serve' and
                                 args.desktop_peak == 1433 and not getattr(args, 'desktop_controls', False)),
          'Live resume requires quiet serve initialization without desktop controls')
@@ -3022,6 +3110,8 @@ def main():
                         help='desktop-mic capture-reopen only: bounded incompatible contract rejection probes')
     parser.add_argument('--desktop-microphone', action='store_true',
                         help='serve-only stock fitted microphone available on client demand')
+    parser.add_argument('--native-mic-app-formats', action='store_true',
+                        help='serve desktop-microphone only: bounded 44.1kHz mono and 48kHz stereo application clients')
     parser.add_argument('--native-mic-cold-start', action='store_true',
                         help='native-mic-on-demand only: stock first-owner ambient prelude before arecord/amps')
     parser.add_argument('--native-mic-on-demand', action='store_true',
@@ -3039,6 +3129,8 @@ def main():
     args = parser.parse_args()
     if args.desktop_microphone and args.action != 'serve':
         parser.error('--desktop-microphone requires serve')
+    if args.native_mic_app_formats and (args.action != 'serve' or not args.desktop_microphone):
+        parser.error('--native-mic-app-formats requires serve --desktop-microphone')
     if args.desktop_controls and args.action != 'serve':
         parser.error('--desktop-controls requires serve')
     if args.microphone_array and (args.action != 'feedback' or args.microphone_source != 'DMIC1'):
