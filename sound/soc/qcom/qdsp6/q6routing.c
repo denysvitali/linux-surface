@@ -356,6 +356,20 @@ MODULE_PARM_DESC(spx_keep_copp,
 		id, 1, 0, msm_routing_get_audio_mixer,			\
 		msm_routing_put_audio_mixer),
 
+/* Separate from the mixer port, which may be disabled between PCM owners. */
+struct spx_capture_route {
+	bool valid;
+	bool asm_retained;
+	int fedai_id;
+	int stream_id;
+	int port_id;
+	int path_type;
+	int sample_rate;
+	int bits_per_sample;
+	int channels;
+	int perf_mode;
+};
+
 struct session_data {
 	int state;
 	int port_id;
@@ -370,6 +384,7 @@ struct session_data {
 	int fedai_id;
 	unsigned long copp_map;
 	struct q6copp *copps[MAX_COPPS_PER_PORT];
+	struct spx_capture_route capture_route;
 };
 
 struct msm_routing_data {
@@ -410,30 +425,68 @@ MODULE_PARM_DESC(spx_rx_app_type, "SPX: ADM app_type for playback COPP");
  *
  * Return: Will be an negative on error or a zero on success.
  */
-int q6routing_stream_open(int fedai_id, int perf_mode,
-			   int stream_id, int stream_type)
+static int __q6routing_stream_open(int fedai_id, int perf_mode,
+				   int stream_id, int stream_type,
+				   bool asm_reused)
 {
 	int j, topology, num_copps = 0;
 	struct route_payload payload;
 	struct q6copp *copp;
-	int copp_idx;
+	int copp_idx, ret = 0;
 	struct session_data *session, *pdata;
+	struct spx_capture_route *cached;
+	bool capture_session, capture_candidate;
 
 	if (!routing_data) {
 		pr_err("Routing driver not yet ready\n");
 		return -EINVAL;
 	}
 
-	session = &routing_data->sessions[stream_id - 1];
-	if (session->port_id < 0) {
-		dev_err(routing_data->dev, "Routing not setup for MultiMedia%d Session\n",
-			session->fedai_id);
+	if (stream_id <= 0 || stream_id > MAX_SESSIONS)
 		return -EINVAL;
-	}
-
-	pdata = &routing_data->port_data[session->port_id];
 
 	mutex_lock(&routing_data->lock);
+	session = &routing_data->sessions[stream_id - 1];
+	cached = &session->capture_route;
+	if (session->port_id < 0 || session->port_id >= AFE_MAX_PORTS) {
+		dev_err(routing_data->dev, "Routing not setup for MultiMedia%d Session\n",
+			fedai_id);
+		ret = -EINVAL;
+		goto unlock;
+	}
+	pdata = &routing_data->port_data[session->port_id];
+	capture_session = of_machine_is_compatible("microsoft,surface-pro-x") &&
+		stream_type == SNDRV_PCM_STREAM_CAPTURE &&
+		fedai_id == MSM_FRONTEND_DAI_MULTIMEDIA2 && stream_id == 2;
+	capture_candidate = capture_session && session->port_id == SLIMBUS_0_TX &&
+		pdata->path_type == ADM_PATH_LIVE_REC &&
+		perf_mode == LEGACY_PCM_MODE;
+
+	/* Compare the immutable route before assigning any new session fields.
+	 * A retained ASM must never get a new COPP or a duplicate matrix map.
+	 */
+	if (cached->asm_retained || (capture_session && asm_reused)) {
+		if (!spx_keep_copp || !capture_candidate || !asm_reused ||
+		    !cached->valid || !cached->asm_retained || !session->copp_map ||
+		    cached->fedai_id != fedai_id || cached->stream_id != stream_id ||
+		    cached->port_id != session->port_id ||
+		    cached->path_type != pdata->path_type ||
+		    cached->sample_rate != pdata->sample_rate ||
+		    cached->channels != pdata->channels ||
+		    cached->bits_per_sample != pdata->bits_per_sample ||
+		    cached->perf_mode != perf_mode) {
+			dev_err(routing_data->dev,
+				"SPX: retained capture COPP/ASM route mismatch\n");
+			ret = -EINVAL;
+			goto unlock;
+		}
+		session->fedai_id = fedai_id;
+		dev_info(routing_data->dev,
+			 "SPX: reusing retained capture COPP/matrix session %d port %d\n",
+			 stream_id, cached->port_id);
+		goto unlock;
+	}
+
 	session->fedai_id = fedai_id;
 
 	session->path_type = pdata->path_type;
@@ -492,14 +545,45 @@ int q6routing_stream_open(int fedai_id, int perf_mode,
 	if (num_copps) {
 		payload.num_copps = num_copps;
 		payload.session_id = stream_id;
-		q6adm_matrix_map(routing_data->dev, session->path_type,
-				 payload, perf_mode);
+		ret = q6adm_matrix_map(routing_data->dev, session->path_type,
+				       payload, perf_mode);
+		if (capture_candidate && spx_keep_copp && !ret)
+			*cached = (struct spx_capture_route) {
+				.valid = true,
+				.fedai_id = fedai_id,
+				.stream_id = stream_id,
+				.port_id = session->port_id,
+				.path_type = pdata->path_type,
+				.sample_rate = pdata->sample_rate,
+				.channels = pdata->channels,
+				.bits_per_sample = pdata->bits_per_sample,
+				.perf_mode = perf_mode,
+			};
+		/* Keep the legacy return behaviour outside this capture contract. */
+		if (!capture_candidate)
+			ret = 0;
 	}
+unlock:
 	mutex_unlock(&routing_data->lock);
+	return ret;
+}
 
-	return 0;
+int q6routing_stream_open(int fedai_id, int perf_mode,
+			  int stream_id, int stream_type)
+{
+	return __q6routing_stream_open(fedai_id, perf_mode, stream_id,
+				       stream_type, false);
 }
 EXPORT_SYMBOL_GPL(q6routing_stream_open);
+
+/* PCM caller reports actual reuse; compressed streams use the legacy API. */
+int q6routing_stream_open_asm(int fedai_id, int perf_mode, int stream_id,
+			    int stream_type, bool asm_reused)
+{
+	return __q6routing_stream_open(fedai_id, perf_mode, stream_id,
+				       stream_type, asm_reused);
+}
+EXPORT_SYMBOL_GPL(q6routing_stream_open_asm);
 
 static struct session_data *get_session_from_id(struct msm_routing_data *data,
 						int fedai_id)
@@ -522,14 +606,37 @@ static struct session_data *get_session_from_id(struct msm_routing_data *data,
  *
  * Return: Will be an negative on error or a zero on success.
  */
-void q6routing_stream_close(int fedai_id, int stream_type)
+static void __q6routing_stream_close(int fedai_id, int stream_type,
+				     bool asm_parked)
 {
 	struct session_data *session;
 	int idx;
 
+	if (!routing_data)
+		return;
+
+	mutex_lock(&routing_data->lock);
 	session = get_session_from_id(routing_data, fedai_id);
 	if (!session)
-		return;
+		goto unlock;
+
+	if (session->capture_route.asm_retained ||
+	    (spx_keep_copp && asm_parked &&
+	     stream_type == SNDRV_PCM_STREAM_CAPTURE &&
+	     session->capture_route.valid && session->copp_map)) {
+		/* Never free a route still owned by a parked capture ASM. */
+		if (!asm_parked)
+			dev_err(routing_data->dev,
+				"SPX: retained capture route has no parked ASM close\n");
+		else
+			session->capture_route.asm_retained = true;
+		dev_info(routing_data->dev,
+			 "SPX: preserving capture COPP/matrix session %d port %d\n",
+			 session->capture_route.stream_id,
+			 session->capture_route.port_id);
+		session->fedai_id = -1;
+		goto unlock;
+	}
 
 	if (spx_keep_copp &&
 	    of_machine_is_compatible("microsoft,surface-pro-x") &&
@@ -537,7 +644,7 @@ void q6routing_stream_close(int fedai_id, int stream_type)
 		dev_info(routing_data->dev,
 			 "SPX: preserving live COPP/matrix route across close\n");
 		session->fedai_id = -1;
-		return;
+		goto unlock;
 	}
 
 	for_each_set_bit(idx, &session->copp_map, MAX_COPPS_PER_PORT) {
@@ -549,8 +656,22 @@ void q6routing_stream_close(int fedai_id, int stream_type)
 
 	session->fedai_id = -1;
 	session->copp_map = 0;
+	memset(&session->capture_route, 0, sizeof(session->capture_route));
+unlock:
+	mutex_unlock(&routing_data->lock);
+}
+
+void q6routing_stream_close(int fedai_id, int stream_type)
+{
+	__q6routing_stream_close(fedai_id, stream_type, false);
 }
 EXPORT_SYMBOL_GPL(q6routing_stream_close);
+
+void q6routing_stream_close_asm(int fedai_id, int stream_type, bool asm_parked)
+{
+	__q6routing_stream_close(fedai_id, stream_type, asm_parked);
+}
+EXPORT_SYMBOL_GPL(q6routing_stream_close_asm);
 
 static int msm_routing_get_audio_mixer(struct snd_kcontrol *kcontrol,
 				       struct snd_ctl_elem_value *ucontrol)
@@ -563,10 +684,9 @@ static int msm_routing_get_audio_mixer(struct snd_kcontrol *kcontrol,
 	struct msm_routing_data *priv = dev_get_drvdata(c->dev);
 	struct session_data *session = &priv->sessions[session_id];
 
-	if (session->port_id == mc->reg)
-		ucontrol->value.integer.value[0] = 1;
-	else
-		ucontrol->value.integer.value[0] = 0;
+	mutex_lock(&priv->lock);
+	ucontrol->value.integer.value[0] = session->port_id == mc->reg;
+	mutex_unlock(&priv->lock);
 
 	return 0;
 }
@@ -584,19 +704,31 @@ static int msm_routing_put_audio_mixer(struct snd_kcontrol *kcontrol,
 	int session_id = mc->shift;
 	struct session_data *session = &data->sessions[session_id];
 
+	mutex_lock(&data->lock);
 	if (ucontrol->value.integer.value[0]) {
-		if (session->port_id == be_id)
+		if (session->port_id == be_id) {
+			mutex_unlock(&data->lock);
 			return 0;
-
+		}
+		/* Disabling is allowed for owner cleanup. A different route cannot
+		 * replace the cached DSP route; re-enable only its original port.
+		 */
+		if (session->capture_route.valid &&
+		    be_id != session->capture_route.port_id) {
+			mutex_unlock(&data->lock);
+			return -EBUSY;
+		}
 		session->port_id = be_id;
-		snd_soc_dapm_mixer_update_power(dapm, kcontrol, 1, update);
 	} else {
-		if (session->port_id == -1 || session->port_id != be_id)
+		if (session->port_id == -1 || session->port_id != be_id) {
+			mutex_unlock(&data->lock);
 			return 0;
-
+		}
 		session->port_id = -1;
-		snd_soc_dapm_mixer_update_power(dapm, kcontrol, 0, update);
 	}
+	mutex_unlock(&data->lock);
+	snd_soc_dapm_mixer_update_power(dapm, kcontrol,
+				      !!ucontrol->value.integer.value[0], update);
 
 	return 1;
 }

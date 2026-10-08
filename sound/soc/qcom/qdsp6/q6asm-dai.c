@@ -739,8 +739,10 @@ static int q6asm_dai_prepare(struct snd_soc_component *component,
 	}
 
 	prtd->session_id = q6asm_get_session_id(prtd->audio_client);
-	ret = q6routing_stream_open(soc_prtd->dai_link->id, LEGACY_PCM_MODE,
-			      prtd->session_id, substream->stream);
+	ret = q6routing_stream_open_asm(soc_prtd->dai_link->id, LEGACY_PCM_MODE,
+				      prtd->session_id, substream->stream,
+				      prtd->client_reused &&
+				      spx_retained_capture(prtd, substream));
 	if (ret) {
 		dev_err(dev, "%s: stream reg failed ret:%d\n", __func__, ret);
 		goto routing_err;
@@ -1021,6 +1023,7 @@ static int q6asm_dai_close(struct snd_soc_component *component,
 	struct q6asm_dai_data *pdata = snd_soc_component_get_drvdata(component);
 	struct q6asm_dai_rtd *prtd = runtime->private_data;
 	int fe_dai = cpu_dai->driver->id;
+	bool asm_parked = false;
 
 	cancel_delayed_work_sync(&prtd->write_watchdog);
 
@@ -1052,6 +1055,7 @@ static int q6asm_dai_close(struct snd_soc_component *component,
 	    fe_dai < ARRAY_SIZE(pdata->parked[0])) {
 		q6asm_audio_client_rebind(prtd->audio_client, NULL, NULL);
 		pdata->parked[substream->stream][fe_dai] = prtd->audio_client;
+		asm_parked = true;
 		if (substream->stream == SNDRV_PCM_STREAM_CAPTURE)
 			pdata->parked_capture_contract[fe_dai] = prtd->capture_contract;
 		prtd->audio_client = NULL;
@@ -1073,8 +1077,8 @@ static int q6asm_dai_close(struct snd_soc_component *component,
 		spx_alias_unmap(component->dev, prtd->alias_iova, prtd->alias_sz);
 		prtd->alias_iova = 0;
 	}
-	q6routing_stream_close(soc_prtd->dai_link->id,
-						substream->stream);
+	q6routing_stream_close_asm(soc_prtd->dai_link->id, substream->stream,
+				   asm_parked);
 	kfree(prtd);
 	return 0;
 }
