@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-08, EA: active Bluetooth discovery resumes)
+## Status (2026-10-08, EC: default microphone and active Bluetooth resume)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
@@ -23,7 +23,7 @@ reverse plugs, visible output and hotplug remain unverified.
 CF retains P01a actual charging pass; further battery tests are deferred.
 **CS closes B06a; CT closes B06b/B06c:** TPM commands, automatic startup and measured GRUB boot pass.
 **DO closes B06e:** TPM-generated ephemeral P256 signatures verify independently; changed messages reject, cleanup passes.
-**DO closes P03c; DS closes P03d; DX closes P03e:** normal AC sleep retains network/motion/storage; DX preserves live native playback/capture owners and passes post-wake public acoustic feedback with full cleanup.
+**DO closes P03c; DS closes P03d; DX closes P03e; EC closes P03f:** normal AC sleep retains network/motion/storage; EC preserves the ordinary default microphone client and passes pre/post acoustic checks. DSP teardown faults remain open.
 **DP closes A03a:** two-minute default desktop stream and ordered SoundWire shutdown pass.
 **DR closes A03f:** quiet default desktop attenuation, mute and unmute pass acoustically; arbitrary shutdown and useful listening range remain open.
 **D01a passes on CE:** two GNOME off/on cycles
@@ -59,7 +59,7 @@ awaits attribution for later observations.
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
 | Speakers (A01) | **BY desktop playback; DP shutdown; DR controls; DX live resume pass** | Persistence, useful volume/mapping/balance, reopen and arbitrary shutdown |
-| Microphones (A02) | **DK array; DI default clients/native reopen; DX native resume pass** | Quality, physical mapping, availability and full lifecycle |
+| Microphones (A02) | **DK array; DI default clients/native reopen; EC default client resumes** | Quality, physical mapping, availability and full lifecycle |
 | Cameras (C01–C05) | Rear sensor identifies | No frame captured |
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
 | Keyboard, touchpad (I04, I05) | **BI keyboard works**; recovery keyboard restored after SSAM timeout | Startup reliability, full keys/gestures and resume |
@@ -68,7 +68,7 @@ awaits attribution for later observations.
 | USB data (U01) | Untested | Both ports/orientations, fixtures |
 | USB-C PD, DisplayPort, dock (U02–U04) | **CG: external off/on scanout restoration passes; normal orientation API works** | Visible output, physical replug, roles/PD, ports/orientations/resume |
 | Battery and charging (P01) | **CF: P01a actual charging passes, +1.26Wh/120s** | Charge-policy explanation, discharge/transitions and charger coverage |
-| Suspend/resume (P03) | **DD13 direct wakes; DO/DS normal AC sleep; DX native live audio resume passes**; targets masked | Full device recovery, battery sleep and physical wakes |
+| Suspend/resume (P03) | **DD13 direct wakes; DO/DS normal AC sleep; DX/EC native/default mic resume pass**; targets masked | Full device recovery, battery sleep and physical wakes |
 | Thermal (P05) | **CM cooling limits; CX/CY combined load/cleanup; DN below temporary55C, automatic testing parked** | Real automatic response, longer envelope and enclosure behavior |
 | Idle power (P02) | BU: CPU scales down; GPU runtime-suspends | **Battery tests deferred by user**; remaining forced-on devices |
 | Sensors (S01, S02) | **DD backend/desktop clients survive repeated/30-minute AC sleep** | Light/axes/calibration; DA fault; final regression |
@@ -77,10 +77,9 @@ awaits attribution for later observations.
 ## Next work, in order
 
 User cannot provide physical assistance (October6); continue autonomous work.
-Default desktop microphone resume has no pass after DY/DZ/EA. After N02c
-breadth gain, its freeze prerequisite is reproduced/resolved with a silent
-frontend. EB bridge resumes but scoring hits the helper deadline; changed EC
-orders teardown before infrastructure checks. [EA result](tools/spx/boot-diagnostics/RESULT-20261008ea.md).
+EC closes scoped default microphone resume (P03f), after resolved frontend
+freeze and scoring prerequisites. Capture teardown still reports an ADM timeout;
+full lifecycle remains open. [EC result](tools/spx/boot-diagnostics/RESULT-20261008ec.md).
 Physical observations remain unverified. CDSP is parked after three changed
 boots without a usable accelerator result. CW stops before its recorded query;
 CV's return stalls in shutdown ramdisk generation. CX prepares that ramdisk
@@ -1392,10 +1391,22 @@ GPU runtime suspend works.
     quiet public440/660Hz acoustic checks before/after pass, no XRUN/reprepare.
     Motion/WLAN/storage, alarm/masks/runtime PM, ordered PCM close, parked
     amplifiers and empty command FIFO cleanup pass; raw mic samples discarded.
-    One AC cycle/public playback/native microphone witness. Default desktop
-    microphone clients, repeat reliability, low-power/battery and full P03 remain
+    One AC cycle/public playback/native microphone witness. P03f adds a default
+    desktop client. Repeat reliability, low-power/battery and full P03 remain
     open. DW's failed live run is preserved.
     [DX result](tools/spx/boot-diagnostics/RESULT-20261008dx.md).
+
+  - [x] **P03f — Same ordinary default microphone client across normal AC sleep.**
+    EC boot `21600907-210f-4a31-bcd6-93f2356c963d`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: same source/module/default client/
+    desktop services and native owners across28.6840s RTC-woken normal sleep.
+    Acknowledged bounded bridge pause/resume; actual default-client440/660Hz
+    pre/post acoustic checks pass. Capture99.819s/raw discarded; client/source/
+    preference/graph/mixers/closed PCMs/parked amps/FIFO0/PMauto and complete
+    motion/network/storage/mask/alarm/inhibitor gates pass. Kernel ADM capture
+    close timeout remains: clean DSP teardown/full lifecycle unproven.
+    One AC cycle; repeat reliability, quality, battery/low-power/full P03 open.
+    [EC result](tools/spx/boot-diagnostics/RESULT-20261008ec.md).
 
 - [ ] **P04 — Hibernate applicability.** Establish whether the intended platform/
   storage/security setup supports hibernation; if supported, verify image restore
