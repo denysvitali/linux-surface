@@ -1877,7 +1877,7 @@ def cold_native_microphone_start(args, report, card, wall_deadline, holders):
     evidence['passed'] = True
 
 
-def verify_native_microphone_clients(source, graph, evidence, pcm, paths, mapping):
+def verify_native_microphone_clients(source, graph, evidence, pcm, paths, mapping, *, previous_trigger=None):
     """Two bounded ordinary default clients; discard all client raw buffers."""
     from acoustic import score_phase
     need(time.clock_gettime(time.CLOCK_BOOTTIME) < source.wall_deadline <=
@@ -1897,6 +1897,9 @@ def verify_native_microphone_clients(source, graph, evidence, pcm, paths, mappin
         try:
             owner = source.begin_client(client, name)
             entry['native_owner'] = owner
+            if index == 0 and previous_trigger is not None:
+                need(owner['trigger_time'] != previous_trigger,
+                     'First post-sleep client did not restart native capture')
             if previous_owner is not None:
                 need(owner['trigger_time'] != previous_owner['trigger_time'],
                      'Second native microphone client did not restart capture')
@@ -2484,7 +2487,8 @@ def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder
             evidence = report['desktop'] = dict(applications=[], acoustic_passed=False)
             graph = DesktopGraph(args.desktop_user, evidence)
             desktop_holder.append(graph)
-            graph.preserve_default_source = getattr(args, 'default_mic_resume', False)
+            graph.preserve_default_source = (getattr(args, 'default_mic_resume', False) or
+                                             getattr(args, 'native_mic_resume', False))
             graph.start()
             if hasattr(live_resume, 'prepare'):
                 live_resume.prepare(graph, capture, pcm)
@@ -2496,10 +2500,18 @@ def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder
             if getattr(args, "desktop_controls", False):
                 from desktop_controls import verify_controls
                 verify_controls(report, pcm, desktop_holder[-1], capture, tone, need)
-            if live_resume is not None:
+            if live_resume is not None and getattr(live_resume, 'after_recording', False):
+                # Native clients must become the first owner after the bounded
+                # oracle closes; keep its mixer lease until source unload.
+                before_serve()
                 live_resume(report, pcm, desktop_holder[-1], capture, paths, mapping)
                 report['desktop']['acoustic_passed'] = True
-            before_serve()  # Close capture while attached, before playback teardown.
+            elif live_resume is not None:
+                live_resume(report, pcm, desktop_holder[-1], capture, paths, mapping)
+                report['desktop']['acoustic_passed'] = True
+                before_serve()
+            else:
+                before_serve()  # Close capture while attached, before playback teardown.
             if live_resume is None:
                 graph = desktop_holder[-1]
                 if getattr(args, 'desktop_microphone', False):
@@ -2724,7 +2736,8 @@ def initialize(args, report, *, live_resume=None):
         nonlocal capture
         try:
             finish_recording(capture, report, saved_mixer,
-                             retain_mixer=getattr(args, 'desktop_microphone', False))
+                             retain_mixer=(getattr(args, 'desktop_microphone', False) or
+                                           getattr(args, 'native_mic_resume', False)))
         finally:
             # Oracle close has been attempted; an enabled serve source retains its mixer lease.
             capture = None
@@ -2806,13 +2819,15 @@ def initialize(args, report, *, live_resume=None):
                                        maximum_seconds=capture_seconds, retain_recording=False, channels=2 if microphone_array else 1,
                                        wall_deadline=wall_deadline)
             else:
+                live_capture = live_resume is not None and not getattr(live_resume, 'after_recording', False)
                 # Only the explicit recording action keeps a WAV. Automated
                 # acoustic tests retain scores and discard incidental audio.
                 capture = OwnedCapture(initial['internal_cards'][0], report, directory,
-                                       maximum_seconds=120 if live_resume is not None or getattr(args, 'desktop_controls', False) else 90,
+                                       maximum_seconds=120 if live_capture or getattr(args, 'desktop_controls', False) else 90,
                                        retain_recording=args.action == 'capture')
             if live_resume is not None:
                 report['capture_deadline_expired'] = False
+            if live_resume is not None and not getattr(live_resume, 'after_recording', False):
                 def expire_live_capture():
                     report['capture_deadline_expired'] = True
                     os.kill(os.getpid(), signal.SIGTERM)

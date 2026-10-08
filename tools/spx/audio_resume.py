@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 # SPDX-License-Identifier: GPL-2.0-only
-"""One Quiet public playback and opt-in default microphone across normal AC s2idle."""
+"""Quiet retained playback, live default-client or idle stock-source AC resume."""
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -17,6 +17,10 @@ import systemd_sleep as sleep
 
 def admission(prepared, args):
     assert prepared.get('live_audio_resume') is True, 'live audio resume not prepared'
+    for name in ('default_mic_resume', 'native_mic_resume'):
+        assert type(prepared.get(name, False)) is bool and type(getattr(args, name, False)) is bool, name + ' must be boolean'
+    assert prepared.get('native_mic_resume', False) == getattr(args, 'native_mic_resume', False), 'native microphone resume opt-in differs from preparation'
+    assert not (getattr(args, 'native_mic_resume', False) and getattr(args, 'default_mic_resume', False)), 'microphone resume modes exclude each other'
     assert bool(prepared.get('default_mic_resume', False)) == bool(getattr(args, 'default_mic_resume', False)), 'default microphone resume opt-in differs from preparation'
     assert prepared.get('audio_mode') == 'parked'
     assert prepared.get('slim_s2idle_retain') is True and prepared.get('pmic_rtc') is True
@@ -304,6 +308,164 @@ class LiveOwnedAudio:
         return after
 
 
+def require_native_idle(source, graph):
+    """Do not renew a deadline while any preceding consumer lives."""
+    assert source.active_owner is None, 'Native recording owner still active'
+    assert source.thread is None or not source.thread.is_alive(), 'Native watchdog still active'
+    for client in getattr(graph, 'recordings', []):
+        assert client.process.poll() is not None, 'Prior default client not reaped'
+        assert not client.thread.is_alive(), 'Prior default reader still active'
+        assert client.log.closed and not client.raw, 'Prior recording not closed/discarded'
+    source.require_closed('idle-phase-boundary')
+    assert audio.read_text(source.status) == 'closed', 'Native capture remains open'
+
+
+class NativeIdleAudio(LiveOwnedAudio):
+    """Retained playback and idle stock source; no recording during sleep."""
+    def __init__(self, lease, pcm, graph, source, paths, mapping, mixer_controls):
+        self.lease, self.pcm, self.graph, self.source = lease, pcm, graph, source
+        self.paths, self.mapping, self.mixer_controls = paths, mapping, mixer_controls
+        self.report = dict(powered_retention=True, energy_saving_claim=False,
+                           playback_or_capture_opened=True, same_native_owners=False,
+                           capture_closed_during_sleep=True)
+        self.report['held'] = self.check()
+
+    def check(self):
+        self.source.serve_healthy()
+        require_native_idle(self.source, self.graph)
+        endpoint = self.source.endpoint()
+        assert endpoint.get('state') in ('IDLE', 'SUSPENDED'), 'Native source active during sleep window'
+        outputs = json.loads(self.graph.run('pactl', '--format=json', 'list', 'source-outputs'))
+        assert not any(str(row.get('source')) == str(self.source.source_id) for row in outputs), 'Recording client appeared in idle window'
+        assert self.graph.run('pactl', 'get-default-source') == self.source.name, 'Native default microphone changed'
+        self.pcm.healthy()
+        self.graph.monitor.healthy()
+        self.graph.require_public_idle()
+        assert self.pcm.source is None and not self.graph.monitor.forward, 'local digital silence required'
+        assert self.graph.monitor.blocks.empty(), 'public monitor queue not drained'
+        assert audio.read_text(self.lease.control) == 'on'
+        assert audio.read_text(self.lease.master / 'power/runtime_status') == 'active'
+        status = audio.read_text(self.pcm.status)
+        assert re.search(r'^state:\s+RUNNING$', status, re.M), 'playback not running'
+        assert re.search(r'^owner_pid\s*:\s*' + str(self.pcm.process.pid) + r'$', status, re.M), 'playback owner changed'
+        trigger = re.search(r'^trigger_time\s*:\s*(.+)$', status, re.M)
+        assert trigger, 'playback trigger missing'
+        for path in Path('/proc/asound').glob('card*/pcm*/sub*/status'):
+            if path != self.pcm.status:
+                assert audio.read_text(path) == 'closed', 'unowned audio consumer appeared'
+        stereo = audio.check_stereo(self.mapping, self.paths, initialized=True)
+        controls = {}
+        for control in self.mixer_controls:
+            controls[control] = audio.subprocess.run(['amixer', '-c', str(self.source.card),
+                'cget', 'name=' + control], check=True, capture_output=True, text=True, timeout=2).stdout
+        return dict(processes={name: process_identity(owner.process.pid) for name, owner in
+                              (('playback', self.pcm), ('monitor', self.graph.monitor))},
+                    native_owners=dict(playback=dict(pid=self.pcm.process.pid, state='RUNNING',
+                        trigger_time=trigger[1], fds=sound_fds(self.pcm.process.pid))),
+                    geometry=dict(playback=audio.read_text(self.pcm.status.with_name('hw_params'))),
+                    initialized_counts={str(unit): state['LATE_INIT_COUNT']
+                                        for unit, state in stereo['codec_shadows'].items()},
+                    native_source=dict(source={key: endpoint.get(key) for key in
+                        ('index', 'name', 'owner_module', 'sample_specification', 'channel_map', 'monitor_source', 'volume', 'mute')},
+                        module=dict(self.source.module_row), services=self.source.services,
+                        configured_default=audio.configured_default_source(self.graph), mixers=controls),
+                    capture_status='closed', stereo=stereo, digital_zero=True)
+
+    def retained(self, before):
+        after = super().retained(before)
+        assert after['native_source'] == before['native_source'], 'native source/default/services/mixers changed across suspend'
+        return after
+
+
+class NativeResumeWindow:
+    """Close the oracle, retain one source idle, then open fresh default clients."""
+    after_recording = True
+
+    def __init__(self, ops, result):
+        self.ops, self.result = ops, result
+        self.source = None
+
+    def phase(self, name, graph, pcm, paths, mapping):
+        require_native_idle(self.source, graph)
+        started = time.clock_gettime(time.CLOCK_BOOTTIME)
+        self.source.wall_deadline = started + 60
+        evidence = self.result['native_microphone'][name] = dict(clients=[], recording=None,
+            maximum_seconds=60, started_boottime=started, wall_deadline_boottime=started + 60,
+            microphone_client_passed=False)
+        previous_trigger = (self.result['native_microphone']['pre']['clients'][-1]['native_owner']['trigger_time']
+                            if name == 'post' else None)
+        audio.verify_native_microphone_clients(self.source, graph, evidence, pcm, paths, mapping,
+                                               previous_trigger=previous_trigger)
+        require_native_idle(self.source, graph)
+        evidence['closed_boottime'] = time.clock_gettime(time.CLOCK_BOOTTIME)
+        assert evidence['closed_boottime'] < self.source.wall_deadline, 'Native phase exceeded60s'
+        assert evidence['microphone_client_passed'] and len(evidence['clients']) == 2
+        assert all(row['passed'] for row in evidence['clients']), 'Native client proof incomplete'
+
+    def __call__(self, report, pcm, graph, capture, paths, mapping):
+        result = self.result
+        result['pre_playback'] = report.pop('public_desktop')
+        evidence = result['native_microphone'] = dict(passed=False, recording=None,
+            scope='same idle stock source across normal30s AC sleep; fresh default clients')
+        assert report.get('recording_closed') and capture.process.poll() is not None, 'Original oracle must close before native source load'
+        assert audio.read_text(capture.status) == 'closed', 'Original oracle PCM remains open'
+        self.source = graph.microphone = audio.NativeMicSource(graph, capture.card,
+            evidence.setdefault('source', {}), time.clock_gettime(time.CLOCK_BOOTTIME) + 60,
+            graph.default_source_before_test, desktop=True)
+        try:
+            self.source.start()
+            assert self.source.default_selected, 'Stock microphone is not the ordinary default source'
+            self.phase('pre', graph, pcm, paths, mapping)
+            quiet(pcm, graph)
+            contract = NativeIdleAudio(self.ops.audio, pcm, graph, self.source, paths, mapping,
+                [row['name'] for row in report['microphone_mixer']])
+            self.ops.audio = contract
+            result['live_audio'] = contract.report
+            result['phase'] = 'idle-native-source-before-normal-suspend'
+            self.ops.save(result)
+            graph.monitor.begin_suspend(60)
+            try:
+                self.ops.inhibit_idle()
+                self.ops.open_shadows()
+                result['sleep'] = self.ops.sleep()
+                assert sleep.sleep_proven(result['sleep']), 'normal-service/RTC/kernel/thaw proof incomplete'
+            finally:
+                failed = sys.exc_info()[0] is not None
+                try:
+                    graph.monitor.end_suspend()
+                except Exception as error:
+                    if not failed:
+                        raise
+                    result['monitor_window_cleanup_error'] = str(error)
+            # Reject source/service/default/playback changes before recording.
+            contract.retained(contract.report['held'])
+            self.phase('post', graph, pcm, paths, mapping)
+            clients = evidence['pre']['clients'] + evidence['post']['clients']
+            assert len({row['pid'] for row in clients}) == 4, 'Fresh pre/post ordinary clients required'
+            before_trigger = evidence['pre']['clients'][-1]['native_owner']['trigger_time']
+            after_trigger = evidence['post']['clients'][0]['native_owner']['trigger_time']
+            assert before_trigger != after_trigger, 'First post-sleep client did not restart native capture'
+            quiet(pcm, graph)
+            contract.retained(contract.report['held'])
+            evidence.update(passed=True, same_source=True, fresh_post_clients=True, new_post_capture_trigger=True)
+            result['functional_pass'] = bool(result['pre_playback']['acoustic_passed'])
+        finally:
+            failed = sys.exc_info()[0] is not None
+            passed = result.pop('functional_pass', False)
+            try:
+                self.source.close()  # Unload before mixer/playback teardown.
+                assert self.source.report.get('restored') and not self.source.report.get('adapter_error'), 'Native source cleanup failed'
+                graph.microphone = None
+                quiet(pcm, graph)
+                graph.monitor.close()
+                graph.monitor = None
+                result['functional_pass'] = passed
+            except Exception as error:
+                if not failed:
+                    raise
+                result['native_microphone_cleanup_error'] = str(error)
+
+
 def quiet(pcm, graph):
     graph.require_public_idle()
     graph.monitor.forward = False
@@ -376,9 +538,12 @@ def retained_window(ops, result, report, pcm, graph, capture, paths, mapping, *,
 def exercise(ops, args, owner):
     result = dict(complete=False, scope='same public playback and native capture owners across one normal30s AC s2idle',
                   audio_tested=True, audio_mode='live-retention', full_suspend_acceptance=False,
-                  default_mic_resume=bool(getattr(args, 'default_mic_resume', False)))
+                  default_mic_resume=bool(getattr(args, 'default_mic_resume', False)),
+                  native_mic_resume=bool(getattr(args, 'native_mic_resume', False)))
     if result['default_mic_resume']:
         result['scope'] = 'same ordinary default-source recording client and native audio owners across one normal30s AC s2idle'
+    if result['native_mic_resume']:
+        result['scope'] = 'same idle stock default microphone across one normal30s AC s2idle; fresh ordinary pre/post clients'
     lease = None
     report = dict(utc=datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'),
                   remaining_prerequisites=list(audio.UNMET))
@@ -395,19 +560,23 @@ def exercise(ops, args, owner):
                                      owner=owner, desktop_user=args.desktop_user, output=ops.output,
                                      microphone_source='DMIC1', microphone_array=False,
                                      capture_reopen=False, capture_contract_check=False,
-                                     default_mic_resume=result['default_mic_resume'])
+                                     default_mic_resume=result['default_mic_resume'],
+                                     native_mic_resume=result['native_mic_resume'])
         audio.initialize(configured, report,
-            live_resume=ResumeWindow(ops, result, result['default_mic_resume']))
+            live_resume=(NativeResumeWindow(ops, result) if result['native_mic_resume'] else
+                         ResumeWindow(ops, result, result['default_mic_resume'])))
         assert result.get('functional_pass'), 'pre/post acoustic proof incomplete'
-        assert not report['capture_deadline_expired'], '120s capture deadline expired'
+        assert not report['capture_deadline_expired'], 'capture deadline expired'
         assert report['capture']['recording'] is None and report['capture']['closed_status'] == 'closed'
-        assert report['capture']['ownership_wall_seconds'] <= 120, 'microphone ownership exceeded120s wall cap'
+        assert report['capture']['ownership_wall_seconds'] <= (90 if result['native_mic_resume'] else 120), 'microphone ownership exceeded bounded wall cap'
+        if result['native_mic_resume']:
+            assert result['native_microphone']['passed'] and result['native_microphone']['source']['restored']
         if result['default_mic_resume']:
             assert result['default_microphone']['client_closed'] and result['default_microphone']['default_source_restored']
         assert report['parked'] and report['runtime_pm']['restored']
         for name in ('pcm', 'capture'):
             assert not re.search(r'underrun|overrun|error|reprepare|recovering', report[name].get('log', ''), re.I), name + ' recovery/error'
-        if result['default_mic_resume']:
+        if result['default_mic_resume'] or result['native_mic_resume']:
             # initialize has closed both hardware PCMs, parked amplifiers and
             # restored graph/mixer state. Only now spend time on WLAN/streams.
             ops.audio = lease
@@ -431,7 +600,7 @@ def exercise(ops, args, owner):
                                   not result.get('cleanup_error') and
                                   result.get('cleanup', {}).get('masks_restored') and
                                   not report.get('cleanup_errors') and
-                                  (not result['default_mic_resume'] or
+                                  (not (result['default_mic_resume'] or result['native_mic_resume']) or
                                    result.get('post_infrastructure_passed') is True))
         ops.save(result)
     return result

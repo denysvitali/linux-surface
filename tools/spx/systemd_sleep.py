@@ -275,13 +275,17 @@ def verify_returned(ops, original):
 
 
 class Live:
-    def __init__(self, output, attempt, release, *, parked_audio=False, desktop_user='dvitali', default_mic_resume=False):
-        assert type(parked_audio) is bool and type(default_mic_resume) is bool
+    def __init__(self, output, attempt, release, *, parked_audio=False, desktop_user='dvitali', default_mic_resume=False, native_mic_resume=False):
+        assert type(parked_audio) is bool and type(default_mic_resume) is bool and type(native_mic_resume) is bool
+        assert not (default_mic_resume and native_mic_resume), 'microphone resume modes exclude each other'
+        assert not native_mic_resume or parked_audio, 'native microphone work budget requires audio retention'
         assert not default_mic_resume or parked_audio, 'extended work budget requires default microphone retention'
-        self.active_budget = 140 if default_mic_resume else 100
+        self.active_budget = 220 if native_mic_resume else 140 if default_mic_resume else 100
         self.budget = dict(active_work_seconds=self.active_budget,
                            command_window_seconds=self.active_budget - 5,
-                           extension_scope='post-teardown infrastructure work' if default_mic_resume else 'none')
+                           extension_scope=('bounded pre/post native verification and post-teardown infrastructure work'
+                                            if native_mic_resume else 'post-teardown infrastructure work'
+                                            if default_mic_resume else 'none'))
         self.output, self.attempt, self.release = output, attempt, release
         self.parked_audio, self.desktop_user, self.audio = parked_audio, desktop_user, None
         output.mkdir(mode=0o700, exist_ok=False)
@@ -294,8 +298,9 @@ class Live:
         for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGALRM):
             self.handlers[sig] = signal.getsignal(sig)
             signal.signal(sig, lambda signum, frame: (_ for _ in ()).throw(RuntimeError('sleep helper interrupted/deadline')))
-        # The microphone's native 120s wall fence is independent. Extended
-        # work is reserved for infrastructure checks after audio teardown.
+        # Recording caps remain independent: legacy live capture120s wall,
+        # or native oracle90s plus separate pre/post60s BOOTTIME phases.
+        # The native source is idle (capture closed) throughout normal sleep.
         signal.setitimer(signal.ITIMER_REAL, self.active_budget)
 
     def run(self, name, argv, timeout=5):

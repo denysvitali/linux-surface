@@ -513,4 +513,233 @@ class DeferredInfrastructure(unittest.TestCase):
                     parked_audio=parked, default_mic_resume=requested)
 
 
+
+class NativeMicResume(unittest.TestCase):
+    def arguments(self):
+        result = args(); result.native_mic_resume = True
+        return result
+
+    def test_typed_matching_exclusive_admission_and_parser(self):
+        import io, sys
+        record = prepared(); record['native_mic_resume'] = True
+        resume.admission(record, self.arguments())
+        for value in (False, 1, 'yes'):
+            changed = dict(record, native_mic_resume=value)
+            with self.subTest(value=value), self.assertRaises(AssertionError):
+                resume.admission(changed, self.arguments())
+        changed = self.arguments(); changed.default_mic_resume = True
+        with self.assertRaises(AssertionError):
+            resume.admission(dict(record, default_mic_resume=True), changed)
+        for flags in (['--native-mic-resume'],
+                      ['--live-audio-resume', '--native-mic-resume', '--default-mic-resume'],
+                      ['--live-audio-resume', '--native-mic-resume', '--desktop-controls']):
+            with patch.object(sys, 'argv', ['trial.py', 'systemd-suspend', '20261008el', *flags]), \
+                 patch.object(sys, 'stderr', io.StringIO()), patch.object(trial, 'systemd_suspend') as hardware:
+                with self.assertRaises(SystemExit) as error: trial.main()
+            self.assertEqual(error.exception.code, 2); hardware.assert_not_called()
+
+    def test_native_dispatch_budget_and_flag_without_changing_legacy(self):
+        import json
+        for enabled in (False, True):
+            record = prepared(); record['native_mic_resume'] = enabled
+            with patch.object(trial, 'OUT', Path('/private'), create=True), \
+                 patch.object(trial, 'ATTEMPT', '20261008el', create=True), \
+                 patch.object(trial, 'RELEASE', 'test-kernel', create=True), \
+                 patch.object(Path, 'exists', return_value=False), \
+                 patch.object(Path, 'read_text', autospec=True, side_effect=lambda path: 'boot-id' if str(path) == '/proc/sys/kernel/random/boot_id' else json.dumps(dict(complete=True, boot_id='boot-id', release='test-kernel'))), \
+                 patch.object(trial.subprocess, 'run') as run:
+                trial.dispatch_live_audio_resume(args(), record)
+            argv = run.call_args.args[0]
+            self.assertEqual('--native-mic-resume' in argv, enabled)
+            self.assertIn('--property=RuntimeMaxSec=' + ('260' if enabled else '200'), argv)
+            self.assertEqual(run.call_args.kwargs['timeout'], 265 if enabled else 205)
+
+    def test_native_budget_scoped_and_typed(self):
+        import tempfile, systemd_sleep
+        with tempfile.TemporaryDirectory() as directory, patch.object(Path, 'read_text', return_value='boot'), \
+             patch.object(systemd_sleep.signal, 'signal'), patch.object(systemd_sleep.signal, 'getsignal'), \
+             patch.object(systemd_sleep.signal, 'setitimer') as timer:
+            live = systemd_sleep.Live(Path(directory)/'fresh', 'attempt', 'release',
+                                     parked_audio=True, native_mic_resume=True)
+        self.assertEqual(live.active_budget, 220)
+        self.assertEqual(live.budget['command_window_seconds'], 215)
+        self.assertIn('pre/post', live.budget['extension_scope'])
+        timer.assert_called_once_with(systemd_sleep.signal.ITIMER_REAL, 220)
+        for keywords in (dict(native_mic_resume=True),
+                         dict(native_mic_resume=1, parked_audio=True),
+                         dict(native_mic_resume=True, default_mic_resume=True, parked_audio=True)):
+            with self.assertRaises(AssertionError): systemd_sleep.Live(Path('/unused'), 'a', 'r', **keywords)
+
+    def test_renewal_rejects_active_owner_watcher_process_reader_or_raw(self):
+        source = Mock(active_owner=None, thread=None, status=Path('/capture/status'))
+        client = Mock(raw=bytearray(), log=Mock(closed=True)); client.process.poll.return_value = 0
+        client.thread.is_alive.return_value = False
+        graph = SimpleNamespace(recordings=[client])
+        with patch.object(audio, 'read_text', return_value='closed'):
+            resume.require_native_idle(source, graph)
+            changes = [(source, 'active_owner', {}), (source, 'thread', Mock()),
+                       (client.process, 'poll', Mock(return_value=None)),
+                       (client.thread, 'is_alive', Mock(return_value=True)),
+                       (client, 'raw', bytearray(b'private'))]
+            for obj, name, value in changes:
+                previous = getattr(obj, name); setattr(obj, name, value)
+                with self.subTest(name=name), self.assertRaises(AssertionError):
+                    resume.require_native_idle(source, graph)
+                setattr(obj, name, previous)
+        with patch.object(audio, 'read_text', return_value='RUNNING'), self.assertRaises(AssertionError):
+            resume.require_native_idle(source, graph)
+
+    def window_fixture(self):
+        events = []; result = {'before': {'parked_audio': object()}}
+        graph = Mock(recordings=[]); graph.default_source_before_test = None
+        capture = Mock(card=0, status=Path('/capture/status')); capture.process.poll.return_value = 0
+        report = {'recording_closed': True, 'public_desktop': {'acoustic_passed': True}, 'microphone_mixer': []}
+        ops = Mock(); source = Mock(default_selected=True, active_owner=None, thread=None,
+                                   status=capture.status, wall_deadline=0, report={'restored': True})
+        source.close.side_effect = lambda: events.append('source-unload')
+        graph.monitor.close.side_effect = lambda: events.append('monitor-close')
+        def verify(source, graph, evidence, *args, previous_trigger=None):
+            name = 'pre' if previous_trigger is None else 'post'; events.append(name)
+            evidence.update(microphone_client_passed=True, clients=[
+                dict(passed=True, pid=(10 if name == 'pre' else 20) + index,
+                     native_owner={'trigger_time': name + str(index)}) for index in range(2)])
+        def suspend():
+            events.append('sleep'); self.assertEqual(events[:2], ['pre', 'sleep'])
+            return {}
+        ops.sleep.side_effect = suspend
+        contract = Mock(report={'held': {}})
+        contract.retained.side_effect = lambda before: events.append('identity')
+        return events, result, graph, capture, report, ops, source, contract, verify
+
+    def run_window(self, fixture):
+        events, result, graph, capture, report, ops, source, contract, verify = fixture
+        window = resume.NativeResumeWindow(ops, result)
+        with patch.object(audio, 'NativeMicSource', return_value=source), \
+             patch.object(audio, 'read_text', return_value='closed'), \
+             patch.object(audio, 'verify_native_microphone_clients', side_effect=verify), \
+             patch.object(resume, 'quiet'), patch.object(resume, 'require_native_idle'), \
+             patch.object(resume, 'NativeIdleAudio', return_value=contract), \
+             patch.object(resume.sleep, 'sleep_proven', return_value=True):
+            window(report, Mock(), graph, capture, {}, {})
+        return window
+
+    def test_native_window_fresh_phases_idle_sleep_unload_before_monitor(self):
+        fixture = self.window_fixture(); original = fixture[1]['before']['parked_audio']
+        self.run_window(fixture)
+        events, result, graph, _, _, ops, _, _, _ = fixture
+        self.assertEqual(events, ['pre', 'sleep', 'identity', 'post', 'identity', 'source-unload', 'monitor-close'])
+        self.assertIs(result['before']['parked_audio'], original); ops.post.assert_not_called()
+        self.assertTrue(result['functional_pass'])
+        self.assertIsNot(result['native_microphone']['pre']['clients'], result['native_microphone']['post']['clients'])
+        for name in ('pre', 'post'):
+            phase = result['native_microphone'][name]
+            self.assertEqual(phase['wall_deadline_boottime'] - phase['started_boottime'], 60)
+            self.assertIsNone(phase['recording'])
+        self.assertIsNone(graph.microphone); self.assertIsNone(graph.monitor)
+
+    def test_sleep_failure_preserved_monitor_ends_source_unloads(self):
+        fixture = self.window_fixture()
+        monitor = fixture[2].monitor
+        monitor.end_suspend.side_effect = RuntimeError('monitor failure')
+        fixture[5].sleep.side_effect = RuntimeError('original sleep failure')
+        with self.assertRaisesRegex(RuntimeError, 'original sleep failure'): self.run_window(fixture)
+        monitor.end_suspend.assert_called_once()
+        self.assertEqual(fixture[1]['monitor_window_cleanup_error'], 'monitor failure')
+        self.assertNotIn('post', fixture[0]); self.assertIn('source-unload', fixture[0])
+
+    def test_identity_failure_stops_before_post_recording_and_closes_source(self):
+        for identity in ('default', 'module', 'service', 'trigger', 'geometry', 'mixer'):
+            fixture = self.window_fixture()
+            fixture[7].retained.side_effect = RuntimeError(identity + ' changed')
+            with self.subTest(identity=identity), self.assertRaisesRegex(RuntimeError, identity):
+                self.run_window(fixture)
+            self.assertNotIn('post', fixture[0]); self.assertIn('source-unload', fixture[0])
+            self.assertFalse(fixture[1].get('functional_pass', False))
+
+    def test_oracle_close_required_before_source_load(self):
+        for closed in (False, True):
+            fixture = self.window_fixture(); fixture[4]['recording_closed'] = closed
+            fixture[3].process.poll.return_value = None
+            with patch.object(audio, 'NativeMicSource') as load, self.assertRaisesRegex(AssertionError, 'Original oracle'):
+                resume.NativeResumeWindow(fixture[5], fixture[1])(fixture[4], Mock(), fixture[2], fixture[3], {}, {})
+            load.assert_not_called()
+
+    def test_post_trigger_reuse_rejects_before_tones_and_discards_client(self):
+        source = Mock(wall_deadline=60)
+        source.begin_client.return_value = {'trigger_time': 'old-trigger'}
+        client = Mock(); client.process.pid = 50
+        pcm = Mock(); pcm.healthy.return_value = 'owner_pid: 10\ntrigger_time: playback\n'
+        evidence = {'clients': []}
+        with patch.object(audio.time, 'clock_gettime', return_value=0), \
+             patch.object(audio, 'DesktopRecording', return_value=client), \
+             self.assertRaisesRegex(RuntimeError, 'First post-sleep client'):
+            audio.verify_native_microphone_clients(source, Mock(), evidence, pcm, {}, {},
+                                                   previous_trigger='old-trigger')
+        client.wait_frames.assert_not_called(); pcm.play.assert_not_called()
+        source.end_client.assert_called_once(); client.close.assert_called_once()
+        self.assertFalse(evidence['clients'][0]['passed'])
+
+    def test_native_infrastructure_runs_only_after_all_audio_teardown(self):
+        events = []; ops = Mock(output=Path('/private/audio-resume')); lease = ops.audio = object()
+        original = object(); ops.gate.return_value = {'parked_audio': original}
+        ops.cleanup.return_value = {'masks_restored': True}
+        def initialize(configured, report, *, live_resume):
+            self.assertTrue(configured.native_mic_resume)
+            self.assertTrue(live_resume.after_recording)
+            live_resume.result.update(functional_pass=True, native_microphone={'passed': True, 'source': {'restored': True}})
+            report.update(capture_deadline_expired=False, capture={'recording': None, 'closed_status': 'closed',
+                'ownership_wall_seconds': 30}, pcm={'log': ''}, parked=True, runtime_pm={'restored': True})
+            ops.audio = object(); events.append('source-pcm-graph-mixer-teardown')
+        def post(before):
+            self.assertIs(ops.audio, lease); self.assertIs(before['parked_audio'], original)
+            self.assertEqual(events, ['source-pcm-graph-mixer-teardown']); events.append('infrastructure')
+            return {}
+        ops.post.side_effect = post
+        with patch.object(Path, 'read_text', return_value='{}'), patch.object(resume, 'admission'), \
+             patch.object(audio, 'initialize', side_effect=initialize):
+            result = resume.exercise(ops, self.arguments(), 'owner')
+        self.assertTrue(result['complete']); self.assertEqual(events[-1], 'infrastructure')
+
+    def test_listen_callback_closes_oracle_first_only_for_native_mode(self):
+        for native in (False, True):
+            events = []; pcm = Mock(feed_stats={}); pcm.process.pid = 10
+            pcm.healthy.return_value = 'state: RUNNING'
+            pcm.close.side_effect = lambda: events.append('playback-attached-close') or ''
+            graph = Mock(); graph.monitor = Mock()
+            report = {'stages': [{'physical_units_to_addresses': {}}], 'before': {'internal_cards': [0]}}
+            configured = SimpleNamespace(action='serve', allow_playback=True, desktop_user='user',
+                                         desktop_peak=1433, native_mic_resume=native)
+            def oracle(): events.append('oracle-close-retain-mixer')
+            def callback(*args): events.append('resume-window')
+            callback.after_recording = native
+            def verify(report, *args, **kwargs): events.append('public-oracle-proof')
+            holders = []; graphs = []
+            with patch.object(audio, 'devices', return_value=[{'unit': 3, 'name': 'left'}, {'unit': 4, 'name': 'right'}]), \
+                 patch.object(Path, 'exists', return_value=True), patch.object(Path, 'write_text'), \
+                 patch.object(audio, 'configure_stereo'), patch.object(audio, 'assert_pcm_idle'), \
+                 patch.object(audio, 'OwnedPCM', return_value=pcm), \
+                 patch.object(audio, 'read_text', return_value='format: S16_LE\nchannels: 2\nrate: 48000\n'), \
+                 patch.object(audio, 'check_stereo', return_value={}), \
+                 patch.object(audio, 'playback_state', side_effect=[{'LATE_INIT_COUNT': value} for value in (0, 1, 1, 0, 1, 1)]), \
+                 patch.object(audio, 'DesktopGraph', return_value=graph), \
+                 patch.object(audio, 'verify_public_playback', side_effect=verify), \
+                 patch.object(audio, 'check_desktop_teardown') as teardown:
+                audio.listen(configured, report, holders, Mock(), desktop_holder=graphs,
+                             before_serve=oracle, live_resume=callback)
+            self.assertEqual(events, ['public-oracle-proof', *(['oracle-close-retain-mixer', 'resume-window'] if native else
+                                                            ['resume-window', 'oracle-close-retain-mixer']), 'playback-attached-close'])
+            self.assertEqual(graph.preserve_default_source, native)
+            teardown.assert_called_once(); self.assertEqual(holders, [])
+
+    def test_idle_observer_rejects_source_metadata_default_or_mixer_change(self):
+        owner = resume.NativeIdleAudio.__new__(resume.NativeIdleAudio); owner.report = {}
+        before = dict(processes={}, native_owners={}, geometry={}, initialized_counts={},
+                      native_source={'module': 'owned', 'default': 'ours', 'mixer': 'retained'})
+        for field in before['native_source']:
+            after = copy.deepcopy(before); after['native_source'][field] = 'changed'
+            owner.check = lambda: after
+            with self.subTest(field=field), self.assertRaisesRegex(AssertionError, 'native source'):
+                owner.retained(before)
+
+
 if __name__ == '__main__': unittest.main()

@@ -286,6 +286,7 @@ def prepare(args):
                     qca_setup_trace=args.qca_setup_trace,
                     live_audio_resume=getattr(args, 'live_audio_resume', False),
                     default_mic_resume=getattr(args, 'default_mic_resume', False),
+                    native_mic_resume=getattr(args, 'native_mic_resume', False),
                     cpu_passive_cooling=args.cpu_passive_cooling, cpu_passive_trip_mc=actual_cpu_trip,
                     thermal_combined=args.thermal_combined,
                     thermal_gpu_fixture=str(args.thermal_gpu_fixture),
@@ -2073,7 +2074,8 @@ def systemd_suspend(args):
         name = 'bluetooth-discovery-resume' if args.retain_bluetooth_discovery else ('bluetooth-resume' if args.bluetooth_resume else ('audio-resume' if args.live_audio_resume else ('systemd-suspend-recovery' if args.verify_sleep_return else 'systemd-suspend')))
         live = Live(OUT / name, ATTEMPT, RELEASE, parked_audio=args.parked_audio or args.live_audio_resume or args.bluetooth_resume,
                     desktop_user=args.desktop_user,
-                    default_mic_resume=getattr(args, 'default_mic_resume', False))
+                    default_mic_resume=getattr(args, 'default_mic_resume', False),
+                    native_mic_resume=getattr(args, 'native_mic_resume', False))
         if args.bluetooth_resume:
             from bluetooth_resume import exercise as bluetooth_resume
             result = bluetooth_resume(live, allow_radio_on=args.allow_radio_on,
@@ -2102,13 +2104,15 @@ def dispatch_live_audio_resume(args, prepared):
     assert current_boot != prepared['preboot_id'], 'prepared boot has not run'
     assert baseline.get('complete') is True and baseline['boot_id'] == current_boot and baseline['release'] == RELEASE
     subprocess.run(['systemd-run', '--unit=spx-systemd-suspend', '--collect', '--wait', '--pipe',
-                    '--property=Type=exec', '--property=RuntimeMaxSec=200',
+                    '--property=Type=exec',
+                    '--property=RuntimeMaxSec=' + ('260' if prepared.get('native_mic_resume') else '200'),
                     '/usr/bin/python3', '-B', '/usr/local/lib/spx-boot-diagnostics/trial.py',
                     'systemd-suspend', ATTEMPT, '--live-audio-resume', '--allow-amp-power',
                     '--allow-playback', '--allow-capture',
                     *(['--default-mic-resume'] if prepared.get('default_mic_resume') else []),
+                    *(['--native-mic-resume'] if prepared.get('native_mic_resume') else []),
                     '--desktop-user', args.desktop_user],
-                   check=True, timeout=205)
+                   check=True, timeout=265 if prepared.get('native_mic_resume') else 205)
 
 
 def bluetooth_power(args):
@@ -2161,6 +2165,8 @@ def main():
     parser.add_argument('--verify-sleep-return', action='store_true', help='systemd-suspend: verify a returned sleep from fresh journal evidence without sleeping again')
     parser.add_argument('--live-audio-resume', action='store_true',
                         help='prepare/systemd-suspend: quiet public audio before/after one normal sleep with the same native owners')
+    parser.add_argument('--native-mic-resume', action='store_true',
+                        help='live-audio-resume only: stock microphone idle across sleep, fresh bounded default clients after wake')
     parser.add_argument('--default-mic-resume', action='store_true',
                         help='live-audio-resume only: retain one ordinary default-source recording client across normal sleep')
     parser.add_argument('--retain-bluetooth-discovery', action='store_true',
@@ -2246,6 +2252,8 @@ def main():
                         help='after a queued audio test, use the existing return timer after this delay (61..900)')
     parser.add_argument('--desktop-user', default='dvitali')
     args = parser.parse_args()
+    if args.native_mic_resume and (not args.live_audio_resume or args.default_mic_resume or args.desktop_controls):
+        parser.error('--native-mic-resume requires --live-audio-resume and excludes default-mic-resume/desktop-controls')
     if args.default_mic_resume and not args.live_audio_resume:
         parser.error('--default-mic-resume requires --live-audio-resume')
     if args.retain_bluetooth_discovery and not args.bluetooth_resume:
