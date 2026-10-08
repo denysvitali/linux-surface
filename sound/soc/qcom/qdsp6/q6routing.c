@@ -547,7 +547,7 @@ static int __q6routing_stream_open(int fedai_id, int perf_mode,
 		payload.session_id = stream_id;
 		ret = q6adm_matrix_map(routing_data->dev, session->path_type,
 				       payload, perf_mode);
-		if (capture_candidate && spx_keep_copp && !ret)
+		if (capture_candidate && spx_keep_copp && ret >= 0)
 			*cached = (struct spx_capture_route) {
 				.valid = true,
 				.fedai_id = fedai_id,
@@ -559,8 +559,10 @@ static int __q6routing_stream_open(int fedai_id, int perf_mode,
 				.bits_per_sample = pdata->bits_per_sample,
 				.perf_mode = perf_mode,
 			};
-		/* Keep the legacy return behaviour outside this capture contract. */
-		if (!capture_candidate)
+		/* ADM success may be positive remaining wait jiffies. Routing's
+		 * caller requires zero; propagate only this capture's real errors.
+		 */
+		if (!capture_candidate || ret >= 0)
 			ret = 0;
 	}
 unlock:
