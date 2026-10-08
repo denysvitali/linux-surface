@@ -297,6 +297,7 @@ def prepare(args):
                     usbc_phy_orientation=args.usbc_phy_orientation,
                     speaker_drivers_blocked=not args.audio,
                     reuse_installed_modules=args.reuse_installed_modules,
+                    camera_capture=args.camera_capture,
                     replace_modules=args.replace_module)
     recovery()
     assert Path('/proc/sys/kernel/random/boot_id').read_text().strip() == BOOT_ID
@@ -381,6 +382,9 @@ def install(args):
             (tpm_helpers / name).chmod(0o644)
     shutil.copy2(HERE / 'audio_stop.py', helper.parent / 'audio_stop.py')
     (helper.parent / 'audio_stop.py').chmod(0o644)
+    if prepared.get('camera_capture'):
+        shutil.copy2(HERE / 'camera.py', helper.parent / 'camera.py')
+        (helper.parent / 'camera.py').chmod(0o644)
     # The retained board DTB already contains this policy in later trials.
     shutil.copy2(HERE / 'thermal.py', helper.parent / 'thermal.py')
     if prepared.get('pmic_rtc'):
@@ -2081,6 +2085,20 @@ def tpm_sign(args):
         subprocess.run([lock, 'release', 'device', owner], check=True)
 
 
+def camera_capture(args):
+    """Run the queued rear-camera capture once, after every other check."""
+    from camera import exercise
+    lock = str(REPO / 'tools/spx/spx-lock')
+    owner = 'camera-' + ATTEMPT
+    subprocess.run([lock, 'acquire', 'device', owner], check=True)
+    try:
+        result = exercise(OUT / 'camera', ATTEMPT, RELEASE)
+        print(json.dumps(dict(complete=result['complete'], error=result.get('error'),
+                              result=str(OUT / 'camera/result.json'))), flush=True)
+    finally:
+        subprocess.run([lock, 'release', 'device', owner], check=True)
+
+
 def systemd_suspend(args):
     from systemd_sleep import Live, exercise, verify_returned
     assert os.geteuid() == 0
@@ -2265,6 +2283,8 @@ def main():
                         help='feedback-only fresh native stereo DMIC1/DMIC0 capture')
     parser.add_argument('--microphone-source', choices=('DMIC0', 'DMIC1'), default='DMIC1',
                         help='bounded capture/feedback/desktop-mic input (default: DMIC1)')
+    parser.add_argument('--camera-capture', action='store_true',
+                        help='prepare only: queue one rear-camera capture of three raw frames, kept in the attempt directory')
     parser.add_argument('--reuse-installed-modules', action='store_true',
                         help='retain current module tree for a command-line-only trial')
     parser.add_argument('--return-after-audio-seconds', type=int,
@@ -2287,6 +2307,8 @@ def main():
         parser.error('--live-audio-resume preparation requires audio, PMIC RTC, retention and sensors')
     if args.qca_setup_trace and args.command != 'prepare':
         parser.error('--qca-setup-trace requires prepare')
+    if args.camera_capture and args.command != 'prepare':
+        parser.error('--camera-capture requires prepare')
     if args.parked_audio and args.command != 'systemd-suspend':
         parser.error('--parked-audio requires systemd-suspend')
     if args.desktop_microphone and (args.command not in ('audio', 'arm-audio') or args.audio_action != 'serve'):
@@ -2381,6 +2403,8 @@ def main():
             dispatch_audio(args)
             if record.get('qca_setup_trace') and not record.get('live_audio_resume') and not (OUT / 'bluetooth-power').exists():
                 bluetooth_power(args)
+            if record.get('camera_capture') and not (OUT / 'camera').exists():
+                camera_capture(args)
         else:
             {'install': install, 'boot': boot, 'return': return_to_default,
              'extend': extend_window, 'audio': audio_check, 'arm-audio': arm_audio,
