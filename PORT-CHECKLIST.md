@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-08, ER: A03j/P03g native microphone sleep recovery passes)
+## Status (2026-10-08, ER: A03j/P03g passed; known-good recovery observed)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
@@ -85,19 +85,14 @@ EH stock-source clients now start/idle-close native capture on the retained rout
 EI proves first capture without arecord priming; EJ automatically publishes the
 native microphone for150s desktop serving. EK proves verified opt-in restoration
 on two later candidate boots, including automatic stop-evidence archival.
-EL/EM/EN stop before normal sleep at acoustic/scorer gates. In the user's quiet
-room, EO passes both native preclients and normal28.5637s AC sleep, then a strict
-playback trigger comparison prevents postclients. EP corrects that observer but
-stops earlier at a fatal playback underrun during initial desktop scoring.
-[EP result](tools/spx/boot-diagnostics/RESULT-20261008ep.md). **EQ closes A03j:**
-idle stock source survives normal27.8767s AC sleep; all four fresh native default
-clients pass acoustics and ordered cleanup. EQ final duration reporting fails before infrastructure. **ER closes P03g:**
-measured original capture24.876s, four fresh clients and complete post-sleep
-WLAN/motion/storage/ordered audio cleanup pass after28.2172s normal AC sleep.
+**EQ closes A03j; ER closes P03g:** idle stock source survives normal AC sleep,
+four fresh native default clients pass acoustics and full WLAN/motion/storage/
+ordered audio cleanup passes. Original capture24.876s stays within fixed90s;
+native pre/post phases25.761s/27.783s stay within60s. Actual ER known-good return
+is observed; working EK and successful ER candidates are retained.
 [ER result](tools/spx/boot-diagnostics/RESULT-20261008er.md).
-[EN result](tools/spx/boot-diagnostics/RESULT-20261008en.md). Full DSP teardown,
-persistence and reliability remain open. [EH result](tools/spx/boot-diagnostics/RESULT-20261008eh.md).
-[EF result](tools/spx/boot-diagnostics/RESULT-20261008ef.md).
+Full DSP teardown, persistence, reliability, physical mapping and quality remain
+open. Earlier failed trials remain recorded in their result files.
 Physical observations remain unverified. CDSP is parked after three changed
 boots without a usable accelerator result. CW stops before its recorded query;
 CV's return stalls in shutdown ramdisk generation. CX prepares that ramdisk
