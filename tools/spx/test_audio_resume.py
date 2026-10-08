@@ -446,4 +446,71 @@ class MicrophoneQuiesce(unittest.TestCase):
         self.assertFalse(result['functional_pass'])
 
 
+class DeferredInfrastructure(unittest.TestCase):
+    def test_default_client_post_runs_after_audio_teardown_with_original_baseline(self):
+        for post_failed in (False, True):
+            events = []; closed = False
+            original = {'parked': 'original codecs and closed PCMs'}
+            ops = Mock(); ops.output = Path('/private/audio-resume')
+            lease = ops.audio = object()
+            ops.gate.return_value = {'parked_audio': original, 'services': {'sensor': 8}}
+            ops.cleanup.return_value = {'masks_restored': True}
+            arguments = args(); arguments.default_mic_resume = True
+            contract = Mock(report={'held': {'live': 'different owner observation'}})
+            def verify(report, *args, microphone=None, **kwargs):
+                events.append('post-client-and-native-proof')
+                report['public_desktop'] = {'acoustic_passed': True}
+                microphone.report['phases'].append({'score': {'passed': True}})
+            def initialize(configured, report, *, live_resume):
+                nonlocal closed
+                report['public_desktop'] = {'acoustic_passed': True}
+                live_resume.microphone = Mock(report=dict(phases=[{'score': {'passed': True}}],
+                    client_closed=True, default_source_restored=True, same_owners=True))
+                live_resume.result['default_microphone'] = live_resume.microphone.report
+                live_resume(report, Mock(), Mock(), Mock(), {}, {})
+                report.update(capture_deadline_expired=False, parked=True,
+                    capture={'recording': None, 'closed_status': 'closed', 'ownership_wall_seconds': 90, 'log': ''},
+                    pcm={'log': ''}, runtime_pm={'restored': True})
+                closed = True; events.append('audio-closed-amps-parked-graph-restored')
+            def post(before):
+                self.assertTrue(closed); self.assertIs(ops.audio, lease)
+                self.assertIs(before['parked_audio'], original)
+                events.append('full-infrastructure-post')
+                if post_failed: raise RuntimeError('post service/transfer gate failed')
+                return {'services': {'sensor': 8}, 'download_bytes': 1000000}
+            ops.post.side_effect = post
+            with patch.object(Path, 'read_text', return_value='{}'), patch.object(resume, 'admission'), \
+                 patch.object(audio, 'initialize', side_effect=initialize), patch.object(resume, 'quiet'), \
+                 patch.object(resume, 'LiveOwnedAudio', return_value=contract), \
+                 patch.object(audio, 'verify_public_playback', side_effect=verify), \
+                 patch.object(resume.sleep, 'sleep_proven', return_value=True):
+                result = resume.exercise(ops, arguments, 'owned')
+            self.assertEqual(events, ['post-client-and-native-proof', 'audio-closed-amps-parked-graph-restored', 'full-infrastructure-post'])
+            self.assertEqual(result['complete'], not post_failed)
+            self.assertEqual(result.get('post_infrastructure_passed', False), not post_failed)
+            self.assertIs(result['before']['parked_audio'], original)
+            if post_failed: self.assertIn('post service/transfer gate failed', result['error'])
+
+    def test_scoped_constructor_budget_defaults_bounds_and_recording(self):
+        import tempfile
+        from pathlib import Path
+        import systemd_sleep
+        for requested, parked, seconds in ((False, False, 100), (False, True, 100), (True, True, 140)):
+            with tempfile.TemporaryDirectory() as directory, \
+                 patch.object(Path, 'read_text', return_value='boot'), \
+                 patch.object(systemd_sleep.signal, 'signal'), patch.object(systemd_sleep.signal, 'getsignal'), \
+                 patch.object(systemd_sleep.signal, 'setitimer') as timer:
+                live = systemd_sleep.Live(Path(directory) / 'fresh', 'attempt', 'release',
+                    parked_audio=parked, default_mic_resume=requested)
+                self.assertEqual(live.active_budget, seconds)
+                self.assertEqual(live.budget['command_window_seconds'], seconds - 5)
+                timer.assert_called_once_with(systemd_sleep.signal.ITIMER_REAL, seconds)
+                record = {}; live.save(record)
+                self.assertEqual(record['helper_budget'], live.budget)
+        for requested, parked in ((True, False), (141, True)):
+            with self.assertRaises(AssertionError):
+                systemd_sleep.Live(Path('/unused'), 'attempt', 'release',
+                    parked_audio=parked, default_mic_resume=requested)
+
+
 if __name__ == '__main__': unittest.main()

@@ -275,8 +275,13 @@ def verify_returned(ops, original):
 
 
 class Live:
-    def __init__(self, output, attempt, release, *, parked_audio=False, desktop_user='dvitali'):
-        assert type(parked_audio) is bool
+    def __init__(self, output, attempt, release, *, parked_audio=False, desktop_user='dvitali', default_mic_resume=False):
+        assert type(parked_audio) is bool and type(default_mic_resume) is bool
+        assert not default_mic_resume or parked_audio, 'extended work budget requires default microphone retention'
+        self.active_budget = 140 if default_mic_resume else 100
+        self.budget = dict(active_work_seconds=self.active_budget,
+                           command_window_seconds=self.active_budget - 5,
+                           extension_scope='post-teardown infrastructure work' if default_mic_resume else 'none')
         self.output, self.attempt, self.release = output, attempt, release
         self.parked_audio, self.desktop_user, self.audio = parked_audio, desktop_user, None
         output.mkdir(mode=0o700, exist_ok=False)
@@ -289,11 +294,12 @@ class Live:
         for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGALRM):
             self.handlers[sig] = signal.getsignal(sig)
             signal.signal(sig, lambda signum, frame: (_ for _ in ()).throw(RuntimeError('sleep helper interrupted/deadline')))
-        #100s active work plus15/30s sleep and at most31s cleanup.
-        signal.setitimer(signal.ITIMER_REAL, 100)
+        # The microphone's native 120s wall fence is independent. Extended
+        # work is reserved for infrastructure checks after audio teardown.
+        signal.setitimer(signal.ITIMER_REAL, self.active_budget)
 
     def run(self, name, argv, timeout=5):
-        remaining = 95 - (time.monotonic() - self.started)
+        remaining = self.active_budget - 5 - (time.monotonic() - self.started)
         assert remaining > 0, 'helper deadline'
         p = subprocess.run(argv, text=True, capture_output=True, timeout=min(timeout, remaining))
         self.steps.append(dict(name=name, returncode=p.returncode, stdout=p.stdout, stderr=p.stderr))
@@ -305,7 +311,7 @@ class Live:
         return dict(line.split('=', 1) for line in text.splitlines())
 
     def save(self, result):
-        result.update(attempt=self.attempt, release=self.release, boot_id=self.boot, steps=self.steps)
+        result.update(attempt=self.attempt, release=self.release, boot_id=self.boot, steps=self.steps, helper_budget=self.budget)
         if self.audio is not None:
             result['parked_audio'] = self.audio.report
         tmp = self.output / 'result.json.new'

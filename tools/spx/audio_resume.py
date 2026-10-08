@@ -328,7 +328,10 @@ def retained_window(ops, result, report, pcm, graph, capture, paths, mapping, *,
     result['live_audio'] = contract.report
     # The infrastructure snapshot was taken before PCM open. Replace only its
     # separate audio observation with the strict live-owner contract.
-    result['before']['parked_audio'] = contract.report['held']
+    if microphone is None:
+        result['before']['parked_audio'] = contract.report['held']
+    # The default-client test keeps the original parked baseline for its
+    # deferred infrastructure checks; live identities stay in live_audio.
     result['phase'] = 'owned-live-audio-before-normal-suspend'
     ops.save(result)
     graph.monitor.begin_suspend(60)
@@ -349,7 +352,8 @@ def retained_window(ops, result, report, pcm, graph, capture, paths, mapping, *,
             if not failed:
                 raise
             result['monitor_window_cleanup_error'] = str(error)
-    result['after'] = ops.post(result['before'])
+    if microphone is None:
+        result['after'] = ops.post(result['before'])
     contract.retained(contract.report['held'])
     if microphone is not None:
         microphone.retained()
@@ -403,6 +407,12 @@ def exercise(ops, args, owner):
         assert report['parked'] and report['runtime_pm']['restored']
         for name in ('pcm', 'capture'):
             assert not re.search(r'underrun|overrun|error|reprepare|recovering', report[name].get('log', ''), re.I), name + ' recovery/error'
+        if result['default_mic_resume']:
+            # initialize has closed both hardware PCMs, parked amplifiers and
+            # restored graph/mixer state. Only now spend time on WLAN/streams.
+            ops.audio = lease
+            result['after'] = ops.post(result['before'])
+            result['post_infrastructure_passed'] = True
     except Exception as error:
         result['error'] = type(error).__name__ + ': ' + str(error)
         result['traceback'] = traceback.format_exc()
@@ -420,6 +430,8 @@ def exercise(ops, args, owner):
         result['complete'] = bool(result.get('functional_pass') and not result.get('error') and
                                   not result.get('cleanup_error') and
                                   result.get('cleanup', {}).get('masks_restored') and
-                                  not report.get('cleanup_errors'))
+                                  not report.get('cleanup_errors') and
+                                  (not result['default_mic_resume'] or
+                                   result.get('post_infrastructure_passed') is True))
         ops.save(result)
     return result

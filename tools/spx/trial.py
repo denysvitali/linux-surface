@@ -1935,7 +1935,8 @@ def systemd_suspend(args):
     try:
         name = 'bluetooth-discovery-resume' if args.retain_bluetooth_discovery else ('bluetooth-resume' if args.bluetooth_resume else ('audio-resume' if args.live_audio_resume else ('systemd-suspend-recovery' if args.verify_sleep_return else 'systemd-suspend')))
         live = Live(OUT / name, ATTEMPT, RELEASE, parked_audio=args.parked_audio or args.live_audio_resume or args.bluetooth_resume,
-                    desktop_user=args.desktop_user)
+                    desktop_user=args.desktop_user,
+                    default_mic_resume=getattr(args, 'default_mic_resume', False))
         if args.bluetooth_resume:
             from bluetooth_resume import exercise as bluetooth_resume
             result = bluetooth_resume(live, allow_radio_on=args.allow_radio_on,
