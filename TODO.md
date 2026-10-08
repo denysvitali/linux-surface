@@ -47,17 +47,18 @@ Hypotheses:
 7. Hypothesis: front fails only because gpio19/20 are missing from the CCI0
    pinctrl. **Refuted (ex, boot 028f358f).** Same timeout with the pins added;
    MCLK2 and the three rails are on during the probe. See `RESULT-20261008ex.md`.
-8. **Open: H-reset.** Front pinctrl-0 includes `cam_front_reset` (GPIO12,
-   output-low). v23 bound only the MCLK pinctrl to the front node. One DTB
-   change (remove `cam_front_reset` from pinctrl-0), one trial.
-9. **Open: H-async.** Does the front failure stop camss completing its sensor
-   bind, and so remove the rear and IR links? One trial with the front node
-   removed; rear and IR should then appear. The rear-only `20261008wb` repeat
-   (boot `76451c48`) captured frames, so it is the reference.
-10. **Open: H-rear.** Why does `ov13858` log no probe on either trial?
-   Check its CCI bus-0 address and reset/power before the identify path.
-   Rear-only repeat `20261008wb` (boot `76451c48`) was collected: same pass
-   as EV, nothing new.
+8. **Refuted: H-reset.** `ov5693_sensor_powerup()` releases reset before
+   identify, so the output-low `cam_front_reset` pin does not hold the sensor.
+   Source reading only; no trial needed.
+9. **Confirmed: H-async (fa, boot `b1da04a0`).** With the front node disabled
+   and its CSIPHY0 endpoint removed, the rear and IR link to CSIPHY2/CSIPHY3 and
+   stream. Camss waits for every CSIPHY endpoint's remote. See
+   `RESULT-20261008fa.md`.
+10. **Answered: H-rear (ez).** The rear OV13858 probes silently. Its link was
+   missing because of the camss notifier, not the sensor. See
+   `RESULT-20261008ez.md`.
+11. **Open: scene.** Rear and IR scene frames are flat and dark (fa). Check
+   the physical setup with the user before any sensor or ISP change.
 
 5. RAW-to-display rendering omits black subtraction, AWB and transfer.
    **Implemented offline, physical acceptance pending:** `camera_render.py`
