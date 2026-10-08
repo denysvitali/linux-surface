@@ -1142,6 +1142,11 @@ class DesktopMicSource:
         self.forward = False
         self.error = None
         self.thread = None
+        self.forward_lock = threading.Lock()
+        self.paused = threading.Event()
+        self.resumed = threading.Event()
+        self.resume_requested = False
+        self.suspend_until = None
         self.name = f'spx_microphone_test_{os.getpid()}'
         self.previous = previous_default
 
@@ -1189,9 +1194,22 @@ class DesktopMicSource:
             cursor = self.capture.mark()
             while not self.stop.wait(0.01):
                 end = self.capture.mark()
-                if not self.forward:
-                    cursor = end  # Never replay idle/private audio to a new client.
-                    continue
+                with self.forward_lock:
+                    if self.suspend_until is not None:
+                        need(time.clock_gettime(time.CLOCK_BOOTTIME) < self.suspend_until,
+                             'Microphone forwarding suspension expired')
+                    if self.resume_requested:
+                        cursor = end  # Discard every frame acquired while paused.
+                        self.resume_requested = False
+                        self.suspend_until = None
+                        self.forward = True
+                        self.paused.clear()
+                        self.resumed.set()
+                    if not self.forward:
+                        cursor = end  # Never replay idle/private audio to a new client.
+                        self.paused.set()  # No pending write survives this boundary.
+                        continue
+                    self.paused.clear()
                 need(end - cursor <= 48000, 'Microphone FIFO adapter fell behind')
                 if end == cursor:
                     continue
@@ -1199,20 +1217,64 @@ class DesktopMicSource:
                 cursor = end
                 deadline = time.monotonic() + 1
                 while data and self.forward and not self.stop.is_set():
-                    if not select.select([], [self.fd], [], 0.1)[1]:
-                        need(time.monotonic() < deadline, 'Desktop microphone FIFO stalled')
-                        continue
-                    try:
-                        count = os.write(self.fd, data[:4096])
-                    except BlockingIOError:
-                        continue
-                    need(count > 0, 'Desktop microphone FIFO stopped')
-                    data = data[count:]
-                    deadline = time.monotonic() + 1
+                    writable = select.select([], [self.fd], [], 0.1)[1]
+                    with self.forward_lock:
+                        if not self.forward or self.stop.is_set():
+                            break  # An intentional pause must win over a stale timeout.
+                        if not writable:
+                            need(time.monotonic() < deadline, 'Desktop microphone FIFO stalled')
+                            continue
+                        try:
+                            count = os.write(self.fd, data[:4096])
+                        except BlockingIOError:
+                            continue
+                        need(count > 0, 'Desktop microphone FIFO stopped')
+                        data = data[count:]
+                        deadline = time.monotonic() + 1
         except (OSError, RuntimeError) as error:
             if not self.stop.is_set():
                 self.error = str(error)
                 os.kill(os.getpid(), signal.SIGTERM)
+
+    def wait_forwarding(self, event, message):
+        deadline = time.monotonic() + 1
+        while not event.wait(.02):
+            self.healthy()
+            need(self.thread is not None and self.thread.is_alive(), 'Microphone forwarding thread exited')
+            need(time.monotonic() < deadline, message)
+        self.healthy()
+        need(self.thread is not None and self.thread.is_alive(), 'Microphone forwarding thread exited')
+
+    def pause_forwarding(self, seconds=60):
+        self.healthy()
+        now = time.clock_gettime(time.CLOCK_BOOTTIME)
+        need(0 < seconds <= 60 and self.suspend_until is None,
+             'Invalid or overlapping microphone suspension')
+        need(now < self.capture.wall_deadline, 'Microphone capture wall deadline expired')
+        with self.forward_lock:
+            self.paused.clear()
+            self.suspend_until = min(now + seconds, self.capture.wall_deadline)
+            self.forward = False
+        self.wait_forwarding(self.paused, 'Microphone forwarding did not quiesce')
+        return dict(quiesced=True, deadline_boottime=self.suspend_until)
+
+    def resume_forwarding(self):
+        self.healthy()
+        now = time.clock_gettime(time.CLOCK_BOOTTIME)
+        with self.forward_lock:
+            need(self.suspend_until is not None and now < self.suspend_until and
+                 now < self.capture.wall_deadline and self.paused.is_set() and not self.forward,
+                 'Microphone suspension expired or not quiesced')
+            self.resumed.clear()
+            self.resume_requested = True
+        try:
+            self.wait_forwarding(self.resumed, 'Microphone forwarding did not resume')
+        except Exception:
+            with self.forward_lock:
+                self.resume_requested = False
+                self.forward = False
+            raise
+        return dict(resumed=True, discarded_paused_frames=True)
 
     def healthy(self):
         self.capture.healthy()

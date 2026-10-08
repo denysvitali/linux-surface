@@ -361,4 +361,89 @@ class DefaultMicResume(unittest.TestCase):
         self.assertTrue(result['functional_pass'])
 
 
+class MicrophoneQuiesce(unittest.TestCase):
+    def source(self):
+        source = audio.DesktopMicSource(Mock(), Mock(), {})
+        source.capture.wall_deadline = 200
+        source.thread = Mock(); source.thread.is_alive.return_value = True
+        source.capture.mark.return_value = 0
+        return source
+
+    def test_stalled_writer_acknowledges_pause_and_discards_paused_frames(self):
+        import os, time
+        from array import array
+        source = self.source()
+        reader, writer = os.pipe2(os.O_NONBLOCK)
+        self.addCleanup(os.close, reader); self.addCleanup(os.close, writer)
+        try:
+            while True: os.write(writer, bytes(4096))
+        except BlockingIOError: pass
+        source.fd = writer
+        source.capture.wall_deadline = time.clock_gettime(time.CLOCK_BOOTTIME) + 120
+        clock = time.monotonic()
+        source.capture.mark.side_effect = lambda: int((time.monotonic() - clock) * 48000)
+        source.capture.samples.side_effect = lambda begin, end: array('h', [0] * (end - begin))
+        source.forward = True
+        source.thread = threading.Thread(target=source.feed)
+        source.thread.start()
+        try:
+            time.sleep(.04)  # The real writer is blocked on the full pipe.
+            pause = source.pause_forwarding(60)
+            self.assertTrue(pause['quiesced']); self.assertTrue(source.paused.is_set())
+            self.assertFalse(source.forward); self.assertIsNone(source.error)
+            time.sleep(.06)
+            resumed = source.resume_forwarding()
+            self.assertTrue(resumed['discarded_paused_frames'])
+            self.assertTrue(source.forward); self.assertIsNone(source.error)
+        finally:
+            source.stop.set(); source.thread.join(timeout=1)
+        self.assertFalse(source.thread.is_alive())
+
+    def test_expired_fifo_wait_does_not_signal_after_intentional_pause(self):
+        from array import array
+        source = self.source(); source.fd = 7; source.forward = True
+        source.capture.mark.side_effect = [0, 480]
+        source.capture.samples.return_value = array('h', [0] * 480)
+        def blocked(*args):
+            source.forward = False; source.stop.set()
+            return [], [], []
+        with patch.object(audio.select, 'select', side_effect=blocked), \
+             patch.object(audio.os, 'kill') as kill:
+            source.feed()
+        self.assertIsNone(source.error); kill.assert_not_called()
+
+    def test_quiesce_ack_dead_thread_and_timeout_fail(self):
+        source = self.source()
+        source.thread.is_alive.return_value = False
+        with self.assertRaisesRegex(RuntimeError, 'thread exited'):
+            source.wait_forwarding(threading.Event(), 'no ack')
+        source.thread.is_alive.return_value = True
+        with patch.object(audio.time, 'monotonic', side_effect=[0, 2]):
+            with self.assertRaisesRegex(RuntimeError, 'no ack'):
+                source.wait_forwarding(threading.Event(), 'no ack')
+        source.capture.healthy.side_effect = RuntimeError('dead capture')
+        with self.assertRaisesRegex(RuntimeError, 'dead capture'): source.pause_forwarding()
+
+    def test_pause_window_cap_and_resume_requires_unexpired_quiescence(self):
+        source = self.source(); source.capture.wall_deadline = 110
+        source.wait_forwarding = Mock(side_effect=lambda event, message: event.set())
+        with patch.object(audio.time, 'clock_gettime', return_value=100):
+            for seconds in (0, 61):
+                with self.assertRaisesRegex(RuntimeError, 'Invalid'): source.pause_forwarding(seconds)
+            self.assertEqual(source.pause_forwarding(60)['deadline_boottime'], 110)
+            with self.assertRaisesRegex(RuntimeError, 'overlapping'): source.pause_forwarding()
+        with patch.object(audio.time, 'clock_gettime', return_value=111):
+            with self.assertRaisesRegex(RuntimeError, 'expired'): source.resume_forwarding()
+        self.assertFalse(source.forward)
+
+    def test_original_sleep_failure_survives_microphone_cleanup_failure(self):
+        result = {}; window = resume.ResumeWindow(Mock(), result, True)
+        window.microphone = Mock(report={'cleanup_errors': ['adapter failed']})
+        window.microphone.close.side_effect = AssertionError('adapter cleanup failed')
+        with patch.object(resume, 'retained_window', side_effect=InterruptedError('original sleep signal')):
+            with self.assertRaisesRegex(InterruptedError, 'original sleep signal'): window()
+        self.assertEqual(result['default_microphone_window_cleanup_error'], 'adapter cleanup failed')
+        self.assertFalse(result['functional_pass'])
+
+
 if __name__ == '__main__': unittest.main()

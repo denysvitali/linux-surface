@@ -137,6 +137,19 @@ class DefaultMicrophone:
         assert after == self.report['held'], 'Default microphone source/client/service identity changed'
         self.report.update(after=after, same_owners=True)
 
+    def begin_suspend(self, seconds=60):
+        self.client.healthy()
+        self.report['forwarding_pause'] = self.source.pause_forwarding(seconds)
+        self.report['forwarding_pause']['client_frame'] = self.client.mark()
+
+    def end_suspend(self):
+        self.client.healthy()
+        self.report['forwarding_resume'] = self.source.resume_forwarding()
+        begin = self.client.mark()
+        self.client.wait_frames(begin + 4800)
+        self.report['forwarding_resume'].update(client_frame_before=begin,
+                                               client_frame_after=self.client.mark())
+
     def reference_begin(self):
         self.client.healthy()
         self.reference_start = self.client.mark()
@@ -220,7 +233,13 @@ class ResumeWindow:
             if self.microphone is not None:
                 passed = self.result.get('functional_pass', False)
                 self.result['functional_pass'] = False
-                self.microphone.close()
+                failed = sys.exc_info()[0] is not None
+                try:
+                    self.microphone.close()
+                except Exception as error:
+                    if not failed:
+                        raise
+                    self.result['default_microphone_window_cleanup_error'] = str(error)
                 self.result['functional_pass'] = bool(passed and
                     self.microphone.report.get('client_closed') and
                     self.microphone.report.get('default_source_restored') and
@@ -314,10 +333,14 @@ def retained_window(ops, result, report, pcm, graph, capture, paths, mapping, *,
     ops.save(result)
     graph.monitor.begin_suspend(60)
     try:
+        if microphone is not None:
+            microphone.begin_suspend(60)
         ops.inhibit_idle()
         ops.open_shadows()
         result['sleep'] = ops.sleep()
         assert sleep.sleep_proven(result['sleep']), 'normal-service/RTC/kernel/thaw proof incomplete'
+        if microphone is not None:
+            microphone.end_suspend()
     finally:
         failed = sys.exc_info()[0] is not None
         try:
