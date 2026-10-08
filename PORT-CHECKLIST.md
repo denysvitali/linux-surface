@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-08, EQ: A03j idle native microphone sleep recovery passes)
+## Status (2026-10-08, ER: full native microphone sleep validation staged)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
@@ -93,7 +93,8 @@ stops earlier at a fatal playback underrun during initial desktop scoring.
 idle stock source survives normal27.8767s AC sleep; all four fresh native default
 clients pass acoustics and ordered cleanup. Final helper duration reporting fails
 before post-infrastructure checks, so P03g remains open.
-[EQ result](tools/spx/boot-diagnostics/RESULT-20261008eq.md).
+[EQ result](tools/spx/boot-diagnostics/RESULT-20261008eq.md). ER stages fixed
+original90s wall enforcement/actual close duration for full infrastructure checks.
 [EN result](tools/spx/boot-diagnostics/RESULT-20261008en.md). Full DSP teardown,
 persistence and reliability remain open. [EH result](tools/spx/boot-diagnostics/RESULT-20261008eh.md).
 [EF result](tools/spx/boot-diagnostics/RESULT-20261008ef.md).
