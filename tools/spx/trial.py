@@ -1546,9 +1546,68 @@ def write_desktop_policy(record):
 
 
 def desktop_ready(ready, boot):
-    return (ready.get('boot_id') == boot and ready.get('release') == RELEASE and
+    return (type(ready) is dict and ready.get('boot_id') == boot and ready.get('release') == RELEASE and
             all(ready.get(key) is True for key in
                 ('acoustic_passed', 'public_acoustic_passed', 'recording_closed')))
+
+
+def desktop_microphone_ready(ready):
+    # Preserving an explicit other default source skips default-client proof;
+    # that fixture cannot authorize microphone persistence.
+    if type(ready) is not dict:
+        return False
+    microphone = ready.get('microphone')
+    return (type(microphone) is dict and microphone.get('source') == 'spx_microphone' and
+            type(microphone.get('source_index')) is int and microphone['source_index'] >= 0 and
+            type(microphone.get('module')) is str and microphone['module'].isdigit() and
+            all(microphone.get(key) is True for key in
+                ('default_selected', 'bounded_clients_passed', 'all_automated_recordings_bounded')) and
+            'recording' in microphone and microphone['recording'] is None and
+            microphone.get('source_lifetime') == 'serve-owner')
+
+
+def desktop_microphone_result(ready, result):
+    """Match proof within one boot; source/module indices may change next boot."""
+    if type(result) is not dict:
+        return False
+    served = result.get('serve')
+    microphone = result.get('desktop_microphone')
+    return (desktop_microphone_ready(ready) and type(served) is dict and
+            desktop_ready(served, ready['boot_id']) and desktop_microphone_ready(served) and
+            served['microphone'] == ready['microphone'] and type(microphone) is dict and
+            microphone.get('microphone_client_passed') is True and
+            all(microphone.get(key) == ready['microphone'][key] for key in
+                ('source', 'source_index', 'module')) and not result.get('error'))
+
+
+def check_live_desktop_microphone(ready, result, account):
+    """Read metadata only; enabling persistence must not open native capture."""
+    assert desktop_microphone_result(ready, result), 'Unverified desktop microphone'
+    identity = result['desktop_microphone'].get('module_identity')
+    assert type(identity) is dict and identity.get('index') == ready['microphone']['module']
+    assert identity.get('name') == 'module-alsa-source' and type(identity.get('argument')) is str
+    command = ['runuser', '-u', account.pw_name, '--', 'env',
+               'XDG_RUNTIME_DIR=/run/user/' + str(account.pw_uid),
+               'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/' + str(account.pw_uid) + '/bus',
+               'pactl']
+    sources = json.loads(subprocess.run(command + ['--format=json', 'list', 'sources'],
+                        capture_output=True, text=True, check=True, timeout=5).stdout)
+    owned = [source for source in sources if source.get('name') == 'spx_microphone']
+    assert len(owned) == 1, 'Desktop microphone missing or duplicated'
+    source = owned[0]
+    assert type(source.get('index')) is int and source['index'] == ready['microphone']['source_index']
+    assert str(source.get('owner_module')) == identity['index']
+    assert source.get('monitor_source') == '' and source.get('sample_specification') == 's16le 1ch 48000Hz'
+    assert source.get('channel_map') == 'mono'
+    modules = []
+    text = subprocess.run(command + ['--format=text', 'list', 'short', 'modules'],
+                          capture_output=True, text=True, check=True, timeout=5).stdout
+    for line in text.splitlines():
+        fields = line.split('\t', 3)
+        if len(fields) >= 3 and fields[1] == 'module-alsa-source' and re.search(
+                r'(?:^|\s)source_name=spx_microphone(?:\s|$)', fields[2]):
+            modules.append(dict(index=fields[0], name=fields[1], argument=fields[2]))
+    assert modules == [identity], 'Desktop microphone module identity changed'
 
 
 def quarantine_desktop_audio(boot):
@@ -1597,7 +1656,8 @@ def enable_desktop_audio(args):
     assert not ready.get('stopped') and ready['sink'] == 'spx_speakers'
     assert type(args.desktop_peak) is int and 1433 <= args.desktop_peak <= 12000
     assert ready['peak_limit'] == args.desktop_peak and ready['pa_gain'] == 0
-    assert pwd.getpwnam(args.desktop_user).pw_uid != 0
+    account = pwd.getpwnam(args.desktop_user)
+    assert account.pw_uid != 0
     owner, pcm = ready['owner_pid'], ready['pcm_pid']
     assert all(type(pid) is int and pid > 1 for pid in (owner, pcm))
     command_path = Path(f'/proc/{owner}/cmdline')
@@ -1612,6 +1672,13 @@ def enable_desktop_audio(args):
     assert re.search(r'^Uid:\s+0\s+0\s+0\s+0\s*$',
                      Path(f'/proc/{owner}/status').read_text(), re.M)
     assert Path('/tmp/spx-locks/spx-device.lock/owner').read_text().strip() == 'audio-' + ATTEMPT
+    assert command.count('--desktop-microphone') <= 1
+    microphone = '--desktop-microphone' in command
+    if microphone:
+        result = json.loads((OUT / 'audio/serve-result.json').read_text())
+        check_live_desktop_microphone(ready, result, account)
+    else:
+        assert 'microphone' not in ready, 'Microphone readiness and live owner flag disagree'
     assert Path(f'/proc/{pcm}/comm').read_text().strip() == 'aplay'
     assert re.search(r'^PPid:\s*' + str(owner) + r'\s*$',
                      Path(f'/proc/{pcm}/status').read_text(), re.M)
@@ -1627,7 +1694,8 @@ def enable_desktop_audio(args):
     # in this boot, even if that checker predates the common consumed marker.
     claim_audio_boot(boot, 'enabled-existing-serve')
     policy = dict(attempt=ATTEMPT, release=RELEASE, desktop_user=args.desktop_user,
-                  desktop_peak=args.desktop_peak, verified_boot_id=boot)
+                  desktop_peak=args.desktop_peak, verified_boot_id=boot,
+                  desktop_microphone=microphone)
     write_desktop_policy(policy)
     print('Desktop audio opted in for this candidate: bounded microphone verification '
           'at startup, then serve until stopped. Boot selection and return timer unchanged.', flush=True)
@@ -1651,14 +1719,25 @@ def dispatch_audio(args):
     peak = record['desktop_peak']
     assert type(peak) is int and 1433 <= peak <= 12000
     assert pwd.getpwnam(record['desktop_user']).pw_uid != 0
-    previous = record.get('last_start_boot_id')
+    microphone = record.get('desktop_microphone', False)
+    validate_desktop_microphone('serve', microphone)
+    if microphone:
+        assert type(record.get('verified_boot_id')) is str and record['verified_boot_id']
+    previous = record.get('last_start_boot_id') or (record.get('verified_boot_id') if microphone else None)
     if previous and previous != boot:
         # If the wrapper was killed during startup it could not quarantine its
         # policy. Missing/mismatched readiness still prevents a blind next boot.
         try:
             ready = json.loads((OUT / 'audio/serve-ready.json').read_text())
             result = json.loads((OUT / 'audio/serve-result.json').read_text())
-            passed = desktop_ready(ready, previous) and not result.get('error')
+            passed = desktop_ready(ready, previous) and type(result) is dict and not result.get('error')
+            if microphone:
+                evidence = result.get('desktop_microphone') if type(result) is dict else None
+                passed = (passed and desktop_microphone_result(ready, result) and
+                          result.get('success') is True and evidence.get('restored') is True and
+                          'adapter_error' in evidence and evidence['adapter_error'] is None and
+                          evidence.get('kernel_errors') == [] and evidence.get('cleanup_errors') == [] and
+                          result.get('cleanup_errors') == [])
         except (OSError, ValueError):
             passed = False
         if not passed:
@@ -1677,9 +1756,11 @@ def dispatch_audio(args):
     args.serve_seconds = 0
     args.desktop_peak = peak
     args.desktop_user = record['desktop_user']
+    args.desktop_microphone = microphone
     args.allow_amp_power = args.allow_playback = args.allow_capture = True
-    print('Starting bounded speaker tones and microphone verification; recording '
-          'closes before desktop readiness. No continuous microphone capture.', flush=True)
+    print('Starting bounded speaker tones and microphone verification; helper recording '
+          'closes before desktop readiness.' + (' Native microphone available to applications.'
+          if microphone else ' No continuous microphone capture.'), flush=True)
     try:
         audio_check(args)  # Holds the device lock; no return-timer changes or retries.
     except BaseException:

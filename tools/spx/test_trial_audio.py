@@ -502,7 +502,7 @@ class DesktopOptInTests(TrialAudioFixture):
             target.write_text(value)
         (self.out / 'lock-owner').write_text('audio-20261004bq\n')
         self.start_patch(patch.object(trial.os, 'geteuid', return_value=0))
-        self.start_patch(patch.object(trial.pwd, 'getpwnam', return_value=SimpleNamespace(pw_uid=1000)))
+        self.start_patch(patch.object(trial.pwd, 'getpwnam', return_value=SimpleNamespace(pw_uid=1000, pw_name='dvitali')))
         # The suite is unprivileged; emulate only policy ownership, retaining
         # real regular-file and permission checks on its actual on-disk mode.
         original_lstat = Path.lstat
@@ -543,6 +543,241 @@ class DesktopOptInTests(TrialAudioFixture):
         self.assertTrue((self.out / 'audio/serve-ready.json').exists())
         self.assertEqual(self.windows, [])
         trial.subprocess.run.assert_not_called()
+
+    def microphone_fixture(self):
+        """Extend the existing policy unit fixture; never accesses live hardware."""
+        self.ready['microphone'] = dict(source='spx_microphone', source_index=131,
+            module='536870917', default_selected=True, bounded_clients_passed=True,
+            recording=None, source_lifetime='serve-owner', all_automated_recordings_bounded=True)
+        self.microphone_identity = dict(index='536870917', name='module-alsa-source',
+            argument='device=hw:0,1 source_name=spx_microphone format=s16le rate=48000 '
+                     'channels=1 channel_map=mono fragments=4 fragment_size=1920 mmap=no')
+        self.live_source = dict(index=131, name='spx_microphone', owner_module='536870917',
+            monitor_source='', sample_specification='s16le 1ch 48000Hz', channel_map='mono')
+        self.live_modules = ('536870917\tmodule-alsa-source\t' +
+                             self.microphone_identity['argument'] + '\t\n')
+        self.microphone_result()
+        command = self.proc / '2276/cmdline'
+        command.write_text(command.read_text() + '--desktop-microphone\0')
+
+        def metadata(command, **options):
+            self.assertEqual(command[:8], ['runuser', '-u', 'dvitali', '--', 'env',
+                'XDG_RUNTIME_DIR=/run/user/1000',
+                'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus', 'pactl'])
+            self.assertEqual(options, dict(capture_output=True, text=True, check=True, timeout=5))
+            if command[8:] == ['--format=json', 'list', 'sources']:
+                return SimpleNamespace(stdout=json.dumps([self.live_source]))
+            self.assertEqual(command[8:], ['--format=text', 'list', 'short', 'modules'])
+            return SimpleNamespace(stdout=self.live_modules)
+
+        trial.subprocess.run.side_effect = metadata
+
+    def microphone_result(self, completed=False):
+        self.save('audio/serve-ready.json', self.ready)
+        microphone = dict(self.ready['microphone'], microphone_client_passed=True,
+                          module_identity=self.microphone_identity)
+        if completed:
+            microphone.update(restored=True, adapter_error=None, kernel_errors=[], cleanup_errors=[])
+        self.save('audio/serve-result.json', dict(serve=self.ready, desktop_microphone=microphone,
+                                                success=completed, cleanup_errors=[]))
+
+    def test_microphone_enable_requires_live_identity_and_persists_exact_boolean(self):
+        self.microphone_fixture()
+        trial.enable_desktop_audio(self.args)
+        policy = json.loads((self.out / 'desktop-audio.json').read_text())
+        self.assertIs(policy['desktop_microphone'], True)
+        self.assertEqual(policy['verified_boot_id'], 'new-boot')
+        self.assertEqual(trial.subprocess.run.call_count, 2)
+        trial.dispatch_audio(self.args)
+        self.audio.assert_not_called()
+        self.assertEqual(self.windows, [])
+
+    def test_microphone_enable_rejects_unverified_or_malformed_readiness(self):
+        self.microphone_fixture()
+        original = dict(self.ready['microphone'])
+        mutations = [None, {}, dict(original, source='other'), dict(original, source_index=True),
+                     dict(original, module=536870917), dict(original, default_selected=False),
+                     dict(original, bounded_clients_passed=1), dict(original, recording='active'),
+                     dict(original, source_lifetime='bounded-test'),
+                     dict(original, all_automated_recordings_bounded='yes')]
+        for microphone in mutations:
+            with self.subTest(microphone=microphone):
+                self.ready['microphone'] = microphone
+                self.save('audio/serve-ready.json', self.ready)
+                with self.assertRaisesRegex(AssertionError, 'Unverified desktop microphone'):
+                    trial.enable_desktop_audio(self.args)
+                self.assertFalse((self.out / 'desktop-audio.json').exists())
+        trial.subprocess.run.assert_not_called()
+
+    def test_microphone_enable_rejects_owner_flag_disagreement_and_duplicate(self):
+        self.microphone_fixture()
+        command = self.proc / '2276/cmdline'
+        original = command.read_text()
+        for changed in (original.replace('--desktop-microphone\0', ''),
+                        original + '--desktop-microphone\0'):
+            with self.subTest(command=changed):
+                command.write_text(changed)
+                with self.assertRaises(AssertionError):
+                    trial.enable_desktop_audio(self.args)
+                self.assertFalse((self.out / 'desktop-audio.json').exists())
+        command.write_text(original)
+        self.ready.pop('microphone')
+        self.save('audio/serve-ready.json', self.ready)
+        with self.assertRaisesRegex(AssertionError, 'Unverified desktop microphone'):
+            trial.enable_desktop_audio(self.args)
+        trial.subprocess.run.assert_not_called()
+
+    def test_microphone_enable_rejects_changed_live_source_or_module(self):
+        self.microphone_fixture()
+        original = dict(self.live_source)
+        for changed in (dict(original, name='other'), dict(original, index=132),
+                        dict(original, index=True), dict(original, owner_module='other'),
+                        dict(original, monitor_source='1'),
+                        dict(original, sample_specification='s16le 2ch 48000Hz'),
+                        dict(original, channel_map='stereo')):
+            with self.subTest(source=changed):
+                self.live_source = changed
+                with self.assertRaises(AssertionError):
+                    trial.enable_desktop_audio(self.args)
+                self.assertFalse((self.out / 'desktop-audio.json').exists())
+        self.live_source = original
+        modules = self.live_modules
+        for changed in ('', modules + modules, modules.replace('mmap=no', 'mmap=yes'),
+                        modules.replace('536870917', '536870918')):
+            with self.subTest(modules=changed):
+                self.live_modules = changed
+                with self.assertRaisesRegex(AssertionError, 'module identity changed'):
+                    trial.enable_desktop_audio(self.args)
+                self.assertFalse((self.out / 'desktop-audio.json').exists())
+
+    def test_microphone_policy_runs_each_boot_once_with_fresh_identity_and_archive(self):
+        self.microphone_fixture()
+        trial.enable_desktop_audio(self.args)
+        self.microphone_result(completed=True)  # Orderly stop before the next boot.
+        self.next_boot()
+        trial.subprocess.run.reset_mock()
+
+        def started(args):
+            self.assertIs(args.desktop_microphone, True)
+            self.assertEqual((args.audio_action, args.serve_seconds), ('serve', 0))
+            self.assertFalse((self.out / 'audio/serve-ready.json').exists())
+            self.assertTrue((self.out / ('audio-started-boots/' +
+                            (self.proc / 'boot_id').read_text() + '.json')).exists())
+            self.ready['boot_id'] = (self.proc / 'boot_id').read_text()
+            self.ready['microphone']['source_index'] += 1
+            self.ready['microphone']['module'] = str(int(self.ready['microphone']['module']) + 1)
+            self.microphone_identity['index'] = self.ready['microphone']['module']
+            self.microphone_result(completed=True)
+
+        self.audio.side_effect = started
+        trial.dispatch_audio(self.args)
+        trial.dispatch_audio(self.args)
+        self.next_boot('third-boot')
+        trial.dispatch_audio(self.args)
+        trial.dispatch_audio(self.args)
+        self.assertEqual(self.audio.call_count, 2)
+        for boot in ('new-boot', 'next-boot'):
+            for name in ('serve-ready.json', 'serve-result.json'):
+                self.assertTrue((self.out / 'audio/boots' / boot / name).exists())
+        self.assertEqual(self.windows, [])
+        trial.subprocess.run.assert_not_called()
+
+    def test_microphone_policy_quarantines_failed_missing_or_mismatched_previous_proof(self):
+        self.microphone_fixture()
+        trial.enable_desktop_audio(self.args)
+        self.microphone_result(completed=True)
+        policy = json.loads((self.out / 'desktop-audio.json').read_text())
+        result = json.loads((self.out / 'audio/serve-result.json').read_text())
+        self.next_boot()
+        mutations = [dict(result, success=False), dict(result, success=1),
+                     dict(result, error='failed after publication'), dict(result, cleanup_errors=['failed']),
+                     dict(result, serve=dict(self.ready, boot_id='unrelated')),
+                     dict(result, serve=dict(self.ready, microphone=dict(self.ready['microphone'], module='other')))]
+        for key, value in (('restored', False), ('adapter_error', 'failed'),
+                           ('kernel_errors', ['fault']), ('cleanup_errors', ['failed']),
+                           ('module', 'other'), ('source_index', 132), ('microphone_client_passed', False)):
+            mutations.append(dict(result, desktop_microphone=dict(result['desktop_microphone'], **{key: value})))
+        for changed in mutations + [[], 'malformed', None]:
+            with self.subTest(result=changed):
+                self.save('desktop-audio.json', policy)
+                if changed is None:
+                    (self.out / 'audio/serve-result.json').unlink()
+                else:
+                    self.save('audio/serve-result.json', changed)
+                trial.dispatch_audio(self.args)
+                self.assertFalse((self.out / 'desktop-audio.json').exists())
+                self.assertTrue((self.out / 'desktop-audio-failed-new-boot.json').exists())
+                self.assertFalse((self.out / 'audio-started-boots/next-boot.json').exists())
+        self.audio.assert_not_called()
+
+    def test_microphone_policy_quarantines_missing_previous_readiness(self):
+        self.microphone_fixture()
+        trial.enable_desktop_audio(self.args)
+        self.microphone_result(completed=True)
+        (self.out / 'audio/serve-ready.json').unlink()
+        self.next_boot()
+        trial.dispatch_audio(self.args)
+        self.assertFalse((self.out / 'desktop-audio.json').exists())
+        self.audio.assert_not_called()
+
+    def test_microphone_failure_after_new_readiness_quarantines_without_retry(self):
+        self.microphone_fixture()
+        trial.enable_desktop_audio(self.args)
+        self.microphone_result(completed=True)
+        self.next_boot()
+
+        def failed(args):
+            self.ready['boot_id'] = 'next-boot'
+            self.microphone_result()
+            raise RuntimeError('failed after microphone publication')
+
+        self.audio.side_effect = failed
+        with self.assertRaisesRegex(RuntimeError, 'failed after microphone publication'):
+            trial.dispatch_audio(self.args)
+        self.assertTrue((self.out / 'desktop-audio-failed-next-boot.json').exists())
+        trial.dispatch_audio(self.args)
+        self.next_boot('third-boot')
+        trial.dispatch_audio(self.args)
+        self.audio.assert_called_once()
+        self.assertEqual(self.windows, [])
+
+    def test_microphone_policy_rejects_malformed_boolean_before_consumption(self):
+        trial.enable_desktop_audio(self.args)
+        policy = json.loads((self.out / 'desktop-audio.json').read_text())
+        self.next_boot()
+        for value in (None, 1, 'yes'):
+            with self.subTest(value=value):
+                self.save('desktop-audio.json', dict(policy, desktop_microphone=value))
+                with self.assertRaisesRegex(AssertionError, 'desktop-microphone'):
+                    trial.dispatch_audio(self.args)
+                self.assertFalse((self.out / 'audio-started-boots/next-boot.json').exists())
+        self.audio.assert_not_called()
+
+    def test_old_speaker_policy_does_not_inherit_microphone_flag_from_args(self):
+        trial.enable_desktop_audio(self.args)
+        policy = json.loads((self.out / 'desktop-audio.json').read_text())
+        policy.pop('desktop_microphone')
+        self.save('desktop-audio.json', policy)
+        self.args.desktop_microphone = True
+        self.next_boot()
+        trial.dispatch_audio(self.args)
+        self.assertIs(self.audio.call_args.args[0].desktop_microphone, False)
+
+    def test_microphone_policy_queued_request_wins_and_restart_does_not_fall_through(self):
+        self.microphone_fixture()
+        trial.enable_desktop_audio(self.args)
+        self.microphone_result(completed=True)
+        self.next_boot()
+        self.request.update(serve_seconds=0, desktop_microphone=False)
+        self.write_request()
+        # The shared fixture mocks journal capture after request completion.
+        trial.subprocess.run.side_effect = None
+        trial.dispatch_audio(self.args)
+        trial.dispatch_audio(self.args)
+        self.audio.assert_called_once()
+        self.assertIs(self.audio.call_args.args[0].desktop_microphone, False)
+        self.assertTrue((self.out / 'audio-started.json').exists())
+        self.assertEqual(self.windows, [])
 
     def test_stale_ready_wrong_owner_open_capture_and_failed_check_cannot_enable(self):
         mutations = [('audio/serve-ready.json', json.dumps(dict(self.ready, boot_id='old-boot'))),
