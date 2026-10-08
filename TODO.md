@@ -40,25 +40,32 @@ Hypotheses:
    captured. **Confirmed.** Trial `20261008ev`
    (boot `fffa14b0`): colour bars (129/119-stddev, full 16-255) prove the
    sensor -> CSI -> CSID -> VFE -> IOMMU path, and the demosaiced bright frame
-   is a real scene (`RESULT-20261008ef`). The user identified it: the **back**
-   camera, a real room (ceiling strip, doorway, a person), upside down and
-   greenish (measured: blue at 77% of red). A 180° rotation fixes it exactly.
-   Two defects are named, both in the pixel path:
-   1. **The image is 180° rotated.** Do **not** blame `orientation = <1>`:
-      that DT property is read-only metadata (`V4L2_CID_CAMERA_ORIENTATION`,
-      flagged read-only in `v4l2-ctrls-defs.c`), so it cannot flip pixels.
-      The evidence points at the sensor mode: `mode_2112x1568_regs` sets
-      `0x3820 = 0xab` and `0x3803 = 0x00`, while the full-res
-      `mode_4224x3136_regs` sets `0x3820 = 0xa8` and `0x3803 = 0x08`. Bit 0 of
-      `0x3820` is the OV vertical-image-control bit, so the binned mode is
-      programmed with different flip state and a window starting at y-origin.
-      Same question for the register readout order.
-   2. **The colour is greenish** — blue at 77% of red on the Bayer planes.
-   Next: fix `camera.py` to demosaic (`bayer_grbg8`) with percentile
-   auto-levels, so the check itself sees a scene instead of a grayscale
-   plateau; then test the sensor's vertical/mirror register state before
-   writing any kernel change. Do the human-session items first; camera item:
-   view the corrected frame.
+   is a real scene (`RESULT-20261008ef`). The user identified it as the **back**
+   camera and rejected the renders twice: the scene description was wrong and
+   the colours were wrong. Two defects are named, both in the pixel path, and
+   neither is fixed:
+   1. **The image is rotated 90°.** A quarter turn puts the tabletop horizontal
+      and the chair upright; 180° does not. Do **not** blame
+      `orientation = <1>`: that DT property is read-only metadata
+      (`V4L2_CID_CAMERA_ORIENTATION`, flagged read-only in
+      `v4l2-ctrls-defs.c`), so it cannot move pixels. The mode table explains
+      only half of it: `mode_2112x1568_regs` writes `0x3820 = 0xab` against
+      `0xa8` in the full-resolution mode, and on this sensor bit 4 of `0x3820`
+      is vertical flip (set = on) and bit 3 is horizontal mirror (clear = on),
+      per Intel's ov13858 driver and a 2026-09 measurement on the part
+      (https://lkml.org/lkml/2026/9/21/1360). So the mode programs a 180°
+      rotation, which is not the 90° the frame shows. The same measurement
+      found the Bayer order does not change with the flip.
+   2. **The colour is magenta**, not green. The earlier "blue at 77% of red"
+      came from assigning the planes backwards and averaging the whole frame.
+      On the pale wall, with the documented GRBG order, the planes read
+      G 42.1/41.8, R 36.1, B 31.2. A single gain per plane computed from that
+      wall makes the wall grey and turns the wood green, so it is not the fix.
+      The cause is not established; do not guess a white balance.
+   Next: find the rotation (the mode's flip accounts for 180°, the frame shows
+   90°) and the colour cause before writing any kernel change. Fix `camera.py`
+   to demosaic (`bayer_grbg8`) with percentile auto-levels, so the check sees a
+   scene instead of a grayscale plateau. Do the human-session items first.
 2. If camss binds but STREAMON hangs or no frame arrives: compare the live
    CSIPHY/CSID register programming and clock rates with the 6.18 run
    (`camss-video.c` bisect knob, 400/300 MHz PHY rates).
