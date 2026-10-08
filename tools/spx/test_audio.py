@@ -156,6 +156,36 @@ class AudioTests(unittest.TestCase):
                 self.assertLessEqual(peak, 1433)
                 self.assertEqual(peak > 0, channel in channels)
 
+    def test_explicit_native_pair_quiet_peak_fades_and_channel_frequencies(self):
+        import math
+        frames = list(struct.iter_unpack('<hh', audio.tone({0, 1}, seconds=.1, frequencies=(880, 1320))))
+        self.assertEqual(len(frames), 4800)
+        self.assertEqual(frames[0], (0, 0)); self.assertEqual(frames[-1], (0, 0))
+        for channel, expected in enumerate((880, 1320)):
+            values = [frame[channel] for frame in frames]
+            self.assertLessEqual(max(abs(value) for value in values), 1433)
+            def magnitude(hz):
+                return abs(sum(value * complex(math.cos(2*math.pi*hz*index/48000),
+                    -math.sin(2*math.pi*hz*index/48000)) for index, value in enumerate(values)))
+            self.assertGreater(magnitude(expected), 100 * max(magnitude(440), magnitude(660), 1))
+
+    def test_default_tone_waveform_remains_byte_identical(self):
+        import math
+        reference = bytearray(); frames = 4800
+        for frame in range(frames):
+            envelope = min(1, frame/960, (frames-1-frame)/960)
+            reference.extend(struct.pack('<hh', *[round(1433*envelope*math.sin(2*math.pi*hz*frame/48000))
+                                                  for hz in (440, 660)]))
+        self.assertEqual(audio.tone({0, 1}, seconds=.1), bytes(reference))
+
+    def test_pair_and_digital_peak_validation_precedes_waveform(self):
+        for pair in ((440,), (440, 440), (0, 660), (880, 24000), (True, 1320), (880.0, 1320), '880,1320'):
+            with self.subTest(pair=pair), self.assertRaisesRegex(RuntimeError, 'tone frequencies'):
+                audio.tone({0, 1}, frequencies=pair)
+        for peak in (-1, 32768, True):
+            with self.subTest(peak=peak), self.assertRaisesRegex(RuntimeError, 'S16_LE'):
+                audio.tone({0, 1}, amplitude=peak)
+
     def test_feeder_preserves_partial_writes_then_returns_to_silence(self):
         # No ALSA process/device: a real pipe with deliberately short writes.
         reader, writer = os.pipe()
@@ -2019,6 +2049,37 @@ class DesktopMicrophoneServingTests(unittest.TestCase):
         for client in clients:
             client.close.assert_called_once()
         self.assertEqual(source.endpoint.call_count, 4)
+
+    def test_shared_verifier_scores_and_records_explicit_pair_at_quiet_peak(self):
+        import acoustic
+        source, graph, pcm = Mock(), Mock(), Mock()
+        source.wall_deadline = 60
+        source.begin_client.side_effect = [dict(trigger_time='1'), dict(trigger_time='2')]
+        pcm.healthy.return_value = 'owner_pid : 42\ntrigger_time : same'
+        clients = [Mock(), Mock()]
+        for index, client in enumerate(clients):
+            client.process.pid = index + 1
+            client.mark.side_effect = [144000, 144000, 288000]
+            client.samples.return_value = [1] * 96000
+        evidence = dict(clients=[])
+        with patch.object(audio.time, 'clock_gettime', return_value=0), \
+                patch.object(audio, 'DesktopRecording', side_effect=clients) as recording, \
+                patch.object(audio, 'check_stereo'), \
+                patch.object(acoustic, 'score_phase', return_value=dict(passed=True, reason='passed')) as score, \
+                patch.object(audio, 'tone', return_value=b'quiet-pair') as waveform:
+            audio.verify_native_microphone_clients(source, graph, evidence, pcm, {}, {}, frequencies=(880, 1320))
+        self.assertTrue(evidence['microphone_client_passed'])
+        self.assertEqual([call.kwargs['wall_deadline'] for call in recording.call_args_list], [60, 60])
+        self.assertEqual([call.args[0] for call in source.require_closed.call_args_list], ['between-clients', 'after-second-client'])
+        for client in clients:
+            client.close.assert_called_once()
+        self.assertEqual(source.endpoint.call_count, 4)
+
+        self.assertEqual([call.args[2] for call in score.call_args_list], [[880, 1320], [880, 1320]])
+        self.assertEqual([row['frequencies_hz'] for row in evidence['clients']], [[880, 1320], [880, 1320]])
+        for call in waveform.call_args_list:
+            self.assertEqual(call.kwargs, {'frequencies': (880, 1320)})
+        self.assertEqual(pcm.play.call_count, 2)
 
     def test_shared_verifier_expiry_and_first_cleanup_failure_cannot_leave_client_open(self):
         source, graph, pcm, client = Mock(), Mock(), Mock(), Mock()

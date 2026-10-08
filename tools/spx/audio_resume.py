@@ -391,11 +391,11 @@ class NativeResumeWindow:
         self.source.wall_deadline = started + 60
         evidence = self.result['native_microphone'][name] = dict(clients=[], recording=None,
             maximum_seconds=60, started_boottime=started, wall_deadline_boottime=started + 60,
-            microphone_client_passed=False)
+            frequencies_hz=[880, 1320], microphone_client_passed=False)
         previous_trigger = (self.result['native_microphone']['pre']['clients'][-1]['native_owner']['trigger_time']
                             if name == 'post' else None)
         audio.verify_native_microphone_clients(self.source, graph, evidence, pcm, paths, mapping,
-                                               previous_trigger=previous_trigger)
+                                               frequencies=(880, 1320), previous_trigger=previous_trigger)
         require_native_idle(self.source, graph)
         evidence['closed_boottime'] = time.clock_gettime(time.CLOCK_BOOTTIME)
         assert evidence['closed_boottime'] < self.source.wall_deadline, 'Native phase exceeded60s'

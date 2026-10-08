@@ -239,14 +239,22 @@ def configure_stereo(card, report):
              f'Mixer {actual} failed ({result.returncode}): {result.stderr.strip()}')
 
 
-def tone(channels, seconds=2, amplitude=1433):
-    """48 kHz S16_LE stereo, <= -27 dBFS peak, 20 ms fades."""
+def validate_tone_frequencies(frequencies):
+    need(isinstance(frequencies, (tuple, list)) and len(frequencies) == 2 and
+         all(type(hz) is int and 0 < hz < 24000 for hz in frequencies) and
+         frequencies[0] != frequencies[1], 'Expected two distinct integer tone frequencies below Nyquist')
+
+
+def tone(channels, seconds=2, amplitude=1433, *, frequencies=(440, 660)):
+    """48 kHz S16_LE stereo, caller peak (quiet default1433), 20 ms fades."""
+    validate_tone_frequencies(frequencies)
+    need(type(amplitude) is int and 0 <= amplitude <= 32767, 'Tone peak exceeds S16_LE range')
     samples = bytearray()
     frames = int(seconds * 48000)
     for frame in range(frames):
         envelope = min(1, frame / 960, (frames - 1 - frame) / 960)
         values = [round(amplitude * envelope * math.sin(2 * math.pi * hz * frame / 48000))
-                  if channel in channels else 0 for channel, hz in ((0, 440), (1, 660))]
+                  if channel in channels else 0 for channel, hz in enumerate(frequencies)]
         samples.extend(struct.pack('<hh', *values))
     return bytes(samples)
 
@@ -1877,9 +1885,10 @@ def cold_native_microphone_start(args, report, card, wall_deadline, holders):
     evidence['passed'] = True
 
 
-def verify_native_microphone_clients(source, graph, evidence, pcm, paths, mapping, *, previous_trigger=None):
+def verify_native_microphone_clients(source, graph, evidence, pcm, paths, mapping, *, frequencies=(440, 660), previous_trigger=None):
     """Two bounded ordinary default clients; discard all client raw buffers."""
     from acoustic import score_phase
+    validate_tone_frequencies(frequencies)
     need(time.clock_gettime(time.CLOCK_BOOTTIME) < source.wall_deadline <=
          time.clock_gettime(time.CLOCK_BOOTTIME) + 60,
          'Native microphone verification deadline exceeds60s or expired')
@@ -1892,7 +1901,7 @@ def verify_native_microphone_clients(source, graph, evidence, pcm, paths, mappin
     for index in range(2):
         name = f'spx-native-default-microphone-{os.getpid()}-{index}'
         client = DesktopRecording(graph, name, wall_deadline=source.wall_deadline)
-        entry = dict(name=name, pid=client.process.pid, passed=False)
+        entry = dict(name=name, pid=client.process.pid, passed=False, frequencies_hz=list(frequencies))
         evidence['clients'].append(entry)
         try:
             owner = source.begin_client(client, name)
@@ -1914,11 +1923,11 @@ def verify_native_microphone_clients(source, graph, evidence, pcm, paths, mappin
             source.healthy()
             check_stereo(mapping, paths, initialized=True)
             begin = client.mark()
-            pcm.play(tone({0, 1}))
+            pcm.play(tone({0, 1}, frequencies=frequencies))
             client.wait_frames(begin + 3 * 48000)
             end = client.mark()
             entry.update(start_frame=begin, end_frame=end,
-                         score=score_phase(client.samples(begin, end), reference, [440, 660]))
+                         score=score_phase(client.samples(begin, end), reference, list(frequencies)))
             need(entry['score']['passed'], 'Native default microphone acoustic test failed: ' +
                  entry['score']['reason'])
             source.healthy()
