@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-08, EQ: local-silence scoring handoff trial)
+## Status (2026-10-08, EQ: A03j idle native microphone sleep recovery passes)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
@@ -39,7 +39,7 @@ peak69.8C. CY extends this to verified native FP. DN stays below temporary55C; a
 cleanup is fixed and real virtual-source restoration verified separately.
 **DI closes A03d:** native microphone PCM close/reopen and third client pass;
 EF strengthens this with retained COPP routing and no close timeout. **EH closes A03g:**
-stock-source clients start native capture and close it on idle; EI proves cold startup. **EJ closes A03h:** native microphone available during150s desktop serving. **EK closes A03i:** verified microphone opt-in restores across candidate reboots. **DM closes A03e:**
+stock-source clients start native capture and close it on idle; EI proves cold startup. **EJ closes A03h:** native microphone available during150s desktop serving. **EK closes A03i:** verified microphone opt-in restores across candidate reboots. **EQ closes A03j:** idle stock microphone survives normal AC sleep and fresh clients pass. **DM closes A03e:**
 four incompatible native requests reject; third original-contract client passes.
 B05a early RTC and N01a IPv6 VPN retain prior passes. **N01b is accepted by user
 assumption from working5GHz; no2.4GHz functional pass was measured.** Light
@@ -89,8 +89,11 @@ EL/EM/EN stop before normal sleep at acoustic/scorer gates. In the user's quiet
 room, EO passes both native preclients and normal28.5637s AC sleep, then a strict
 playback trigger comparison prevents postclients. EP corrects that observer but
 stops earlier at a fatal playback underrun during initial desktop scoring.
-[EP result](tools/spx/boot-diagnostics/RESULT-20261008ep.md). EQ stages explicit
-local PCM silence during scoring; no new A03/P03 pass yet.
+[EP result](tools/spx/boot-diagnostics/RESULT-20261008ep.md). **EQ closes A03j:**
+idle stock source survives normal27.8767s AC sleep; all four fresh native default
+clients pass acoustics and ordered cleanup. Final helper duration reporting fails
+before post-infrastructure checks, so P03g remains open.
+[EQ result](tools/spx/boot-diagnostics/RESULT-20261008eq.md).
 [EN result](tools/spx/boot-diagnostics/RESULT-20261008en.md). Full DSP teardown,
 persistence and reliability remain open. [EH result](tools/spx/boot-diagnostics/RESULT-20261008eh.md).
 [EF result](tools/spx/boot-diagnostics/RESULT-20261008ef.md).
@@ -908,6 +911,20 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
     [EK result](tools/spx/boot-diagnostics/RESULT-20261008ek.md).
     Scope is this opt-in candidate and warm reboots. Cold power-off, logout,
     arbitrary clients/XRUN, UCM, quality and full DSP lifecycle remain open.
+
+  - [x] **A03j — Idle stock microphone recovery across normal AC sleep.** EQ,
+    boot `82373e99-3e10-46d2-9735-82fa5d24a77f`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: same idle native default source and
+    services survive27.8767s normal AC sleep with capture closed. Two fresh
+    ordinary clients before and two after wake pass quiet acoustics, exact
+    native geometry, new capture triggers and actual idle closure. Each client
+    phase stays within60s. Playback PID/start/FD/geometry/init remain strict;
+    proven normal resume permits one ALSA playback trigger refresh. Source/
+    default/mixers/graph restore, attached teardown/FIFO0, all PCMs closed and
+    parked amps/PMauto pass. [EQ result](tools/spx/boot-diagnostics/RESULT-20261008eq.md).
+    Enclosing helper fails on missing original-oracle duration report before
+    infrastructure checks; P03g remains open. Reliability, battery sleep,
+    quality/mapping and full DSP teardown remain open.
 
 - [ ] **A04 — External audio.** Test applicable USB-C audio/dock and Bluetooth
   output/input devices, routing, hotplug and reconnect. The logical codec
