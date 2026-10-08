@@ -40,14 +40,25 @@ Hypotheses:
    captured. **Confirmed.** Trial `20261008ev`
    (boot `fffa14b0`): colour bars (129/119-stddev, full 16-255) prove the
    sensor -> CSI -> CSID -> VFE -> IOMMU path, and the demosaiced bright frame
-   is a real scene (`RESULT-20261008ef`). The user identified it: front-facing
-   camera, real colour, upside down. Two defects are now named:
-   **the image is upside down** (board DT `orientation = <1>` on this sensor)
-   and **`camera.py` writes an undemosaiced grayscale preview**, so a raw
-   preview is never a scene. Fix the orientation in the DT, demosaic in the
-   helper, then C01 needs repeated stream start/stop plus resume and the
-   user's confirmation of the corrected picture. Do the human-session items
-   first; camera item: view the corrected frame.
+   is a real scene (`RESULT-20261008ef`). The user identified it: the **back**
+   camera, a real room (ceiling strip, doorway, a person), upside down and
+   greenish (measured: blue at 77% of red). A 180° rotation fixes it exactly.
+   Two defects are named, both in the pixel path:
+   1. **The image is 180° rotated.** Do **not** blame `orientation = <1>`:
+      that DT property is read-only metadata (`V4L2_CID_CAMERA_ORIENTATION`,
+      flagged read-only in `v4l2-ctrls-defs.c`), so it cannot flip pixels.
+      The evidence points at the sensor mode: `mode_2112x1568_regs` sets
+      `0x3820 = 0xab` and `0x3803 = 0x00`, while the full-res
+      `mode_4224x3136_regs` sets `0x3820 = 0xa8` and `0x3803 = 0x08`. Bit 0 of
+      `0x3820` is the OV vertical-image-control bit, so the binned mode is
+      programmed with different flip state and a window starting at y-origin.
+      Same question for the register readout order.
+   2. **The colour is greenish** — blue at 77% of red on the Bayer planes.
+   Next: fix `camera.py` to demosaic (`bayer_grbg8`) with percentile
+   auto-levels, so the check itself sees a scene instead of a grayscale
+   plateau; then test the sensor's vertical/mirror register state before
+   writing any kernel change. Do the human-session items first; camera item:
+   view the corrected frame.
 2. If camss binds but STREAMON hangs or no frame arrives: compare the live
    CSIPHY/CSID register programming and clock rates with the 6.18 run
    (`camss-video.c` bisect knob, 400/300 MHz PHY rates).
