@@ -1619,14 +1619,6 @@
 		orientation = <0>;
 		rotation = <0>;
 
-		port {
-			cam_front_ep: endpoint {
-				clock-lanes = <7>;
-				data-lanes = <1 2>;
-				link-frequencies = /bits/ 64 <419200000>;
-				remote-endpoint = <&csiphy0_ep>;
-			};
-		};
 	};
 };
 
