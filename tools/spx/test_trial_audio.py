@@ -25,6 +25,7 @@ class TrialAudioFixture(unittest.TestCase):
         (self.proc / 'cmdline').write_text('spx_attempt=20261004bq spx_audio=parked')
         (self.proc / 'boot_id').write_text('new-boot')
         (self.proc / 'uptime').write_text('100.0 0.0')
+        (self.out / 'installed.json').write_text(json.dumps(dict(boot_id='old-boot')))
         self.request = dict(attempt='20261004bq', release='test-kernel',
                             preboot_id='old-boot', action='serve',
                             allow_amp_power=True, playback=True, capture=True,
@@ -54,6 +55,42 @@ class TrialAudioFixture(unittest.TestCase):
 
 
 class AudioRequestTests(TrialAudioFixture):
+    def test_prepare_trial_install_recovery_arm_and_consume_next_boot(self):
+        storage = self.out / '20261004bq'
+        storage.mkdir()
+        (storage / 'prepared.json').write_text(json.dumps(dict(
+            audio_mode='parked', preboot_id='prepared-trial', release='test-kernel')))
+        (storage / 'installed.json').write_text(json.dumps(dict(boot_id='recovery-boot')))
+        (self.proc / 'boot_id').write_text('recovery-boot')
+        account = SimpleNamespace(pw_uid=1000, pw_name='dvitali')
+        def paths(value):
+            return self.out if value == '/var/lib/spx-boot-diagnostics/functional' else self.path(value)
+        argv = ['trial.py', 'arm-audio', '20261004bq', '--audio-action', 'desktop-mic',
+                '--capture-reopen', '--allow-amp-power', '--allow-playback', '--allow-capture']
+        with patch.object(trial, 'Path', side_effect=paths), patch.object(sys, 'argv', argv), \
+                patch.object(trial.os, 'geteuid', return_value=0), \
+                patch.object(trial.os, 'uname', return_value=SimpleNamespace(release='6.18.3-1-surface+')), \
+                patch.object(trial, 'recovery'), \
+                patch.object(trial.pwd, 'getpwnam', return_value=account):
+            trial.main()
+        record = json.loads((storage / 'audio-request.json').read_text())
+        self.assertEqual(record['preboot_id'], 'recovery-boot')
+        (self.proc / 'boot_id').write_text('new-boot')
+        with patch.object(trial, 'BOOT_ID', 'prepared-trial'), \
+                patch.object(trial, 'audio_check') as hardware:
+            trial.requested_audio(SimpleNamespace())
+        self.assertTrue(hardware.call_args.args[0].capture_reopen)
+        self.assertTrue((storage / 'audio-started.json').exists())
+
+    def test_request_from_different_installation_boot_rejects_before_hardware(self):
+        (self.out / 'installed.json').write_text(json.dumps(dict(boot_id='other-recovery')))
+        self.write_request()
+        with patch.object(trial, 'audio_check') as hardware:
+            with self.assertRaises(AssertionError):
+                trial.requested_audio(self.args)
+            hardware.assert_not_called()
+        self.assertTrue((self.out / 'audio-request.json').exists())
+
     def test_array_cli_rejects_wrong_actions_before_hardware(self):
         for command, action, source in (('prepare', 'feedback', 'DMIC1'),
                                         ('audio', 'desktop-mic', 'DMIC1'),

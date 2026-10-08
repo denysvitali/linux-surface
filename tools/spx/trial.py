@@ -1675,7 +1675,8 @@ def requested_audio(args):
     words = Path('/proc/cmdline').read_text().split()
     boot_id = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
     assert record['attempt'] == ATTEMPT and record['release'] == os.uname().release
-    assert record['preboot_id'] == BOOT_ID and boot_id != BOOT_ID
+    source_boot = json.loads((OUT / 'installed.json').read_text())['boot_id']
+    assert record['preboot_id'] == source_boot and boot_id != source_boot
     assert 'spx_attempt=' + ATTEMPT in words and 'spx_audio=parked' in words
     assert record['action'] in ('initialize', 'feedback', 'desktop', 'serve', 'reopen', 'desktop-mic') and record['allow_amp_power'] is True
     feedback = record['action'] in ('feedback', 'desktop', 'serve', 'reopen', 'desktop-mic')
@@ -2175,7 +2176,7 @@ def main():
         BOOT_ID, RELEASE = record['preboot_id'], record['release']
         if args.command == 'install':
             BOOT_ID = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
-        elif args.command == 'boot':
+        elif args.command in ('boot', 'arm-audio'):
             BOOT_ID = json.loads((OUT / 'installed.json').read_text())['boot_id']
         if args.command == 'check':
             lock = str(REPO / 'tools/spx/spx-lock')
