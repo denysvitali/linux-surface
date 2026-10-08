@@ -330,3 +330,56 @@ def exercise(out, attempt, release, sensor_kind='rear'):
                           informative(repeat))
     save()
     return result
+
+
+def libcamera_exercise(out, frames=20):
+    """Bounded processed captures through libcamera's software ISP.
+
+    Runs after the raw captures, so a failure here cannot cost their evidence.
+    Each listed camera delivers `frames` processed frames; the first, middle
+    and last are kept so exposure and white-balance convergence can be seen.
+    """
+    out.mkdir(mode=0o700)
+    result = dict(complete=False, cameras=[],
+                  boot_id=Path('/proc/sys/kernel/random/boot_id').read_text().strip())
+    target = out / 'result.json'
+
+    def save():
+        target.write_text(json.dumps(result, indent=2) + '\n')
+        os.sync()
+
+    environment = ['env', 'LIBCAMERA_LOG_LEVELS=*:INFO']
+    listing = call(environment + ['cam', '-l'], 60)
+    result['list'] = listing
+    save()
+    identifiers = re.findall(r'^\d+: .*\((\S+)\)\s*$', listing.get('output', ''), re.M)
+    for index, identifier in enumerate(identifiers, 1):
+        folder = out / ('cam%d' % index)
+        folder.mkdir(mode=0o700)
+        record = dict(index=index, id=identifier)
+        result['cameras'].append(record)
+        record['properties'] = call(environment + ['cam', '-c', str(index), '-p',
+                                                   '--list-controls'], 60)
+        save()
+        record['capture'] = call(
+            environment + ['cam', '-c', str(index), '-I',
+                           '-s', 'role=viewfinder,width=1280,height=960,pixelformat=BGR888',
+                           '--capture=%d' % frames, '--metadata',
+                           '--file=' + str(folder / 'frame-#.ppm')], 120)
+        written = sorted(folder.glob('*.ppm'))
+        record['frames_written'] = len(written)
+        keep = {written[i] for i in (0, len(written) // 2, len(written) - 1)} if written else set()
+        for path in written:
+            if path not in keep:
+                path.unlink()
+        record['kept'] = sorted(path.name for path in keep)
+        save()
+    step = call(['journalctl', '-b', '-k', '--no-pager', '-o', 'short-monotonic', '-n', '80',
+                 '-g', 'camss|csiphy|csid|vfe|ov13858|ov5693|ov7251|cci|arm-smmu'], 30)
+    result['kernel_log'] = step
+    result['complete'] = bool(identifiers) and all(
+        item['capture'].get('returncode') == 0 and item['frames_written'] == frames
+        for item in result['cameras'])
+    save()
+    return result
+

@@ -2108,6 +2108,16 @@ def camera_capture(args, sensors):
                                            result=str(root / name / 'result.json'))
                                 for name, item in results.items()})
         (root / 'result.json').write_text(json.dumps(summary, indent=2) + '\n')
+        if shutil.which('cam'):
+            # Processed streams through libcamera, after the raw evidence is safe.
+            try:
+                from camera import libcamera_exercise
+                processed = libcamera_exercise(root / 'libcamera')
+                summary['libcamera'] = dict(complete=processed['complete'],
+                                            result=str(root / 'libcamera/result.json'))
+            except Exception as error:
+                summary['libcamera'] = dict(complete=False, error=repr(error))
+            (root / 'result.json').write_text(json.dumps(summary, indent=2) + '\n')
         print(json.dumps(dict(complete=summary['complete'],
                               result=str(root / 'result.json'))), flush=True)
     finally:

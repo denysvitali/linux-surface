@@ -32,6 +32,23 @@ reference board; LDO9_E is USB-only). Both are already on for UFS/eDP.
 
 Hypotheses:
 
+6. The front OV5693 and IR OV7251 only need the v23 wiring that worked on
+   6.18 (front: CCI0 bus 1, MCLK2/GPIO15, reset GPIO12, CSIPHY0 two lanes;
+   IR: CCI0 bus 0, MCLK3/GPIO16, enable GPIO23, CSIPHY3 one lane), and the
+   colour/processing gap is the missing ISP stage, which libcamera's software
+   ISP supplies. Change: commit `23848bdb15dd` (DT, sensor modules) plus
+   `UDMABUF`/`DMABUF_HEAPS` and a bounded `cam` step. Expect: all three
+   sensors in the graph, two informative raw captures each, and `cam -l`
+   listing three cameras with 20 processed frames each.
+   **Not yet run.** Build with dma-buf (`UDMABUF`, `DMABUF_HEAPS`) in progress;
+   DTB verified to carry the three sensor nodes. Next: prepare and boot the
+   trial, then read `/var/lib/spx-boot-diagnostics/functional/<attempt>/camera/`
+   (`result.json`, `front|rear|ir/result.json`, `libcamera/result.json`),
+   write `RESULT-<attempt>.md`, show the user `libcamera/cam*/frame-*.ppm` for
+   colour/orientation, then remove `/boot/spx-trial-<attempt>`.
+   Rear-only repeat `20261008wb` (boot `76451c48`) was collected: same pass
+   as EV, nothing new.
+
 5. RAW-to-display rendering omits black subtraction, AWB and transfer.
    **Implemented offline, physical acceptance pending:** `camera_render.py`
    adds full RAW10 decoding, provisional common black subtraction, bounded
