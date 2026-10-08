@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-08, EP: playback underrun blocks native microphone sleep test)
+## Status (2026-10-08, EQ: local-silence scoring handoff trial)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
@@ -89,7 +89,8 @@ EL/EM/EN stop before normal sleep at acoustic/scorer gates. In the user's quiet
 room, EO passes both native preclients and normal28.5637s AC sleep, then a strict
 playback trigger comparison prevents postclients. EP corrects that observer but
 stops earlier at a fatal playback underrun during initial desktop scoring.
-[EP result](tools/spx/boot-diagnostics/RESULT-20261008ep.md). No new A03/P03 pass yet.
+[EP result](tools/spx/boot-diagnostics/RESULT-20261008ep.md). EQ stages explicit
+local PCM silence during scoring; no new A03/P03 pass yet.
 [EN result](tools/spx/boot-diagnostics/RESULT-20261008en.md). Full DSP teardown,
 persistence and reliability remain open. [EH result](tools/spx/boot-diagnostics/RESULT-20261008eh.md).
 [EF result](tools/spx/boot-diagnostics/RESULT-20261008ef.md).
