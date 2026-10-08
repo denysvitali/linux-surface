@@ -40,12 +40,22 @@ Hypotheses:
    `UDMABUF`/`DMABUF_HEAPS` and a bounded `cam` step. Expect: all three
    sensors in the graph, two informative raw captures each, and `cam -l`
    listing three cameras with 20 processed frames each.
-   **Not yet run.** Build with dma-buf (`UDMABUF`, `DMABUF_HEAPS`) in progress;
-   DTB verified to carry the three sensor nodes. Next: prepare and boot the
-   trial, then read `/var/lib/spx-boot-diagnostics/functional/<attempt>/camera/`
-   (`result.json`, `front|rear|ir/result.json`, `libcamera/result.json`),
-   write `RESULT-<attempt>.md`, show the user `libcamera/cam*/frame-*.ppm` for
-   colour/orientation, then remove `/boot/spx-trial-<attempt>`.
+   **Partly refuted (ew, boot 9366f2e2).** Front OV5693 fails on CCI bus 1
+   at identify (`master 1 queue 0 timeout`, reg 0x300a -110); IR OV7251
+   probes but has no graph link; rear logs no probe; no frames. See
+   `RESULT-20261008ew.md`.
+7. Hypothesis: front fails only because gpio19/20 are missing from the CCI0
+   pinctrl. **Refuted (ex, boot 028f358f).** Same timeout with the pins added;
+   MCLK2 and the three rails are on during the probe. See `RESULT-20261008ex.md`.
+8. **Open: H-reset.** Front pinctrl-0 includes `cam_front_reset` (GPIO12,
+   output-low). v23 bound only the MCLK pinctrl to the front node. One DTB
+   change (remove `cam_front_reset` from pinctrl-0), one trial.
+9. **Open: H-async.** Does the front failure stop camss completing its sensor
+   bind, and so remove the rear and IR links? One trial with the front node
+   removed; rear and IR should then appear. The rear-only `20261008wb` repeat
+   (boot `76451c48`) captured frames, so it is the reference.
+10. **Open: H-rear.** Why does `ov13858` log no probe on either trial?
+   Check its CCI bus-0 address and reset/power before the identify path.
    Rear-only repeat `20261008wb` (boot `76451c48`) was collected: same pass
    as EV, nothing new.
 
