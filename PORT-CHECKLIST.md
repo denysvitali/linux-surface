@@ -79,7 +79,8 @@ awaits attribution for later observations.
 User cannot provide physical assistance (October6); continue autonomous work.
 Default desktop microphone resume has no pass after DY/DZ/EA. After N02c
 breadth gain, its freeze prerequisite is reproduced/resolved with a silent
-frontend; changed EB hardware trial is prepared. [EA result](tools/spx/boot-diagnostics/RESULT-20261008ea.md).
+frontend. EB bridge resumes but scoring hits the helper deadline; changed EC
+orders teardown before infrastructure checks. [EA result](tools/spx/boot-diagnostics/RESULT-20261008ea.md).
 Physical observations remain unverified. CDSP is parked after three changed
 boots without a usable accelerator result. CW stops before its recorded query;
 CV's return stalls in shutdown ramdisk generation. CX prepares that ramdisk
