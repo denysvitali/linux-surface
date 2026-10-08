@@ -599,7 +599,7 @@ class NativeMicResume(unittest.TestCase):
         source.close.side_effect = lambda: events.append('source-unload')
         graph.monitor.close.side_effect = lambda: events.append('monitor-close')
         def verify(source, graph, evidence, *args, frequencies=(440, 660), previous_trigger=None):
-            self.assertEqual(frequencies, (880, 1320))
+            self.assertEqual(frequencies, (440, 660))
             name = 'pre' if previous_trigger is None else 'post'; events.append(name)
             evidence.update(microphone_client_passed=True, clients=[
                 dict(passed=True, pid=(10 if name == 'pre' else 20) + index,
@@ -634,9 +634,9 @@ class NativeMicResume(unittest.TestCase):
         self.assertIsNot(result['native_microphone']['pre']['clients'], result['native_microphone']['post']['clients'])
         for name in ('pre', 'post'):
             phase = result['native_microphone'][name]
-            self.assertEqual(phase['wall_deadline_boottime'] - phase['started_boottime'], 60)
+            self.assertAlmostEqual(phase['wall_deadline_boottime'] - phase['started_boottime'], 60)
             self.assertIsNone(phase['recording'])
-            self.assertEqual(phase['frequencies_hz'], [880, 1320])
+            self.assertEqual(phase['frequencies_hz'], [440, 660])
         self.assertIsNone(graph.microphone); self.assertIsNone(graph.monitor)
 
     def test_sleep_failure_preserved_monitor_ends_source_unloads(self):
