@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-08, ER: full native microphone sleep validation staged)
+## Status (2026-10-08, ER: A03j/P03g native microphone sleep recovery passes)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
@@ -23,7 +23,7 @@ reverse plugs, visible output and hotplug remain unverified.
 CF retains P01a actual charging pass; further battery tests are deferred.
 **CS closes B06a; CT closes B06b/B06c:** TPM commands, automatic startup and measured GRUB boot pass.
 **DO closes B06e:** TPM-generated ephemeral P256 signatures verify independently; changed messages reject, cleanup passes.
-**DO closes P03c; DS closes P03d; DX closes P03e; EC closes P03f:** normal AC sleep retains network/motion/storage; EC preserves the ordinary default microphone client and passes pre/post acoustic checks. Full DSP teardown remains open.
+**DO closes P03c; DS closes P03d; DX closes P03e; EC closes P03f; ER closes P03g:** normal AC sleep retains network/motion/storage; EC preserves a default recording client; ER retains the idle stock source and fresh clients work after wake. Full DSP teardown remains open.
 **DP closes A03a:** two-minute default desktop stream and ordered SoundWire shutdown pass.
 **DR closes A03f:** quiet default desktop attenuation, mute and unmute pass acoustically; arbitrary shutdown and useful listening range remain open.
 **D01a passes on CE:** two GNOME off/on cycles
@@ -39,7 +39,7 @@ peak69.8C. CY extends this to verified native FP. DN stays below temporary55C; a
 cleanup is fixed and real virtual-source restoration verified separately.
 **DI closes A03d:** native microphone PCM close/reopen and third client pass;
 EF strengthens this with retained COPP routing and no close timeout. **EH closes A03g:**
-stock-source clients start native capture and close it on idle; EI proves cold startup. **EJ closes A03h:** native microphone available during150s desktop serving. **EK closes A03i:** verified microphone opt-in restores across candidate reboots. **EQ closes A03j:** idle stock microphone survives normal AC sleep and fresh clients pass. **DM closes A03e:**
+stock-source clients start native capture and close it on idle; EI proves cold startup. **EJ closes A03h:** native microphone available during150s desktop serving. **EK closes A03i:** verified microphone opt-in restores across candidate reboots. **EQ/ER close A03j:** idle stock microphone survives normal AC sleep and fresh clients pass. **DM closes A03e:**
 four incompatible native requests reject; third original-contract client passes.
 B05a early RTC and N01a IPv6 VPN retain prior passes. **N01b is accepted by user
 assumption from working5GHz; no2.4GHz functional pass was measured.** Light
@@ -60,7 +60,7 @@ awaits attribution for later observations.
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
 | Speakers (A01) | **BY desktop playback; DP shutdown; DR controls; DX live resume pass** | Persistence, useful volume/mapping/balance, reopen and arbitrary shutdown |
-| Microphones (A02) | **DK array; EF native reopen; EC resume; EI cold startup; EK boot opt-in** | Quality, physical mapping, persistence and full lifecycle |
+| Microphones (A02) | **DK array; EF native reopen; EC/ER resume; EI cold startup; EK boot opt-in** | Quality, physical mapping, persistence and full lifecycle |
 | Cameras (C01–C05) | Rear sensor identifies | No frame captured |
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
 | Keyboard, touchpad (I04, I05) | **BI keyboard works**; recovery keyboard restored after SSAM timeout | Startup reliability, full keys/gestures and resume |
@@ -69,7 +69,7 @@ awaits attribution for later observations.
 | USB data (U01) | Untested | Both ports/orientations, fixtures |
 | USB-C PD, DisplayPort, dock (U02–U04) | **CG: external off/on scanout restoration passes; normal orientation API works** | Visible output, physical replug, roles/PD, ports/orientations/resume |
 | Battery and charging (P01) | **CF: P01a actual charging passes, +1.26Wh/120s** | Charge-policy explanation, discharge/transitions and charger coverage |
-| Suspend/resume (P03) | **DD13 direct wakes; DO/DS normal AC sleep; DX/EC native/default mic resume pass**; targets masked | Full device recovery, battery sleep and physical wakes |
+| Suspend/resume (P03) | **DD13 direct wakes; DO/DS normal AC sleep; DX/EC/ER native/default mic resume pass**; targets masked | Full device recovery, battery sleep and physical wakes |
 | Thermal (P05) | **CM cooling limits; CX/CY combined load/cleanup; DN below temporary55C, automatic testing parked** | Real automatic response, longer envelope and enclosure behavior |
 | Idle power (P02) | BU: CPU scales down; GPU runtime-suspends | **Battery tests deferred by user**; remaining forced-on devices |
 | Sensors (S01, S02) | **DD backend/desktop clients survive repeated/30-minute AC sleep** | Light/axes/calibration; DA fault; final regression |
@@ -91,10 +91,10 @@ playback trigger comparison prevents postclients. EP corrects that observer but
 stops earlier at a fatal playback underrun during initial desktop scoring.
 [EP result](tools/spx/boot-diagnostics/RESULT-20261008ep.md). **EQ closes A03j:**
 idle stock source survives normal27.8767s AC sleep; all four fresh native default
-clients pass acoustics and ordered cleanup. Final helper duration reporting fails
-before post-infrastructure checks, so P03g remains open.
-[EQ result](tools/spx/boot-diagnostics/RESULT-20261008eq.md). ER stages fixed
-original90s wall enforcement/actual close duration for full infrastructure checks.
+clients pass acoustics and ordered cleanup. EQ final duration reporting fails before infrastructure. **ER closes P03g:**
+measured original capture24.876s, four fresh clients and complete post-sleep
+WLAN/motion/storage/ordered audio cleanup pass after28.2172s normal AC sleep.
+[ER result](tools/spx/boot-diagnostics/RESULT-20261008er.md).
 [EN result](tools/spx/boot-diagnostics/RESULT-20261008en.md). Full DSP teardown,
 persistence and reliability remain open. [EH result](tools/spx/boot-diagnostics/RESULT-20261008eh.md).
 [EF result](tools/spx/boot-diagnostics/RESULT-20261008ef.md).
@@ -923,8 +923,10 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
     proven normal resume permits one ALSA playback trigger refresh. Source/
     default/mixers/graph restore, attached teardown/FIFO0, all PCMs closed and
     parked amps/PMauto pass. [EQ result](tools/spx/boot-diagnostics/RESULT-20261008eq.md).
-    Enclosing helper fails on missing original-oracle duration report before
-    infrastructure checks; P03g remains open. Reliability, battery sleep,
+    EQ enclosing helper fails on missing original-oracle duration report; ER
+    repeats the functional pass with measured24.876s capture and full P03g
+    infrastructure/cleanup. [ER result](tools/spx/boot-diagnostics/RESULT-20261008er.md).
+    Reliability, battery sleep,
     quality/mapping and full DSP teardown remain open.
 
 - [ ] **A04 — External audio.** Test applicable USB-C audio/dock and Bluetooth
@@ -1490,6 +1492,22 @@ GPU runtime suspend works.
     close timeout remains: clean DSP teardown/full lifecycle unproven.
     One AC cycle; repeat reliability, quality, battery/low-power/full P03 open.
     [EC result](tools/spx/boot-diagnostics/RESULT-20261008ec.md).
+
+  - [x] **P03g — Idle stock microphone and fresh clients after normal AC sleep.**
+    ER boot `8b6fece4-f8d7-4897-9aad-480ac3d87d0a`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: same idle source/module/default/services,
+    actual capture closed through28.2172s normal RTC-woken AC sleep. Two fresh
+    preclients and two postclients pass exact native capture geometry, changed
+    capture triggers and quiet acoustics. Original oracle closes after measured
+    24.876s within fixed90s cap; native phases25.761s/27.783s within60s caps.
+    Strict playback PID/start/FD/geometry/init retain; normal proof permits one
+    expected ALSA trigger refresh. Ordered attached teardown/FIFO0/parked amps,
+    six closed PCMs, raw discard/source/default/mixer/graph/PMauto/mask/alarm/
+    inhibitor cleanup pass. Same motion services/all three streams,1MB WLAN
+    transfer and64KiB fsync/readback pass after audio closure. Complete helper
+    and check service succeed. [ER result](tools/spx/boot-diagnostics/RESULT-20261008er.md).
+    One AC cycle; reliability, battery/low-power, physical wake, full DSP teardown
+    and full P03 remain open.
 
 - [ ] **P04 — Hibernate applicability.** Establish whether the intended platform/
   storage/security setup supports hibernation; if supported, verify image restore
