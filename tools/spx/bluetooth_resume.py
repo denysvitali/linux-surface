@@ -63,7 +63,7 @@ class Radio(power.Live):
         return dict(pid=pid, process_start_ticks=ticks, service_start_monotonic_us=started)
 
 
-    def original(self):
+    def original(self, *, include_network=True):
         adapter = power.idle(self.objects())
         assert adapter['Manufacturer'] == 29 and adapter['AddressType'] == 'public', 'fitted public QCA controller required'
         states = {}
@@ -74,9 +74,11 @@ class Radio(power.Live):
             states[key] = state
         assert 'bluetooth:hci0' in states and states['bluetooth:hci0']['hard'] == '0', 'fitted radio hardblocked or absent'
         assert states['bluetooth:hci0']['soft'] in ('0', '1')
-        return dict(address=adapter['Address'].upper(), policy=power.policy(adapter),
-                    powered=adapter['Powered'], power_state=adapter['PowerState'],
-                    rfkill=states, network=self.network())
+        result = dict(address=adapter['Address'].upper(), policy=power.policy(adapter),
+                      powered=adapter['Powered'], power_state=adapter['PowerState'], rfkill=states)
+        if include_network:
+            result['network'] = self.network()
+        return result
 
     def write_soft(self, value):
         assert self.fixture_window, 'rfkill write refused outside fixture window'
@@ -136,10 +138,10 @@ class Radio(power.Live):
             self.fixture_window = False
         end = time.monotonic() + 5
         while True:
-            current = self.original()
-            if current == original:
+            current = self.original(include_network=False)
+            if current == {key: value for key, value in original.items() if key != 'network'}:
                 return
-            assert time.monotonic() < end, 'original radio power/policy/rfkill/network not restored'
+            assert time.monotonic() < end, 'original radio power/policy/rfkill not restored'
             time.sleep(.1)
 
 
@@ -151,9 +153,24 @@ def scan_proven(result, *, retained=False):
                 result.get('fresh_new_events', 0) + result.get('fresh_rssi_events', 0) > 0)
 
 
-def require_same(radio, before, identity, *, discovering=False):
-    power.unchanged(before, radio.snapshot(discovering=discovering))
+def require_same(radio, before, identity, *, discovering=False, include_network=True):
+    power.unchanged(before, radio.snapshot(discovering=discovering, include_network=include_network),
+                    include_network=include_network)
     assert radio.identity() == identity, 'native BlueZ PID/start time changed'
+
+
+def wait_same_network(radio, expected):
+    """Allow bounded native WLAN recovery; never reconnect or change its policy."""
+    end = time.monotonic() + 20
+    while True:
+        try:
+            current = radio.network()
+        except AssertionError:
+            assert time.monotonic() < end, 'WLAN did not natively recover within20s'
+            time.sleep(.5)
+            continue
+        assert current == expected, 'WLAN connection UUID changed'
+        return dict(native_recovery_observed=True, same_connection=True, grace_seconds=20)
 
 
 def exercise(ops, radio=None, *, allow_radio_on=False, retain_discovery=False):
@@ -223,7 +240,7 @@ def exercise(ops, radio=None, *, allow_radio_on=False, retain_discovery=False):
             result['scans']['after'] = radio.client.observe()
             result['scanner_after'] = radio.client.identity()
             assert result['scanner_after'] == scanner_identity, 'owned scanner pipes changed after thaw'
-            require_same(radio, before, identity, discovering=True)
+            require_same(radio, before, identity, discovering=True, include_network=False)
             if not scan_proven(result['scans']['after'], retained=True):
                 result['fixture_inconclusive'] = result['scans']['after'].get('fresh_peer_count', 0) == 0
                 raise RuntimeError('fresh post-thaw delivered discovery proof missing')
@@ -257,14 +274,14 @@ def exercise(ops, radio=None, *, allow_radio_on=False, retain_discovery=False):
         signal.setitimer(signal.ITIMER_REAL, 0)
         for sig in ops.handlers:
             signal.signal(sig, signal.SIG_IGN)
-        radio.deadline = time.monotonic() + 30
+        radio.deadline = time.monotonic() + 35
         try:
             if radio.client is not None:
                 radio.client.close()
                 radio.client = None
             if before is not None:
                 radio.wait_discovery_off()
-                require_same(radio, before, identity)
+                require_same(radio, before, identity, include_network=False)
             result['owned_discovery_clients_reaped'] = True
         except (Exception, KeyboardInterrupt) as error:
             result['scanner_cleanup_error'] = power.error_text(error)
@@ -272,8 +289,10 @@ def exercise(ops, radio=None, *, allow_radio_on=False, retain_discovery=False):
             if fixture_changed:
                 radio.restore_fixture(original)
             if original is not None:
-                assert radio.original() == original, 'original radio state changed'
+                assert radio.original(include_network=False) == {key: value for key, value in original.items() if key != 'network'}, 'original radio state changed'
                 assert radio.identity() == identity, 'native BlueZ identity changed during fixture cleanup'
+                result['radio_fixture']['preference_restored'] = True
+                result['cleanup_network'] = wait_same_network(radio, original['network'])
             result['radio_fixture']['restored'] = True
         except (Exception, KeyboardInterrupt) as error:
             result['fixture_cleanup_error'] = power.error_text(error)

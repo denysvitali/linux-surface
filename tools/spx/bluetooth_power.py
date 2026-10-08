@@ -286,12 +286,15 @@ class Live:
         assert Path('/sys/class/net/wlan0/carrier').read_text().strip() == '1', 'wlan0 carrier absent'
         return state
 
-    def snapshot(self, discovering=False):
+    def snapshot(self, discovering=False, *, include_network=True):
         adapter = idle(self.objects(), discovering)
         assert adapter['Manufacturer'] == 29 and adapter['AddressType'] == 'public', 'fitted public QCA controller required'
-        return dict(address=adapter['Address'].upper(), policy=policy(adapter),
-                    powered=adapter['Powered'], power_state=adapter['PowerState'],
-                    rfkill=self.rfkill(), network=self.network())
+        result = dict(address=adapter['Address'].upper(), policy=policy(adapter),
+                      powered=adapter['Powered'], power_state=adapter['PowerState'],
+                      rfkill=self.rfkill())
+        if include_network:
+            result['network'] = self.network()
+        return result
 
     def set_power(self, powered):
         self.command(['busctl', 'set-property', 'org.bluez', ADAPTER, INTERFACE,
@@ -329,8 +332,9 @@ class Live:
         return 1000000
 
 
-def unchanged(before, after, powered=True):
-    for key in ('address', 'policy', 'rfkill', 'network'):
+def unchanged(before, after, powered=True, *, include_network=True):
+    keys = ('address', 'policy', 'rfkill') + (('network',) if include_network else ())
+    for key in keys:
         assert before[key] == after[key], key + ' changed'
     assert after['powered'] is powered and after['power_state'] == ('on' if powered else 'off'), 'power preference not restored'
 

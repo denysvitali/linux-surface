@@ -28,9 +28,9 @@ class Radio(PowerFake):
     def set_power(self, powered):
         raise AssertionError('resume test attempted power mutation')
 
-    def original(self):
+    def original(self, *, include_network=True):
         assert self.hard == '0', 'fitted radio hardblocked'
-        state = self.snapshot()
+        state = self.snapshot(include_network=include_network)
         state['rfkill'] = {'bluetooth:hci0': dict(name='hci0', type='bluetooth', soft=self.soft, hard=self.hard)}
         return state
 
@@ -271,7 +271,7 @@ class Resume(unittest.TestCase):
         radio.write_soft = lambda value: calls.append(('rfkill', value, radio.fixture_window))
         radio.set_power = lambda value: calls.append(('power', value, radio.fixture_window))
         radio.settle = lambda value: calls.append(('settle', value, radio.fixture_window))
-        radio.original = lambda: current
+        radio.original = lambda **kwargs: {key: value for key, value in current.items() if kwargs.get("include_network", True) or key != "network"}
         radio.fixture_needs_power_request = lambda unblocked: True
         with self.assertRaises(AssertionError): radio.prepare_fixture(original, False)
         self.assertEqual(calls, [])
@@ -293,7 +293,7 @@ class Resume(unittest.TestCase):
         radio.write_soft = Mock()
         radio.set_power = Mock(side_effect=AssertionError('redundant Powered=true request'))
         radio.settle = Mock(side_effect=AssertionError('unnecessary settle'))
-        radio.original = lambda: current
+        radio.original = lambda **kwargs: {key: value for key, value in current.items() if kwargs.get("include_network", True) or key != "network"}
         observations = [dict(Powered=False, PowerState='off-enabling'),
                         dict(Powered=False, PowerState='off-enabling'),
                         dict(Powered=True, PowerState='on')]
@@ -338,7 +338,7 @@ class Resume(unittest.TestCase):
         radio.set_power = Mock(side_effect=AssertionError('unnecessary power write'))
         radio.settle = Mock(side_effect=AssertionError('off-blocked must not wait for off'))
         radio.write_soft = Mock()
-        radio.original = lambda: original
+        radio.original = lambda **kwargs: {key: value for key, value in original.items() if kwargs.get("include_network", True) or key != "network"}
         with patch.object(resume.power, 'idle', return_value=dict(Powered=False)):
             radio.restore_fixture(original)
         radio.set_power.assert_not_called()
@@ -385,6 +385,54 @@ class Resume(unittest.TestCase):
                 self.assertEqual(live.radio.writes, [True, False])
                 self.assertTrue(result['radio_fixture']['restored'])
                 if failure == 'no-after': self.assertTrue(result['fixture_inconclusive'])
+
+    def test_native_wlan_grace_applies_after_retained_scanner_is_stopped(self):
+        live = Sleep('/not-written')
+        expected = live.radio.network()
+        def network():
+            if 'sleep' in live.events and 'post' not in live.events:
+                raise AssertionError('wlan0 not connected')
+            return expected
+        live.radio.network = network
+        with patch.object(resume.signal, 'setitimer'), patch.object(resume.power, 'Discovery', RetainedScanner):
+            result = resume.exercise(live, live.radio, retain_discovery=True)
+        self.assertTrue(result['complete'])
+        self.assertLess(live.events.index('scanner-close'), live.events.index('post'))
+        self.assertTrue(result['same_controller_policy_rfkill_network'])
+        self.assertTrue(result['cleanup_network']['same_connection'])
+
+    def test_failed_sleep_restores_radio_before_waiting_for_native_wlan(self):
+        live = Sleep('/not-written', 'proof')
+        expected = live.radio.network()
+        live.radio.soft = '1'
+        live.radio.data[resume.power.ADAPTER][resume.power.INTERFACE].update(Powered=False, PowerState='off-blocked')
+        observations = []
+        def network():
+            if 'sleep' in live.events:
+                self.assertIn('fixture-restore', live.events)
+                observations.append('native recovery')
+                if len(observations) < 3: raise AssertionError('wlan0 not connected')
+            return expected
+        live.radio.network = network
+        with patch.object(resume.signal, 'setitimer'), patch.object(resume.power, 'Discovery', RetainedScanner), patch.object(resume.time, 'sleep'):
+            result = resume.exercise(live, live.radio, allow_radio_on=True, retain_discovery=True)
+        self.assertFalse(result['complete'])
+        self.assertTrue(result['radio_fixture']['preference_restored'])
+        self.assertTrue(result['radio_fixture']['restored'])
+        self.assertTrue(result['cleanup_network']['same_connection'])
+        self.assertNotIn('scanner_cleanup_error', result)
+        self.assertNotIn('fixture_cleanup_error', result)
+        self.assertEqual(live.radio.writes, [True, False])
+
+    def test_network_grace_still_rejects_changed_uuid_and_expired_recovery(self):
+        radio = Mock()
+        radio.network.return_value = 'different-private-uuid'
+        with self.assertRaisesRegex(AssertionError, 'UUID changed'):
+            resume.wait_same_network(radio, 'original-private-uuid')
+        radio.network.side_effect = AssertionError('not connected')
+        with patch.object(resume.time, 'monotonic', side_effect=[0, 21]), patch.object(resume.time, 'sleep'):
+            with self.assertRaisesRegex(AssertionError, 'within20s'):
+                resume.wait_same_network(radio, 'original-private-uuid')
 
     def test_actual_drain_discards_queued_and_partial_private_events_before_new_counts(self):
         client = resume.power.Discovery.__new__(resume.power.Discovery)
