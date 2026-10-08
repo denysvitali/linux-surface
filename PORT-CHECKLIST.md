@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-08, EJ: native microphone desktop availability)
+## Status (2026-10-08, EK: native microphone boot opt-in)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
@@ -39,7 +39,7 @@ peak69.8C. CY extends this to verified native FP. DN stays below temporary55C; a
 cleanup is fixed and real virtual-source restoration verified separately.
 **DI closes A03d:** native microphone PCM close/reopen and third client pass;
 EF strengthens this with retained COPP routing and no close timeout. **EH closes A03g:**
-stock-source clients start native capture and close it on idle; EI proves cold startup. **EJ closes A03h:** native microphone available during150s desktop serving. Persistent opt-in remains open. **DM closes A03e:**
+stock-source clients start native capture and close it on idle; EI proves cold startup. **EJ closes A03h:** native microphone available during150s desktop serving. **EK closes A03i:** verified microphone opt-in restores across candidate reboots. **DM closes A03e:**
 four incompatible native requests reject; third original-contract client passes.
 B05a early RTC and N01a IPv6 VPN retain prior passes. **N01b is accepted by user
 assumption from working5GHz; no2.4GHz functional pass was measured.** Light
@@ -60,7 +60,7 @@ awaits attribution for later observations.
 | Touch startup (I01) | BI: automatic IPTSD, ready, zero bus errors/restarts | Repeated startup reliability |
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
 | Speakers (A01) | **BY desktop playback; DP shutdown; DR controls; DX live resume pass** | Persistence, useful volume/mapping/balance, reopen and arbitrary shutdown |
-| Microphones (A02) | **DK array; EF native reopen; EC resume; EI cold startup; EJ desktop availability** | Quality, physical mapping, persistence and full lifecycle |
+| Microphones (A02) | **DK array; EF native reopen; EC resume; EI cold startup; EK boot opt-in** | Quality, physical mapping, persistence and full lifecycle |
 | Cameras (C01–C05) | Rear sensor identifies | No frame captured |
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
 | Keyboard, touchpad (I04, I05) | **BI keyboard works**; recovery keyboard restored after SSAM timeout | Startup reliability, full keys/gestures and resume |
@@ -83,7 +83,8 @@ freeze and scoring prerequisites. EF fixes the capture COPP retention asymmetry,
 and three default clients pass across native close/reopen without the ADM timeout.
 EH stock-source clients now start/idle-close native capture on the retained route;
 EI proves first capture without arecord priming; EJ automatically publishes the
-native microphone for150s desktop serving. Persistent boot opt-in is next. Full DSP teardown,
+native microphone for150s desktop serving. EK proves verified opt-in restoration
+on two later candidate boots, including automatic stop-evidence archival. Full DSP teardown,
 persistence and reliability remain open. [EH result](tools/spx/boot-diagnostics/RESULT-20261008eh.md).
 [EF result](tools/spx/boot-diagnostics/RESULT-20261008ef.md).
 Physical observations remain unverified. CDSP is parked after three changed
@@ -707,8 +708,9 @@ PipeWire/PulseAudio and one initialized native PCM. No capture clipping or ALSA
 capture error occurred. Closing playback while amplifiers remained attached
 disabled the speaker streams and left an empty SoundWire FIFO; then the helper
 parked both amps. BN supplies the amps-off acoustic control. Persistent desktop
-integration, physical mapping, quality and repeated hardware reopen remain open,
-as do WCD RX overflow messages and ADM capture-close timeout(-110).
+integration beyond the verified candidate opt-in, physical mapping, quality and
+repeated playback reopen remain open. EF fixes matched capture COPP close;
+full DSP destruction and WCD RX overflow handling remain open.
 Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
 [BP](tools/spx/boot-diagnostics/RESULT-20261004bp.md).
 
@@ -885,6 +887,20 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
     [EJ result](tools/spx/boot-diagnostics/RESULT-20261008ej.md).
     Scope is the queued trial and bounded serving owner. Persistent opt-in
     across boots, arbitrary clients/XRUN, quality and full DSP teardown remain open.
+
+  - [x] **A03i — Verified desktop microphone opt-in across candidate reboots.** EK,
+    first boot `9665ca47-80fd-473f-b082-d8add883f637`, then
+    `24d59eb0-e3a9-4901-885a-40399bd83f8a` and
+    `8c0022e5-e26c-41e9-9302-3597b7a6dedb`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: verified live enable saves native
+    microphone policy; later boots automatically publish the source without
+    queued requests. Fresh ordinary default clients pass acoustics/idle closure.
+    Third boot archives old stop evidence automatically, retains source141s,
+    and normal guarded stop restores source/default/mixers/graph with attached
+    teardown/FIFO0, closed PCMs and parked amps, without live repair.
+    [EK result](tools/spx/boot-diagnostics/RESULT-20261008ek.md).
+    Scope is this opt-in candidate and warm reboots. Cold power-off, logout,
+    arbitrary clients/XRUN, UCM, quality and full DSP lifecycle remain open.
 
 - [ ] **A04 — External audio.** Test applicable USB-C audio/dock and Bluetooth
   output/input devices, routing, hotplug and reconnect. The logical codec
