@@ -57,6 +57,8 @@ Hypotheses:
 10. **Answered: H-rear (ez).** The rear OV13858 probes silently. Its link was
    missing because of the camss notifier, not the sensor. See
    `RESULT-20261008ez.md`.
+12. **Refuted: v23 extra CCI pads (fb, boot `1a5a2dde`).** gpio31-34/41/42 as
+   `cci_i2c` did not fix front bus 1. Untested: enable CCI1-3 as v23 did.
 11. **Open: scene.** Rear and IR scene frames are flat and dark (fa). Check
    the physical setup with the user before any sensor or ISP change.
 
