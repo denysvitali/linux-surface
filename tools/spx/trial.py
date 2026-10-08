@@ -1436,6 +1436,12 @@ def validate_native_mic_on_demand(action, enabled, reopen=False, contract=False)
         '--native-mic-on-demand requires desktop-mic and excludes capture-reopen/contract-check'
 
 
+def validate_native_mic_cold_start(action, enabled, on_demand=False, reopen=False, contract=False):
+    assert type(enabled) is bool and (not enabled or
+        (action == 'desktop-mic' and on_demand is True and not reopen and not contract)), \
+        '--native-mic-cold-start requires desktop-mic --native-mic-on-demand and excludes capture-reopen/contract-check'
+
+
 def validate_desktop_controls(action, enabled):
     assert type(enabled) is bool and (not enabled or action == "serve"), \
         "--desktop-controls requires serve"
@@ -1445,6 +1451,9 @@ def arm_audio(args):
     """Queue one authorized initialization or microphone-monitored audio test."""
     action = 'initialize' if args.audio_action == 'plan' else args.audio_action
     source = getattr(args, 'microphone_source', 'DMIC1')
+    validate_native_mic_cold_start(action, getattr(args, 'native_mic_cold_start', False),
+        getattr(args, 'native_mic_on_demand', False), getattr(args, 'capture_reopen', False),
+        getattr(args, 'capture_contract_check', False))
     validate_native_mic_on_demand(action, getattr(args, 'native_mic_on_demand', False),
                                  getattr(args, 'capture_reopen', False),
                                  getattr(args, 'capture_contract_check', False))
@@ -1478,6 +1487,7 @@ def arm_audio(args):
                        microphone_source=source, microphone_array=getattr(args, 'microphone_array', False), capture_reopen=getattr(args, 'capture_reopen', False),
                        capture_contract_check=getattr(args, 'capture_contract_check', False),
                        native_mic_on_demand=getattr(args, 'native_mic_on_demand', False),
+                       native_mic_cold_start=getattr(args, 'native_mic_cold_start', False),
                        allow_amp_power=True, playback=action in ('feedback', 'desktop', 'serve', 'reopen', 'desktop-mic'),
                        capture=action in ('feedback', 'desktop', 'serve', 'reopen', 'desktop-mic'),
                        serve_seconds=args.serve_seconds if action == 'serve' else None,
@@ -1676,6 +1686,9 @@ def requested_audio(args):
         return
     record = json.loads(request.read_text())
     source = record.get('microphone_source', 'DMIC1')
+    validate_native_mic_cold_start(record['action'], record.get('native_mic_cold_start', False),
+        record.get('native_mic_on_demand', False), record.get('capture_reopen', False),
+        record.get('capture_contract_check', False))
     validate_native_mic_on_demand(record['action'], record.get('native_mic_on_demand', False),
                                  record.get('capture_reopen', False),
                                  record.get('capture_contract_check', False))
@@ -1713,6 +1726,7 @@ def requested_audio(args):
     args.capture_reopen = record.get('capture_reopen', False)
     args.capture_contract_check = record.get('capture_contract_check', False)
     args.native_mic_on_demand = record.get('native_mic_on_demand', False)
+    args.native_mic_cold_start = record.get('native_mic_cold_start', False)
     args.allow_amp_power = True
     args.allow_playback = feedback
     args.allow_capture = feedback
@@ -1751,6 +1765,9 @@ def requested_audio(args):
 def audio_check(args):
     action = args.audio_action
     source = getattr(args, 'microphone_source', 'DMIC1')
+    validate_native_mic_cold_start(action, getattr(args, 'native_mic_cold_start', False),
+        getattr(args, 'native_mic_on_demand', False), getattr(args, 'capture_reopen', False),
+        getattr(args, 'capture_contract_check', False))
     validate_native_mic_on_demand(action, getattr(args, 'native_mic_on_demand', False),
                                  getattr(args, 'capture_reopen', False),
                                  getattr(args, 'capture_contract_check', False))
@@ -1805,6 +1822,8 @@ def audio_check(args):
                 command.append('--microphone-array')
             if getattr(args, 'capture_contract_check', False):
                 command.append('--capture-contract-check')
+            if getattr(args, 'native_mic_cold_start', False):
+                command.append('--native-mic-cold-start')
             if getattr(args, 'native_mic_on_demand', False):
                 command.append('--native-mic-on-demand')
             if getattr(args, 'capture_reopen', False):
@@ -2100,6 +2119,8 @@ def main():
     parser.add_argument('--audio-action', choices=('plan', 'inspect', 'initialize', 'listen', 'recover', 'capture', 'feedback', 'desktop', 'serve', 'reopen', 'desktop-mic'), default='plan')
     parser.add_argument('--capture-contract-check', action='store_true',
                         help='desktop-mic capture-reopen only: bounded incompatible contract rejection probes')
+    parser.add_argument('--native-mic-cold-start', action='store_true',
+                        help='native-mic-on-demand only: cold stock first-owner ambient prelude')
     parser.add_argument('--native-mic-on-demand', action='store_true',
                         help='desktop-mic-only stock ALSA source demand and idle-close test')
     parser.add_argument('--capture-reopen', action='store_true',
@@ -2154,6 +2175,8 @@ def main():
     if args.capture_contract_check and (args.command not in ('audio', 'arm-audio') or
                                         args.audio_action != 'desktop-mic' or not args.capture_reopen):
         parser.error('--capture-contract-check requires audio/arm-audio desktop-mic --capture-reopen')
+    if args.native_mic_cold_start and (args.command not in ('audio', 'arm-audio') or args.audio_action != 'desktop-mic' or not args.native_mic_on_demand or args.capture_reopen or args.capture_contract_check):
+        parser.error('--native-mic-cold-start requires audio/arm-audio desktop-mic --native-mic-on-demand and excludes capture-reopen/contract-check')
     if args.native_mic_on_demand and (args.command not in ('audio', 'arm-audio') or args.audio_action != 'desktop-mic' or args.capture_reopen or args.capture_contract_check):
         parser.error('--native-mic-on-demand requires audio/arm-audio desktop-mic and excludes capture-reopen/contract-check')
     if args.capture_reopen and (args.command not in ('audio', 'arm-audio') or args.audio_action != 'desktop-mic'):

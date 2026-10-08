@@ -15,7 +15,10 @@ public PipeWire sink and verifies attached-amplifier PCM teardown. ``serve`` fir
 runs that acoustic test, closes the microphone, then retains the same PCM for
 ordinary applications at minimum PA gain. ``--desktop-peak`` selects their fixed
 attenuation (default 1433/32768, at most 12000/32768). ``desktop-mic`` tests
-two bounded default recording clients over one retained capture/playback pair; it provides no persistent microphone service.
+two bounded default recording clients over one retained capture/playback pair.
+Opt-in --native-mic-cold-start verifies stock first-owner capture before the
+startup oracle and amp power, within the same 60 second budget. Neither mode
+provides a persistent microphone service.
 ``reopen`` tests two Linux playback PCMs with one continuous microphone capture
 and attached-amp teardown between them; ASM stays parked. None loads modules.
 """
@@ -265,6 +268,12 @@ def validate_native_mic_on_demand(action, enabled, reopen=False, contract=False)
          '--native-mic-on-demand requires desktop-mic and excludes capture-reopen/contract-check')
 
 
+def validate_native_mic_cold_start(action, enabled, on_demand=False, reopen=False, contract=False):
+    need(type(enabled) is bool and (not enabled or
+         (action == 'desktop-mic' and on_demand is True and not reopen and not contract)),
+         '--native-mic-cold-start requires desktop-mic --native-mic-on-demand and excludes capture-reopen/contract-check')
+
+
 def validate_capture_contract_check(action, reopen, enabled):
     need(type(enabled) is bool and (not enabled or (action == 'desktop-mic' and reopen is True)),
          '--capture-contract-check requires desktop-mic --capture-reopen')
@@ -383,7 +392,7 @@ def array_independence(phases):
 class OwnedCapture:
     """One finite MM2 capture, consumed continuously without XRUN recovery."""
 
-    def __init__(self, card, report, directory, maximum_seconds=90, retain_recording=True, channels=1):
+    def __init__(self, card, report, directory, maximum_seconds=90, retain_recording=True, channels=1, wall_deadline=None):
         need(channels in (1, 2), 'Capture channel count must be one or two')
         need(channels == 1 or (maximum_seconds <= 50 and not retain_recording),
              'Stereo capture requires a <=50 second bound and discarded recording')
@@ -395,6 +404,9 @@ class OwnedCapture:
         self.card = card
         self.started = time.monotonic()
         self.started_boottime = time.clock_gettime(time.CLOCK_BOOTTIME)
+        need(wall_deadline is None or self.started_boottime < wall_deadline <= self.started_boottime + maximum_seconds,
+             'Capture wall budget expired or extended')
+        self.wall_deadline = wall_deadline
         self.closed = True
         self.maximum_seconds = maximum_seconds
         self.retain_recording = retain_recording
@@ -1695,6 +1707,93 @@ def capture_contract_probes(capture, pcm, evidence):
 
 
 
+COLD_CAPTURE_MARKERS = (r'parking ASM capture|reusing parked ASM capture|'
+                        r'preserving capture COPP/matrix|reusing retained capture COPP/matrix')
+
+
+def cold_native_microphone_start(args, report, card, wall_deadline, holders):
+    """First configured capture belongs to stock PipeWire, with amps still parked."""
+    evidence = report['native_mic_cold_start'] = dict(passed=False, recording=None,
+        wall_deadline_boottime=wall_deadline, scope='cold stock first capture; no speaker power or playback')
+    need(time.clock_gettime(time.CLOCK_BOOTTIME) < wall_deadline,
+         'Cold native microphone budget expired')
+    statuses = {str(path): read_text(path) for path in
+                Path('/proc/asound').glob('card*/pcm*c/sub*/status')}
+    evidence['capture_status_before'] = statuses
+    need(statuses and all(value == 'closed' for value in statuses.values()),
+         'Capture already open before cold stock source')
+    history = subprocess.run(['journalctl', '-k', '-b', '--no-pager', '-n', '1',
+        '--grep=' + COLD_CAPTURE_MARKERS, '-o', 'cat'],
+        capture_output=True, text=True, timeout=1)
+    need(history.returncode in (0, 1) and not history.stderr and
+         (history.returncode == 0 or not history.stdout), 'Cold capture history query failed')
+    evidence['prior_capture_cache_exit'] = history.returncode
+    history = history.stdout
+    evidence['prior_capture_cache'] = history
+    need(not re.search(COLD_CAPTURE_MARKERS, history),
+         'Cold stock capture requires a boot with no prior parked capture/COPP')
+    graph = DesktopGraph(args.desktop_user, evidence)
+    holders.append(graph)  # Outer cleanup also covers a partially started graph.
+    graph.preserve_default_source = True
+    source = client = None
+    cursor = None
+    try:
+        graph.start()
+        source = graph.microphone = NativeMicSource(graph, card, evidence, wall_deadline,
+                                                  graph.default_source_before_test)
+        source.start()
+        cursor = source.cursor
+        name = f'spx-cold-default-microphone-{os.getpid()}'
+        report['microphone_capture'] = True
+        client = DesktopRecording(graph, name, wall_deadline=wall_deadline)
+        evidence['client'] = dict(name=name, pid=client.process.pid)
+        evidence['native_owner'] = source.begin_client(client, name)
+        client.wait_frames(3 * 48000)
+        samples = client.samples(48000, 3 * 48000)
+        need(len(samples) == 2 * 48000 and sum(value != 0 for value in samples) > len(samples) // 100,
+             'Cold native default microphone returned silence or incomplete data')
+        rms = math.sqrt(sum(value * value for value in samples) / len(samples))
+        need(math.isfinite(rms) and 0 < rms < 1000, 'Cold native microphone ambient level invalid')
+        client.limit = max(300, rms * 12)
+        source.healthy()
+        source.endpoint()
+        evidence['baseline'] = dict(start_frame=48000, end_frame=144000, rms=rms,
+                                    peak=max(abs(value) for value in samples), abort_rms=client.limit)
+    finally:
+        original = sys.exc_info()[0]
+        errors = []
+        def attempt(label, function, *arguments):
+            try:
+                function(*arguments)
+            except Exception as error:
+                errors.append(label + ': ' + type(error).__name__ + ': ' + str(error))
+        if source is not None:
+            attempt('watchdog', source.end_client)
+        if client is not None:
+            attempt('client', client.close)
+        if source is not None:
+            attempt('idle', source.require_closed, 'cold-after-client')
+            if cursor is not None:
+                def observe_close():
+                    text = source.journal('--after-cursor=' + cursor, '-n', '80', '-o', 'cat')
+                    evidence['kernel_close_observations'] = [line for line in text.splitlines()
+                        if re.search(r'SPX ASM stream|parking ASM capture|capture COPP/matrix', line)]
+                attempt('close observations', observe_close)
+            attempt('source', source.close)
+            if source.closed:
+                graph.microphone = None
+        attempt('graph', graph.close)
+        if evidence.get('graph_restored'):
+            holders.remove(graph)
+        attempt('desktop pause', assert_desktop_paused, args.desktop_user)
+        evidence['cleanup_errors'] = evidence.get('cleanup_errors', []) + errors
+        if errors and original is None:
+            raise RuntimeError('Cold native microphone cleanup failed: ' + '; '.join(errors))
+    need(time.clock_gettime(time.CLOCK_BOOTTIME) < wall_deadline,
+         'Cold native microphone exhausted original capture budget')
+    evidence['passed'] = True
+
+
 def native_microphone_on_demand(args, report, pcm, paths, mapping, capture, holders):
     """One stock source, two real default clients, actual native close on each idle."""
     from acoustic import score_phase
@@ -1711,7 +1810,7 @@ def native_microphone_on_demand(args, report, pcm, paths, mapping, capture, hold
         need(read_text(capture.status) == 'closed', 'Oracle capture PCM remained open')
         graph.start()
         source = graph.microphone = NativeMicSource(graph, capture.card, evidence,
-            capture.started_boottime + 60, graph.default_source_before_test)
+            getattr(capture, 'wall_deadline', None) or capture.started_boottime + 60, graph.default_source_before_test)
         source.start()
         playback = pcm.healthy()
         held = {field: re.search(r'^' + field + r'\s*:\s*(.+)$', playback, re.M)[1]
@@ -2415,6 +2514,9 @@ def initialize(args, report, *, live_resume=None):
                                 args.desktop_peak == 1433 and not getattr(args, 'desktop_controls', False)),
          'Live resume requires quiet serve initialization without desktop controls')
     source = getattr(args, 'microphone_source', 'DMIC1')
+    validate_native_mic_cold_start(args.action, getattr(args, 'native_mic_cold_start', False),
+        getattr(args, 'native_mic_on_demand', False), getattr(args, 'capture_reopen', False),
+        getattr(args, 'capture_contract_check', False))
     validate_native_mic_on_demand(args.action, getattr(args, 'native_mic_on_demand', False),
                                  getattr(args, 'capture_reopen', False),
                                  getattr(args, 'capture_contract_check', False))
@@ -2545,10 +2647,18 @@ def initialize(args, report, *, live_resume=None):
                 report['capture_deadline_expired'] = False
                 # Reserve ten seconds for bounded termination/close in array mode.
                 capture_seconds = 50 if microphone_array else 60
+                budget_start = time.clock_gettime(time.CLOCK_BOOTTIME)
+                wall_deadline = budget_start + capture_seconds
                 capture_deadline = threading.Timer(capture_seconds, expire_capture)
                 capture_deadline.start()
+                if getattr(args, 'native_mic_cold_start', False):
+                    report['capture_budget'] = dict(started_boottime=budget_start,
+                        wall_deadline_boottime=wall_deadline, maximum_seconds=capture_seconds)
+                    cold_native_microphone_start(args, report, initial['internal_cards'][0],
+                                                 wall_deadline, desktop_holder)
                 capture = OwnedCapture(initial['internal_cards'][0], report, directory,
-                                       maximum_seconds=capture_seconds, retain_recording=False, channels=2 if microphone_array else 1)
+                                       maximum_seconds=capture_seconds, retain_recording=False, channels=2 if microphone_array else 1,
+                                       wall_deadline=wall_deadline)
             else:
                 # Only the explicit recording action keeps a WAV. Automated
                 # acoustic tests retain scores and discard incidental audio.
@@ -2726,6 +2836,8 @@ def main():
                         help='feedback-only fresh native stereo DMIC1/DMIC0 capture')
     parser.add_argument('--capture-contract-check', action='store_true',
                         help='desktop-mic capture-reopen only: bounded incompatible contract rejection probes')
+    parser.add_argument('--native-mic-cold-start', action='store_true',
+                        help='native-mic-on-demand only: stock first-owner ambient prelude before arecord/amps')
     parser.add_argument('--native-mic-on-demand', action='store_true',
                         help='desktop-mic-only stock ALSA source demand and idle-close test')
     parser.add_argument('--capture-reopen', action='store_true',
@@ -2745,6 +2857,8 @@ def main():
         parser.error('--microphone-array requires feedback with primary DMIC1')
     if args.capture_contract_check and (args.action != 'desktop-mic' or not args.capture_reopen):
         parser.error('--capture-contract-check requires desktop-mic --capture-reopen')
+    if args.native_mic_cold_start and (args.action != 'desktop-mic' or not args.native_mic_on_demand or args.capture_reopen or args.capture_contract_check):
+        parser.error('--native-mic-cold-start requires desktop-mic --native-mic-on-demand and excludes capture-reopen/contract-check')
     if args.native_mic_on_demand and (args.action != 'desktop-mic' or args.capture_reopen or args.capture_contract_check):
         parser.error('--native-mic-on-demand requires desktop-mic and excludes capture-reopen/contract-check')
     if args.capture_reopen and args.action != 'desktop-mic':

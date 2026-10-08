@@ -1699,5 +1699,138 @@ class NativeMicOnDemandTests(unittest.TestCase):
         source.graph.run.side_effect = [source.name, json.dumps([row])]
         self.assertFalse(source.require_client_route('test'))
 
+class ColdNativeMicTests(unittest.TestCase):
+    def setUp(self):
+        self.report, self.holders = {}, []
+        self.args = SimpleNamespace(desktop_user='test-user')
+        self.graph, self.source, self.client = Mock(), Mock(), Mock()
+        self.graph.default_source_before_test = None
+        self.graph.close.side_effect = lambda: self.report['native_mic_cold_start'].update(graph_restored=True)
+        self.source.cursor, self.source.closed = 'cold-cursor', True
+        self.source.journal.return_value = 'SPX ASM stream 1: bits=16 submitted=0 write_done=75 fallback=0'
+        self.client.samples.return_value = [1] * 96000
+        self.client.process.pid = 42
+        patches = [patch.object(audio.time, 'clock_gettime', return_value=10),
+            patch.object(audio, 'Path'), patch.object(audio, 'read_text', return_value='closed'),
+            patch.object(audio.subprocess, 'run', return_value=SimpleNamespace(returncode=1, stdout='', stderr='')),
+            patch.object(audio, 'DesktopGraph', return_value=self.graph),
+            patch.object(audio, 'NativeMicSource', return_value=self.source),
+            patch.object(audio, 'DesktopRecording', return_value=self.client),
+            patch.object(audio, 'assert_desktop_paused')]
+        (self.clock, self.paths, self.read, self.journal, self.graph_factory,
+         self.source_factory, self.client_factory, self.paused) = [self.start_patch(p) for p in patches]
+        self.paths.return_value.glob.return_value = ['/unused/pcm1c/status']
+
+    def start_patch(self, p):
+        self.addCleanup(p.stop)
+        return p.start()
+
+    def test_invalid_modes_reject_before_hardware(self):
+        for action, on_demand, reopen, contract in [('desktop-mic', False, False, False),
+                ('feedback', True, False, False), ('desktop-mic', True, True, False),
+                ('desktop-mic', True, False, True)]:
+            with self.subTest(action=action, on_demand=on_demand, reopen=reopen, contract=contract), \
+                    patch.object(audio, 'parameter') as hardware:
+                with self.assertRaisesRegex(RuntimeError, 'native-mic-cold-start'):
+                    audio.initialize(SimpleNamespace(action=action, native_mic_cold_start=True,
+                        native_mic_on_demand=on_demand, capture_reopen=reopen,
+                        capture_contract_check=contract), {})
+                hardware.assert_not_called()
+
+    def test_expired_budget_rejects_before_source_and_history(self):
+        self.clock.return_value = 60
+        with self.assertRaisesRegex(RuntimeError, 'budget expired'):
+            audio.cold_native_microphone_start(self.args, self.report, 0, 60, self.holders)
+        self.graph_factory.assert_not_called()
+        self.journal.assert_not_called()
+
+    def test_open_native_pcm_rejects_before_graph_or_history(self):
+        self.read.return_value = 'state: PREPARED'
+        with self.assertRaisesRegex(RuntimeError, 'already open'):
+            audio.cold_native_microphone_start(self.args, self.report, 0, 60, self.holders)
+        self.graph_factory.assert_not_called()
+        self.journal.assert_not_called()
+
+    def test_prior_retained_capture_rejects_before_graph(self):
+        for marker in ('parking ASM capture', 'reusing parked ASM capture',
+                       'preserving capture COPP/matrix', 'reusing retained capture COPP/matrix'):
+            with self.subTest(marker=marker):
+                self.journal.return_value = SimpleNamespace(returncode=0, stdout=marker, stderr='')
+                with self.assertRaisesRegex(RuntimeError, 'no prior parked'):
+                    audio.cold_native_microphone_start(self.args, self.report, 0, 60, self.holders)
+        self.graph_factory.assert_not_called()
+
+    def test_history_error_cannot_be_mistaken_for_clean_boot(self):
+        for result in (SimpleNamespace(returncode=2, stdout='', stderr=''),
+                       SimpleNamespace(returncode=1, stdout='', stderr='denied'),
+                       SimpleNamespace(returncode=1, stdout='truncated', stderr='')):
+            with self.subTest(result=result):
+                self.journal.return_value = result
+                with self.assertRaisesRegex(RuntimeError, 'history query failed'):
+                    audio.cold_native_microphone_start(self.args, self.report, 0, 60, self.holders)
+        self.graph_factory.assert_not_called()
+
+    def test_no_match_exit_one_admitted_but_original_budget_never_restarted(self):
+        self.clock.side_effect = [10, 60]
+        with self.assertRaisesRegex(RuntimeError, 'exhausted original capture budget'):
+            audio.cold_native_microphone_start(self.args, self.report, 0, 60, self.holders)
+        self.source_factory.assert_called_once_with(self.graph, 0,
+            self.report['native_mic_cold_start'], 60, None)
+        self.assertEqual(self.client_factory.call_args.kwargs['wall_deadline'], 60)
+        self.source.require_closed.assert_called_once_with('cold-after-client')
+        self.client.close.assert_called_once()
+        self.source.close.assert_called_once()
+        self.graph.close.assert_called_once()
+        self.paused.assert_called_once_with('test-user')
+        self.assertFalse(self.holders)
+        self.assertFalse(self.report['native_mic_cold_start']['passed'])
+
+    def test_owner_failure_closes_client_and_source_without_reading(self):
+        self.source.begin_client.side_effect = RuntimeError('native owner changed')
+        with self.assertRaisesRegex(RuntimeError, 'native owner changed'):
+            audio.cold_native_microphone_start(self.args, self.report, 0, 60, self.holders)
+        self.client.wait_frames.assert_not_called()
+        self.client.close.assert_called_once()
+        self.source.require_closed.assert_called_once_with('cold-after-client')
+        self.source.close.assert_called_once()
+        self.graph.close.assert_called_once()
+
+    def test_silence_error_survives_watchdog_and_client_cleanup_failures(self):
+        self.client.samples.return_value = [0] * 96000
+        self.source.end_client.side_effect = RuntimeError('watchdog failed')
+        self.client.close.side_effect = RuntimeError('client close failed')
+        with self.assertRaisesRegex(RuntimeError, 'silence or incomplete'):
+            audio.cold_native_microphone_start(self.args, self.report, 0, 60, self.holders)
+        self.client.close.assert_called_once()
+        self.source.close.assert_called_once()
+        self.graph.close.assert_called_once()
+        self.assertEqual(len(self.report['native_mic_cold_start']['cleanup_errors']), 2)
+        self.assertFalse(self.report['native_mic_cold_start']['passed'])
+
+    def test_partial_graph_and_source_start_both_restore_graph(self):
+        for phase in ('graph', 'source'):
+            with self.subTest(phase=phase):
+                self.graph.start.side_effect = RuntimeError('graph failed') if phase == 'graph' else None
+                self.source.start.side_effect = RuntimeError('source failed')
+                self.graph.close.reset_mock()
+                self.source.close.reset_mock()
+                with self.assertRaisesRegex(RuntimeError, phase + ' failed'):
+                    audio.cold_native_microphone_start(self.args, self.report, 0, 60, self.holders)
+                self.graph.close.assert_called_once()
+                if phase == 'source':
+                    self.source.close.assert_called_once()
+                else:
+                    self.source.close.assert_not_called()
+                self.assertFalse(self.holders)
+
+    def test_oracle_rejects_expired_or_extended_wall_budget_before_open(self):
+        for deadline in (10, 71):
+            with self.subTest(deadline=deadline), patch.object(audio.subprocess, 'Popen') as opened:
+                with self.assertRaisesRegex(RuntimeError, 'wall budget expired or extended'):
+                    audio.OwnedCapture(0, {}, '/unused', maximum_seconds=60,
+                                       retain_recording=False, wall_deadline=deadline)
+                opened.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()
