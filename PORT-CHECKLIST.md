@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-08, ES: A03k application microphone formats passed)
+## Status (2026-10-08, ES: A03k passed; known-good return observed)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
@@ -93,7 +93,8 @@ is observed; working EK and successful ER candidates are retained.
 [ER result](tools/spx/boot-diagnostics/RESULT-20261008er.md).
 **ES closes A03k:** common default microphone formats pass, including every
 delivered stereo channel and idle capture restart; quiet desktop serving and
-ordered cleanup pass. [ES result](tools/spx/boot-diagnostics/RESULT-20261008es.md).
+ordered cleanup and actual known-good return pass; working EK/current ES kept.
+[ES result](tools/spx/boot-diagnostics/RESULT-20261008es.md).
 Full DSP teardown, persistence, reliability, physical mapping and quality remain
 open. Earlier failed trials remain recorded in their result files.
 Physical observations remain unverified. CDSP is parked after three changed
