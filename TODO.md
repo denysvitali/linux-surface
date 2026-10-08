@@ -37,16 +37,17 @@ Hypotheses:
    with `vdda-phy` = L5E, `vdda-pll` = L3C, linked to the rear OV13858 on
    CSIPHY2, and build `qcom-camss`. Expect: camss binds, the media graph
    shows ov13858 -> csiphy2, and a 2112x1568 raw frame of a real scene is
-   captured. **Not tested yet.** Trial `20261008et`
-   (boot `c0164c56`) booted and camss/CCI probed without error, but an
-   unrelated Bluetooth step ended the check before the capture ran
-   ([RESULT-20261008et](tools/spx/boot-diagnostics/RESULT-20261008et.md)).
-   Tool fixed in `a6fb1f2700e8`; attempt `20261008eu` is installed with the
-   same Image, DTB and command line and needs one reboot go-ahead (capture
-   permission was given 2026-10-08). On resume: collect
-   `/var/lib/spx-boot-diagnostics/functional/20261008eu/camera` first. The
-   user agreed to the human session today; it must run on the mainline boot,
-   so `extend` the return before starting it.
+   captured. **Partly confirmed.** Trial `20261008eu`
+   (boot `273722d5`): camss binds, ov13858 -> csiphy2 -> csid0 -> vfe0 links
+   and STREAMON work, 3 frames arrive at ~30 fps with no SMMU fault, but they
+   are black-level (mean 17, nothing aimed at the camera)
+   ([RESULT-20261008eu](tools/spx/boot-diagnostics/RESULT-20261008eu.md)).
+   Next: attempt `20261008ev` adds the sensor colour-bar pattern (path proof)
+   and a 45 s-delayed capture at raised exposure/gain. **The user must aim the
+   rear camera (back of the tablet) at a lit scene for the first 2 minutes
+   after the desktop appears.** On resume: collect
+   `/var/lib/spx-boot-diagnostics/functional/20261008ev/camera` first, and
+   `extend` the return before the human session.
 2. If camss binds but STREAMON hangs or no frame arrives: compare the live
    CSIPHY/CSID register programming and clock rates with the 6.18 run
    (`camss-video.c` bisect knob, 400/300 MHz PHY rates).

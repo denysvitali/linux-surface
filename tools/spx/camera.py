@@ -16,6 +16,7 @@ SENSOR = 'ov13858'
 CODE, SIZE, PIXEL = 'SGRBG10_1X10', '2112x1568', 'pgAA'
 CSID, RDI, VIDEO = 'msm_csid0', 'msm_vfe0_rdi0', 'msm_vfe0_video0'
 FRAMES = 3
+BRIGHT_WAIT = 45
 LED = Path('/sys/class/leds/spx:rear:privacy/brightness')
 SUMMARY = Path('/sys/kernel/debug/regulator/regulator_summary')
 
@@ -50,7 +51,7 @@ def entity(graph, name):
     return match.group(0) if match else None
 
 
-def analyse(path, width, height, stride, sizeimage, out):
+def analyse(path, width, height, stride, sizeimage, out, label='scene'):
     """Per-frame statistics on the 8 MSBs, and a small preview of the last frame."""
     data = path.read_bytes()
     frames = []
@@ -74,7 +75,7 @@ def analyse(path, width, height, stride, sizeimage, out):
         for row in range(0, height, 8):
             line = frame[row * stride:row * stride + width * 5 // 4]
             rows.append(bytes(line[i] for i in range(0, len(line), 10)))
-        preview = out / 'preview.pgm'
+        preview = out / ('preview.pgm' if label == 'scene' else 'preview-%s.pgm' % label)
         preview.write_bytes(b'P5\n%d %d\n255\n' % (len(rows[0]), len(rows)) + b''.join(rows))
     return frames
 
@@ -166,30 +167,49 @@ def exercise(out, attempt, release):
                   iommu=Path('/sys/bus/platform/devices/ac65000.camss/iommu_group').exists())
     save()
 
-    raw = out / 'frames.raw'
+    def grab(label, filename):
+        """Stream FRAMES buffers to one file; return the capture record or None if it wedged."""
+        raw = out / filename
+        record = dict(started=time.time())
+        proc = subprocess.Popen(['v4l2-ctl', '-d', video, '--stream-mmap=4', '--stream-count=%d' % FRAMES,
+                                 '--stream-to=' + str(raw)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        time.sleep(2)
+        try:
+            record['led_during'] = LED.read_text().strip()
+        except OSError as error:
+            record['led_during'] = str(error)
+        record['rails_during'] = rails()
+        try:
+            output, _ = proc.communicate(timeout=25)
+            record['stream'] = dict(returncode=proc.returncode, output=output)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            record['stream'] = dict(timed_out=True)
+            result[label] = record
+            save()
+            try:
+                proc.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                return None
+        record['bytes'] = raw.stat().st_size if raw.exists() else 0
+        if record['stream'].get('returncode') == 0 and record['bytes'] >= sizeimage:
+            record['frames'] = analyse(raw, width, height, stride, sizeimage, out, label)
+        result[label] = record
+        save()
+        return record
+
+    def informative(record):
+        return bool(record and record.get('frames')) and all(
+            f['distinct'] > 16 and not f['all_a5'] and not f['all_zero'] for f in record['frames'])
+
+    # 1. The scene as the sensor sees it with its default exposure.
     result['stream_started'] = time.time()
     save()
-    proc = subprocess.Popen(['v4l2-ctl', '-d', video, '--stream-mmap=4', '--stream-count=%d' % FRAMES,
-                             '--stream-to=' + str(raw)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    time.sleep(2)
-    try:
-        result['led_during'] = LED.read_text().strip()
-    except OSError as error:
-        result['led_during'] = str(error)
-    result['rails_during'] = rails()
-    save()
-    try:
-        output, _ = proc.communicate(timeout=25)
-        result['stream'] = dict(returncode=proc.returncode, output=output)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        result['stream'] = dict(timed_out=True)
-        save()
-        try:
-            proc.communicate(timeout=10)
-        except subprocess.TimeoutExpired:
-            return fail('capture process is wedged')
-    save()
+    scene = grab('scene', 'frames.raw')
+    if scene is None:
+        return fail('capture process is wedged')
+    result['led_during'], result['led_after'] = scene.get('led_during'), None
+    result['rails_during'] = scene.get('rails_during')
     time.sleep(2)
     try:
         result['led_after'] = LED.read_text().strip()
@@ -198,14 +218,28 @@ def exercise(out, attempt, release):
     result['rails_after'] = rails()
     step('kernel-log', ['journalctl', '-b', '-k', '--no-pager', '-o', 'short-monotonic',
                         '-g', 'camss|csiphy|csid|vfe|ov13858|cci|arm-smmu|ac65000'], 30)
-    size = raw.stat().st_size if raw.exists() else 0
-    result['bytes'] = size
-    if result['stream'].get('returncode') != 0 or size < sizeimage:
+    result['bytes'] = scene['bytes']
+    result['stream'] = scene['stream']
+    if scene['stream'].get('returncode') != 0 or scene['bytes'] < sizeimage:
         return fail('no complete frame was captured')
-    result['frames'] = analyse(raw, width, height, stride, sizeimage, out)
+    result['frames'] = scene['frames']
+
+    # 2. A flat scene is either darkness or a dead path. The sensor's own colour
+    # bars cross the same CSIPHY/CSID/VFE/IOMMU path with known content.
+    if not informative(scene):
+        step('sensor-pattern-bars', ['v4l2-ctl', '-d', subdev, '--set-ctrl=test_pattern=1'])
+        if grab('pattern', 'frames-pattern.raw') is None:
+            return fail('pattern capture is wedged')
+        step('sensor-pattern-off-again', ['v4l2-ctl', '-d', subdev, '--set-ctrl=test_pattern=0'])
+        # 3. The scene again after a pause (time to aim the camera at a lit
+        # subject), with exposure and analogue gain raised well above default.
+        time.sleep(BRIGHT_WAIT)
+        step('exposure-up', ['v4l2-ctl', '-d', subdev, '--set-ctrl=exposure=3000,analogue_gain=2048'])
+        if grab('bright', 'frames-bright.raw') is None:
+            return fail('bright capture is wedged')
+        step('exposure-restore', ['v4l2-ctl', '-d', subdev, '--set-ctrl=exposure=1600,analogue_gain=128'])
     # Varied, non-fill data shows frames arrived. A person still has to look at
     # preview.pgm to say that it is the scene in front of the camera.
-    result['complete'] = all(f['distinct'] > 16 and not f['all_a5'] and not f['all_zero']
-                             for f in result['frames'])
+    result['complete'] = informative(scene) or informative(result.get('bright'))
     save()
     return result
