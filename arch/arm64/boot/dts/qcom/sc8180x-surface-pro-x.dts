@@ -1000,14 +1000,14 @@
 	gpio-reserved-ranges = <0 4>, <47 4>;
 
 	cci0_default: cci0-default-state {
-		pins = "gpio17", "gpio18";
+		pins = "gpio17", "gpio18", "gpio19", "gpio20";
 		function = "cci_i2c";
 		drive-strength = <2>;
 		bias-pull-up;
 	};
 
 	cci0_sleep: cci0-sleep-state {
-		pins = "gpio17", "gpio18";
+		pins = "gpio17", "gpio18", "gpio19", "gpio20";
 		function = "gpio";
 		drive-strength = <2>;
 		bias-pull-down;
