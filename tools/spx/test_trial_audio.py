@@ -168,6 +168,37 @@ class AudioRequestTests(TrialAudioFixture):
             trial.requested_audio(SimpleNamespace())
         self.assertTrue(hardware.call_args.args[0].capture_contract_check)
 
+    def test_native_microphone_request_rejects_conflict_before_consumption(self):
+        self.request.update(action='desktop-mic', native_mic_on_demand=True,
+                            capture_reopen=True, playback=True, capture=True)
+        self.write_request()
+        with patch.object(trial, 'audio_check') as hardware:
+            with self.assertRaisesRegex(AssertionError, 'native-mic-on-demand'):
+                trial.requested_audio(self.args)
+        hardware.assert_not_called()
+        self.assertTrue((self.out / 'audio-request.json').exists())
+
+    def test_native_microphone_recorded_and_forwarded_direct_and_armed(self):
+        (self.out / 'prepared.json').write_text(json.dumps(dict(audio_mode='parked')))
+        (self.out / 'installed.json').touch()
+        args = SimpleNamespace(audio_action='desktop-mic', native_mic_on_demand=True,
+            allow_amp_power=True, allow_playback=True, allow_capture=True,
+            desktop_user='dvitali', return_after_audio_seconds=None)
+        account = SimpleNamespace(pw_uid=1000, pw_name='dvitali')
+        with patch.object(trial, 'require_source_boot'), patch.object(trial, 'recovery'), \
+                patch.object(trial.pwd, 'getpwnam', return_value=account):
+            trial.arm_audio(args)
+        self.assertTrue(json.loads((self.out / 'audio-request.json').read_text())['native_mic_on_demand'])
+        with patch.object(trial.os, 'geteuid', return_value=0), \
+                patch.object(trial.pwd, 'getpwnam', return_value=account), \
+                patch.object(trial.subprocess, 'Popen') as opened:
+            opened.return_value.wait.return_value = 0
+            trial.audio_check(args)
+        self.assertIn('--native-mic-on-demand', opened.call_args.args[0])
+        with patch.object(trial, 'audio_check') as hardware:
+            trial.requested_audio(SimpleNamespace())
+        self.assertTrue(hardware.call_args.args[0].native_mic_on_demand)
+
     def test_capture_reopen_cli_rejects_other_actions_before_lock(self):
         for command, action in (('prepare', 'desktop-mic'), ('audio', 'feedback'),
                                 ('arm-audio', 'reopen'), ('check', 'desktop-mic')):

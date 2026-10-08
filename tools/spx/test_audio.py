@@ -1586,5 +1586,118 @@ class DiscardedRecording(unittest.TestCase):
                 self.assertFalse(list(Path(directory).glob('*.wav')))
 
 
+
+class NativeMicOnDemandTests(unittest.TestCase):
+    def make_source(self):
+        graph = Mock()
+        source = audio.NativeMicSource(graph, 0, {}, 60, None)
+        source.cursor = 'cursor'
+        return source
+
+    def test_admission_rejects_wrong_action_and_conflicting_modes_before_hardware(self):
+        for action, reopen, contract in [('feedback', False, False),
+                                          ('desktop-mic', True, False),
+                                          ('desktop-mic', False, True)]:
+            with self.subTest(action=action, reopen=reopen, contract=contract):
+                with patch.object(audio, 'parameter') as parameter, \
+                        self.assertRaisesRegex(RuntimeError, 'native-mic-on-demand'):
+                    audio.initialize(SimpleNamespace(action=action, native_mic_on_demand=True,
+                        capture_reopen=reopen, capture_contract_check=contract), {})
+                parameter.assert_not_called()
+
+    def test_stock_module_properties_remain_one_quoted_nested_argument(self):
+        import shlex
+        source = self.make_source()
+        source.endpoint = Mock()
+        source.require_closed = Mock()
+        source.journal = Mock(return_value='-- cursor: cursor')
+        source.process_start = Mock(return_value='ticks')
+        def run(*argv):
+            if argv[:2] == ('pactl', 'get-default-source'):
+                return source.name
+            return '100'
+        source.graph.run.side_effect = run
+        with patch.object(audio.time, 'clock_gettime', return_value=0):
+            source.start()
+        argv = next(call.args for call in source.graph.run.call_args_list if call.args[:2] == ('pactl', 'load-module'))
+        nested = next(arg for arg in argv if arg.startswith('source_properties='))
+        parsed = dict(word.split('=', 1) for word in shlex.split(' '.join(argv[3:])))
+        self.assertIn('api.alsa.disable-tsched=true', parsed['source_properties'])
+        self.assertIn('api.alsa.disable-batch=true', parsed['source_properties'])
+        self.assertIn('node.suspend-on-idle=true', parsed['source_properties'])
+        self.assertNotIn('api.alsa.disable-tsched', parsed)
+        self.assertTrue(nested.startswith("source_properties='") and nested.endswith("'"))
+
+    def test_kernel_close_timeout_rejects_before_recovery(self):
+        source = self.make_source()
+        source.journal = Mock(return_value='q6asm CMD 10bcd timeout\n-- cursor: next')
+        with self.assertRaisesRegex(RuntimeError, 'CMD 10bcd timeout'):
+            source.check_kernel()
+        self.assertEqual(source.report['kernel_errors'], ['q6asm CMD 10bcd timeout'])
+
+    def test_module_recovery_ignores_other_modules_but_rejects_duplicate_owned_name(self):
+        source = self.make_source()
+        owned = '42\tmodule-alsa-source\tsource_name=' + source.name + ' device=hw:0,1\n'
+        source.graph.run.return_value = ('unowned diagnostic\n'
+            '4\tmodule-alsa-source\tsource_name=another device=hw:0,1\n' + owned)
+        self.assertEqual(source.modules()[0]['index'], '42')
+        source.graph.run.return_value = owned + owned.replace('42\t', '43\t')
+        with self.assertRaisesRegex(RuntimeError, 'Duplicate owned'):
+            source.modules()
+
+    def test_native_owner_accepts_service_tid_and_rejects_wrong_tgid_or_geometry(self):
+        source = self.make_source()
+        source.services = {'100': {'unit': 'pipewire.service', 'start_ticks': '123'}}
+        paths = {str(source.status): 'state: RUNNING\nowner_pid : 101\ntrigger_time : 1.0',
+                 str(source.status.with_name('hw_params')): 'access: RW_INTERLEAVED\nformat: S16_LE\n'
+                    'channels: 1\nrate: 48000 (48000/1)\nperiod_size: 1920\nbuffer_size: 7680',
+                 '/proc/101/status': 'Tgid:\t100',
+                 '/proc/100/stat': '100 (pipewire) ' + ' '.join(['0'] * 19 + ['123'])}
+        with patch.object(audio, 'read_text', side_effect=lambda path: paths[str(path)]):
+            self.assertEqual(source.native_owner()['tgid'], '100')
+            paths['/proc/101/status'] = 'Tgid:\t999'
+            with self.assertRaisesRegex(RuntimeError, 'owned PipeWire task'):
+                source.native_owner()
+            paths['/proc/101/status'] = 'Tgid:\t100'
+            paths[str(source.status.with_name('hw_params'))] = paths[str(source.status.with_name('hw_params'))].replace('1920', '960')
+            with self.assertRaisesRegex(RuntimeError, 'hardware contract'):
+                source.native_owner()
+
+    def test_idle_does_not_accept_prepared_pcm_or_wait_past_three_seconds(self):
+        source = self.make_source()
+        with patch.object(audio, 'read_text', return_value='state: PREPARED'), \
+                patch.object(audio.time, 'monotonic', side_effect=[0, 3]), \
+                patch.object(audio.time, 'sleep') as sleep:
+            with self.assertRaisesRegex(RuntimeError, 'close within3s'):
+                source.require_closed('idle')
+        sleep.assert_not_called()
+        self.assertNotIn('idle_checks', source.report)
+
+    def test_failed_unload_still_closes_clients_restores_preference_and_checks_pcm(self):
+        source = self.make_source()
+        source.graph.recordings = [Mock()]
+        source.modules = Mock(return_value=[{'index': '42'}])
+        source.graph.run.side_effect = RuntimeError('unload failed')
+        source.require_closed = Mock()
+        with patch.object(audio, 'restore_default_source') as restore:
+            with self.assertRaisesRegex(RuntimeError, 'unload failed'):
+                source.close()
+        source.graph.recordings[0].close.assert_called_once()
+        restore.assert_called_once_with(source.graph, None)
+        source.require_closed.assert_called_once_with('after-source-unload')
+        self.assertFalse(source.report['restored'])
+        self.assertFalse(source.closed)
+
+    def test_wrong_route_rejects_but_invalid_sentinel_may_wait(self):
+        source = self.make_source()
+        source.source_id = 12
+        row = dict(index=3, source=19, properties={'application.name': 'test'})
+        source.graph.run.side_effect = [source.name, json.dumps([row])]
+        with self.assertRaisesRegex(RuntimeError, 'another source'):
+            source.require_client_route('test')
+        row['source'] = 4294967295
+        source.graph.run.side_effect = [source.name, json.dumps([row])]
+        self.assertFalse(source.require_client_route('test'))
+
 if __name__ == '__main__':
     unittest.main()
