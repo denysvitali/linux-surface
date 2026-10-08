@@ -47,6 +47,13 @@ measured settings to replace the provisional pedestal and automatic estimate.
 No vendor colour matrix is applied until its mode and coefficient conventions
 are established. Offline correctness checks: `python3 -B tools/spx/test_camera_render.py`.
 
+For offline analysis of the Surface's existing Windows tuning data, run
+`python3 -B tools/spx/camera_tuning.py /lib/firmware/qcom/surface/tuned.rfc_ov13858.bin`.
+It extracts CC12/CC13 coefficient candidates and their profile/trigger chains
+as JSON. The inferred schema is limited to the fitted blobs' Parameter Parser
+V1.3.2 format. Output is research data; RGB ordering and selector meanings
+remain to be established before producing an application tuning file.
+
 Add `--usbc` to preparation to load the experimental USC-to-DP0 forwarder
 from the initramfs and exercise its deferred startup. This provides no initial
 dock-state query; actual hotplug and monitor output still need a dock replug.

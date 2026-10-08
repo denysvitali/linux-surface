@@ -40,8 +40,38 @@ Hypotheses:
    rotations. `camera.py` keeps the diagnostic and adds a rear view rotated
    180° for the upside-down image reported by the user. EV was reprocessed
    (`RESULT-20261008-processing`); no acceptance or calibration claimed.
+   **Controlled real-frame comparison:** reused this renderer on the archived
+   6.18 rear RAW10 frame; held black=64, white=11.5 and sRGB transfer fixed.
+   Changing only grey-world gains from unity to R=1.36186/B=1.52247 reduced
+   the baseline green cast (`RESULT-20261008-white-balance`). Strong noise
+   and missing physical colour validation remain; no vendor matrix applied.
    Next: confirm the actual scene colours/pose with a known-colour neutral
    target before matrix tuning or a sensor/DT orientation change.
+   Live-trial attempt cannot start in the current restricted session:
+   known-good `6.18.3-1-surface+`, boot `5c85d8e5-876a-4c84-8c48-93f27164d80b`;
+   candidate build directory unreadable, camera nodes unavailable, and sudo
+   rejected by `NoNewPrivs=1`. Needs restored device-session access; standing
+   reboot authorization remains valid. No trial was selected or capture run.
+
+4. Residual colour error may require the vendor's colour matrix rather than
+   per-plane gains. Decode the rear tuning blob's CC12/CC13 reference chains
+   and recover the temperature-dependent coefficient sets with their module
+   and profile IDs. Expect non-identity matrices in an enabled processing
+   stage. **Coefficients recovered:** rear BPS/IFE sets are identity; IPE
+   has seven selector profiles, 52 temperature regions, 51 non-identity.
+   `camera_tuning.py` follows all references and preserves selector/trigger
+   chains (`RESULT-20261008-colour-tuning`). This supports a missing ISP
+   processing lead; it does not prove the scene colour cause or RGB ordering.
+   Next: establish selector semantics/coefficient ordering and use libcamera's
+   CAMSS software ISP with black-level correction and AWB before colour-matrix
+   tuning. Libcamera is absent locally; shell downloads are blocked by the
+   current restricted environment. No guessed gains or kernel colour patch.
+   **Matrix-only trial negative:** applied profile 3 / symbol 421 / region 0
+   to the accessible 6.18 rear RAW10 frame, preserving all ten bits. Both RGB
+   and BGR interpretations intensified the green cast; about 30% of channel
+   samples became negative before clipping. This selected matrix alone is
+   insufficient (`RESULT-20261008-matrix-test`); other profiles and the full
+   exposure/AWB pipeline remain untested. EV is inaccessible in this sandbox.
 
 0. The offline renderer corrupts colour and orientation: `/tmp/spxjpg/dem.py`
    writes `(g, r, b)` into RGB and its `rot90cw` is a transpose. Compare a
