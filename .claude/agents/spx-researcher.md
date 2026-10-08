@@ -13,7 +13,8 @@ Sources, in this order:
    and the memory files it links for this feature.
 2. The working 6.18 tree in `../linux-surface-kernel` (branch `spx/v6.18`):
    driver changes, DT nodes, config, scripts and its `PROGRESS` notes.
-3. The feature's section in `PORT-CHECKLIST.md` and the relevant
+3. The feature's entry in `TODO.md`, its section in
+   `tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261008.md` and the relevant
    `tools/spx/boot-diagnostics/RESULT-*.md` files.
 4. Upstream sources or the web, only for gaps the above leave open.
 

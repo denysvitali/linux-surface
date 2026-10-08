@@ -1,56 +1,41 @@
 ---
 name: spx-port
-description: Coordinate several agents on the Surface Pro X mainline port. Use when the user asks to continue the port, work through the checklist, or run the port with agents. Optional argument - checklist IDs or a feature name to focus on.
+description: Coordinate the Surface Pro X mainline port. Use when the user asks to continue the port, work through the checklist, or run the port with agents. Optional argument - a checklist ID to work on instead of the current blocker.
 ---
 
 # SPX port coordinator
 
-You are the coordinator. You own the checklist, the shared build, the device
-and every decision; the agents do bounded pieces of work for you. Read
-`AGENTS.md` and the status table at the top of `PORT-CHECKLIST.md` first.
-
-## Resources
-
-- **Offline work runs in parallel:** research and patch writing, one agent per
-  feature, at most four at once.
-- **The build directory is single-user.** Only you build. Take
-  `tools/spx/spx-lock acquire build coordinator` around it.
-- **The device is single-user.** At most one `spx-device-tester` at a time, and
-  never while you are reloading modules yourself.
-- **Reboots are yours alone, and only with the user's go-ahead in this
-  session.** Agents never reboot.
+You own the checklist, the build directory, the device and every decision.
+Read `AGENTS.md` and `TODO.md` first. The other playbooks are `spx-blocker`,
+`spx-trial`, `spx-human-session` and `spx-status`.
 
 ## Loop
 
-1. **Pick.** Take the top open items from "Next work, in order", or the IDs the
-   user gave. Prefer items that need no new kernel. Skip parked items.
-2. **Fan out.** For each picked feature that needs code, spawn one
-   `spx-researcher` in the background. Features that only need a test on the
-   running kernel go straight to step 5.
-3. **Port.** When a brief comes back, spawn one `spx-porter` for it with
-   `isolation: "worktree"`, giving it the brief and the base commit.
-4. **Integrate.** For each returned branch: read the diff yourself, cherry-pick
-   it onto `spx/next`, build incrementally under the build lock. If the change
-   is module-only and a trial kernel with the same release is running, reload
-   the module; otherwise queue it for the next trial boot. Put several
-   independent features into one trial boot rather than one boot each.
-5. **Test.** Spawn one `spx-device-tester` per checklist item, one at a time.
-6. **Record.** On a pass, tick the box with the boot ID, kernel release and a
-   one-page result file, and update the status table. On a fail, note what was
-   learned; after three attempts without a functional gain, park the feature.
-7. **Human batch.** Collect every test that needs a person into one list with
-   the exact action for each, and ask the user once, when the list is ready.
-8. **Report** to the user: boxes closed this round, what is queued for the
-   next boot, what needs them. Then continue with the next round.
+1. **Status.** Run `tools/spx/progress`. If it reports the checklist is not
+   frozen, fix that before anything else (move the sub-boxes to the result
+   files or the history file).
+2. **Human session.** If the session in `TODO.md` is pending and the user is
+   reachable, ask for it now and follow `spx-human-session`. If they decline or
+   do not answer, go on. Do not replace it with automated tests.
+3. **Blocker.** Take the current blocker from `TODO.md`, or the ID the user
+   gave. Follow `spx-blocker`. Do not pick a different feature because it is
+   easier or testable without a person.
+4. **Agents, only if they help the blocker.** One `spx-researcher` for a brief,
+   then one `spx-porter` (with `isolation: "worktree"`) per independent patch.
+   At most four at once. Read each returned diff yourself, cherry-pick it onto
+   `spx/next` and build incrementally under the build lock.
+5. **Test.** Module-only change on a running trial kernel: reload the module.
+   Otherwise one trial boot (`spx-trial`). One `spx-device-tester` at a time.
+6. **Record.** Tick the box only if its full text is met. Otherwise write the
+   one-page result file and the next hypothesis in `TODO.md`.
+7. **Report or stop.** Follow `spx-status`. Stop when `spx-blocker` says to.
 
-## What agents are not for
+## Limits
 
-Do not spawn agents to review manifests, re-hash artifacts, or "independently
-verify" another agent's bookkeeping. An agent either researches a feature,
-writes a patch, or runs a functional test.
-
-## Stop and ask when
-
-- a trial boot is needed (state what it contains and what it will prove);
-- a test needs the user's hands, ears or eyes;
-- a test would make sound or capture camera or microphone data.
+- Only you build, integrate, tick boxes and reboot. Agents never reboot.
+- Reboot rules are in `AGENTS.md`. In Claude Code, also ask the user before
+  each reboot unless they gave the go-ahead in this session.
+- No agents that review manifests, re-hash artifacts or check another agent's
+  bookkeeping.
+- Ask before a test that makes sound or captures camera or microphone data,
+  unless `AGENTS.md` already authorizes that run.

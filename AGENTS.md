@@ -3,137 +3,141 @@
 ## Goal
 
 Mainline Linux on the Surface Pro X with every fitted hardware feature working.
-`PORT-CHECKLIST.md` is the acceptance checklist; its status table at the top is
-the state of the port. Read that table, the newest `LOCAL-PROGRESS.md` entry and
-the latest `tools/spx/boot-diagnostics/RESULT-*.md` before starting work.
 
-Progress is measured in checklist boxes closed and features a person can use.
-Builds, manifests, reviews and passing diagnostics are not progress.
+| File | What it is |
+|---|---|
+| `PORT-CHECKLIST.md` | The 47 acceptance boxes. Frozen. |
+| `TODO.md` | What to work on now, what is parked, what needs the user. |
+| `LOCAL-PROGRESS.md` | Short local log, newest trial first. |
+| `tools/spx/boot-diagnostics/RESULT-*.md` | One page per trial. |
+| `.claude/skills/spx-*/SKILL.md` | Playbooks: `spx-port`, `spx-blocker`, `spx-trial`, `spx-human-session`, `spx-status`. Any harness may read and follow them. |
 
-## How to work (revised 2026-10-04)
+Read `TODO.md`, the checklist status table and the newest `LOCAL-PROGRESS.md`
+entry before starting work.
 
-These rules replace the earlier evidence-first process. A review of the
-2026-09-22..10-04 sessions found 56 boots, no acceptance box closed and about
-half of all tool calls spent on hashing and verification.
+**Progress is the number of checklist boxes closed** (`tools/spx/progress`
+prints it) and features a person can use. Builds, passing diagnostics, partial
+passes, TODO items, commits, boots and result files are not progress.
 
-1. **Close boxes per feature.** When a feature's functional test passes, tick
-   its box and record the boot ID, kernel release and result file. Do not wait
-   for a final candidate. The final-candidate regression is the separate F02/F03
-   step at the end. Reopen a box if the feature regresses.
-2. **Breadth before depth.** Prefer the feature that is closest to working for
-   a user. If a feature gets three boots without a functional gain, write down
-   what is known, park it and move to the next one. Venus (D03) is parked.
-3. **Ask for physical tests.** Many boxes need a person: typing, tapping, pen,
-   plugging in devices, listening. Prepare those tests, batch them into one
-   short session and ask the user explicitly, with the exact action needed.
-   Do not keep working around a missing human observation.
-4. **Reuse known findings.** The 6.18 tree in `../linux-surface-kernel` already
-   has working audio, camera and display findings. Port them instead of
-   re-deriving them one register at a time.
-5. **Commit as you go.** One commit per feature or fix on `spx/next`, with the
-   status stated honestly in the message (working, WIP, not working). Never
-   leave kernel changes uncommitted across a boot.
-6. **Keep per-boot overhead small.** For a diagnostic boot keep only: the
-   known-good default, the one-shot selection, the automatic return, and the
-   dmesg/journal capture. Do not build file manifests, "independent" rehash
-   reviews, frozen preparation records or fault-injection suites for a boot
-   that changes one variable. Shorten the baseline wait when the change cannot
-   affect it.
-7. **Keep documents short.** A result file is one page: what changed, what was
-   observed, what it means, what is next. Do not paste hashes or file counts
-   into `PORT-CHECKLIST.md`. Its status table stays under about 40 lines;
-   history belongs in the result files.
-8. **Do not play sound or power the speaker amplifiers** unless the user asked
-   for that run. Do not capture camera or microphone data without saying so.
+Two earlier processes failed and these rules exist because of them. Until
+2026-10-04: 56 boots and no box closed, half the tool calls spent on hashing
+and review. From 2026-10-04 to 10-08: 511 TODO items, 481 commits and about 97
+reboots for one box closed (2 to 3 of 47), because the agent split boxes into
+49 narrower sub-boxes, ticked 47 of those, and spent 204 TODO items on audio
+tests, the one feature it could score without a person.
 
-## Harness rules (2026-10-04)
+## Rules
 
-### Nighttime audio preference (2026-10-05)
+1. **The checklist is frozen.** Do not add, split, rename or re-scope boxes.
+   Only the user does. No lettered sub-boxes.
+2. **A box closes only when its full text is met** on a real boot. Record the
+   boot ID, kernel release and result file. A narrower pass is a line in the
+   result file. If part of a box needs a person, it stays open until the person
+   has done that part. Reopen a box if the feature regresses.
+3. **One blocker at a time, in depth.** Work on the current blocker in
+   `TODO.md` until its box closes or rule 5 applies. Only the user changes the
+   blocker order. Follow `spx-blocker`.
+4. **Do not extend what already passes.** No further tests, harness variants or
+   acceptance criteria for a feature whose remaining gap is a human observation
+   or a parked defect. In particular: no new audio or microphone test
+   variations until the playback reopen defect is fixed.
+5. **Stop when there is nothing real to do.** Stop and report when the current
+   blocker has no untested hypothesis left, or needs a person, a fixture or
+   information that is not available. Stopping with a one-page report is a
+   correct outcome. An open-ended goal such as "continue until all hardware
+   works" does not require inventing work or picking an easier feature.
+6. **The human session comes first when it is pending.** Many boxes need a
+   person: typing, touch, pen, buttons, USB, looking at the panel. Ask for the
+   session in `TODO.md` at the start of a session and whenever the user is
+   present. If the user declines, do not substitute automated stand-ins.
+   Follow `spx-human-session`.
+7. **Reuse known findings.** The 6.18 tree in `../linux-surface-kernel` has
+   working audio, camera and display. Port those instead of re-deriving them.
+   The findings index is
+   `~/.claude/projects/-home-dvitali-Documents-git-linux-surface-kernel/memory/MEMORY.md`;
+   read the entries for a feature before working on it.
+8. **Commit as you go.** One commit per feature or fix on `spx/next`, status
+   stated honestly (working, WIP, not working). Never leave kernel changes
+   uncommitted across a boot. Do not make commits that only record bookkeeping.
+9. **Keep overhead small.** A trial boot needs the known-good default, the
+   one-shot selection, the automatic return and the dmesg/journal capture.
+   No manifests, rehash reviews, preparation records or fault-injection suites.
+   A result file is one page: what changed, what was observed, what it means,
+   what is next. Follow `spx-trial`.
+10. **TODO items and reports.** One TODO item per box being worked on and one
+    per hypothesis being tested; none for recording, collecting, staging or
+    returning to known-good. Every report starts with "boxes closed: N of 47"
+    and the IDs closed since the last report. Follow `spx-status`.
 
-The user requested low volume for any further audio tests because it is night.
-Keep test signals at the earlier quiet digital peak (1433/32768 or lower) and
-minimum PA gain. Do not run the louder peak4000 public verification at night.
-Proceed with other hardware while audio's retained desktop stream is working.
-
-### Authorized acoustic feedback loop (2026-10-04)
-
-The user requested: "You need to build a feedback loop. I can't be around to
-tell you if it worked or not. Use the microphones!" This authorizes bounded
-speaker playback and microphone captures for automated audio testing, including
-retries informed by the recordings. Announce capture, keep minimum PA gain and
-bounded test levels/durations, and park the amplifiers on completion or failure.
-Do not require a new human listening confirmation for each run within this loop.
-This supersedes the earlier per-run permission workflow for this task; it does
-not authorize unrelated sound or camera capture.
+## Build and device
 
 - **Reload modules instead of rebooting.** Venus, spi-hid, the WSA/SoundWire
-  codecs and the camera drivers are modules. On a running trial kernel, rebuild
-  the one module and `rmmod`/`modprobe` it. Reboot only for built-in code, DTB
-  or initramfs changes. Never unload MSM display modules.
-- **Keep one kernel release name** (`LOCALVERSION`) and one build directory for
-  the whole port, and build incrementally. A per-attempt release name forces a
-  full rebuild and stops modules loading across attempts. Do not copy, tar or
-  rehash the source tree for a build; the commit ID identifies the source.
-- **One parameterised trial tool.** Do not write new `build-XX`, `prepare-XX`,
-  `assemble-XX`, `deploy-XX` or `archive-XX` scripts or new systemd units per
-  attempt. Use one script and one set of units that take the attempt ID.
+  codecs and the camera drivers are modules: rebuild the one module and
+  `rmmod`/`modprobe` it. Reboot only for built-in code, DTB or initramfs
+  changes. Never unload MSM display modules.
+- **One kernel release name and one build directory** for the whole port,
+  built incrementally. Do not copy, tar or rehash the source tree.
+- **One trial tool:** `tools/spx/trial.py` with the attempt ID. No new
+  per-attempt scripts or systemd units.
 - **Clean up after a trial:** remove its `/boot/spx-trial-*` directory, module
-  tree and units once the result is collected, keeping only the current
-  candidate and known-good.
-- **Known findings** from the 6.18 work are indexed in
-  `~/.claude/projects/-home-dvitali-Documents-git-linux-surface-kernel/memory/MEMORY.md`.
-  Read the entries for a feature before working on it.
+  tree and units once the result is collected. Keep only the current candidate
+  and known-good.
 
-## Agents and coordination (2026-10-04)
+## Agents
 
-One coordinator session owns the checklist, the shared build directory, the
-device and every reboot. It spawns agents for bounded work and integrates
-their results. This applies to any harness that can spawn agents.
+One coordinator owns the checklist, the build directory, the device and every
+reboot. It may spawn agents for bounded work (`spx-port`).
 
-- **Roles.** A researcher collects what is known about one feature (read-only).
-  A porter writes the patch for one feature in its own git worktree and returns
-  commits on `spx/wip/<feature>`. A device tester runs one functional test on
-  the live hardware. Claude Code definitions are in `.claude/agents/`; the
-  coordinator loop is the `spx-port` skill in `.claude/skills/`.
-- **Parallel:** research and patch writing, one agent per feature, at most four.
-- **Exclusive:** the device and the build directory. Take the lock first:
-  `tools/spx/spx-lock acquire device|build <owner>`, release it afterwards,
+- Roles: a researcher (read-only brief on one feature), a porter (patch in its
+  own git worktree, commits on `spx/wip/<feature>`), a device tester (one
+  functional test on the live hardware). Definitions are in `.claude/agents/`.
+- Research and patch writing may run in parallel, at most four agents, all for
+  the current blocker.
+- The device and the build directory are exclusive. Take the lock first:
+  `tools/spx/spx-lock acquire device|build <owner>`; release it afterwards;
   check with `tools/spx/spx-lock status`. A reboot clears the locks.
-- **Only the coordinator** builds, integrates onto `spx/next`, ticks checklist
-  boxes, and reboots (under the reboot rules below). Agents never reboot.
-- **Batch features per boot.** Put several independent changes into one trial
-  boot when each has its own functional test; bisect only if the boot fails.
-- **No review agents.** Do not spawn agents to review manifests, re-hash
-  artifacts or verify another agent's bookkeeping. In the 2026-09-22 session
-  22 of 31 spawned agents were reviewers.
+- Only the coordinator builds, integrates, ticks boxes and reboots.
+- No review agents: none that review manifests, re-hash artifacts or verify
+  another agent's bookkeeping.
 
-## Authorized SPX reboot loop (2026-09-22)
+## Sound and capture
 
-The user explicitly authorized repeated experimental boots to complete the
-mainline port and preserve logs. When asked whether this permits boots that
-may need a manual power cycle, the user answered: "Yes. Proceed. Don't ask."
-Do not ask for the same authorization again. Automatic recovery across the
-EFI handoff is still unvalidated; the authorization does not establish it.
+- Do not play sound or power the speaker amplifiers unless the user asked for
+  that run. Do not capture camera or microphone data without saying so.
+- **Acoustic feedback loop (authorized 2026-10-04).** The user said: "You need
+  to build a feedback loop. I can't be around to tell you if it worked or not.
+  Use the microphones!" Bounded speaker playback and microphone capture are
+  allowed for automated audio testing. Announce capture, keep minimum PA gain
+  and bounded levels and durations, and park the amplifiers on completion or
+  failure. Since 2026-10-08 this is for verifying a fix to the playback reopen
+  defect only (rule 4). It does not authorize unrelated sound or camera capture.
+- **Night (2026-10-05).** Keep test signals at the quiet digital peak
+  (1433/32768 or lower) and minimum PA gain. No louder peak-4000 run at night.
+- **Battery tests are deferred** at the user's request (2026-10-05). Do not ask
+  for charger unplugging or run battery load or endurance tests.
 
-Safety rules that still apply to every trial boot:
+## Reboots
+
+The user authorized repeated experimental boots on 2026-09-22, including boots
+that may need a manual power cycle: "Yes. Proceed. Don't ask." Do not ask for
+that authorization again. Automatic recovery across the EFI handoff is not
+validated; a hang after ExitBootServices needs a manual power cycle
+(`tools/spx/boot-diagnostics/RECOVERY.md`).
+
+Every trial boot:
 
 - Keep `spx-known-good` as the persistent default and select each trial once.
-- Check that the known-good kernel, initramfs and DTB are intact before a
-  reboot (a hash check of those few files is enough).
+- Check that the known-good kernel, initramfs and DTB are intact (a hash check
+  of those files is enough).
 - Recheck the boot ID and any pending boot selection before every reboot. An
   interrupted reboot call may already have executed.
 - Collect the result before choosing the next experiment. Never blindly re-arm
   a failed image.
-- Change one variable per boot.
-- Do not unbind or rebind live MSM display components; this froze the device.
-- Never read `171c0000+0x2000` or the pinctrl `pinmux-pins`/`pins` debugfs
-  files; both wedge the machine.
+- Change one variable per boot, or several independent changes that each have
+  their own functional test.
 
-## Historical boot lock (2026-09-14)
+Never:
 
-Superseded by the authorization above. Its findings remain relevant: there is
-no validated pre-kernel reset mechanism, the diagnostic DTB has no hardware
-watchdog node, and a hang after ExitBootServices needs a manual power cycle.
-The prepared, unvalidated APSS watchdog candidate is described in the
-"Pre-kernel watchdog candidate" section of
-`tools/spx/boot-diagnostics/RECOVERY.md`.
+- unbind or rebind live MSM display components (this froze the device);
+- read `171c0000+0x2000` or the pinctrl `pinmux-pins`/`pins` debugfs files
+  (both wedge the machine).

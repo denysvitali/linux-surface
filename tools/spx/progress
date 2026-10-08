@@ -1,0 +1,32 @@
+#!/usr/bin/env python3
+"""Print SPX port progress: acceptance boxes closed in PORT-CHECKLIST.md.
+
+Exit status 1 if the checklist is no longer in its frozen form (lettered
+sub-boxes, or a box count other than 47).
+"""
+import pathlib
+import re
+import sys
+
+EXPECTED = 47
+root = pathlib.Path(__file__).resolve().parents[2]
+text = (root / "PORT-CHECKLIST.md").read_text()
+
+boxes = re.findall(r"^- \[( |x)\] \*\*([A-Z]\d\d) — ", text, re.M)
+subs = re.findall(r"^\s*- \[[ x]\] \*\*([A-Z]\d\d[a-z]) — ", text, re.M)
+closed = [box for mark, box in boxes if mark == "x"]
+open_ = [box for mark, box in boxes if mark == " "]
+
+print(f"boxes closed: {len(closed)} of {len(boxes)}")
+print("closed:", " ".join(closed) or "none")
+if "-v" in sys.argv[1:]:
+    print("open:", " ".join(open_))
+
+problems = []
+if len(boxes) != EXPECTED:
+    problems.append(f"expected {EXPECTED} boxes, found {len(boxes)}")
+if subs:
+    problems.append("lettered sub-boxes present: " + " ".join(subs))
+for problem in problems:
+    print("CHECKLIST NOT FROZEN:", problem, file=sys.stderr)
+sys.exit(1 if problems else 0)
