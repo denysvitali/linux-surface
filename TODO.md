@@ -39,13 +39,15 @@ Hypotheses:
    shows ov13858 -> csiphy2, and a 2112x1568 raw frame of a real scene is
    captured. **Confirmed.** Trial `20261008ev`
    (boot `fffa14b0`): colour bars (129/119-stddev, full 16-255) prove the
-   sensor -> CSI -> CSID -> VFE -> IOMMU path, and a bright capture has real
-   scene structure (87 distinct values, 28.6 column spread). C01 opens:
-   supplies are real (L5E/L3C ride the shared UFS/eDP rails) but the person
-   must confirm the picture in
-   `/var/lib/spx-boot-diagnostics/functional/20261008ev/camera/preview-bright.pgm`,
-   and C02/C03 still need repeated start/stop and resume. Do the
-   human-session items first; camera item: view that preview.
+   sensor -> CSI -> CSID -> VFE -> IOMMU path, and the demosaiced bright frame
+   is a real scene (`RESULT-20261008ef`). The user identified it: front-facing
+   camera, real colour, upside down. Two defects are now named:
+   **the image is upside down** (board DT `orientation = <1>` on this sensor)
+   and **`camera.py` writes an undemosaiced grayscale preview**, so a raw
+   preview is never a scene. Fix the orientation in the DT, demosaic in the
+   helper, then C01 needs repeated stream start/stop plus resume and the
+   user's confirmation of the corrected picture. Do the human-session items
+   first; camera item: view the corrected frame.
 2. If camss binds but STREAMON hangs or no frame arrives: compare the live
    CSIPHY/CSID register programming and clock rates with the 6.18 run
    (`camss-video.c` bisect knob, 400/300 MHz PHY rates).
