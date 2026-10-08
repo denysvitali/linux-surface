@@ -612,6 +612,8 @@ class AudioTests(unittest.TestCase):
                 # Let the finite two-second waveform drain fully before scoring.
                 time.sleep(3)
                 monitor.forward = False
+                pcm.set_source(None)
+                self.assertIsNone(pcm.source)
                 for _ in range(3):
                     acoustic.score_phase([0] * 150000, [0] * 96000, [440, 660])
                 self.assertTrue(select.select([result_read], [], [], 6)[0])
@@ -738,7 +740,7 @@ class AudioTests(unittest.TestCase):
         self.assertEqual(report['serve']['output_peak'], 1433)
         self.assertTrue(monitor.forward)
         pcm.close.assert_not_called()  # Caller performs attached-amplifier close.
-        pcm.set_source.assert_called_once_with(None)
+        self.assertEqual([call.args[0] for call in pcm.set_source.call_args_list], [monitor, None])
         monitor.close.assert_called_once()
 
     def test_serve_monitor_fault_does_not_take_normal_close_path(self):
@@ -764,6 +766,8 @@ class AudioTests(unittest.TestCase):
         pcm.settle.side_effect = lambda seconds: counter.__setitem__(0, counter[0] + round(seconds * 48000))
         graph.public_restore = [('pactl', 'set-sink-volume', 'spx_speakers', '25559', '25559')]
         graph.monitor.peak = 4000
+        held_monitor = graph.monitor
+        microphone = Mock()
         starts = []
 
         def play(payload, name):
@@ -774,14 +778,17 @@ class AudioTests(unittest.TestCase):
 
         graph.play.side_effect = play
         report = {}
+        pcm.set_source.side_effect = lambda source: setattr(pcm, 'source', source)
+        microphone.tone_end.side_effect = lambda: self.assertIsNone(pcm.source)
         def score_public(*unused):
             self.assertFalse(graph.monitor.forward)
+            self.assertIsNone(pcm.source)
             return {'passed': True, 'reason': 'detected'}
 
         with patch.object(audio.threading, 'Timer'), \
                 patch.object(audio, 'tone', return_value=b'full-scale input') as tone, \
                 patch.object(acoustic, 'score_phase', side_effect=score_public) as score:
-            audio.verify_public_playback(report, pcm, graph, capture, desktop_peak=4000)
+            audio.verify_public_playback(report, pcm, graph, capture, desktop_peak=4000, microphone=microphone)
         tone.assert_called_once_with({0, 1}, amplitude=32767)
         graph.connect_public.assert_called_once_with(pcm, desktop_peak=4000)
         self.assertEqual(score.call_args.args[1], (starts[0] - 96000, starts[0]))
@@ -794,6 +801,9 @@ class AudioTests(unittest.TestCase):
         self.assertEqual(report['public_desktop']['public_volume']['current'], [65536, 65536])
         self.assertEqual(report['public_desktop']['public_volume']['prior'], ['25559', '25559'])
         capture.close.assert_not_called()  # Caller closes only after this score succeeds.
+        pcm.set_source.assert_called_once_with(None)
+        self.assertIs(graph.monitor, held_monitor)
+        microphone.tone_end.assert_called_once_with()
 
     def test_public_deadline_allows_setup_and_retains_interrupted_score_bounds(self):
         import acoustic
@@ -2062,10 +2072,14 @@ class DesktopMicrophoneServingTests(unittest.TestCase):
             client.mark.side_effect = [144000, 144000, 288000]
             client.samples.return_value = [1] * 96000
         evidence = dict(clients=[])
+        pcm.set_source.side_effect = lambda source: setattr(pcm, 'source', source)
+        def actual_score(*arguments):
+            self.assertIsNone(pcm.source)
+            return dict(passed=True, reason='passed')
         with patch.object(audio.time, 'clock_gettime', return_value=0), \
                 patch.object(audio, 'DesktopRecording', side_effect=clients) as recording, \
                 patch.object(audio, 'check_stereo'), \
-                patch.object(acoustic, 'score_phase', return_value=dict(passed=True, reason='passed')) as score, \
+                patch.object(acoustic, 'score_phase', side_effect=actual_score) as score, \
                 patch.object(audio, 'tone', return_value=b'quiet-pair') as waveform:
             audio.verify_native_microphone_clients(source, graph, evidence, pcm, {}, {}, frequencies=(880, 1320))
         self.assertTrue(evidence['microphone_client_passed'])

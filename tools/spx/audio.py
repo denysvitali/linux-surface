@@ -1897,6 +1897,9 @@ def verify_native_microphone_clients(source, graph, evidence, pcm, paths, mappin
     playback = pcm.healthy()
     held = {field: re.search(r'^' + field + r'\s*:\s*(.+)$', playback, re.M)[1]
             for field in ('owner_pid', 'trigger_time')}
+    # Finite native tones use the owned PCM directly. Keep CPU-bound scoring
+    # on its ALSA-paced silence branch rather than the desktop monitor queue.
+    pcm.set_source(None)
     previous_owner = None
     for index in range(2):
         name = f'spx-native-default-microphone-{os.getpid()}-{index}'
@@ -2271,6 +2274,7 @@ def verify_public_playback(report, pcm, graph, capture, desktop_peak=1433, *, co
         # can starve the 5 ms monitor/feeder handoff even with queued samples.
         # Leave this mode in place through microphone close and mixer restore.
         graph.monitor.forward = False
+        pcm.set_source(None)
         evidence.update(input_peak=graph.monitor.input_peak, output_peak=graph.monitor.peak)
         if microphone is not None:
             microphone.tone_end()
@@ -2298,6 +2302,8 @@ def serve_desktop(args, report, pcm, graph, paths, mapping):
     need(report['desktop']['acoustic_passed'] and
          report['public_desktop']['acoustic_passed'] and report.get('recording_closed'),
          'Serve handoff requires acoustic verification and a closed microphone')
+    graph.monitor.healthy()
+    pcm.set_source(graph.monitor)
     graph.monitor.forward = True
     pcm.settle(0.5)
     graph.monitor.healthy()
@@ -2308,6 +2314,8 @@ def serve_desktop(args, report, pcm, graph, paths, mapping):
         if microphone.default_selected:
             graph.monitor.forward = False
             verify_native_microphone_clients(microphone, graph, microphone.report, pcm, paths, mapping)
+            graph.monitor.healthy()
+            pcm.set_source(graph.monitor)
             graph.monitor.forward = True
         else:
             microphone.report['verification_fixture_rejected'] = (
