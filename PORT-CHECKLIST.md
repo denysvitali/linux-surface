@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-08, ER: A03j/P03g passed; known-good recovery observed)
+## Status (2026-10-08, ES: A03k application microphone formats passed)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
@@ -39,7 +39,7 @@ peak69.8C. CY extends this to verified native FP. DN stays below temporary55C; a
 cleanup is fixed and real virtual-source restoration verified separately.
 **DI closes A03d:** native microphone PCM close/reopen and third client pass;
 EF strengthens this with retained COPP routing and no close timeout. **EH closes A03g:**
-stock-source clients start native capture and close it on idle; EI proves cold startup. **EJ closes A03h:** native microphone available during150s desktop serving. **EK closes A03i:** verified microphone opt-in restores across candidate reboots. **EQ/ER close A03j:** idle stock microphone survives normal AC sleep and fresh clients pass. **DM closes A03e:**
+stock-source clients start native capture and close it on idle; EI proves cold startup. **EJ closes A03h:** native microphone available during150s desktop serving. **EK closes A03i:** verified microphone opt-in restores across candidate reboots. **EQ/ER close A03j:** idle stock microphone survives normal AC sleep. **ES closes A03k:** ordinary44.1kmono/48kstereo recording clients pass. **DM closes A03e:**
 four incompatible native requests reject; third original-contract client passes.
 B05a early RTC and N01a IPv6 VPN retain prior passes. **N01b is accepted by user
 assumption from working5GHz; no2.4GHz functional pass was measured.** Light
@@ -91,6 +91,9 @@ ordered audio cleanup passes. Original capture24.876s stays within fixed90s;
 native pre/post phases25.761s/27.783s stay within60s. Actual ER known-good return
 is observed; working EK and successful ER candidates are retained.
 [ER result](tools/spx/boot-diagnostics/RESULT-20261008er.md).
+**ES closes A03k:** common default microphone formats pass, including every
+delivered stereo channel and idle capture restart; quiet desktop serving and
+ordered cleanup pass. [ES result](tools/spx/boot-diagnostics/RESULT-20261008es.md).
 Full DSP teardown, persistence, reliability, physical mapping and quality remain
 open. Earlier failed trials remain recorded in their result files.
 Physical observations remain unverified. CDSP is parked after three changed
@@ -924,13 +927,18 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
     Reliability, battery sleep,
     quality/mapping and full DSP teardown remain open.
 
-  - [ ] **A03k — Common application formats through the stock default microphone.**
-    Two ordinary clients request44.1kHz mono and48kHz stereo S16LE without device
-    selection. Verify delivered stream format/map and source routing, acoustic
-    tones on every delivered channel, and actual idle close/reopen while native
-    hardware remains S16LE48kmono/1920/7680. Keep one fixed60s verification cap,
-    discard all raw recordings and restore source/default/mixers/graph through
-    ordered speaker shutdown. Stereo conversion is not an independent array pass.
+  - [x] **A03k — Common application formats through the stock default microphone.** ES,
+    boot `6beeb0bb-c3a7-44d6-a0aa-4055157af5e1`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: ordinary default clients receive actual
+    S16LE44.1kHz mono and48kHz stereo with exact maps/source routing. Quiet tones
+    pass on every delivered channel; native hardware stays48kmono/1920/7680,
+    fresh triggers and actual idle closure pass. Client ownership10.687s/15.583s
+    stays within the shared fixed60s phase; processes reaped/raw discarded.
+    Source/default/six mixers/graph restore, attached shutdown/FIFO0/parkedamps/
+    closedPCMs/PMauto pass. Stereo is duplicated mono, not an array pass.
+    [ES result](tools/spx/boot-diagnostics/RESULT-20261008es.md). Audio success=true;
+    later independent Bluetooth cycling refuses the initially blocked radio.
+    Arbitrary clients/XRUN, float formats, quality, UCM and full lifecycle remain open.
 
 - [ ] **A04 — External audio.** Test applicable USB-C audio/dock and Bluetooth
   output/input devices, routing, hotplug and reconnect. The logical codec
