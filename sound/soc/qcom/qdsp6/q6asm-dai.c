@@ -109,6 +109,10 @@ struct q6asm_dai_rtd {
 	unsigned int n_submitted;
 	/* Protected by lock; the DSP ring/session survives a retained pause. */
 	bool spx_started;
+	/* Per-open latches: initial preparation is distinct from DSP execution. */
+	bool spx_capture_prepared;
+	bool spx_run_issued;
+	bool spx_pm_transition;
 	bool spx_run_pending;
 	unsigned int spx_pending_writes;
 	unsigned int spx_deferred_reads;
@@ -650,11 +654,32 @@ static int q6asm_dai_prepare(struct snd_soc_component *component,
 				return ret;
 		}
 		/*
-		 * A second prepare on this open would tear down a retained session
-		 * or queue the same read ring again. Recovery from XRUN/repeated
-		 * prepare is outside the close/reopen admission contract.
+		 * ALSA hw_params prepares implicitly; PipeWire prepares again before
+		 * START. Admit only that unchanged initial state as a no-op. Never
+		 * reset/requeue the retained ring or admit XRUN/STOP recovery here.
 		 */
 		if (prtd->state != Q6ASM_STREAM_IDLE) {
+			unsigned long flags;
+			snd_pcm_state_t alsa_state;
+			bool initial;
+
+			/* ALSA's stream lock precedes prtd->lock in trigger callbacks. */
+			alsa_state = snd_pcm_get_state(substream);
+			spin_lock_irqsave(&prtd->lock, flags);
+			initial = prtd->spx_capture_prepared &&
+				prtd->capture_contract.valid &&
+				alsa_state == SNDRV_PCM_STATE_PREPARED &&
+				prtd->state == Q6ASM_STREAM_RUNNING &&
+				!prtd->spx_run_issued && !prtd->spx_started &&
+				!prtd->spx_run_pending && !prtd->spx_pm_transition &&
+				!prtd->spx_pm_error && !prtd->n_write_done &&
+				!prtd->pcm_irq_pos && !prtd->spx_deferred_reads &&
+				!prtd->spx_deferred_elapsed;
+			spin_unlock_irqrestore(&prtd->lock, flags);
+			if (initial) {
+				dev_info(dev, "SPX: initial capture prepare retained unchanged\n");
+				return 0;
+			}
 			dev_err(dev, "SPX: repeated retained capture prepare is unsupported\n");
 			return -EBUSY;
 		}
@@ -776,9 +801,17 @@ static int q6asm_dai_prepare(struct snd_soc_component *component,
 	if (ret < 0) {
 		dev_info(dev, "%s: CMD Format block failed\n", __func__);
 	} else {
-		if (spx_retained_capture(prtd, substream))
+		if (spx_retained_capture(prtd, substream)) {
+			unsigned long flags;
+
+			spin_lock_irqsave(&prtd->lock, flags);
 			prtd->capture_contract.valid = true;
-		prtd->state = Q6ASM_STREAM_RUNNING;
+			prtd->spx_capture_prepared = true;
+			prtd->state = Q6ASM_STREAM_RUNNING;
+			spin_unlock_irqrestore(&prtd->lock, flags);
+		} else {
+			prtd->state = Q6ASM_STREAM_RUNNING;
+		}
 	}
 
 	return ret;
@@ -834,6 +867,8 @@ static int spx_pcm_trigger(struct q6asm_dai_rtd *prtd, int cmd)
 			ret = prtd->spx_pm_error;
 			break;
 		}
+		/* Latch before submission: even a failed RUN must forbid reprepare. */
+		prtd->spx_run_issued = true;
 		prtd->spx_run_pending = true;
 		ret = q6asm_run_nowait(prtd->audio_client, prtd->stream_id, 0, 0, 0);
 		if (ret) {
@@ -843,6 +878,7 @@ static int spx_pcm_trigger(struct q6asm_dai_rtd *prtd, int cmd)
 		}
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
+		prtd->spx_pm_transition = true;
 		prtd->state = Q6ASM_STREAM_STOPPED;
 		prtd->spx_run_pending = false;
 		cancel_delayed_work(&prtd->write_watchdog);
@@ -851,6 +887,7 @@ static int spx_pcm_trigger(struct q6asm_dai_rtd *prtd, int cmd)
 	case SNDRV_PCM_TRIGGER_SUSPEND:
 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
 		/* Stop every local producer before sending the retained DSP pause. */
+		prtd->spx_pm_transition = true;
 		prtd->state = Q6ASM_STREAM_PAUSED;
 		prtd->spx_run_pending = false;
 		cancel_delayed_work(&prtd->write_watchdog);
