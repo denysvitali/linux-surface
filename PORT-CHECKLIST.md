@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-08, DX: native audio and Bluetooth discovery resume)
+## Status (2026-10-08, EA: active Bluetooth discovery resumes)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
@@ -64,7 +64,7 @@ awaits attribution for later observations.
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
 | Keyboard, touchpad (I04, I05) | **BI keyboard works**; recovery keyboard restored after SSAM timeout | Startup reliability, full keys/gestures and resume |
 | Buttons (I06) | User: short power press opens shutdown prompt, boot pending | Volume/posture and intended wake |
-| Bluetooth (N02) | **DT: N02a radio cycling; DX: N02b discovery resumes; DV MSFT warning fix** | Intermittent framing error, peripheral pairing/reconnect and repeated resume |
+| Bluetooth (N02) | **DT: N02a radio cycling; DX: N02b discovery resumes; EA: N02c active client resumes** | Intermittent framing error, peripheral pairing/reconnect and repeated resume |
 | USB data (U01) | Untested | Both ports/orientations, fixtures |
 | USB-C PD, DisplayPort, dock (U02–U04) | **CG: external off/on scanout restoration passes; normal orientation API works** | Visible output, physical replug, roles/PD, ports/orientations/resume |
 | Battery and charging (P01) | **CF: P01a actual charging passes, +1.26Wh/120s** | Charge-policy explanation, discharge/transitions and charger coverage |
@@ -934,6 +934,18 @@ host datapath; that is not current cellular service verification.
     alarm/mask/inhibitor cleanup restore. One AC cycle; pairing/peripheral use,
     reconnect, transport reliability and full N02 remain open.
     [DX Bluetooth result](tools/spx/boot-diagnostics/RESULT-20261008dx-bluetooth-resume.md).
+
+  - [x] **N02c — Active Bluetooth discovery client across normal AC sleep.**
+    EA boot `701bb5d8-e4b3-4ac1-85cb-e8eea4ea2c31`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: same scanner PID/startticks/pipe
+    identities across29.4476s RTC-woken normal sleep.15 pre-sleep peers and3
+    fresh post-drain peers; queued output discarded before counting delivery.
+    Same controller/policy/rfkill/BlueZ/WLAN UUID, no interval radio/scan repair.
+    Scanner stops/reaps; original off/softblocked preference, native WLAN1MB,
+    motion/storage and full parked-audio/mask/alarm/inhibitor cleanup pass.
+    One AC cycle; packet transmission timestamps, pairing/peripheral data,
+    reconnect, repeat reliability and full N02 remain open.
+    [EA Bluetooth result](tools/spx/boot-diagnostics/RESULT-20261008ea-bluetooth-resume.md).
 
 - [ ] **N03 — Cellular control/data.** Stable modem startup and discovery, correct
   SIM/eSIM applicability, network registration and actual bidirectional data with
