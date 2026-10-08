@@ -1609,6 +1609,7 @@
 &cci0_i2c1 {
 	camera@36 {
 		compatible = "ovti,ov5693";
+		status = "disabled";
 		reg = <0x36>;
 		clocks = <&camcc CAM_CC_MCLK2_CLK>;
 		clock-names = "xvclk";
