@@ -2402,8 +2402,13 @@ def main():
             dispatch_live_audio_resume(args, record)
             dispatch_audio(args)
             if record.get('qca_setup_trace') and not record.get('live_audio_resume') and not (OUT / 'bluetooth-power').exists():
-                bluetooth_power(args)
-            if record.get('camera_capture') and not (OUT / 'camera').exists():
+                # A failed Bluetooth step must not cost the boot its capture.
+                try:
+                    bluetooth_power(args)
+                finally:
+                    if record.get('camera_capture') and not (OUT / 'camera').exists():
+                        camera_capture(args)
+            elif record.get('camera_capture') and not (OUT / 'camera').exists():
                 camera_capture(args)
         else:
             {'install': install, 'boot': boot, 'return': return_to_default,
