@@ -23,6 +23,12 @@ selection/reboot; known-good stays the persistent default. Each attempt is
 selected once. Results and short state files go to
 `/var/lib/spx-boot-diagnostics/functional/<attempt>`.
 
+Camera trials retain packed RAW10 and write demosaiced `preview*.ppm` files
+using FFmpeg. Previews use common percentile contrast levels and preserve
+sensor pixel orientation; colour calibration and mounting rotation remain
+separate. A missing FFmpeg or failed conversion is recorded as `preview_error`
+alongside the raw-frame statistics.
+
 Add `--usbc` to preparation to load the experimental USC-to-DP0 forwarder
 from the initramfs and exercise its deferred startup. This provides no initial
 dock-state query; actual hotplug and monitor output still need a dock replug.

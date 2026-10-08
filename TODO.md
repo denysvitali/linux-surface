@@ -13,8 +13,8 @@ S01, S02, P03. Battery steps are left out (deferred by the user).
 ## 2. Current blocker: camera first frame (C01, then C02–C05)
 
 - Known: the rear sensor identifies. Receiver SID and mask are resolved.
-- Missing: real ownership of the `vdda-phy` and `vdda-pll` supplies. No frame
-  has been captured on mainline.
+- Missing: resolved ownership of the `vdda-phy` and `vdda-pll` supplies,
+  plus validated scene colours/orientation. EV captured real mainline frames.
 - Start from the working 6.18 rear capture: commit `005adbc494a5` in
   `../linux-surface-kernel` and `docs/spx-camera-recon.md` section 7.
 - Do not use dummy supplies or guessed RPMh votes. Do not repeat camera audits
@@ -32,6 +32,15 @@ reference board; LDO9_E is USB-only). Both are already on for UFS/eDP.
 
 Hypotheses:
 
+0. The offline renderer corrupts colour and orientation: `/tmp/spxjpg/dem.py`
+   writes `(g, r, b)` into RGB and its `rot90cw` is a transpose. Compare a
+   standard FFmpeg `bayer_grbg8` conversion of the saved EV bytes, with one
+   common percentile stretch, and verify with a known-colour Bayer fixture.
+   **Confirmed offline:** known GRBG colours and padded RAW10 rows decode
+   correctly; EV matches the direct FFmpeg conversion. Fixed `camera.py` to
+   produce a demosaiced, common-percentile PPM (`RESULT-20261008-render`).
+   Physical orientation and scene colour still need the user's confirmation.
+
 1. The only thing missing for a frame is the camss node itself, which was
    never enabled on mainline. Change: add camss (cell-identical to 6.18 v23)
    with `vdda-phy` = L5E, `vdda-pll` = L3C, linked to the rear OV13858 on
@@ -41,31 +50,18 @@ Hypotheses:
    (boot `fffa14b0`): colour bars (129/119-stddev, full 16-255) prove the
    sensor -> CSI -> CSID -> VFE -> IOMMU path, and the demosaiced bright frame
    is a real scene (`RESULT-20261008ef`). The user identified it as the **back**
-   camera and rejected the renders twice: the scene description was wrong and
-   the colours were wrong. Two defects are named, both in the pixel path, and
-   neither is fixed:
-   1. **The image is rotated 90°.** A quarter turn puts the tabletop horizontal
-      and the chair upright; 180° does not. Do **not** blame
-      `orientation = <1>`: that DT property is read-only metadata
-      (`V4L2_CID_CAMERA_ORIENTATION`, flagged read-only in
-      `v4l2-ctrls-defs.c`), so it cannot move pixels. The mode table explains
-      only half of it: `mode_2112x1568_regs` writes `0x3820 = 0xab` against
-      `0xa8` in the full-resolution mode, and on this sensor bit 4 of `0x3820`
-      is vertical flip (set = on) and bit 3 is horizontal mirror (clear = on),
-      per Intel's ov13858 driver and a 2026-09 measurement on the part
-      (https://lkml.org/lkml/2026/9/21/1360). So the mode programs a 180°
-      rotation, which is not the 90° the frame shows. The same measurement
-      found the Bayer order does not change with the flip.
-   2. **The colour is magenta**, not green. The earlier "blue at 77% of red"
-      came from assigning the planes backwards and averaging the whole frame.
-      On the pale wall, with the documented GRBG order, the planes read
-      G 42.1/41.8, R 36.1, B 31.2. A single gain per plane computed from that
-      wall makes the wall grey and turns the wood green, so it is not the fix.
-      The cause is not established; do not guess a white balance.
-   Next: find the rotation (the mode's flip accounts for 180°, the frame shows
-   90°) and the colour cause before writing any kernel change. Fix `camera.py`
-   to demosaic (`bayer_grbg8`) with percentile auto-levels, so the check sees a
-   scene instead of a grayscale plateau. Do the human-session items first.
+   camera and rejected the earlier scene description and colours. The EF
+   render analysis is superseded by `RESULT-20261008-render`: its custom
+   converter swapped R/G and transposed an image labelled as a rotation.
+   The standard GRBG preview preserves sensor pixel orientation and applies
+   one common percentile stretch; it has no white balance or calibration.
+   The previous mode-flip explanation is also unsupported: `0xab ^ 0xa8`
+   is `0x03`, so bits 3/4 do not change between those values. The mode tables
+   match the working 6.18 source. Do not infer a sensor flip from the faulty
+   render or guess a white balance. Next: the user confirms actual colours
+   and tablet pose for the corrected EV preview, then choose a supported
+   orientation/calibration change. Do the human-session items first.
+
 2. If camss binds but STREAMON hangs or no frame arrives: compare the live
    CSIPHY/CSID register programming and clock rates with the 6.18 run
    (`camss-video.c` bisect knob, 400/300 MHz PHY rates).

@@ -6,6 +6,7 @@ and synced before the next one, because a wedged STREAMON loses anything that
 is still in the page cache.
 """
 import json
+from collections import Counter
 import os
 import re
 import subprocess
@@ -51,8 +52,48 @@ def entity(graph, name):
     return match.group(0) if match else None
 
 
+def preview(frame, width, height, stride, destination):
+    """Demosaic RAW10 as GRBG, then apply one common 0.2–99.8% stretch.
+
+    Preserve sensor orientation and channel ratios: this diagnostic preview
+    does not supply camera mounting rotation, white balance or calibration.
+    """
+    if width % 4 or height % 2 or stride < width * 5 // 4 or len(frame) < stride * height:
+        raise ValueError('invalid packed RAW10 dimensions or truncated frame')
+    bayer = bytearray(width * height)
+    for row in range(height):
+        line = frame[row * stride:row * stride + width * 5 // 4]
+        for phase in range(4):
+            bayer[row * width + phase:(row + 1) * width:4] = line[phase::5]
+    converted = subprocess.run(
+        ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-f', 'rawvideo',
+         '-pixel_format', 'bayer_grbg8', '-video_size', '%dx%d' % (width, height),
+         '-i', 'pipe:0', '-frames:v', '1', '-pix_fmt', 'rgb24',
+         '-f', 'rawvideo', 'pipe:1'], input=bayer, capture_output=True,
+        check=True, timeout=30)
+    rgb = converted.stdout
+    if len(rgb) != width * height * 3:
+        raise ValueError('incomplete demosaiced frame')
+    histogram = Counter(rgb)
+
+    def percentile(fraction):
+        count = 0
+        for value in range(256):
+            count += histogram[value]
+            if count > int((len(rgb) - 1) * fraction):
+                return value
+
+    low, high = percentile(0.002), percentile(0.998)
+    # Preserve a flat frame instead of manufacturing contrast in it.
+    table = bytes(max(0, min(255, round((v - low) * 255 / (high - low))))
+                  for v in range(256)) if high > low else bytes(range(256))
+    destination.write_bytes(b'P6\n%d %d\n255\n' % (width, height) + rgb.translate(table))
+    return dict(file=destination.name, bayer='GRBG', low=low, high=high,
+                rotation=0, colour_calibrated=False)
+
+
 def analyse(path, width, height, stride, sizeimage, out, label='scene'):
-    """Per-frame statistics on the 8 MSBs, and a small preview of the last frame."""
+    """Per-frame statistics and a demosaiced preview of the last complete frame."""
     data = path.read_bytes()
     frames = []
     for index in range(len(data) // sizeimage):
@@ -70,13 +111,14 @@ def analyse(path, width, height, stride, sizeimage, out, label='scene'):
                            all_a5=all(b == 0xa5 for b in frame[:4096]),
                            all_zero=not any(frame[::257])))
     if frames:
-        frame = data[-sizeimage:]
-        rows = []
-        for row in range(0, height, 8):
-            line = frame[row * stride:row * stride + width * 5 // 4]
-            rows.append(bytes(line[i] for i in range(0, len(line), 10)))
-        preview = out / ('preview.pgm' if label == 'scene' else 'preview-%s.pgm' % label)
-        preview.write_bytes(b'P5\n%d %d\n255\n' % (len(rows[0]), len(rows)) + b''.join(rows))
+        frame = data[(len(frames) - 1) * sizeimage:len(frames) * sizeimage]
+        destination = out / ('preview.ppm' if label == 'scene' else 'preview-%s.ppm' % label)
+        try:
+            frames[-1]['preview'] = preview(frame, width, height, stride, destination)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            # A rendering failure must not interrupt capture cleanup or discard
+            # the raw-frame evidence (including on systems without FFmpeg).
+            frames[-1]['preview_error'] = str(error)
     return frames
 
 
@@ -239,7 +281,7 @@ def exercise(out, attempt, release):
             return fail('bright capture is wedged')
         step('exposure-restore', ['v4l2-ctl', '-d', subdev, '--set-ctrl=exposure=1600,analogue_gain=128'])
     # Varied, non-fill data shows frames arrived. A person still has to look at
-    # preview.pgm to say that it is the scene in front of the camera.
+    # preview.ppm to say that it is the scene in front of the camera.
     result['complete'] = informative(scene) or informative(result.get('bright'))
     save()
     return result
