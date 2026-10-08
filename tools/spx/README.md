@@ -25,7 +25,9 @@ selected once. Results and short state files go to
 
 Camera trials retain packed RAW10 and write demosaiced `preview*.ppm` files
 using FFmpeg. Those diagnostic previews keep common percentile contrast levels
-and sensor pixel orientation. A separate `view*.ppm` uses all ten RAW bits,
+and sensor pixel orientation. Queue all fitted sensors with
+`--camera-capture --camera-sensors front,rear,ir`; each selected sensor is
+opened, captured, stopped and opened once more. A separate `view*.ppm` uses all ten RAW bits,
 a provisional common black pedestal, frame-derived grey-world white balance,
 common exposure normalization and sRGB transfer. Rear views rotate RGB by 180°
 for the upside-down image reported by the user; this is not mounting metadata

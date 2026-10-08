@@ -89,6 +89,13 @@
 			gpios = <&tlmm 11 GPIO_ACTIVE_HIGH>;
 			default-state = "off";
 		};
+
+		/* ACPI CAMP.PRLD: front/IR camera activity LED on TLMM 25. */
+		front_privacy_led: led-1 {
+			label = "spx:front:privacy";
+			gpios = <&tlmm 25 GPIO_ACTIVE_HIGH>;
+			default-state = "off";
+		};
 	};
 
 	chosen {
@@ -1023,6 +1030,38 @@
 		output-low;
 	};
 
+	/* CAMF / front OV5693: the working 6.18 tree uses MCLK2/GPIO12. */
+	cam_front_mclk: cam-front-mclk-state {
+		pins = "gpio15";
+		function = "cam_mclk";
+		drive-strength = <4>;
+		bias-disable;
+	};
+
+	cam_front_reset: cam-front-reset-state {
+		pins = "gpio12";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+		output-low;
+	};
+
+	/* CAMI / Windows Hello OV7251: the working 6.18 tree uses MCLK3/GPIO23. */
+	cam_ir_mclk: cam-ir-mclk-state {
+		pins = "gpio16";
+		function = "cam_mclk";
+		drive-strength = <4>;
+		bias-disable;
+	};
+
+	cam_ir_enable: cam-ir-enable-state {
+		pins = "gpio23";
+		function = "gpio";
+		drive-strength = <2>;
+		bias-disable;
+		output-low;
+	};
+
 	pcie1_default_state: pcie1-default-state {
 		clkreq {
 			pins = "gpio176";
@@ -1476,11 +1515,27 @@
 	status = "okay";
 
 	ports {
+		port@0 {
+			csiphy0_ep: endpoint {
+				clock-lanes = <7>;
+				data-lanes = <0 1>;
+				remote-endpoint = <&cam_front_ep>;
+			};
+		};
+
 		port@2 {
 			csiphy2_ep: endpoint {
 				clock-lanes = <7>;
 				data-lanes = <0 1 2 3>;
 				remote-endpoint = <&cam_rear_ep>;
+			};
+		};
+
+		port@3 {
+			csiphy3_ep: endpoint {
+				clock-lanes = <7>;
+				data-lanes = <0>;
+				remote-endpoint = <&cam_ir_ep>;
 			};
 		};
 	};
@@ -1517,6 +1572,66 @@
 				data-lanes = <1 2 3 4>;
 				link-frequencies = /bits/ 64 <540000000 270000000>;
 				remote-endpoint = <&csiphy2_ep>;
+			};
+		};
+	};
+
+	camera@60 {
+		compatible = "ovti,ov7251";
+		reg = <0x60>;
+		clocks = <&camcc CAM_CC_MCLK3_CLK>;
+		clock-names = "xclk";
+		assigned-clocks = <&camcc CAM_CC_MCLK3_CLK>;
+		assigned-clock-rates = <19200000>;
+		power-domains = <&camcc TITAN_TOP_GDSC>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam_ir_mclk &cam_ir_enable>;
+		enable-gpios = <&tlmm 23 GPIO_ACTIVE_HIGH>;
+		vdddo-supply = <&vreg_cam_dovdd_1p8>;
+		vdda-supply = <&vreg_cam_avdd_2p85>;
+		vddd-supply = <&vreg_cam_dvdd_1p2>;
+		leds = <&front_privacy_led>;
+		led-names = "privacy";
+		orientation = <0>;
+		rotation = <0>;
+
+		port {
+			cam_ir_ep: endpoint {
+				clock-lanes = <7>;
+				data-lanes = <1>;
+				link-frequencies = /bits/ 64 <240000000>;
+				remote-endpoint = <&csiphy3_ep>;
+			};
+		};
+	};
+};
+
+&cci0_i2c1 {
+	camera@36 {
+		compatible = "ovti,ov5693";
+		reg = <0x36>;
+		clocks = <&camcc CAM_CC_MCLK2_CLK>;
+		clock-names = "xvclk";
+		assigned-clocks = <&camcc CAM_CC_MCLK2_CLK>;
+		assigned-clock-rates = <19200000>;
+		power-domains = <&camcc TITAN_TOP_GDSC>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam_front_mclk &cam_front_reset>;
+		reset-gpios = <&tlmm 12 GPIO_ACTIVE_LOW>;
+		avdd-supply = <&vreg_cam_avdd_2p85>;
+		dovdd-supply = <&vreg_cam_dovdd_1p8>;
+		dvdd-supply = <&vreg_cam_dvdd_1p2>;
+		leds = <&front_privacy_led>;
+		led-names = "privacy";
+		orientation = <0>;
+		rotation = <0>;
+
+		port {
+			cam_front_ep: endpoint {
+				clock-lanes = <7>;
+				data-lanes = <1 2>;
+				link-frequencies = /bits/ 64 <419200000>;
+				remote-endpoint = <&csiphy0_ep>;
 			};
 		};
 	};

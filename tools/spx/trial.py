@@ -298,6 +298,7 @@ def prepare(args):
                     speaker_drivers_blocked=not args.audio,
                     reuse_installed_modules=args.reuse_installed_modules,
                     camera_capture=args.camera_capture,
+                    camera_sensors=args.camera_sensors,
                     replace_modules=args.replace_module)
     recovery()
     assert Path('/proc/sys/kernel/random/boot_id').read_text().strip() == BOOT_ID
@@ -2086,16 +2087,29 @@ def tpm_sign(args):
         subprocess.run([lock, 'release', 'device', owner], check=True)
 
 
-def camera_capture(args):
-    """Run the queued rear-camera capture once, after every other check."""
+def camera_capture(args, sensors):
+    """Run bounded captures for the queued fitted cameras."""
     from camera import exercise
     lock = str(REPO / 'tools/spx/spx-lock')
     owner = 'camera-' + ATTEMPT
     subprocess.run([lock, 'acquire', 'device', owner], check=True)
     try:
-        result = exercise(OUT / 'camera', ATTEMPT, RELEASE)
-        print(json.dumps(dict(complete=result['complete'], error=result.get('error'),
-                              result=str(OUT / 'camera/result.json'))), flush=True)
+        root = OUT / 'camera'
+        root.mkdir(mode=0o700)
+        results = {}
+        for sensor in sensors:
+            try:
+                results[sensor] = exercise(root / sensor, ATTEMPT, RELEASE, sensor)
+            except Exception as error:
+                results[sensor] = dict(complete=False, error=repr(error))
+        summary = dict(complete=all(item.get('complete') for item in results.values()),
+                       cameras={name: dict(complete=item.get('complete', False),
+                                           error=item.get('error'),
+                                           result=str(root / name / 'result.json'))
+                                for name, item in results.items()})
+        (root / 'result.json').write_text(json.dumps(summary, indent=2) + '\n')
+        print(json.dumps(dict(complete=summary['complete'],
+                              result=str(root / 'result.json'))), flush=True)
     finally:
         subprocess.run([lock, 'release', 'device', owner], check=True)
 
@@ -2285,7 +2299,9 @@ def main():
     parser.add_argument('--microphone-source', choices=('DMIC0', 'DMIC1'), default='DMIC1',
                         help='bounded capture/feedback/desktop-mic input (default: DMIC1)')
     parser.add_argument('--camera-capture', action='store_true',
-                        help='prepare only: queue one rear-camera capture of three raw frames, kept in the attempt directory')
+                        help='prepare only: queue bounded raw captures kept in the attempt directory')
+    parser.add_argument('--camera-sensors', default='rear',
+                        help='comma-separated camera-capture selection: front,rear,ir')
     parser.add_argument('--reuse-installed-modules', action='store_true',
                         help='retain current module tree for a command-line-only trial')
     parser.add_argument('--return-after-audio-seconds', type=int,
@@ -2310,6 +2326,11 @@ def main():
         parser.error('--qca-setup-trace requires prepare')
     if args.camera_capture and args.command != 'prepare':
         parser.error('--camera-capture requires prepare')
+    args.camera_sensors = [item for item in args.camera_sensors.split(',') if item]
+    if any(item not in ('front', 'rear', 'ir') for item in args.camera_sensors):
+        parser.error('--camera-sensors contains an unknown camera')
+    if (args.camera_capture and not args.camera_sensors) or (args.camera_sensors != ['rear'] and not args.camera_capture):
+        parser.error('--camera-sensors requires --camera-capture and may not be empty')
     if args.parked_audio and args.command != 'systemd-suspend':
         parser.error('--parked-audio requires systemd-suspend')
     if args.desktop_microphone and (args.command not in ('audio', 'arm-audio') or args.audio_action != 'serve'):
@@ -2408,9 +2429,9 @@ def main():
                     bluetooth_power(args)
                 finally:
                     if record.get('camera_capture') and not (OUT / 'camera').exists():
-                        camera_capture(args)
+                        camera_capture(args, record.get('camera_sensors', ['rear']))
             elif record.get('camera_capture') and not (OUT / 'camera').exists():
-                camera_capture(args)
+                camera_capture(args, record.get('camera_sensors', ['rear']))
         else:
             {'install': install, 'boot': boot, 'return': return_to_default,
              'extend': extend_window, 'audio': audio_check, 'arm-audio': arm_audio,

@@ -27,6 +27,12 @@ def bayer(width, height, r, g, b):
                        for y in range(height) for x in range(width)))
 
 
+def bggr(width, height, r, g, b):
+    return array('H', (b if x % 2 == 0 and y % 2 == 0 else
+                       r if x % 2 == 1 and y % 2 == 1 else g
+                       for y in range(height) for x in range(width)))
+
+
 class Raw10(unittest.TestCase):
     def test_all_low_bits_and_padding(self):
         samples = array('H', [0, 1, 2, 3, 1020, 1021, 1022, 1023] * 2)
@@ -46,6 +52,11 @@ class Raw10(unittest.TestCase):
         self.assertEqual(gains, (2.0, 1.0, 4.0))
         self.assertEqual(render.colour_gains(bayer(8, 8, 64, 64, 64), 8, 8, 64),
                          ((1.0, 1.0, 1.0), False))
+
+        front_gains, valid = render.colour_gains(
+            bggr(8, 8, 164, 264, 114), 8, 8, 64, 'BGGR')
+        self.assertTrue(valid)
+        self.assertEqual(front_gains, (2.0, 1.0, 4.0))
 
     def test_transfer_reference_points(self):
         self.assertEqual(render.srgb(0), 0)
@@ -70,6 +81,11 @@ class Raw10(unittest.TestCase):
 class Processing(unittest.TestCase):
     def test_rgb_order_and_ten_bit_precision(self):
         output = render.demosaic(bayer(8, 8, 801, 402, 163), 8, 8)
+        self.assertEqual(set(tuple(output[i:i + 3]) for i in range(0, len(output), 3)),
+                         {(801 << 6, 402 << 6, 163 << 6)})
+
+    def test_front_bggr_rgb_order(self):
+        output = render.demosaic(bggr(8, 8, 801, 402, 163), 8, 8, 'BGGR')
         self.assertEqual(set(tuple(output[i:i + 3]) for i in range(0, len(output), 3)),
                          {(801 << 6, 402 << 6, 163 << 6)})
 

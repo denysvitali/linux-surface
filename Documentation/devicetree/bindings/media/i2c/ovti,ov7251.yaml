@@ -14,6 +14,9 @@ description:
 maintainers:
   - Todor Tomov <todor.too@gmail.com>
 
+allOf:
+  - $ref: /schemas/media/video-interface-devices.yaml#
+
 properties:
   compatible:
     const: ovti,ov7251
@@ -77,7 +80,7 @@ required:
   - vdda-supply
   - port
 
-additionalProperties: false
+unevaluatedProperties: false
 
 examples:
   - |

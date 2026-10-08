@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-only
-"""Offline RAW10 processing for the OV13858 rear-camera helper."""
+"""Offline RAW10 processing for the Surface camera capture helper."""
 from array import array
 from collections import Counter
 import math
@@ -23,8 +23,8 @@ def unpack(frame, width, height, stride):
     return samples
 
 
-def demosaic(samples, width, height):
-    """Convert linear GRBG to linear RGB without discarding the low bits."""
+def demosaic(samples, width, height, bayer='GRBG'):
+    """Convert linear Bayer data to RGB without discarding the low bits."""
     if len(samples) != width * height:
         raise ValueError('incorrect Bayer sample count')
     source = array('H', (value << 6 for value in samples))
@@ -32,7 +32,8 @@ def demosaic(samples, width, height):
         source.byteswap()
     result = subprocess.run(
         ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-f', 'rawvideo',
-         '-pixel_format', 'bayer_grbg16le', '-video_size', '%dx%d' % (width, height),
+         '-pixel_format', 'bayer_%s16le' % bayer.lower(),
+         '-video_size', '%dx%d' % (width, height),
          '-i', 'pipe:0', '-frames:v', '1', '-pix_fmt', 'rgb48le',
          '-f', 'rawvideo', 'pipe:1'], input=source.tobytes(), capture_output=True,
         check=True, timeout=30)
@@ -45,21 +46,27 @@ def demosaic(samples, width, height):
     return rgb
 
 
-def colour_gains(samples, width, height, black):
+def colour_gains(samples, width, height, black, bayer='GRBG'):
     """Grey-world AWB in the linear domain, after a common black subtraction.
 
     This is an estimate, not a module calibration. As with libcamera's simple
     ISP, a scene dominated by one colour can bias it. Never infer neutral
     objects or invent a colour-correction matrix from an unlabelled scene.
     """
+    if bayer not in ('GRBG', 'BGGR', 'GBRG', 'RGGB'):
+        raise ValueError('unsupported Bayer order')
+    channels = {'R': 0, 'G': 1, 'B': 2}
     sums = [0, 0, 0]
+    counts = [0, 0, 0]
     for y in range(0, height, 2):
         row, next_row = y * width, (y + 1) * width
         for x in range(0, width, 2):
-            sums[0] += max(0, samples[row + x + 1] - black)
-            sums[1] += (max(0, samples[row + x] - black) +
-                        max(0, samples[next_row + x + 1] - black)) / 2
-            sums[2] += max(0, samples[next_row + x] - black)
+            for phase, offset in enumerate((row + x, row + x + 1,
+                                            next_row + x, next_row + x + 1)):
+                channel = channels[bayer[phase]]
+                sums[channel] += max(0, samples[offset] - black)
+                counts[channel] += 1
+    sums = [total / count for total, count in zip(sums, counts)]
     if min(sums) == 0:
         return (1.0, 1.0, 1.0), False
     return (max(0.25, min(4.0, sums[1] / sums[0])), 1.0,
@@ -94,7 +101,8 @@ def rotate(rgb, width, height, rotation):
     return bytes(output), height, width
 
 
-def render(samples, width, height, destination, rotation=0, black=64, gains=None):
+def render(samples, width, height, destination, rotation=0, black=64, gains=None,
+           bayer='GRBG'):
     """Render a display preview; report estimates separately from calibration.
 
     The provisional RAW10 black level is the simple ISP default (16 in the
@@ -111,12 +119,12 @@ def render(samples, width, height, destination, rotation=0, black=64, gains=None
         raise ValueError('invalid clockwise rotation')
     automatic = gains is None
     if automatic:
-        gains, valid = colour_gains(samples, width, height, black)
+        gains, valid = colour_gains(samples, width, height, black, bayer)
     else:
         valid = True
     if len(gains) != 3 or any(not math.isfinite(g) or not 0 < g <= 16 for g in gains):
         raise ValueError('invalid RGB colour gains')
-    linear = demosaic(samples, width, height)
+    linear = demosaic(samples, width, height, bayer)
     histograms = [Counter(linear[channel::3]) for channel in range(3)]
     balanced = Counter()
     for channel, histogram in enumerate(histograms):
@@ -140,7 +148,7 @@ def render(samples, width, height, destination, rotation=0, black=64, gains=None
         rgb[channel::3] = bytes(tables[channel][v] for v in linear[channel::3])
     rgb, out_width, out_height = rotate(rgb, width, height, rotation)
     destination.write_bytes(b'P6\n%d %d\n255\n' % (out_width, out_height) + rgb)
-    return dict(file=destination.name, bayer='GRBG', raw_bits=10, black_level=black,
+    return dict(file=destination.name, bayer=bayer, raw_bits=10, black_level=black,
                 black_level_calibrated=False, white_level=white, exposure_normalized=normalize,
                 white_balance='grey-world' if automatic else 'manual', awb_valid=valid,
                 gains=list(gains), transfer='sRGB', rotation=rotation,
@@ -160,6 +168,7 @@ def main():
     parser.add_argument('--stride', type=int)
     parser.add_argument('--msb8', action='store_true', help='saved high-byte Bayer, not packed RAW10')
     parser.add_argument('--rotation', type=int, choices=(0, 90, 180, 270), default=0)
+    parser.add_argument('--bayer', choices=('GRBG', 'BGGR', 'GBRG', 'RGGB'), default='GRBG')
     parser.add_argument('--black-level', type=float, default=64)
     parser.add_argument('--gains', nargs=3, type=float, metavar=('R', 'G', 'B'))
     args = parser.parse_args()
@@ -177,7 +186,8 @@ def main():
     descriptor = os.open(args.destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     os.close(descriptor)
     result = render(samples, args.width, args.height, args.destination,
-                    rotation=args.rotation, black=args.black_level, gains=args.gains)
+                    rotation=args.rotation, black=args.black_level, gains=args.gains,
+                    bayer=args.bayer)
     result['source_bits'] = 8 if args.msb8 else 10
     print(json.dumps(result, indent=2))
 

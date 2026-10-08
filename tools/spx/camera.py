@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-only
-"""Bounded rear-camera capture on a running trial: three raw frames, then off.
+"""Bounded fitted-camera capture on a running trial: three raw frames, then off.
 
 The frames stay in the attempt directory (root only). Every step is written
 and synced before the next one, because a wedged STREAMON loses anything that
@@ -13,12 +13,20 @@ import subprocess
 import time
 from pathlib import Path
 
-SENSOR = 'ov13858'
-CODE, SIZE, PIXEL = 'SGRBG10_1X10', '2112x1568', 'pgAA'
+PROFILES = {
+    'front': dict(sensor='ov5693', code='SBGGR10_1X10', size='2592x1944',
+                  pixel='pBAA', bayer='BGGR', rotation=0,
+                  led=Path('/sys/class/leds/spx:front:privacy/brightness')),
+    'rear': dict(sensor='ov13858', code='SGRBG10_1X10', size='2112x1568',
+                 pixel='pgAA', bayer='GRBG', rotation=180,
+                 led=Path('/sys/class/leds/spx:rear:privacy/brightness')),
+    'ir': dict(sensor='ov7251', code='Y10_1X10', size='640x480',
+               pixel='Y10P', bayer=None, rotation=0,
+               led=Path('/sys/class/leds/spx:front:privacy/brightness')),
+}
 CSID, RDI, VIDEO = 'msm_csid0', 'msm_vfe0_rdi0', 'msm_vfe0_video0'
 FRAMES = 3
 BRIGHT_WAIT = 45
-LED = Path('/sys/class/leds/spx:rear:privacy/brightness')
 SUMMARY = Path('/sys/kernel/debug/regulator/regulator_summary')
 
 
@@ -52,48 +60,52 @@ def entity(graph, name):
     return match.group(0) if match else None
 
 
-def preview(frame, width, height, stride, destination):
-    """Demosaic RAW10 as GRBG, then apply one common 0.2–99.8% stretch.
+def preview(frame, width, height, stride, destination, bayer_pattern):
+    """Decode packed RAW10, then apply one common 0.2–99.8% stretch.
 
     Preserve sensor orientation and channel ratios: this diagnostic preview
     does not supply camera mounting rotation, white balance or calibration.
     """
     if width % 4 or height % 2 or stride < width * 5 // 4 or len(frame) < stride * height:
         raise ValueError('invalid packed RAW10 dimensions or truncated frame')
-    bayer = bytearray(width * height)
+    raw8 = bytearray(width * height)
     for row in range(height):
         line = frame[row * stride:row * stride + width * 5 // 4]
         for phase in range(4):
-            bayer[row * width + phase:(row + 1) * width:4] = line[phase::5]
-    converted = subprocess.run(
-        ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-f', 'rawvideo',
-         '-pixel_format', 'bayer_grbg8', '-video_size', '%dx%d' % (width, height),
-         '-i', 'pipe:0', '-frames:v', '1', '-pix_fmt', 'rgb24',
-         '-f', 'rawvideo', 'pipe:1'], input=bayer, capture_output=True,
-        check=True, timeout=30)
-    rgb = converted.stdout
-    if len(rgb) != width * height * 3:
-        raise ValueError('incomplete demosaiced frame')
-    histogram = Counter(rgb)
+            raw8[row * width + phase:(row + 1) * width:4] = line[phase::5]
+    if bayer_pattern is None:
+        pixels, channels, magic = bytes(raw8), 1, b'P5'
+    else:
+        converted = subprocess.run(
+            ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-f', 'rawvideo',
+             '-pixel_format', 'bayer_%s8' % bayer_pattern.lower(),
+             '-video_size', '%dx%d' % (width, height), '-i', 'pipe:0',
+             '-frames:v', '1', '-pix_fmt', 'rgb24', '-f', 'rawvideo', 'pipe:1'],
+            input=raw8, capture_output=True, check=True, timeout=30)
+        pixels, channels, magic = converted.stdout, 3, b'P6'
+    if len(pixels) != width * height * channels:
+        raise ValueError('incomplete decoded frame')
+    histogram = Counter(pixels)
 
     def percentile(fraction):
         count = 0
         for value in range(256):
             count += histogram[value]
-            if count > int((len(rgb) - 1) * fraction):
+            if count > int((len(pixels) - 1) * fraction):
                 return value
 
     low, high = percentile(0.002), percentile(0.998)
     # Preserve a flat frame instead of manufacturing contrast in it.
     table = bytes(max(0, min(255, round((v - low) * 255 / (high - low))))
                   for v in range(256)) if high > low else bytes(range(256))
-    destination.write_bytes(b'P6\n%d %d\n255\n' % (width, height) + rgb.translate(table))
-    return dict(file=destination.name, bayer='GRBG', low=low, high=high,
+    destination.write_bytes(magic + b'\n%d %d\n255\n' % (width, height) + pixels.translate(table))
+    return dict(file=destination.name, bayer=bayer_pattern, low=low, high=high,
                 rotation=0, colour_calibrated=False)
 
 
-def analyse(path, width, height, stride, sizeimage, out, label='scene'):
+def analyse(path, width, height, stride, sizeimage, out, profile=None, label='scene'):
     """Per-frame statistics and a demosaiced preview of the last complete frame."""
+    profile = profile or PROFILES['rear']
     data = path.read_bytes()
     frames = []
     for index in range(len(data) // sizeimage):
@@ -114,27 +126,35 @@ def analyse(path, width, height, stride, sizeimage, out, label='scene'):
         frame = data[(len(frames) - 1) * sizeimage:len(frames) * sizeimage]
         destination = out / ('preview.ppm' if label == 'scene' else 'preview-%s.ppm' % label)
         try:
-            frames[-1]['preview'] = preview(frame, width, height, stride, destination)
+            frames[-1]['preview'] = preview(frame, width, height, stride, destination,
+                                             profile['bayer'])
         except (OSError, ValueError, subprocess.SubprocessError) as error:
             # A rendering failure must not interrupt capture cleanup or discard
             # the raw-frame evidence (including on systems without FFmpeg).
             frames[-1]['preview_error'] = str(error)
         try:
-            import camera_render
-            processed = out / ('view.ppm' if label == 'scene' else 'view-%s.ppm' % label)
-            samples = camera_render.unpack(frame, width, height, stride)
-            # Viewing correction for the rear image the user reported upside
-            # down; not a claim about sensor flip bits or DT mounting metadata.
-            frames[-1]['processed_preview'] = camera_render.render(
-                samples, width, height, processed, rotation=180)
+            if profile['bayer'] is not None:
+                import camera_render
+                processed = out / ('view.ppm' if label == 'scene' else 'view-%s.ppm' % label)
+                samples = camera_render.unpack(frame, width, height, stride)
+                frames[-1]['processed_preview'] = camera_render.render(
+                    samples, width, height, processed, rotation=profile['rotation'],
+                    bayer=profile['bayer'])
         except (OSError, ValueError, ImportError, subprocess.SubprocessError) as error:
             frames[-1]['processed_preview_error'] = str(error)
     return frames
 
 
-def exercise(out, attempt, release):
+def exercise(out, attempt, release, sensor_kind='rear'):
+    if sensor_kind not in PROFILES:
+        raise ValueError('unknown camera %r' % sensor_kind)
+    profile = PROFILES[sensor_kind]
+    sensor_driver = profile['sensor']
+    code_request, size_request, pixel = profile['code'], profile['size'], profile['pixel']
+    led = profile['led']
     out.mkdir(mode=0o700)
     result = dict(attempt=attempt, release=release, complete=False, steps=[],
+                  camera=sensor_kind,
                   boot_id=Path('/proc/sys/kernel/random/boot_id').read_text().strip())
     target = out / 'result.json'
 
@@ -158,7 +178,7 @@ def exercise(out, attempt, release):
         result['error'] = reason
         result['rails_after'] = rails()
         step('kernel-log', ['journalctl', '-b', '-k', '--no-pager', '-o', 'short-monotonic',
-                            '-g', 'camss|csiphy|csid|vfe|ov13858|cci|arm-smmu|ac65000'], 30)
+                            '-g', 'camss|csiphy|csid|vfe|ov13858|ov5693|ov7251|cci|arm-smmu|ac65000'], 30)
         save()
         return result
 
@@ -179,7 +199,7 @@ def exercise(out, attempt, release):
         return fail('no camss media device')
     (out / 'graph.txt').write_text(graph)
     result['media'] = media
-    name = re.search(r'^- entity \d+: (' + SENSOR + r' [^ (]+)', graph, re.M)
+    name = re.search(r'^- entity \d+: (' + sensor_driver + r' [^ (]+)', graph, re.M)
     if not name:
         return fail('sensor is not in the camss graph')
     sensor = name.group(1)
@@ -196,11 +216,16 @@ def exercise(out, attempt, release):
 
     step('csid-pattern-off', ['v4l2-ctl', '-d', csid, '--set-ctrl=test_pattern=0'])
     step('sensor-pattern-off', ['v4l2-ctl', '-d', subdev, '--set-ctrl=test_pattern=0'])
+    for old_phy in ('msm_csiphy0', 'msm_csiphy2', 'msm_csiphy3'):
+        if old_phy != phy:
+            step('unlink-' + old_phy, ['media-ctl', '-d', media, '-l',
+                                      "'%s':1 -> '%s':0 [0]" % (old_phy, CSID)])
     for source, sink in ((phy, CSID), (CSID, RDI), (RDI, VIDEO)):
         linked = step('link-' + sink, ['media-ctl', '-d', media, '-l', "'%s':1 -> '%s':0 [1]" % (source, sink)])
         if linked.get('returncode') != 0:
             return fail('link to ' + sink + ' failed')
-    step('sensor-format', ['media-ctl', '-d', media, '-V', "'%s':0 [fmt:%s/%s]" % (sensor, CODE, SIZE)])
+    step('sensor-format', ['media-ctl', '-d', media, '-V',
+                           "'%s':0 [fmt:%s/%s]" % (sensor, code_request, size_request)])
     actual = step('sensor-format-read', ['media-ctl', '-d', media, '--get-v4l2', "'%s':0" % sensor])
     found = re.search(r'fmt:([A-Z0-9_]+)/(\d+)x(\d+)', actual.get('output', ''))
     if not found:
@@ -208,7 +233,9 @@ def exercise(out, attempt, release):
     code, width, height = found.group(1), int(found.group(2)), int(found.group(3))
     for name in (phy, CSID, RDI):
         step('format-' + name, ['media-ctl', '-d', media, '-V', "'%s':0 [fmt:%s/%dx%d]" % (name, code, width, height)])
-    step('video-format', ['v4l2-ctl', '-d', video, '--set-fmt-video=width=%d,height=%d,pixelformat=%s' % (width, height, PIXEL)])
+    step('video-format', ['v4l2-ctl', '-d', video,
+                          '--set-fmt-video=width=%d,height=%d,pixelformat=%s' %
+                          (width, height, pixel)])
     shown = step('video-format-read', ['v4l2-ctl', '-d', video, '--get-fmt-video'])
     stride = re.search(r'Bytes per Line\s*:\s*(\d+)', shown.get('output', ''))
     sizeimage = re.search(r'Size Image\s*:\s*(\d+)', shown.get('output', ''))
@@ -227,7 +254,7 @@ def exercise(out, attempt, release):
                                  '--stream-to=' + str(raw)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         time.sleep(2)
         try:
-            record['led_during'] = LED.read_text().strip()
+            record['led_during'] = led.read_text().strip()
         except OSError as error:
             record['led_during'] = str(error)
         record['rails_during'] = rails()
@@ -245,7 +272,8 @@ def exercise(out, attempt, release):
                 return None
         record['bytes'] = raw.stat().st_size if raw.exists() else 0
         if record['stream'].get('returncode') == 0 and record['bytes'] >= sizeimage:
-            record['frames'] = analyse(raw, width, height, stride, sizeimage, out, label)
+            record['frames'] = analyse(raw, width, height, stride, sizeimage,
+                                       out, profile, label)
         result[label] = record
         save()
         return record
@@ -260,16 +288,19 @@ def exercise(out, attempt, release):
     scene = grab('scene', 'frames.raw')
     if scene is None:
         return fail('capture process is wedged')
+    repeat = grab('repeat', 'frames-repeat.raw')
+    if repeat is None:
+        return fail('repeat capture process is wedged')
     result['led_during'], result['led_after'] = scene.get('led_during'), None
     result['rails_during'] = scene.get('rails_during')
     time.sleep(2)
     try:
-        result['led_after'] = LED.read_text().strip()
+        result['led_after'] = led.read_text().strip()
     except OSError as error:
         result['led_after'] = str(error)
     result['rails_after'] = rails()
     step('kernel-log', ['journalctl', '-b', '-k', '--no-pager', '-o', 'short-monotonic',
-                        '-g', 'camss|csiphy|csid|vfe|ov13858|cci|arm-smmu|ac65000'], 30)
+                        '-g', 'camss|csiphy|csid|vfe|ov13858|ov5693|ov7251|cci|arm-smmu|ac65000'], 30)
     result['bytes'] = scene['bytes']
     result['stream'] = scene['stream']
     if scene['stream'].get('returncode') != 0 or scene['bytes'] < sizeimage:
@@ -285,13 +316,17 @@ def exercise(out, attempt, release):
         step('sensor-pattern-off-again', ['v4l2-ctl', '-d', subdev, '--set-ctrl=test_pattern=0'])
         # 3. The scene again after a pause (time to aim the camera at a lit
         # subject), with exposure and analogue gain raised well above default.
-        time.sleep(BRIGHT_WAIT)
-        step('exposure-up', ['v4l2-ctl', '-d', subdev, '--set-ctrl=exposure=3000,analogue_gain=2048'])
-        if grab('bright', 'frames-bright.raw') is None:
-            return fail('bright capture is wedged')
-        step('exposure-restore', ['v4l2-ctl', '-d', subdev, '--set-ctrl=exposure=1600,analogue_gain=128'])
+        if sensor_kind == 'rear':
+            time.sleep(BRIGHT_WAIT)
+            step('exposure-up', ['v4l2-ctl', '-d', subdev,
+                                 '--set-ctrl=exposure=3000,analogue_gain=2048'])
+            if grab('bright', 'frames-bright.raw') is None:
+                return fail('bright capture is wedged')
+            step('exposure-restore', ['v4l2-ctl', '-d', subdev,
+                                      '--set-ctrl=exposure=1600,analogue_gain=128'])
     # Varied, non-fill data shows frames arrived. A person still has to look at
     # preview.ppm to say that it is the scene in front of the camera.
-    result['complete'] = informative(scene) or informative(result.get('bright'))
+    result['complete'] = ((informative(scene) or informative(result.get('bright'))) and
+                          informative(repeat))
     save()
     return result
