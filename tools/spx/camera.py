@@ -119,6 +119,16 @@ def analyse(path, width, height, stride, sizeimage, out, label='scene'):
             # A rendering failure must not interrupt capture cleanup or discard
             # the raw-frame evidence (including on systems without FFmpeg).
             frames[-1]['preview_error'] = str(error)
+        try:
+            import camera_render
+            processed = out / ('view.ppm' if label == 'scene' else 'view-%s.ppm' % label)
+            samples = camera_render.unpack(frame, width, height, stride)
+            # Viewing correction for the rear image the user reported upside
+            # down; not a claim about sensor flip bits or DT mounting metadata.
+            frames[-1]['processed_preview'] = camera_render.render(
+                samples, width, height, processed, rotation=180)
+        except (OSError, ValueError, ImportError, subprocess.SubprocessError) as error:
+            frames[-1]['processed_preview_error'] = str(error)
     return frames
 
 

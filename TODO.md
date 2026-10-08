@@ -32,6 +32,17 @@ reference board; LDO9_E is USB-only). Both are already on for UFS/eDP.
 
 Hypotheses:
 
+5. RAW-to-display rendering omits black subtraction, AWB and transfer.
+   **Implemented offline, physical acceptance pending:** `camera_render.py`
+   adds full RAW10 decoding, provisional common black subtraction, bounded
+   frame-derived grey-world AWB, common exposure normalization and sRGB
+   transfer. Twelve fixtures pass, including neutral/primary patches and RGB
+   rotations. `camera.py` keeps the diagnostic and adds a rear view rotated
+   180° for the upside-down image reported by the user. EV was reprocessed
+   (`RESULT-20261008-processing`); no acceptance or calibration claimed.
+   Next: confirm the actual scene colours/pose with a known-colour neutral
+   target before matrix tuning or a sensor/DT orientation change.
+
 0. The offline renderer corrupts colour and orientation: `/tmp/spxjpg/dem.py`
    writes `(g, r, b)` into RGB and its `rot90cw` is a transpose. Compare a
    standard FFmpeg `bayer_grbg8` conversion of the saved EV bytes, with one

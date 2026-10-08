@@ -24,10 +24,28 @@ selected once. Results and short state files go to
 `/var/lib/spx-boot-diagnostics/functional/<attempt>`.
 
 Camera trials retain packed RAW10 and write demosaiced `preview*.ppm` files
-using FFmpeg. Previews use common percentile contrast levels and preserve
-sensor pixel orientation; colour calibration and mounting rotation remain
-separate. A missing FFmpeg or failed conversion is recorded as `preview_error`
-alongside the raw-frame statistics.
+using FFmpeg. Those diagnostic previews keep common percentile contrast levels
+and sensor pixel orientation. A separate `view*.ppm` uses all ten RAW bits,
+a provisional common black pedestal, frame-derived grey-world white balance,
+common exposure normalization and sRGB transfer. Rear views rotate RGB by 180°
+for the upside-down image reported by the user; this is not mounting metadata
+or a sensor-register change. AWB is an estimate, not colour calibration. The
+raw/diagnostic views remain untouched. Rendering errors are recorded separately
+without interrupting capture cleanup.
+
+To process an existing capture offline (no camera access):
+
+```
+python3 -B tools/spx/camera_render.py frames.raw view.ppm \
+  --width 2112 --height 1568 --stride 2640 --rotation 180
+```
+
+The command reads the first frame. Use `--msb8` only for an already extracted
+high-byte Bayer file; it cannot recover discarded low bits. The destination must
+be new and is private. `--black-level` (RAW10 counts) and `--gains R G B` allow
+measured settings to replace the provisional pedestal and automatic estimate.
+No vendor colour matrix is applied until its mode and coefficient conventions
+are established. Offline correctness checks: `python3 -B tools/spx/test_camera_render.py`.
 
 Add `--usbc` to preparation to load the experimental USC-to-DP0 forwarder
 from the initramfs and exercise its deferred startup. This provides no initial

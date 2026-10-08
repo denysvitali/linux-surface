@@ -383,8 +383,9 @@ def install(args):
     shutil.copy2(HERE / 'audio_stop.py', helper.parent / 'audio_stop.py')
     (helper.parent / 'audio_stop.py').chmod(0o644)
     if prepared.get('camera_capture'):
-        shutil.copy2(HERE / 'camera.py', helper.parent / 'camera.py')
-        (helper.parent / 'camera.py').chmod(0o644)
+        for name in ('camera.py', 'camera_render.py'):
+            shutil.copy2(HERE / name, helper.parent / name)
+            (helper.parent / name).chmod(0o644)
     # The retained board DTB already contains this policy in later trials.
     shutil.copy2(HERE / 'thermal.py', helper.parent / 'thermal.py')
     if prepared.get('pmic_rtc'):
