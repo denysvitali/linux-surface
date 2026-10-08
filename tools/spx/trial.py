@@ -1618,8 +1618,8 @@ def quarantine_desktop_audio(boot):
 
 def archive_audio_result(boot):
     """Retain small prior-boot evidence before the shared output is reused."""
-    for name in ('serve-ready.json', 'serve-result.json'):
-        source = OUT / 'audio' / name
+    for name in ('serve-ready.json', 'serve-result.json', 'audio-stop.json'):
+        source = OUT / name if name == 'audio-stop.json' else OUT / 'audio' / name
         if not source.exists():
             continue
         record = json.loads(source.read_text())
@@ -1632,6 +1632,11 @@ def archive_audio_result(boot):
             target = directory / name
             if not target.exists():
                 shutil.copy2(source, target)
+            if name == 'audio-stop.json':
+                # The stop tool refuses another boot's record. Preserve its
+                # exact bytes before allowing the new owner's independent stop.
+                assert target.read_bytes() == source.read_bytes(), 'Conflicting archived stop evidence'
+                source.unlink()
 
 
 def stop_desktop_audio(args):

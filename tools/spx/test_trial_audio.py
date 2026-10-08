@@ -581,6 +581,40 @@ class DesktopOptInTests(TrialAudioFixture):
         self.save('audio/serve-result.json', dict(serve=self.ready, desktop_microphone=microphone,
                                                 success=completed, cleanup_errors=[]))
 
+    def test_prior_stop_archived_before_policy_starts_new_owner(self):
+        self.microphone_fixture()
+        trial.enable_desktop_audio(self.args)
+        self.microphone_result(completed=True)
+        previous = dict(boot_id='new-boot', complete=True)
+        self.save('audio-stop.json', previous)
+        original = (self.out / 'audio-stop.json').read_bytes()
+        self.next_boot()
+
+        def started(args):
+            self.assertFalse((self.out / 'audio-stop.json').exists())
+            self.assertEqual((self.out / 'audio/boots/new-boot/audio-stop.json').read_bytes(), original)
+
+        self.audio.side_effect = started
+        trial.dispatch_audio(self.args)
+        self.audio.assert_called_once()
+
+    def test_current_boot_stop_is_preserved_for_idempotent_reuse(self):
+        self.save('audio-stop.json', dict(boot_id='new-boot', complete=False))
+        original = (self.out / 'audio-stop.json').read_bytes()
+        trial.archive_audio_result('new-boot')
+        self.assertEqual((self.out / 'audio-stop.json').read_bytes(), original)
+        self.assertFalse((self.out / 'audio/boots/new-boot/audio-stop.json').exists())
+
+    def test_conflicting_prior_stop_archive_preserves_both_records(self):
+        self.save('audio-stop.json', dict(boot_id='old-boot', complete=False))
+        self.save('audio/boots/old-boot/audio-stop.json', dict(boot_id='old-boot', complete=True))
+        original = (self.out / 'audio-stop.json').read_bytes()
+        archived = (self.out / 'audio/boots/old-boot/audio-stop.json').read_bytes()
+        with self.assertRaisesRegex(AssertionError, 'Conflicting archived stop evidence'):
+            trial.archive_audio_result('new-boot')
+        self.assertEqual((self.out / 'audio-stop.json').read_bytes(), original)
+        self.assertEqual((self.out / 'audio/boots/old-boot/audio-stop.json').read_bytes(), archived)
+
     def test_microphone_enable_requires_live_identity_and_persists_exact_boolean(self):
         self.microphone_fixture()
         trial.enable_desktop_audio(self.args)
