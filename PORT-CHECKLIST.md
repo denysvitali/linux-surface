@@ -924,6 +924,14 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
     Reliability, battery sleep,
     quality/mapping and full DSP teardown remain open.
 
+  - [ ] **A03k — Common application formats through the stock default microphone.**
+    Two ordinary clients request44.1kHz mono and48kHz stereo S16LE without device
+    selection. Verify delivered stream format/map and source routing, acoustic
+    tones on every delivered channel, and actual idle close/reopen while native
+    hardware remains S16LE48kmono/1920/7680. Keep one fixed60s verification cap,
+    discard all raw recordings and restore source/default/mixers/graph through
+    ordered speaker shutdown. Stereo conversion is not an independent array pass.
+
 - [ ] **A04 — External audio.** Test applicable USB-C audio/dock and Bluetooth
   output/input devices, routing, hotplug and reconnect. The logical codec
   "Headset Jack" node does not establish a physical analog jack on this device.
