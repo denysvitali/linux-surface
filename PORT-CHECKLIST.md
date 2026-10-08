@@ -6,7 +6,7 @@ Keep this header short: no hashes, no file counts, no build narration. The
 history that used to live here is in
 [CHECKLIST-HISTORY-20261004.md](tools/spx/boot-diagnostics/CHECKLIST-HISTORY-20261004.md).
 
-## Status (2026-10-08, EC: default microphone and active Bluetooth resume)
+## Status (2026-10-08, EF: retained microphone route close/reopen)
 
 **CN closes S02a; CO closes S02b/S02c:** live accel/gyro/magnetometer streams,
 automatic desktop backend and compass heading API work. Physical mapping,
@@ -23,7 +23,7 @@ reverse plugs, visible output and hotplug remain unverified.
 CF retains P01a actual charging pass; further battery tests are deferred.
 **CS closes B06a; CT closes B06b/B06c:** TPM commands, automatic startup and measured GRUB boot pass.
 **DO closes B06e:** TPM-generated ephemeral P256 signatures verify independently; changed messages reject, cleanup passes.
-**DO closes P03c; DS closes P03d; DX closes P03e; EC closes P03f:** normal AC sleep retains network/motion/storage; EC preserves the ordinary default microphone client and passes pre/post acoustic checks. DSP teardown faults remain open.
+**DO closes P03c; DS closes P03d; DX closes P03e; EC closes P03f:** normal AC sleep retains network/motion/storage; EC preserves the ordinary default microphone client and passes pre/post acoustic checks. Full DSP teardown remains open.
 **DP closes A03a:** two-minute default desktop stream and ordered SoundWire shutdown pass.
 **DR closes A03f:** quiet default desktop attenuation, mute and unmute pass acoustically; arbitrary shutdown and useful listening range remain open.
 **D01a passes on CE:** two GNOME off/on cycles
@@ -38,7 +38,7 @@ peak69.8C. CY extends this to verified native FP. DN stays below temporary55C; a
 **DH closes A03c:** two default microphone clients pass acoustically; absent-default
 cleanup is fixed and real virtual-source restoration verified separately.
 **DI closes A03d:** native microphone PCM close/reopen and third client pass;
-whole-run source restoration/cleanup now passes directly. **DM closes A03e:**
+EF strengthens this with retained COPP routing and no close timeout. **DM closes A03e:**
 four incompatible native requests reject; third original-contract client passes.
 B05a early RTC and N01a IPv6 VPN retain prior passes. **N01b is accepted by user
 assumption from working5GHz; no2.4GHz functional pass was measured.** Light
@@ -78,8 +78,10 @@ awaits attribution for later observations.
 
 User cannot provide physical assistance (October6); continue autonomous work.
 EC closes scoped default microphone resume (P03f), after resolved frontend
-freeze and scoring prerequisites. Capture teardown still reports an ADM timeout;
-full lifecycle remains open. [EC result](tools/spx/boot-diagnostics/RESULT-20261008ec.md).
+freeze and scoring prerequisites. EF fixes the capture COPP retention asymmetry,
+and three default clients pass across native close/reopen without the ADM timeout.
+Full DSP teardown, persistence and reliability remain open.
+[EF result](tools/spx/boot-diagnostics/RESULT-20261008ef.md).
 Physical observations remain unverified. CDSP is parked after three changed
 boots without a usable accelerator result. CW stops before its recorded query;
 CV's return stalls in shutdown ramdisk generation. CX prepares that ramdisk
@@ -815,6 +817,12 @@ Read [BN](tools/spx/boot-diagnostics/RESULT-20261004bn.md) and
     playback2835. Third ordinary default-source client records quiet440/660Hz,
     all three clients pass and source/graph/mixer cleanup parks the amps.
     [DI result](tools/spx/boot-diagnostics/RESULT-20261007di.md).
+    EF boot `df74ef3d-0cab-482f-bf6c-3add2bf0b307`, kernel
+    `7.3.0-rc2-spx-mainline-20261004bg+`: same-contract native capture closes/
+    reopens with preserved COPP/matrix; third default client passes acoustically.
+    No fresh ADM close timeout, no deadline expiry,55.252s within60s; full Linux
+    source/graph/mixer/PCM/amp/FIFO/PM cleanup passes.
+    [EF result](tools/spx/boot-diagnostics/RESULT-20261008ef.md).
     Scope excludes DSP destruction, playback reopen, resume and availability.
 
   - [x] **A03e — Original capture survives incompatible native requests.**
