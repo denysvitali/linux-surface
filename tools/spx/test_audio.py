@@ -1613,6 +1613,10 @@ class NativeMicOnDemandTests(unittest.TestCase):
         source.journal = Mock(return_value='-- cursor: cursor')
         source.process_start = Mock(return_value='ticks')
         def run(*argv):
+            if argv == ('pactl', '--format=json', 'list', 'sources'):
+                return '[]'
+            if argv == ('pactl', '--format=text', 'list', 'short', 'modules'):
+                return ''
             if argv[:2] == ('pactl', 'get-default-source'):
                 return source.name
             return '100'
@@ -1677,6 +1681,7 @@ class NativeMicOnDemandTests(unittest.TestCase):
         source = self.make_source()
         source.graph.recordings = [Mock()]
         source.modules = Mock(return_value=[{'index': '42'}])
+        source.load_started = True
         source.graph.run.side_effect = RuntimeError('unload failed')
         source.require_closed = Mock()
         with patch.object(audio, 'restore_default_source') as restore:
@@ -1830,6 +1835,265 @@ class ColdNativeMicTests(unittest.TestCase):
                     audio.OwnedCapture(0, {}, '/unused', maximum_seconds=60,
                                        retain_recording=False, wall_deadline=deadline)
                 opened.assert_not_called()
+
+
+class DesktopMicrophoneServingTests(unittest.TestCase):
+    def make_source(self, previous=None):
+        graph = Mock()
+        graph.recordings = []
+        source = audio.NativeMicSource(graph, 0, {}, 60, previous, desktop=True)
+        source.endpoint = Mock()
+        source.require_closed = Mock()
+        source.journal = Mock(return_value='-- cursor: cursor')
+        source.process_start = Mock(return_value='ticks')
+        def run(*argv):
+            if argv == ('pactl', '--format=json', 'list', 'sources'):
+                return '[]'
+            if argv == ('pactl', '--format=text', 'list', 'short', 'modules'):
+                return ''
+            if argv[:2] == ('pactl', 'get-default-source'):
+                return source.name
+            return '100'
+        graph.run.side_effect = run
+        return source
+
+    def test_direct_and_parser_admission_precede_hardware(self):
+        for value in (True, 1, 'yes'):
+            with self.subTest(enabled=value), patch.object(audio, 'parameter') as hardware:
+                with self.assertRaisesRegex(RuntimeError, 'desktop-microphone'):
+                    audio.initialize(SimpleNamespace(action='feedback', desktop_microphone=value), {})
+                hardware.assert_not_called()
+        with patch.object(audio.sys, 'argv', ['audio.py', 'inspect', '--desktop-microphone']), \
+                patch.object(audio, 'inventory') as hardware, contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                audio.main()
+        hardware.assert_not_called()
+
+    def test_source_start_rejects_unbounded_or_expired_recording_budget(self):
+        for deadline in (0, 61, float('inf')):
+            source = self.make_source()
+            source.wall_deadline = deadline
+            with patch.object(audio.time, 'clock_gettime', return_value=0):
+                with self.assertRaisesRegex(RuntimeError, 'budget expired or exceeds60s'):
+                    source.start()
+            source.graph.run.assert_not_called()
+
+    def test_stable_source_collision_never_loads_or_unloads_another_owner(self):
+        for collision in ('source', 'module'):
+            source = self.make_source()
+            old_run = source.graph.run.side_effect
+            def run(*argv):
+                if collision == 'source' and argv == ('pactl', '--format=json', 'list', 'sources'):
+                    return json.dumps([dict(name='spx_microphone', owner_module='99')])
+                if collision == 'module' and argv == ('pactl', '--format=text', 'list', 'short', 'modules'):
+                    return '99\tmodule-alsa-source\tsource_name=spx_microphone device=hw:0,1'
+                return old_run(*argv)
+            source.graph.run.side_effect = run
+            with self.subTest(collision=collision), patch.object(audio.time, 'clock_gettime', return_value=0), \
+                    patch.object(audio, 'restore_default_source') as restore:
+                with self.assertRaisesRegex(RuntimeError, 'name already exists'):
+                    source.start()
+                source.close()
+            self.assertFalse(source.load_started)
+            calls = [call.args[:2] for call in source.graph.run.call_args_list]
+            self.assertNotIn(('pactl', 'load-module'), calls)
+            self.assertNotIn(('pactl', 'unload-module'), calls)
+            restore.assert_not_called()
+
+    def test_partial_load_recovers_only_after_absence_and_refuses_replaced_module(self):
+        source = self.make_source()
+        source.load_started = True
+        source.module = '42'
+        source.modules = Mock(return_value=[dict(index='43', name='module-alsa-source', argument='replaced')])
+        with self.assertRaisesRegex(RuntimeError, 'ownership changed'):
+            source.close()
+        self.assertNotIn(('pactl', 'unload-module'), [call.args[:2] for call in source.graph.run.call_args_list])
+        source.require_closed.assert_called_once_with('after-source-unload')
+        source = self.make_source()
+        source.load_started = True
+        source.modules = Mock(side_effect=[[dict(index='42')], []])
+        source.close()
+        source.graph.run.assert_called_once_with('pactl', 'unload-module', '42')
+
+    def test_default_policy_preserves_other_named_or_unavailable_choices(self):
+        for name in (None, 'spx_microphone', 'usb_microphone', 'unavailable-source'):
+            previous = None if name is None else dict(type='Spa:String:JSON', value=dict(name=name))
+            source = self.make_source(previous)
+            with self.subTest(previous=name), patch.object(audio.time, 'clock_gettime', return_value=0):
+                source.start()
+            defaults = [call.args for call in source.graph.run.call_args_list if call.args[:2] == ('pactl', 'set-default-source')]
+            self.assertEqual(bool(defaults), name in (None, 'spx_microphone'))
+            self.assertEqual(source.name, 'spx_microphone')
+            self.assertEqual(source.report['source_lifetime'], 'serve-owner')
+            self.assertTrue(source.report['all_automated_recordings_bounded'])
+
+    def test_stop_restores_only_our_unchanged_preference_even_if_unload_fails(self):
+        for current in ('spx_microphone', 'user-new-choice', None):
+            source = self.make_source()
+            source.default_selected = source.load_started = True
+            source.modules = Mock(return_value=[dict(index='42')])
+            source.graph.run.side_effect = RuntimeError('unload failed')
+            preference = None if current is None else dict(type='Spa:String:JSON', value=dict(name=current))
+            with self.subTest(current=current), patch.object(audio, 'configured_default_source', return_value=preference), \
+                    patch.object(audio, 'restore_default_source') as restore:
+                with self.assertRaisesRegex(RuntimeError, 'unload failed'):
+                    source.close()
+            self.assertEqual(restore.called, current == 'spx_microphone')
+            source.require_closed.assert_called_once_with('after-source-unload')
+
+    def test_mixer_lease_survives_oracle_close_and_restores_after_source_cleanup(self):
+        events = []
+        capture = Mock()
+        capture.close.side_effect = lambda: events.append('oracle-close')
+        capture.process.poll.return_value = 0
+        report = dict(capture=dict(error=None, log=''))
+        saved = [(['amixer', 'first'], 'first'), (['amixer', 'second'], 'second')]
+        def restore(command, **kwargs):
+            events.append(command[-1])
+            return SimpleNamespace(returncode=0, stderr='')
+        graph = Mock()
+        graph.close.side_effect = lambda: events.append('source-unload')
+        with patch.object(audio, 'read_text', return_value='closed'), \
+                patch.object(audio.subprocess, 'run', side_effect=restore):
+            audio.finish_recording(capture, report, saved, retain_mixer=True)
+            self.assertEqual(len(saved), 2)
+            self.assertEqual(events, ['oracle-close'])
+            audio.cleanup_audio_consumers(report, [], [graph], None, saved, {}, None)
+        self.assertEqual(events, ['oracle-close', 'source-unload', 'second', 'first'])
+        self.assertTrue(report['recording_closed'])
+
+    def test_metadata_monitor_survives_deadline_without_recording_and_bounds_transition(self):
+        source = self.make_source()
+        source.services = {}
+        source.check_kernel = Mock()
+        source.healthy = Mock(side_effect=AssertionError('recording monitor must not run'))
+        with patch.object(audio, 'read_text', return_value='closed'), \
+                patch.object(audio.time, 'clock_gettime', return_value=1000):
+            source.serve_healthy()
+        source.healthy.assert_not_called()
+        self.assertEqual(source.report['serve_observation']['status'], 'closed')
+        with patch.object(audio, 'read_text', return_value='state: PREPARED'), \
+                patch.object(audio.time, 'monotonic', side_effect=[0, 0, 3]):
+            source.serve_healthy()
+            with self.assertRaisesRegex(RuntimeError, 'transition exceeded3s'):
+                source.serve_healthy()
+        with patch.object(audio, 'read_text', return_value='state: XRUN'):
+            with self.assertRaisesRegex(RuntimeError, 'PCM fault'):
+                source.serve_healthy()
+
+    def test_native_owner_accepts_confirmed_idle_race_but_rejects_wrong_contract(self):
+        source = self.make_source()
+        source.services = {'100': dict(unit='pipewire.service', start_ticks='ticks')}
+        source.endpoint = Mock()
+        source.check_kernel = Mock()
+        running = 'state: RUNNING\nowner_pid : 101\ntrigger_time : 1.0'
+        with patch.object(audio, 'read_text', side_effect=[running, 'Tgid: 100', 'closed', 'closed']):
+            self.assertIsNone(source.native_owner(allow_idle_race=True))
+        with patch.object(audio, 'read_text', side_effect=[running, 'Tgid: 999']):
+            with self.assertRaisesRegex(RuntimeError, 'owned PipeWire task'):
+                source.native_owner(allow_idle_race=True)
+        with patch.object(audio, 'read_text', side_effect=[running, 'Tgid: 100', 'access: MMAP_INTERLEAVED']):
+            with self.assertRaisesRegex(RuntimeError, 'hardware contract'):
+                source.native_owner(allow_idle_race=True)
+
+    def test_shared_verifier_uses_two_bounded_clients_and_real_idle_checks(self):
+        import acoustic
+        source, graph, pcm = Mock(), Mock(), Mock()
+        source.wall_deadline = 60
+        source.begin_client.side_effect = [dict(trigger_time='1'), dict(trigger_time='2')]
+        pcm.healthy.return_value = 'owner_pid : 42\ntrigger_time : same'
+        clients = [Mock(), Mock()]
+        for index, client in enumerate(clients):
+            client.process.pid = index + 1
+            client.mark.side_effect = [144000, 144000, 288000]
+            client.samples.return_value = [1] * 96000
+        evidence = dict(clients=[])
+        with patch.object(audio.time, 'clock_gettime', return_value=0), \
+                patch.object(audio, 'DesktopRecording', side_effect=clients) as recording, \
+                patch.object(audio, 'check_stereo'), \
+                patch.object(acoustic, 'score_phase', return_value=dict(passed=True, reason='passed')):
+            audio.verify_native_microphone_clients(source, graph, evidence, pcm, {}, {})
+        self.assertTrue(evidence['microphone_client_passed'])
+        self.assertEqual([call.kwargs['wall_deadline'] for call in recording.call_args_list], [60, 60])
+        self.assertEqual([call.args[0] for call in source.require_closed.call_args_list], ['between-clients', 'after-second-client'])
+        for client in clients:
+            client.close.assert_called_once()
+        self.assertEqual(source.endpoint.call_count, 4)
+
+    def test_shared_verifier_expiry_and_first_cleanup_failure_cannot_leave_client_open(self):
+        source, graph, pcm, client = Mock(), Mock(), Mock(), Mock()
+        source.wall_deadline = 60
+        with patch.object(audio.time, 'clock_gettime', return_value=60), \
+                patch.object(audio, 'DesktopRecording') as recording:
+            with self.assertRaisesRegex(RuntimeError, 'deadline exceeds60s or expired'):
+                audio.verify_native_microphone_clients(source, graph, {}, pcm, {}, {})
+            recording.assert_not_called()
+        pcm.healthy.return_value = 'owner_pid : 42\ntrigger_time : same'
+        source.begin_client.side_effect = RuntimeError('first capture failed')
+        source.end_client.side_effect = RuntimeError('watchdog cleanup failed')
+        with patch.object(audio.time, 'clock_gettime', return_value=0), \
+                patch.object(audio, 'DesktopRecording', return_value=client):
+            with self.assertRaisesRegex(RuntimeError, 'first capture failed'):
+                audio.verify_native_microphone_clients(source, graph, dict(clients=[]), pcm, {}, {})
+        client.close.assert_called_once()
+
+    def test_failed_client_stop_attempts_remaining_cleanup_and_discards_raw(self):
+        client = audio.DesktopRecording.__new__(audio.DesktopRecording)
+        client.log = tempfile.TemporaryFile()
+        client.stop, client.mutex = threading.Event(), threading.Lock()
+        client.process, client.thread = Mock(), Mock()
+        client.thread.is_alive.return_value = False
+        client.error = None
+        client.raw = bytearray(b'incidental samples')
+        with patch.object(audio, 'stop_desktop_process', side_effect=RuntimeError('first stop error')):
+            with self.assertRaisesRegex(RuntimeError, 'first stop error'):
+                client.close()
+        client.thread.join.assert_called_once_with(timeout=2)
+        client.process.stdout.close.assert_called_once()
+        self.assertTrue(client.log.closed)
+        self.assertFalse(client.raw)
+
+    def run_serve(self, *, default_selected=True):
+        report = dict(action='serve', desktop=dict(acoustic_passed=True),
+            public_desktop=dict(acoustic_passed=True), recording_closed=True,
+            before=dict(boot_id='boot', release='release'))
+        pcm, graph = Mock(), Mock()
+        source = graph.microphone
+        source.name, source.module, source.source_id = 'spx_microphone', '42', 79
+        source.default_selected = default_selected
+        source.report = dict(microphone_client_passed=default_selected)
+        pcm.process.pid, pcm.feed_stats = 42, {}
+        pcm.healthy.return_value = 'trigger_time : same'
+        graph.monitor.input_peak, graph.monitor.peak = 0, 0
+        graph.monitor.max_interarrival_seconds = 0
+        events = []
+        source.close.side_effect = lambda: events.append('source-unload')
+        graph.monitor.close.side_effect = lambda: events.append('monitor-close')
+        with tempfile.TemporaryDirectory() as temporary:
+            args = SimpleNamespace(output=Path(temporary), serve_seconds=120, desktop_peak=1433,
+                                   desktop_microphone=True)
+            with patch.object(audio, 'verify_native_microphone_clients') as verify, \
+                    patch.object(audio, 'check_stereo'), patch.object(audio.signal, 'signal'), \
+                    patch.object(audio.threading, 'Event') as event, \
+                    patch.object(audio.time, 'monotonic', side_effect=[0, 120, 120.5]):
+                event.return_value.wait.return_value = False
+                event.return_value.is_set.return_value = False
+                audio.serve_desktop(args, report, pcm, graph, {}, {})
+        self.assertEqual(verify.called, default_selected)
+        self.assertTrue(report['serve']['microphone_identity_retained_120s'])
+        self.assertEqual(source.serve_healthy.call_count, 2)
+        self.assertEqual(events, ['source-unload', 'monitor-close'])
+        pcm.close.assert_not_called()
+        self.assertIsNone(graph.microphone)
+        return source, report
+
+    def test_120_second_serve_checks_final_identity_and_closes_source_before_monitor(self):
+        self.run_serve()
+
+    def test_explicit_other_default_keeps_serve_available_without_forcing_capture(self):
+        source, report = self.run_serve(default_selected=False)
+        self.assertIn('verification_fixture_rejected', source.report)
+        self.assertFalse(report['serve']['microphone']['bounded_clients_passed'])
 
 
 if __name__ == '__main__':

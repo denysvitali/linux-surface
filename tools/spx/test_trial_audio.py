@@ -657,5 +657,56 @@ class DesktopOptInTests(TrialAudioFixture):
         self.audio.assert_not_called()
 
 
+class DesktopMicrophoneRequestTests(TrialAudioFixture):
+    def test_wrong_mode_and_malformed_flag_reject_before_arm_lock_or_request_consumption(self):
+        for enabled in (True, 1, 'yes'):
+            args = SimpleNamespace(audio_action='feedback', desktop_microphone=enabled)
+            with self.subTest(enabled=enabled), patch.object(trial, 'require_source_boot') as boot:
+                with self.assertRaisesRegex(AssertionError, 'desktop-microphone'):
+                    trial.arm_audio(args)
+                boot.assert_not_called()
+                trial.subprocess.run.reset_mock()
+                with self.assertRaisesRegex(AssertionError, 'desktop-microphone'):
+                    trial.audio_check(args)
+                trial.subprocess.run.assert_not_called()
+                self.request.update(action='feedback', desktop_microphone=enabled)
+                self.write_request()
+                with self.assertRaisesRegex(AssertionError, 'desktop-microphone'):
+                    trial.requested_audio(self.args)
+                self.assertTrue((self.out / 'audio-request.json').exists())
+                self.assertFalse((self.out / 'audio-started.json').exists())
+
+    def test_flag_is_armed_consumed_and_forwarded_to_direct_helper(self):
+        (self.out / 'prepared.json').write_text(json.dumps(dict(audio_mode='parked')))
+        args = SimpleNamespace(audio_action='serve', desktop_microphone=True,
+            allow_amp_power=True, allow_playback=True, allow_capture=True,
+            desktop_user='dvitali', return_after_audio_seconds=None,
+            serve_seconds=150, desktop_peak=1433)
+        account = SimpleNamespace(pw_uid=1000, pw_name='dvitali')
+        with patch.object(trial, 'require_source_boot'), patch.object(trial, 'recovery'), \
+                patch.object(trial.pwd, 'getpwnam', return_value=account):
+            trial.arm_audio(args)
+        self.assertTrue(json.loads((self.out / 'audio-request.json').read_text())['desktop_microphone'])
+        with patch.object(trial.os, 'geteuid', return_value=0), \
+                patch.object(trial.pwd, 'getpwnam', return_value=account), \
+                patch.object(trial.subprocess, 'Popen') as opened:
+            opened.return_value.wait.return_value = 0
+            trial.audio_check(args)
+        self.assertIn('--desktop-microphone', opened.call_args.args[0])
+        with patch.object(trial, 'audio_check') as hardware:
+            trial.requested_audio(SimpleNamespace())
+        self.assertTrue(hardware.call_args.args[0].desktop_microphone)
+        self.assertFalse((self.out / 'audio-request.json').exists())
+
+    def test_parser_rejects_flag_on_non_serve_command_before_dispatch(self):
+        with patch.object(sys, 'argv', ['trial.py', 'arm-audio', '20261004bq',
+                                      '--audio-action', 'feedback', '--desktop-microphone']), \
+                patch.object(trial, 'arm_audio') as hardware, \
+                patch.object(sys, 'stderr', io.StringIO()):
+            with self.assertRaises(SystemExit):
+                trial.main()
+        hardware.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()

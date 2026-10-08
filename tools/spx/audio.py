@@ -262,6 +262,11 @@ def validate_microphone_array(action, source, enabled):
          '--microphone-array requires feedback with primary DMIC1')
 
 
+def validate_desktop_microphone(action, enabled):
+    need(type(enabled) is bool and (not enabled or action == 'serve'),
+         '--desktop-microphone requires serve')
+
+
 def validate_native_mic_on_demand(action, enabled, reopen=False, contract=False):
     need(type(enabled) is bool and (not enabled or
          (action == 'desktop-mic' and not reopen and not contract)),
@@ -1344,12 +1349,14 @@ class DesktopMicSource:
 
 
 class NativeMicSource:
-    """Temporary stock ALSA source; clients alone start the fitted MM2 PCM."""
+    """Stock ALSA source; clients alone start the fitted MM2 PCM."""
 
-    def __init__(self, graph, card, report, wall_deadline, previous_default):
+    def __init__(self, graph, card, report, wall_deadline, previous_default, *, desktop=False):
         self.graph, self.card, self.report = graph, card, report
         self.previous, self.wall_deadline = previous_default, wall_deadline
-        self.name = f'spx_native_microphone_test_{os.getpid()}'
+        self.desktop = desktop
+        self.name = 'spx_microphone' if desktop else f'spx_native_microphone_test_{os.getpid()}'
+        self.load_started = self.default_selected = False
         self.status = Path(f'/proc/asound/card{card}/pcm1c/sub0/status')
         self.module = self.source_id = self.module_row = None
         self.error = None
@@ -1359,6 +1366,7 @@ class NativeMicSource:
         self.closed = False
         self.services = {}
         self.cursor = None
+        self.transition_started = None
 
     def modules(self):
         rows = []
@@ -1417,8 +1425,9 @@ class NativeMicSource:
         need(not failures, 'Native microphone kernel fault: ' + '; '.join(failures))
 
     def start(self):
-        need(time.clock_gettime(time.CLOCK_BOOTTIME) < self.wall_deadline,
-             'Native microphone capture budget expired')
+        now = time.clock_gettime(time.CLOCK_BOOTTIME)
+        need(now < self.wall_deadline <= now + 60,
+             'Native microphone capture budget expired or exceeds60s')
         for unit in ('pipewire.service', 'pipewire-pulse.service'):
             pid = self.graph.run('systemctl', '--user', 'show', unit, '--property=MainPID', '--value')
             need(pid.isdigit() and int(pid) > 0, 'Owned PipeWire service PID missing')
@@ -1426,10 +1435,18 @@ class NativeMicSource:
         cursor = re.search(r'^-- cursor: (.+)$', self.journal('-n', '0', '--show-cursor'), re.M)
         need(cursor is not None, 'Native microphone kernel cursor missing')
         self.cursor = cursor[1]
+        # A stable name may already belong to another owner. Only confirmed
+        # absence permits partial-load cleanup by name after our load begins.
+        sources = json.loads(self.graph.run('pactl', '--format=json', 'list', 'sources'))
+        need(not any(item.get('name') == self.name for item in sources) and not self.modules(),
+             'Native microphone source name already exists: ' + self.name)
         # Keep the exact frame ring. Pulse fragment_size is passed to SPA as frames.
         props = ('node.pause-on-idle=true node.suspend-on-idle=true node.always-process=false '
                  'audio.allowed-rates=[48000] api.alsa.disable-tsched=true '
                  'api.alsa.disable-batch=true api.alsa.use-chmap=false api.alsa.headroom=0')
+        if self.desktop:
+            props += ' node.description="Surface Pro X Microphone"'
+        self.load_started = True
         reply = self.graph.run('pactl', 'load-module', 'module-alsa-source',
             f'device=hw:{self.card},1', 'source_name=' + self.name, 'format=s16le',
             'rate=48000', 'channels=1', 'channel_map=mono', 'fragments=4',
@@ -1439,16 +1456,55 @@ class NativeMicSource:
         self.endpoint()  # Exact private module row resolves a mixed load reply.
         self.graph.run('pactl', 'set-source-volume', self.name, '65536')
         self.graph.run('pactl', 'set-source-mute', self.name, '0')
-        self.graph.run('pactl', 'set-default-source', self.name)
-        need(self.graph.run('pactl', 'get-default-source') == self.name,
-             'Native microphone did not become the default')
-        self.report.update(source=self.name, source_index=self.source_id, module=self.module,
+        self.default_selected = (not self.desktop or self.previous is None or
+                                 self.previous.get('value', {}).get('name') == self.name)
+        if self.default_selected:
+            self.graph.run('pactl', 'set-default-source', self.name)
+            need(self.graph.run('pactl', 'get-default-source') == self.name,
+                 'Native microphone did not become the default')
+        self.report.update(source_lifetime='serve-owner' if self.desktop else 'bounded-test',
+                           all_automated_recordings_bounded=True,
+                           source=self.name, source_index=self.source_id, module=self.module,
                            module_identity=self.module_row, previous_default=self.previous,
-                           services=self.services, recording=None, maximum_seconds=60)
+                           services=self.services, recording=None, maximum_seconds=60,
+                           default_selected=self.default_selected, desktop_available=self.desktop)
         self.require_closed('before-first-client')
 
-    def native_owner(self):
+    def serve_healthy(self):
+        """Check identities/status only; bounded helper recording stays bounded."""
+        need(self.desktop and self.error is None, self.error or 'Native desktop microphone failed')
+        self.endpoint()
+        for pid, service in self.services.items():
+            current = self.graph.run('systemctl', '--user', 'show', service['unit'],
+                                     '--property=MainPID', '--value')
+            need(current == pid and self.process_start(pid) == service['start_ticks'],
+                 'Native microphone service restarted')
         status = read_text(self.status)
+        if status == 'closed':
+            self.transition_started = None
+            owner = None
+        elif re.search(r'^state:\s+RUNNING$', status, re.M):
+            self.transition_started = None
+            owner = self.native_owner(allow_idle_race=True)
+            if owner is None:
+                status = 'closed'
+        else:
+            need(re.search(r'^state:\s+(?:OPEN|SETUP|PREPARED)$', status, re.M),
+                 'Native desktop microphone PCM fault: ' + status)
+            now = time.monotonic()
+            if self.transition_started is None:
+                self.transition_started = now
+            need(now - self.transition_started < 3,
+                 'Native desktop microphone transition exceeded3s')
+            owner = None
+        self.check_kernel()
+        self.report['serve_observation'] = dict(status=status, native_owner=owner,
+                                               checked_monotonic=time.monotonic())
+
+    def native_owner(self, *, allow_idle_race=False):
+        status = read_text(self.status)
+        if allow_idle_race and status == 'closed':
+            return None
         need(re.search(r'^state:\s+RUNNING$', status, re.M), 'Native microphone PCM is not RUNNING')
         owner = re.search(r'^owner_pid\s*:\s*(\d+)$', status, re.M)
         trigger = re.search(r'^trigger_time\s*:\s*(.+)$', status, re.M)
@@ -1459,6 +1515,8 @@ class NativeMicSource:
         need(self.process_start(tgid[1]) == self.services[tgid[1]]['start_ticks'],
              'Native microphone service restarted')
         hw = read_text(self.status.with_name('hw_params'))
+        if allow_idle_race and hw == 'closed' and read_text(self.status) == 'closed':
+            return None  # An ordinary client closed between the status and params reads.
         for expression in (r'^access: RW_INTERLEAVED$', r'^format: S16_LE$', r'^channels: 1$',
                            r'^rate: 48000(?: |$)', r'^period_size: 1920$', r'^buffer_size: 7680$'):
             need(re.search(expression, hw, re.M), 'Native microphone hardware contract changed')
@@ -1556,13 +1614,27 @@ class NativeMicSource:
         for client in getattr(self.graph, 'recordings', []):
             attempt(client.close)
         def unload():
+            if not self.load_started:
+                return  # Never unload a preexisting unowned stable source.
             rows = self.modules()
             if rows:
-                self.graph.run('pactl', 'unload-module', rows[0]['index'])
+                row = rows[0]
+                need(self.module is None or row['index'] == self.module,
+                     'Native microphone module ownership changed during cleanup')
+                need(self.module_row is None or row == self.module_row,
+                     'Native microphone module arguments changed during cleanup')
+                self.graph.run('pactl', 'unload-module', row['index'])
             need(not self.modules(), 'Owned native microphone module remains loaded')
             self.module = None
-        attempt(unload)  # Also covers load failures that returned no module ID.
-        if self.previous is not _UNSET_DEFAULT_SOURCE:
+        restore_ours = False
+        if self.desktop and self.default_selected:
+            def selected():
+                nonlocal restore_ours
+                current = configured_default_source(self.graph)
+                restore_ours = current is not None and current['value'].get('name') == self.name
+            attempt(selected)  # Snapshot before unload changes the effective default.
+        attempt(unload)
+        if self.previous is not _UNSET_DEFAULT_SOURCE and (not self.desktop or restore_ours):
             attempt(restore_default_source, self.graph, self.previous)
         # Even a failed unload may not leave a PCM silently held open.
         attempt(self.require_closed, 'after-source-unload')
@@ -1604,19 +1676,30 @@ class DesktopRecording(OwnedCapture):
     def close(self):
         if self.log.closed:
             return
+        errors = []
+        def attempt(function, *args, **kwargs):
+            try:
+                return function(*args, **kwargs)
+            except Exception as error:
+                errors.append(error)
         self.stop.set()
-        stop_desktop_process(self.process)
-        self.thread.join(timeout=2)
-        self.process.stdout.close()
-        self.log.seek(0)
-        log = self.log.read().decode(errors='replace')
-        self.log.close()
+        attempt(stop_desktop_process, self.process)
+        attempt(self.thread.join, timeout=2)
+        attempt(self.process.stdout.close)
+        def read_log():
+            self.log.seek(0)
+            return self.log.read().decode(errors='replace')
+        log = attempt(read_log)
+        attempt(self.log.close)
         with self.mutex:
-            self.raw.clear()
-        need(not self.thread.is_alive() and not self.error,
-             self.error or 'Desktop recording thread did not stop')
-        need(not re.search(r'error|overrun|underrun', log, re.I),
-             'Desktop recording client reported an error: ' + log)
+            self.raw.clear()  # A failed client stop must still discard incidental audio.
+        attempt(need, not self.thread.is_alive() and not self.error,
+                self.error or 'Desktop recording thread did not stop')
+        if log is not None:
+            attempt(need, not re.search(r'error|overrun|underrun', log, re.I),
+                    'Desktop recording client reported an error: ' + log)
+        if errors:
+            raise errors[0]
 
 
 CAPTURE_CONTRACT_MARKER = ('SPX: capture contract mismatch: retained '
@@ -1794,9 +1877,76 @@ def cold_native_microphone_start(args, report, card, wall_deadline, holders):
     evidence['passed'] = True
 
 
+def verify_native_microphone_clients(source, graph, evidence, pcm, paths, mapping):
+    """Two bounded ordinary default clients; discard all client raw buffers."""
+    from acoustic import score_phase
+    need(time.clock_gettime(time.CLOCK_BOOTTIME) < source.wall_deadline <=
+         time.clock_gettime(time.CLOCK_BOOTTIME) + 60,
+         'Native microphone verification deadline exceeds60s or expired')
+    print('Capturing two bounded default microphone clients for quiet acoustic verification; '
+          'all incidental recordings are discarded.', flush=True)
+    playback = pcm.healthy()
+    held = {field: re.search(r'^' + field + r'\s*:\s*(.+)$', playback, re.M)[1]
+            for field in ('owner_pid', 'trigger_time')}
+    previous_owner = None
+    for index in range(2):
+        name = f'spx-native-default-microphone-{os.getpid()}-{index}'
+        client = DesktopRecording(graph, name, wall_deadline=source.wall_deadline)
+        entry = dict(name=name, pid=client.process.pid, passed=False)
+        evidence['clients'].append(entry)
+        try:
+            owner = source.begin_client(client, name)
+            entry['native_owner'] = owner
+            if previous_owner is not None:
+                need(owner['trigger_time'] != previous_owner['trigger_time'],
+                     'Second native microphone client did not restart capture')
+            client.wait_frames(3 * 48000)
+            end = client.mark()
+            reference = client.samples(end - 2 * 48000, end)
+            values = [v for v in reference if v]
+            need(len(values) > len(reference) // 100, 'Native default microphone returned silence')
+            rms = math.sqrt(sum(v*v for v in reference) / len(reference))
+            need(0 < rms < 1000, 'Native default microphone ambient level invalid')
+            client.limit = max(300, rms * 12)
+            source.healthy()
+            check_stereo(mapping, paths, initialized=True)
+            begin = client.mark()
+            pcm.play(tone({0, 1}))
+            client.wait_frames(begin + 3 * 48000)
+            end = client.mark()
+            entry.update(start_frame=begin, end_frame=end,
+                         score=score_phase(client.samples(begin, end), reference, [440, 660]))
+            need(entry['score']['passed'], 'Native default microphone acoustic test failed: ' +
+                 entry['score']['reason'])
+            source.healthy()
+            source.endpoint()
+            for field, expected in held.items():
+                current = re.search(r'^' + field + r'\s*:\s*(.+)$', pcm.healthy(), re.M)
+                need(current and current[1] == expected, 'Playback owner/trigger changed')
+            entry['passed'] = True
+            previous_owner = owner
+        finally:
+            # Preserve the scoring/start failure while still closing the client.
+            original = sys.exc_info()[0]
+            errors = []
+            for function in (source.end_client, client.close):
+                try:
+                    function()
+                except Exception as error:
+                    errors.append(type(error).__name__ + ': ' + str(error))
+            if errors:
+                entry['cleanup_errors'] = errors
+                if original is None:
+                    raise RuntimeError('Native microphone client cleanup failed: ' + '; '.join(errors))
+        source.require_closed('between-clients' if index == 0 else 'after-second-client')
+        source.endpoint()
+    need(len({row['pid'] for row in evidence['clients']}) == 2,
+         'Expected distinct ordinary default recording clients')
+    evidence['microphone_client_passed'] = True
+
+
 def native_microphone_on_demand(args, report, pcm, paths, mapping, capture, holders):
     """One stock source, two real default clients, actual native close on each idle."""
-    from acoustic import score_phase
     evidence = report['desktop'] = dict(microphone_client_passed=False, native_mic_on_demand=True,
         maximum_seconds=60, clients=[], recording=None, scope='bounded stock source client demand/idle')
     graph = DesktopGraph(args.desktop_user, evidence)
@@ -1812,64 +1962,7 @@ def native_microphone_on_demand(args, report, pcm, paths, mapping, capture, hold
         source = graph.microphone = NativeMicSource(graph, capture.card, evidence,
             getattr(capture, 'wall_deadline', None) or capture.started_boottime + 60, graph.default_source_before_test)
         source.start()
-        playback = pcm.healthy()
-        held = {field: re.search(r'^' + field + r'\s*:\s*(.+)$', playback, re.M)[1]
-                for field in ('owner_pid', 'trigger_time')}
-        previous_owner = None
-        for index in range(2):
-            name = f'spx-native-default-microphone-{os.getpid()}-{index}'
-            client = DesktopRecording(graph, name, wall_deadline=source.wall_deadline)
-            entry = dict(name=name, pid=client.process.pid, passed=False)
-            evidence['clients'].append(entry)
-            try:
-                owner = source.begin_client(client, name)
-                entry['native_owner'] = owner
-                if previous_owner is not None:
-                    need(owner['trigger_time'] != previous_owner['trigger_time'],
-                         'Second native microphone client did not restart capture')
-                client.wait_frames(3 * 48000)
-                end = client.mark()
-                reference = client.samples(end - 2 * 48000, end)
-                values = [v for v in reference if v]
-                need(len(values) > len(reference) // 100, 'Native default microphone returned silence')
-                rms = math.sqrt(sum(v*v for v in reference) / len(reference))
-                need(0 < rms < 1000, 'Native default microphone ambient level invalid')
-                client.limit = max(300, rms * 12)
-                source.healthy()
-                check_stereo(mapping, paths, initialized=True)
-                begin = client.mark()
-                pcm.play(tone({0, 1}))
-                client.wait_frames(begin + 3 * 48000)
-                end = client.mark()
-                entry.update(start_frame=begin, end_frame=end,
-                             score=score_phase(client.samples(begin, end), reference, [440, 660]))
-                need(entry['score']['passed'], 'Native default microphone acoustic test failed: ' +
-                     entry['score']['reason'])
-                source.healthy()
-                source.endpoint()
-                for field, expected in held.items():
-                    current = re.search(r'^' + field + r'\s*:\s*(.+)$', pcm.healthy(), re.M)
-                    need(current and current[1] == expected, 'Playback owner/trigger changed')
-                entry['passed'] = True
-                previous_owner = owner
-            finally:
-                # Preserve the scoring/start failure while still closing the client.
-                original = sys.exc_info()[0]
-                errors = []
-                for function in (source.end_client, client.close):
-                    try:
-                        function()
-                    except Exception as error:
-                        errors.append(type(error).__name__ + ': ' + str(error))
-                if errors:
-                    entry['cleanup_errors'] = errors
-                    if original is None:
-                        raise RuntimeError('Native microphone client cleanup failed: ' + '; '.join(errors))
-            source.require_closed('between-clients' if index == 0 else 'after-second-client')
-            source.endpoint()
-        need(len({row['pid'] for row in evidence['clients']}) == 2,
-             'Expected distinct ordinary default recording clients')
-        evidence['microphone_client_passed'] = True
+        verify_native_microphone_clients(source, graph, evidence, pcm, paths, mapping)
         report['acoustic_passed'] = True
         report['remaining_prerequisites'] = [
             'Persistent microphone configuration, quality, arbitrary clients, XRUN/reprepare '
@@ -2014,6 +2107,7 @@ def desktop_playback(args, report, pcm, paths, mapping, capture, holders):
                                    'phases': [], 'maximum_seconds': 45}
     graph = DesktopGraph(args.desktop_user, evidence)
     holders.append(graph)  # On failure outer cleanup parks before graph cleanup.
+    graph.preserve_default_source = getattr(args, 'desktop_microphone', False)
     start_time = time.monotonic()
     deadline = threading.Timer(45, lambda: os.kill(os.getpid(), signal.SIGTERM))
     deadline.start()
@@ -2078,20 +2172,21 @@ def restore_microphone_mixer(report, saved):
             errors.append('capture mixer: ' + type(error).__name__ + ': ' + str(error))
 
 
-def finish_recording(capture, report, saved):
-    """Close recording and restore its route before any ordinary app handoff."""
+def finish_recording(capture, report, saved, *, retain_mixer=False):
+    """Close/discard the oracle; optionally lease its mixer route to the serve source."""
     try:
         capture.close()
         need(capture.process.poll() is not None, 'Microphone process remains active')
         need(read_text(capture.status) == 'closed', 'Microphone PCM remains open')
         report['recording_closed'] = True
     finally:
-        restore_microphone_mixer(report, saved)
+        if not retain_mixer:
+            restore_microphone_mixer(report, saved)
     need(not report['capture'].get('error'), 'Microphone monitor failed')
     need(not re.search(r'overrun|underrun|error', report['capture']['log'], re.I),
          'Capture reported an ALSA error')
     need(not report.get('cleanup_errors') and
-         all(item['returncode'] == 0 for item in report['microphone_mixer_restore']),
+         all(item['returncode'] == 0 for item in report.get('microphone_mixer_restore', [])),
          'Microphone mixer restoration failed')
 
 
@@ -2187,7 +2282,7 @@ def verify_public_playback(report, pcm, graph, capture, desktop_peak=1433, *, co
 
 
 def serve_desktop(args, report, pcm, graph, paths, mapping):
-    """Ordinary desktop session; no microphone is open in this loop."""
+    """Ordinary desktop session with optional stock microphone demand/idle."""
     need(report['desktop']['acoustic_passed'] and
          report['public_desktop']['acoustic_passed'] and report.get('recording_closed'),
          'Serve handoff requires acoustic verification and a closed microphone')
@@ -2195,6 +2290,24 @@ def serve_desktop(args, report, pcm, graph, paths, mapping):
     pcm.settle(0.5)
     graph.monitor.healthy()
     check_stereo(mapping, paths, initialized=True)
+    microphone = getattr(graph, 'microphone', None) if getattr(args, 'desktop_microphone', False) else None
+    if microphone is not None:
+        microphone.require_closed('before-ordinary-handoff')
+        if microphone.default_selected:
+            graph.monitor.forward = False
+            verify_native_microphone_clients(microphone, graph, microphone.report, pcm, paths, mapping)
+            graph.monitor.forward = True
+        else:
+            microphone.report['verification_fixture_rejected'] = (
+                'An explicit other default source is preserved; default clients were not captured.')
+        microphone.report['verification_scope'] = 'publication before ordinary handoff'
+        microphone.require_closed('after-bounded-verification')
+        microphone.serve_healthy()
+    playback_owner = None
+    if microphone is not None:
+        playback_owner = re.search(r'^trigger_time\s*:\s*(.+)$', pcm.healthy(), re.M)
+        need(playback_owner is not None, 'Playback trigger missing at microphone handoff')
+        playback_owner = playback_owner[1]
     started = time.monotonic()
     deadline = started + args.serve_seconds if args.serve_seconds else None
     ready = report['serve'] = {
@@ -2210,6 +2323,12 @@ def serve_desktop(args, report, pcm, graph, paths, mapping):
         'pcm_feed': dict(pcm.feed_stats),
         'monitor_max_interarrival_seconds': graph.monitor.max_interarrival_seconds,
         'note': 'Conservative fixed attenuation; useful listening volume is not yet validated.'}
+    if microphone is not None:
+        ready['microphone'] = dict(source=microphone.name, source_index=microphone.source_id,
+            module=microphone.module, default_selected=microphone.default_selected,
+            bounded_clients_passed=microphone.report['microphone_client_passed'], recording=None,
+            source_lifetime='serve-owner', all_automated_recordings_bounded=True)
+        ready['microphone_identity_retained_120s'] = False
     stop = threading.Event()
 
     def terminate(signum, frame):
@@ -2226,12 +2345,19 @@ def serve_desktop(args, report, pcm, graph, paths, mapping):
         temporary.replace(args.output / 'serve-ready.json')
         save_run_result(args.output, report)
         next_hardware_check = started
+        next_microphone_check = started
         while not stop.wait(0.1):
             pcm.healthy()
             graph.monitor.healthy()
             now = time.monotonic()
             if deadline is not None and now >= deadline:
                 break
+            if microphone is not None and now >= next_microphone_check:
+                microphone.serve_healthy()
+                trigger = re.search(r'^trigger_time\s*:\s*(.+)$', pcm.healthy(), re.M)
+                need(trigger and trigger[1] == playback_owner, 'Playback trigger changed during serve')
+                ready['microphone_identity_retained_120s'] = now - started >= 120
+                next_microphone_check = now + 1
             if now >= next_hardware_check:
                 check_stereo(mapping, paths, initialized=True)
                 next_hardware_check = now + 5
@@ -2242,6 +2368,13 @@ def serve_desktop(args, report, pcm, graph, paths, mapping):
                      input_peak=graph.monitor.input_peak, output_peak=graph.monitor.peak,
                      pcm_feed=dict(pcm.feed_stats),
                      monitor_max_interarrival_seconds=graph.monitor.max_interarrival_seconds)
+        if microphone is not None:
+            microphone.serve_healthy()
+            trigger = re.search(r'^trigger_time\s*:\s*(.+)$', pcm.healthy(), re.M)
+            need(trigger and trigger[1] == playback_owner, 'Playback trigger changed during serve')
+            ready['microphone_identity_retained_120s'] = ready['seconds'] >= 120
+            microphone.close()
+            graph.microphone = None
         # Keep the same PCM running on silence while the monitor is removed.
         pcm.set_source(None)
         graph.monitor.close()
@@ -2368,7 +2501,16 @@ def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder
                 report['desktop']['acoustic_passed'] = True
             before_serve()  # Close capture while attached, before playback teardown.
             if live_resume is None:
-                serve_desktop(args, report, pcm, desktop_holder[-1], paths, mapping)
+                graph = desktop_holder[-1]
+                if getattr(args, 'desktop_microphone', False):
+                    evidence = report['desktop_microphone'] = dict(microphone_client_passed=False,
+                        clients=[], recording=None, maximum_seconds=60,
+                        scope='stock microphone available for serve; bounded client verification')
+                    graph.microphone = NativeMicSource(graph, card, evidence,
+                        time.clock_gettime(time.CLOCK_BOOTTIME) + 60,
+                        graph.default_source_before_test, desktop=True)
+                    graph.microphone.start()
+                serve_desktop(args, report, pcm, graph, paths, mapping)
         # Orderly close while the native slaves can still receive mute and
         # disable/deprepare writes. Failures retain the outer park-first path.
         report['pcm']['log'] = pcm.close()
@@ -2513,6 +2655,9 @@ def initialize(args, report, *, live_resume=None):
     need(live_resume is None or (callable(live_resume) and args.action == 'serve' and
                                 args.desktop_peak == 1433 and not getattr(args, 'desktop_controls', False)),
          'Live resume requires quiet serve initialization without desktop controls')
+    validate_desktop_microphone(args.action, getattr(args, 'desktop_microphone', False))
+    need(not getattr(args, 'desktop_microphone', False) or live_resume is None,
+         '--desktop-microphone excludes live resume tests')
     source = getattr(args, 'microphone_source', 'DMIC1')
     validate_native_mic_cold_start(args.action, getattr(args, 'native_mic_cold_start', False),
         getattr(args, 'native_mic_on_demand', False), getattr(args, 'capture_reopen', False),
@@ -2578,9 +2723,10 @@ def initialize(args, report, *, live_resume=None):
     def release_recording():
         nonlocal capture
         try:
-            finish_recording(capture, report, saved_mixer)
+            finish_recording(capture, report, saved_mixer,
+                             retain_mixer=getattr(args, 'desktop_microphone', False))
         finally:
-            # Close and mixer restoration have already been attempted.
+            # Oracle close has been attempted; an enabled serve source retains its mixer lease.
             capture = None
 
     def interrupted(signum, frame):
@@ -2836,6 +2982,8 @@ def main():
                         help='feedback-only fresh native stereo DMIC1/DMIC0 capture')
     parser.add_argument('--capture-contract-check', action='store_true',
                         help='desktop-mic capture-reopen only: bounded incompatible contract rejection probes')
+    parser.add_argument('--desktop-microphone', action='store_true',
+                        help='serve-only stock fitted microphone available on client demand')
     parser.add_argument('--native-mic-cold-start', action='store_true',
                         help='native-mic-on-demand only: stock first-owner ambient prelude before arecord/amps')
     parser.add_argument('--native-mic-on-demand', action='store_true',
@@ -2851,6 +2999,8 @@ def main():
     parser.add_argument('--desktop-controls', action='store_true',
                         help='serve-only bounded acoustic software volume/mute/restoration test')
     args = parser.parse_args()
+    if args.desktop_microphone and args.action != 'serve':
+        parser.error('--desktop-microphone requires serve')
     if args.desktop_controls and args.action != 'serve':
         parser.error('--desktop-controls requires serve')
     if args.microphone_array and (args.action != 'feedback' or args.microphone_source != 'DMIC1'):
