@@ -744,4 +744,138 @@ class NativeMicResume(unittest.TestCase):
                 owner.retained(before)
 
 
+
+class NativePlaybackResumeProof(unittest.TestCase):
+    def baseline(self):
+        return dict(processes={'playback': {'pid': 10, 'start_ticks': '100'}, 'monitor': {'pid': 20}},
+                    native_owners={'playback': {'pid': 10, 'state': 'RUNNING', 'trigger_time': '96.699', 'fds': {'4': '/dev/snd/pcmC0D0p'}}},
+                    geometry={'playback': 'S16/stereo/48k'}, initialized_counts={'3': 1, '4': 1},
+                    native_source={'source': 99, 'module': 'owned', 'services': {'PW': 2680}, 'default': 'ours', 'mixers': 'retained'})
+
+    def owner(self, after):
+        owner = resume.NativeIdleAudio.__new__(resume.NativeIdleAudio)
+        owner.report = {'held': self.baseline()}
+        owner.check = lambda: copy.deepcopy(after)
+        return owner
+
+    def proof(self):
+        return dict(normal_sleep_proven=True, ngd_retention_proven=True, journal_cursor='fresh',
+                    playback_resume=dict(complete=True, direction=0, marker_positions=[1, 2, 3, 4, 5]))
+
+    def log(self):
+        return '\n'.join(('PM: suspend entry (s2idle)',
+            'SPX: retained ASM pause sent direction=0 pending-writes=1 error=0',
+            'SPX: retained ASM pause acknowledged direction=0', resume.sleep.RETAIN_ENTRY,
+            resume.sleep.RETAIN_EXIT,
+            'SPX: retained ASM resumed direction=0 pending-writes=1 deferred-reads=0 error=0',
+            'PM: suspend exit')) + '\n'
+
+    def sleep_result(self):
+        return dict(boot_unchanged=True, sleep_seconds=28, kernel_entered=True, kernel_exited=True,
+                    service_completed=True, irq_before=1, irq_after=2, event=0xa0,
+                    alarm_disabled=True, user_thawed=True)
+
+    def test_one_refresh_requires_proof_then_new_timestamp_stays_strict(self):
+        before = self.baseline(); after = copy.deepcopy(before)
+        after['native_owners']['playback']['trigger_time'] = '154.220'
+        owner = self.owner(after)
+        with self.assertRaisesRegex(AssertionError, 'native owners'): owner.retained(before)
+        self.assertEqual(owner.report['after_observed'], after)
+        owner.accept_normal_resume(self.proof())
+        self.assertEqual(owner.retained(before), after)
+        self.assertEqual(before, self.baseline()); self.assertEqual(owner.report['held'], self.baseline())
+        self.assertTrue(owner.report['playback_resume_trigger']['changed'])
+        self.assertEqual(owner.retained(before), after)
+        changed = copy.deepcopy(after); changed['native_owners']['playback']['trigger_time'] = '155.000'
+        owner.check = lambda: changed
+        with self.assertRaisesRegex(AssertionError, 'native owners'): owner.retained(before)
+        self.assertEqual(owner.report['after_observed'], changed)
+        with self.assertRaisesRegex(AssertionError, 'already accepted'): owner.accept_normal_resume(self.proof())
+
+    def test_proven_refresh_never_relaxes_other_owner_or_source_fields(self):
+        for field, key in (('processes', 'playback'), ('native_owners', 'pid'), ('native_owners', 'fds'),
+                           ('native_owners', 'state'), ('geometry', 'playback'), ('initialized_counts', '3'),
+                           ('native_source', 'source'), ('native_source', 'module'), ('native_source', 'services'),
+                           ('native_source', 'default'), ('native_source', 'mixers')):
+            after = self.baseline(); after['native_owners']['playback']['trigger_time'] = '154.220'
+            values = after['native_owners']['playback'] if field == 'native_owners' else after[field]
+            values[key] = 'changed'
+            owner = self.owner(after); owner.accept_normal_resume(self.proof())
+            with self.subTest(field=field, key=key), self.assertRaises(AssertionError):
+                owner.retained(owner.report['held'])
+            self.assertEqual(owner.report['after_observed'], after)
+            self.assertNotIn('playback_resume_trigger', owner.report)
+
+    def test_bad_proof_or_invalid_timestamp_rejects_with_observation(self):
+        for key in ('normal_sleep_proven', 'ngd_retention_proven', 'journal_cursor'):
+            proof = self.proof(); proof[key] = False
+            with self.subTest(key=key), self.assertRaises(AssertionError): self.owner(self.baseline()).accept_normal_resume(proof)
+        for trigger in ('0.000', 'not-time', ''):
+            after = self.baseline(); after['native_owners']['playback']['trigger_time'] = trigger
+            owner = self.owner(after); owner.accept_normal_resume(self.proof())
+            with self.subTest(trigger=trigger), self.assertRaisesRegex(AssertionError, 'invalid resumed'):
+                owner.retained(owner.report['held'])
+            self.assertEqual(owner.report['after_observed'], after)
+
+    def test_actual_normal_retention_hook_follows_all_proof_before_owner_check(self):
+        import tempfile
+        after = self.baseline(); after['native_owners']['playback']['trigger_time'] = '154.220'
+        owner = self.owner(after)
+        live = resume.sleep.Live.__new__(resume.sleep.Live)
+        live.audio = owner; live.sleep_result = self.sleep_result(); live.run = Mock(return_value=self.log())
+        with tempfile.TemporaryDirectory() as directory:
+            live.output = Path(directory)
+            evidence = live.retention_evidence('fresh', 'normal-retention-kernel')
+        self.assertTrue(evidence['playback_resume']['complete'])
+        self.assertEqual(evidence['after'], after)
+        self.assertEqual(owner.report['held'], self.baseline())
+
+    def test_missing_unordered_failed_or_direct_sleep_proof_cannot_authorize_refresh(self):
+        import tempfile
+        logs = (self.log().replace('pause acknowledged direction=0', 'pause acknowledged direction=1'),
+                self.log().replace('resumed direction=0', 'resumed direction=1'),
+                self.log().replace('pending-writes=1 error=0', 'pending-writes=1 error=-5'),
+                self.log().replace('deferred-reads=0 error=0', 'deferred-reads=0 error=-5'),
+                self.log().replace('PM: suspend exit', 'PM: suspend exit\nPM: suspend exit'),
+                self.log().replace(resume.sleep.RETAIN_EXIT, ''),
+                self.log().replace('PM: suspend entry (s2idle)', 'no PM entry'))
+        for log in logs:
+            live = resume.sleep.Live.__new__(resume.sleep.Live)
+            live.audio = self.owner(self.baseline()); live.sleep_result = self.sleep_result(); live.run = Mock(return_value=log)
+            with tempfile.TemporaryDirectory() as directory:
+                live.output = Path(directory)
+                with self.subTest(log=log), self.assertRaises(AssertionError):
+                    live.retention_evidence('fresh', 'normal-retention-kernel')
+            self.assertNotIn('normal_resume_proof', live.audio.report)
+        live.run = Mock(return_value=self.log()); live.sleep_result['service_completed'] = False
+        with tempfile.TemporaryDirectory() as directory:
+            live.output = Path(directory)
+            with self.assertRaisesRegex(AssertionError, 'normal sleep proof'):
+                live.retention_evidence('fresh', 'normal-retention-kernel')
+        after = self.baseline(); after['native_owners']['playback']['trigger_time'] = '154.220'
+        live.audio = self.owner(after); live.sleep_result = self.sleep_result()
+        with tempfile.TemporaryDirectory() as directory:
+            live.output = Path(directory)
+            with self.assertRaisesRegex(AssertionError, 'native owners'):
+                live.retention_evidence('fresh', 'direct-retention-kernel')
+        self.assertNotIn('normal_resume_proof', live.audio.report)
+
+    def test_marker_order_and_legacy_observer_behavior_remain_strict(self):
+        log = self.log()
+        log = log.replace('pause sent direction=0 pending-writes=1 error=0', 'TEMP').replace(
+            'pause acknowledged direction=0', 'pause sent direction=0 pending-writes=1 error=0').replace(
+            'TEMP', 'pause acknowledged direction=0')
+        with self.assertRaisesRegex(AssertionError, 'ordering'): resume.sleep.playback_resume_proven(log)
+        import tempfile
+        held = {'closed': True}
+        live = resume.sleep.Live.__new__(resume.sleep.Live)
+        live.audio = SimpleNamespace(report={'held': held}, retained=Mock(return_value=held))
+        # Old observers still need only their original NGD and PM evidence.
+        live.run = Mock(return_value='PM: suspend entry (s2idle)\n' + resume.sleep.RETAIN_ENTRY + '\n' + resume.sleep.RETAIN_EXIT + '\nPM: suspend exit')
+        with tempfile.TemporaryDirectory() as directory:
+            live.output = Path(directory)
+            self.assertEqual(live.retention_evidence('fresh', 'normal-retention-kernel')['after'], held)
+        live.audio.retained.assert_called_once_with(held)
+
+
 if __name__ == '__main__': unittest.main()

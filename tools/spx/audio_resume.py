@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-only
 """Quiet retained playback, live default-client or idle stock-source AC resume."""
 from datetime import datetime, timezone
+import copy
 import json
 from pathlib import Path
 import queue
@@ -371,9 +372,41 @@ class NativeIdleAudio(LiveOwnedAudio):
                         configured_default=audio.configured_default_source(self.graph), mixers=controls),
                     capture_status='closed', stereo=stereo, digital_zero=True)
 
+    def accept_normal_resume(self, proof):
+        """Authorize one ALSA trigger-timestamp refresh after proven normal sleep."""
+        assert not self.report.get('normal_resume_proof'), 'normal resume already accepted'
+        playback = proof.get('playback_resume', {})
+        positions = playback.get('marker_positions', [])
+        assert (proof.get('normal_sleep_proven') is True and
+                proof.get('ngd_retention_proven') is True and proof.get('journal_cursor') and
+                playback.get('complete') is True and playback.get('direction') == 0 and
+                len(positions) == 5 and all(type(value) is int for value in positions) and
+                all(a < b for a, b in zip(positions, positions[1:]))), 'normal playback resume proof incomplete'
+        self.report['normal_resume_proof'] = copy.deepcopy(proof)
+        self.resume_trigger_pending = True
+
     def retained(self, before):
-        after = super().retained(before)
-        assert after['native_source'] == before['native_source'], 'native source/default/services/mixers changed across suspend'
+        after = self.check()
+        # Retain the actual difference even if strict comparison rejects it.
+        self.report['after_observed'] = copy.deepcopy(after)
+        expected = copy.deepcopy(before)
+        accepted = self.report.get('playback_resume_trigger')
+        pending = getattr(self, 'resume_trigger_pending', False)
+        if accepted is not None:
+            expected['native_owners']['playback']['trigger_time'] = accepted['after']
+        elif pending:
+            trigger = after['native_owners']['playback']['trigger_time']
+            assert re.fullmatch(r'\d+\.\d+', trigger) and any(c in '123456789' for c in trigger), 'invalid resumed playback timestamp'
+            expected['native_owners']['playback']['trigger_time'] = trigger
+        for name in ('processes', 'native_owners', 'geometry', 'initialized_counts', 'native_source'):
+            assert after[name] == expected[name], name.replace('_', ' ') + ' changed across suspend'
+        if pending:
+            original = before['native_owners']['playback']['trigger_time']
+            observed = after['native_owners']['playback']['trigger_time']
+            self.report['playback_resume_trigger'] = dict(before=original, after=observed,
+                                                         changed=original != observed)
+            self.resume_trigger_pending = False
+        self.report.update(same_native_owners=True, after=after)
         return after
 
 

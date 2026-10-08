@@ -61,6 +61,24 @@ def retention_proven(log):
                 entry_count=len(entries), ownership_preserved_count=len(exits), new_kernel_faults=[])
 
 
+def playback_resume_proven(log):
+    """Require one successful, ordered playback PAUSE/ACK/RUN in a PM cycle."""
+    patterns = (
+        r'PM: suspend entry \(s2idle\)',
+        r'SPX: retained ASM pause sent direction=0 pending-writes=\d+ error=0(?:\n|$)',
+        r'SPX: retained ASM pause acknowledged direction=0(?:\n|$)',
+        r'SPX: retained ASM resumed direction=0 pending-writes=\d+ deferred-reads=\d+ error=0(?:\n|$)',
+        r'PM: suspend exit',
+    )
+    positions = []
+    for pattern in patterns:
+        matches = list(re.finditer(pattern, log))
+        assert len(matches) == 1, 'one normal playback resume marker required: ' + pattern
+        positions.append(matches[0].start())
+    assert positions == sorted(positions), 'playback pause/ack/resume/PM ordering'
+    return dict(complete=True, direction=0, marker_positions=positions)
+
+
 class ParkedAudio:
     """Own an active SWR PM hold and only the safe auxiliary GPIO park write."""
     def __init__(self, output, boot, desktop_user):
@@ -427,7 +445,14 @@ class Live:
         (self.output / (name + '.log')).write_text(log)
         evidence = retention_proven(log)
         assert 'PM: suspend entry (s2idle)' in log and 'PM: suspend exit' in log
-        evidence.update(journal_cursor=cursor, after=self.audio.retained(self.audio.report['held']))
+        evidence['journal_cursor'] = cursor
+        hook = getattr(self.audio, 'accept_normal_resume', None)
+        if hook is not None and name == 'normal-retention-kernel':
+            assert sleep_proven(self.sleep_result), 'normal sleep proof required before playback timestamp refresh'
+            evidence['playback_resume'] = playback_resume_proven(log)
+            hook(dict(normal_sleep_proven=True, ngd_retention_proven=evidence['complete'],
+                      journal_cursor=cursor, playback_resume=evidence['playback_resume']))
+        evidence['after'] = self.audio.retained(self.audio.report['held'])
         return evidence
 
     def direct(self):
