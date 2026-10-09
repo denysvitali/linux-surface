@@ -61,8 +61,9 @@ Hypotheses:
    `cci_i2c` did not fix front bus 1. Untested: enable CCI1-3 as v23 did.
 13. **Refuted: CCI1 enabled (fc, boot `b1b3e2d9`).** Front bus 1 unchanged. No
    untested hypothesis left for the front OV5693; rear and IR work with it off.
-11. **Open: scene.** Rear and IR scene frames are flat and dark (fa). Check
-   the physical setup with the user before any sensor or ISP change.
+11. **Answered: scene (fd, boot `89f87251`).** Lit scene: rear and IR show real
+   frames; the dark frames were the scene. Open: user confirms colours and IR
+   orientation, then resume/repeat start-stop. See `RESULT-20261008fd.md`.
 
 5. RAW-to-display rendering omits black subtraction, AWB and transfer.
    **Implemented offline, physical acceptance pending:** `camera_render.py`
