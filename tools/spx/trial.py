@@ -231,7 +231,10 @@ def prepare(args):
     else:
         run('modules-install', make + ['-j4', 'INSTALL_MOD_PATH=' + str(module_root), 'DEPMOD=true', 'modules_install'])
     if args.usbc:
-        run('usbc-dp0-helper-build', ['make', '-C', str(HERE / 'live')])
+        run('usbc-dp0-helper-build', ['make', '-C', str(HERE / 'live'),
+            'KDIR=' + str(BUILD),
+            'SSAM_KO=' + str(root / 'kernel/drivers/platform/surface/aggregator/surface_aggregator.ko'),
+            'KBUILD_EXTRA_SYMBOLS='])
         helper = HERE / 'live/spx_dp0_enable.ko'
         assert helper.is_file()
         vermagic = subprocess.check_output(['modinfo', '-F', 'vermagic', str(helper)], text=True).split()[0]
