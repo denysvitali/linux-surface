@@ -314,16 +314,17 @@ def exercise(out, attempt, release, sensor_kind='rear'):
         if grab('pattern', 'frames-pattern.raw') is None:
             return fail('pattern capture is wedged')
         step('sensor-pattern-off-again', ['v4l2-ctl', '-d', subdev, '--set-ctrl=test_pattern=0'])
-        # 3. The scene again after a pause (time to aim the camera at a lit
-        # subject), with exposure and analogue gain raised well above default.
-        if sensor_kind == 'rear':
+    # 3. The rear scene again with exposure and analogue gain raised above default
+    # (the default frame sits at the sensor black level); wait only if it was dark.
+    if sensor_kind == 'rear':
+        if not informative(scene):
             time.sleep(BRIGHT_WAIT)
-            step('exposure-up', ['v4l2-ctl', '-d', subdev,
-                                 '--set-ctrl=exposure=3000,analogue_gain=2048'])
-            if grab('bright', 'frames-bright.raw') is None:
-                return fail('bright capture is wedged')
-            step('exposure-restore', ['v4l2-ctl', '-d', subdev,
-                                      '--set-ctrl=exposure=1600,analogue_gain=128'])
+        step('exposure-up', ['v4l2-ctl', '-d', subdev,
+                             '--set-ctrl=exposure=3000,analogue_gain=512'])
+        if grab('bright', 'frames-bright.raw') is None:
+            return fail('bright capture is wedged')
+        step('exposure-restore', ['v4l2-ctl', '-d', subdev,
+                                  '--set-ctrl=exposure=1600,analogue_gain=128'])
     # Varied, non-fill data shows frames arrived. A person still has to look at
     # preview.ppm to say that it is the scene in front of the camera.
     result['complete'] = ((informative(scene) or informative(result.get('bright'))) and
