@@ -18,7 +18,8 @@ attenuation (default 1433/32768, at most 12000/32768). ``desktop-mic`` tests
 two bounded default recording clients over one retained capture/playback pair.
 Opt-in --native-mic-cold-start verifies stock first-owner capture before the
 startup oracle and amp power, within the same 60 second budget. Neither mode
-provides a persistent microphone service.
+provides a persistent microphone service. ``play-desktop`` initializes the verified
+speaker path and forwards ordinary desktop audio without test tones or capture.
 ``reopen`` tests two Linux playback PCMs with one continuous microphone capture
 and attached-amp teardown between them; ASM stays parked. None loads modules.
 """
@@ -895,7 +896,7 @@ class DesktopGraph:
         return subprocess.run(self.command + list(command), check=True,
                               capture_output=True, text=True, timeout=5).stdout.strip()
 
-    def start(self):
+    def start(self, *, public_only=False):
         # Preserve the existing policy which prevents hardware ALSA probing.
         policy = read_text('/etc/wireplumber/wireplumber.conf.d/51-spx-disable-alsa-monitor.conf')
         need(re.search(r'hardware\.audio\s*=\s*disabled', policy),
@@ -925,6 +926,8 @@ class DesktopGraph:
         need(all(not any(key.startswith(('alsa.', 'api.alsa.'))
                          for key in s.get('properties', {})) for s in sinks),
              'PipeWire exposed an ALSA hardware sink')
+        if public_only:
+            return
         default_sink = self.run('pactl', 'get-default-sink')
         if getattr(self, 'preserve_default_source', False):
             self.default_source_before_test = configured_default_source(self)
@@ -2381,9 +2384,14 @@ def verify_public_playback(report, pcm, graph, capture, desktop_peak=1433, *, co
 
 def serve_desktop(args, report, pcm, graph, paths, mapping):
     """Ordinary desktop session with optional stock microphone demand/idle."""
-    need(report['desktop']['acoustic_passed'] and
-         report['public_desktop']['acoustic_passed'] and report.get('recording_closed'),
-         'Serve handoff requires acoustic verification and a closed microphone')
+    playback_only = report.get('action') == 'play-desktop'
+    if playback_only:
+        need(report.get('playback_ready') and not report.get('microphone_capture'),
+             'Desktop playback requires native initialization without microphone capture')
+    else:
+        need(report['desktop']['acoustic_passed'] and
+             report['public_desktop']['acoustic_passed'] and report.get('recording_closed'),
+             'Serve handoff requires acoustic verification and a closed microphone')
     graph.monitor.healthy()
     pcm.set_source(graph.monitor)
     graph.monitor.forward = True
@@ -2416,8 +2424,10 @@ def serve_desktop(args, report, pcm, graph, paths, mapping):
     started = time.monotonic()
     deadline = started + args.serve_seconds if args.serve_seconds else None
     ready = report['serve'] = {
-        'acoustic_passed': True, 'public_acoustic_passed': True,
-        'recording_closed': True, 'sink': 'spx_speakers',
+        'acoustic_passed': None if playback_only else True,
+        'public_acoustic_passed': None if playback_only else True,
+        'recording_closed': not report.get('microphone_capture') or report.get('recording_closed', False),
+        'sink': 'spx_speakers',
         'owner_pid': os.getpid(), 'pcm_pid': pcm.process.pid,
         'boot_id': report['before']['boot_id'], 'release': report['before']['release'],
         'maximum_seconds': args.serve_seconds, 'deadline_monotonic': deadline,
@@ -2579,6 +2589,18 @@ def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder
     pcm.settle(1.0)  # Conservative settling margin; minimum has not been measured.
     report['remaining_prerequisites'] = [UNMET[-1]]
     report['playback_ready'] = True
+    if args.action == 'play-desktop':
+        evidence = report['desktop'] = {'acoustic_passed': None}
+        graph = DesktopGraph(args.desktop_user, evidence)
+        desktop_holder.append(graph)
+        graph.start(public_only=True)
+        graph.connect_public(pcm, args.desktop_peak)
+        # Use the initialization verified on WX without another acoustic test.
+        serve_desktop(args, report, pcm, graph, paths, mapping)
+        report['pcm']['log'] = pcm.close()
+        pcm_holder.remove(pcm)
+        check_desktop_teardown(paths, evidence)
+        return
     if args.action == 'desktop-mic':
         desktop_microphone(args, report, pcm, paths, mapping, capture, desktop_holder)
         return
@@ -2794,7 +2816,7 @@ def initialize(args, report, *, live_resume=None):
     need(os.geteuid() == 0, 'initialize requires root')
     need(args.action in ('recover', 'capture') or args.allow_amp_power,
          'initialize/listen requires --allow-amp-power for this authorized run')
-    need(args.action not in ('listen', 'feedback', 'desktop', 'serve', 'reopen', 'desktop-mic') or args.allow_playback,
+    need(args.action not in ('listen', 'feedback', 'desktop', 'serve', 'reopen', 'desktop-mic', 'play-desktop') or args.allow_playback,
          'listen requires separate explicit --allow-playback authorization')
     need(args.action not in ('capture', 'feedback', 'desktop', 'serve', 'reopen', 'desktop-mic') or args.allow_capture,
          'Microphone recording requires --allow-capture')
@@ -2816,7 +2838,7 @@ def initialize(args, report, *, live_resume=None):
             ('snd_soc_wsa881x', 'spx_enumerated_mode', 'Y'),
             ('snd_soc_wsa881x', 'spx_write_only', 'N')):
         need(parameter(module, name) == expected, f'{module}.{name} must be {expected}')
-    if args.action in ('listen', 'feedback', 'desktop', 'serve', 'reopen', 'desktop-mic'):
+    if args.action in ('listen', 'feedback', 'desktop', 'serve', 'reopen', 'desktop-mic', 'play-desktop'):
         need(parameter('snd_soc_wcd934x', 'spx_persist_stream') == 'Y',
              'Playback requires WCD SLIM stream persistence before its first open')
     assert_desktop_paused(args.desktop_user)
@@ -2986,7 +3008,7 @@ def initialize(args, report, *, live_resume=None):
         report['remaining_prerequisites'].remove(UNMET[0])
         if args.action == 'reopen':
             playback_reopen(args, report, pcm_holder, capture, baseline)
-        elif args.action in ('listen', 'feedback', 'desktop', 'serve', 'desktop-mic'):
+        elif args.action in ('listen', 'feedback', 'desktop', 'serve', 'desktop-mic', 'play-desktop'):
             listen(args, report, pcm_holder, capture, baseline, desktop_holder, release_recording, live_resume)
         if args.action == 'feedback':
             # Control for electrical crosstalk: keep the identical capture/PCM
@@ -3071,7 +3093,7 @@ def initialize(args, report, *, live_resume=None):
     if 'pcm' in report:
         need(not re.search(r'underrun|overrun|error', report['pcm']['log'], re.I),
              'ALSA reported an underrun or playback error; inspect the PCM log')
-    if args.action in ('desktop', 'serve', 'desktop-mic'):
+    if args.action in ('desktop', 'serve', 'desktop-mic', 'play-desktop'):
         need(report['desktop'].get('graph_restored') and
              not report['desktop'].get('cleanup_error'), 'Desktop graph cleanup failed')
 
@@ -3092,7 +3114,7 @@ def desktop_peak_limit(value):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', nargs='?', choices=('plan', 'inspect', 'initialize', 'listen', 'recover', 'capture', 'feedback', 'desktop', 'serve', 'reopen', 'desktop-mic'), default='plan')
+    parser.add_argument('action', nargs='?', choices=('plan', 'inspect', 'initialize', 'listen', 'recover', 'capture', 'feedback', 'desktop', 'serve', 'reopen', 'desktop-mic', 'play-desktop'), default='plan')
     parser.add_argument('--output', type=Path, help='directory for result JSON')
     parser.add_argument('--owner', help='coordinator device-lock owner (initialize)')
     parser.add_argument('--desktop-user', help='user whose audio units the caller has paused')
@@ -3127,6 +3149,8 @@ def main():
     parser.add_argument('--desktop-controls', action='store_true',
                         help='serve-only bounded acoustic software volume/mute/restoration test')
     args = parser.parse_args()
+    if args.action == 'play-desktop' and args.output is None:
+        parser.error('play-desktop requires --output for runtime status')
     if args.desktop_microphone and args.action != 'serve':
         parser.error('--desktop-microphone requires serve')
     if args.native_mic_app_formats and (args.action != 'serve' or not args.desktop_microphone):
@@ -3147,8 +3171,8 @@ def main():
         parser.error('--reopen-first-channel requires reopen')
     if args.microphone_source != 'DMIC1' and args.action not in ('capture', 'feedback', 'desktop-mic'):
         parser.error('--microphone-source DMIC0 requires capture or feedback or desktop-mic')
-    if args.desktop_peak is not None and args.action != 'serve':
-        parser.error('--desktop-peak is only valid with serve')
+    if args.desktop_peak is not None and args.action not in ('serve', 'play-desktop'):
+        parser.error('--desktop-peak requires serve or play-desktop')
     if args.desktop_peak is None:
         args.desktop_peak = 1433
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
@@ -3163,10 +3187,10 @@ def main():
     try:
         if args.output:
             args.output.mkdir(parents=True, exist_ok=True)
-            if args.action in ('initialize', 'listen', 'recover', 'capture', 'feedback', 'desktop', 'serve', 'reopen', 'desktop-mic'):
+            if args.action in ('initialize', 'listen', 'recover', 'capture', 'feedback', 'desktop', 'serve', 'reopen', 'desktop-mic', 'play-desktop'):
                 # A killed run must never leave an earlier "parked" verdict.
                 save_run_result(args.output, report)
-                if args.action == 'serve':
+                if args.action in ('serve', 'play-desktop'):
                     (args.output / 'serve-ready.json').unlink(missing_ok=True)
         if args.action == 'plan':
             report['initialization'] = (
@@ -3213,7 +3237,7 @@ def main():
     text = json.dumps(report, indent=2) + '\n'
     if args.output:
         (args.output / f'audio-{args.action}-{stamp}.json').write_text(text)
-        if args.action in ('initialize', 'listen', 'recover', 'capture', 'feedback', 'desktop', 'serve', 'reopen', 'desktop-mic'):
+        if args.action in ('initialize', 'listen', 'recover', 'capture', 'feedback', 'desktop', 'serve', 'reopen', 'desktop-mic', 'play-desktop'):
             save_run_result(args.output, report)
     print(text, end='')
     return result

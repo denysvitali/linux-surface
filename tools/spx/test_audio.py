@@ -2457,5 +2457,37 @@ class MicrophoneApplicationFormatTests(unittest.TestCase):
         self.assertFalse(score_phase(phase, quiet, [440, 660])['passed'])
 
 
+class OrdinaryDesktopPlaybackTests(unittest.TestCase):
+    def test_handoff_keeps_pcm_and_does_not_claim_acoustic_verification(self):
+        report = dict(action='play-desktop', playback_ready=True,
+                      microphone_capture=False, desktop={},
+                      before=dict(boot_id='boot', release='kernel'))
+        pcm, graph = Mock(), Mock()
+        pcm.process.pid, pcm.feed_stats = 42, {}
+        graph.monitor.input_peak, graph.monitor.peak = 0, 0
+        graph.monitor.max_interarrival_seconds = 0
+        with tempfile.TemporaryDirectory() as directory:
+            args = SimpleNamespace(output=Path(directory), serve_seconds=0,
+                                   desktop_peak=1433, desktop_microphone=False)
+            with patch.object(audio, 'check_stereo'), patch.object(audio.signal, 'signal'), \
+                    patch.object(audio.threading, 'Event') as event, \
+                    patch.object(audio, 'OwnedCapture') as capture:
+                event.return_value.wait.return_value = True
+                audio.serve_desktop(args, report, pcm, graph, {}, {})
+            capture.assert_not_called()
+            self.assertIsNone(report['serve']['acoustic_passed'])
+            self.assertIsNone(report['serve']['public_acoustic_passed'])
+            self.assertEqual(report['serve']['peak_limit'], 1433)
+            self.assertTrue(report['serve']['stopped'])
+            pcm.close.assert_not_called()
+
+    def test_handoff_rejects_uninitialized_or_capturing_state(self):
+        for ready, capturing in ((False, False), (True, True)):
+            report = dict(action='play-desktop', playback_ready=ready,
+                          microphone_capture=capturing)
+            with self.assertRaisesRegex(RuntimeError, 'native initialization'):
+                audio.serve_desktop(None, report, None, None, {}, {})
+
+
 if __name__ == '__main__':
     unittest.main()
