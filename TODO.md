@@ -28,16 +28,26 @@ tests. Leave the physical session pending; do not substitute synthetic checks.
    WR boot `f7854ae1` detected both speakers initially, then reopened left
    fell to the noise floor (0.262 versus 0.233 RMS) despite successful native
    reinitialization. See `RESULT-20261009wr.md`. Do not repeat this reset trial.
-2. **H-WCD-reset, untested:** WCD keeps its SLIMbus playback stream active,
+2. **H-WCD-reset, untested (WS interrupted):** WCD keeps its SLIMbus playback stream active,
    but DAPM still resets RX7/RX8 on close. Suppress only those interpolator
    resets with `spx_skip_speaker_reset=1`, leaving clock/PA shutdown intact.
    Expected: existing microphone reopen test detects both channels on its
    second PCM. This switch is writable live; do not destroy parked DSP sessions.
+   WS boot `1436256e` completed baseline checks but ended uncleanly with no
+   acoustic result, return record or retained crash dump. The user does not
+   know the restart cause. See `RESULT-20261009ws.md`; do not count this as
+   an acoustic failure or blindly re-arm the same image.
 
 User reminder (2026-10-09): minimize reboots; use module reloads wherever
-possible. Current boot is recovery 6.18 (`cd43dcb0`), so latest-kernel testing
-requires one transition to mainline. Keep a longer bounded mainline window
-for subsequent module work instead of returning after each acoustic check.
+possible. Current boot is recovery 6.18 (`83ea2424`); latest-kernel modules
+cannot be loaded into that kernel. WS had a verified two-hour return window,
+but no normal return was recorded. No trial is armed. Further acoustic work
+needs a stable mainline session; first resolve or localize the interrupted
+startup instead of repeating the consumed automatic audio request.
+WT localization: keep the same candidate and WCD switch, but omit the
+automatic audio request. If mainline remains available after baseline
+checks, invoke the existing reopen test manually on that boot. This
+separates startup from playback without another audio-test variation.
 
 ## GTK window corruption (D01/D02, workaround confirmed 2026-10-09)
 

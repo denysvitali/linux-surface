@@ -30,7 +30,10 @@ sudo python3 -B tools/spx/trial.py boot 20261004bg
 
 Preparation uses the existing full build, normal modules_install/depmod and
 mkinitcpio. The generic `spx-trial-return@` units capture the kernel/journal
-and return after900s. The known-good kernel/initramfs/DTB are checked before
+and return after the installation's `--return-seconds` window (default 3600s,
+range 900..86400s). Use a longer bounded window for module work on one boot;
+do not request a short post-audio return when continuing live diagnosis.
+The known-good kernel/initramfs/DTB are checked before
 selection/reboot; known-good stays the persistent default. Each attempt is
 selected once. Results and short state files go to
 `/var/lib/spx-boot-diagnostics/functional/<attempt>`.

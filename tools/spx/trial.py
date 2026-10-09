@@ -373,6 +373,7 @@ def verify_retained_modules(prepared, modules):
 def install(args):
     os.umask(63)
     assert os.geteuid() == 0
+    assert 900 <= args.return_seconds <= 86400, 'installation return window must be 900..86400 seconds'
     assert Path('/proc/sys/kernel/random/boot_id').read_text().strip() == BOOT_ID
     r = recovery()
     prepared = json.loads((OUT / 'prepared.json').read_text())
@@ -403,6 +404,12 @@ def install(args):
         assert not target.exists() or target.read_text() == text
         target.write_text(text)
         target.chmod(420)
+    # Keep the same return unit, but allow one longer session for module work.
+    # Clear the inherited trigger so the template's 900s return cannot win.
+    window = unit_dir / ('spx-trial-return@' + ATTEMPT + '.timer.d/window.conf')
+    window.parent.mkdir(parents=True, exist_ok=True)
+    window.write_text('[Timer]\nOnBootSec=\nOnBootSec=' + str(args.return_seconds) + 's\n')
+    window.chmod(0o644)
     check_service = '[Unit]\nDescription=SPX bounded functional checks\nConditionKernelCommandLine=spx_attempt=%i\nAfter=network-online.target bluetooth.service\nRequiresMountsFor=/var/lib/spx-boot-diagnostics\n\n[Service]\nType=oneshot\nExecStart=/usr/bin/python3 -B /usr/local/lib/spx-boot-diagnostics/trial.py check %i\nTimeoutStartSec=infinity\nTimeoutStopSec=20\n'
     check_timer = '[Unit]\nDescription=Run SPX functional checks after startup\nConditionKernelCommandLine=spx_attempt=%i\n\n[Timer]\nOnBootSec=50\nAccuracySec=1\nUnit=spx-trial-check@%i.service\n\n[Install]\nWantedBy=timers.target\n'
     for name, text in [('spx-trial-check@.service', check_service), ('spx-trial-check@.timer', check_timer)]:
@@ -526,10 +533,10 @@ def install(args):
     assert subprocess.check_output(['systemctl', 'is-enabled', 'spx-trial-return@' + ATTEMPT + '.timer'], text=True).strip() == 'enabled'
     recovery()
     assert Path('/proc/sys/kernel/random/boot_id').read_text().strip() == BOOT_ID
-    installed = dict(utc=datetime.now(timezone.utc).isoformat(), boot_id=BOOT_ID, release=RELEASE, source_commit=subprocess.check_output(['git', '-c', 'safe.directory=' + str(REPO), 'rev-parse', 'HEAD'], cwd=REPO, text=True).strip(), boot_payloads=expected, persistent_default='spx-known-good', next_entry_empty=True, return_timer_seconds=900, installed=True, boot_selected=False)
+    installed = dict(utc=datetime.now(timezone.utc).isoformat(), boot_id=BOOT_ID, release=RELEASE, source_commit=subprocess.check_output(['git', '-c', 'safe.directory=' + str(REPO), 'rev-parse', 'HEAD'], cwd=REPO, text=True).strip(), boot_payloads=expected, persistent_default='spx-known-good', next_entry_empty=True, return_timer_seconds=args.return_seconds, installed=True, boot_selected=False)
     (OUT / 'installed.json').write_text(json.dumps(installed, indent=2) + '\n')
     os.sync()
-    print(ATTEMPT + ' installed with900s return; known-good default retained, no selection', flush=True)
+    print(f'{ATTEMPT} installed with {args.return_seconds}s return; known-good default retained, no selection', flush=True)
 
 
 def prepare_shutdown_ramfs():
