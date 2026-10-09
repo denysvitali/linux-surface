@@ -118,6 +118,12 @@ reboot. It may spawn agents for bounded work (`spx-port`).
 
 ## Reboots
 
+**Baseline policy (user requested 2026-10-09):** the verified 7.x candidate
+is the persistent `spx-mainline` baseline. Keep 6.18 (`spx-known-good`) as a
+manual recovery entry. Ordinary boots and trial returns use 7.x. Promoted
+baseline boots have no automatic trial return. Do not demote the default to
+6.18 without the user's instruction. This does not close B01 acceptance.
+
 The user authorized repeated experimental boots on 2026-09-22, including boots
 that may need a manual power cycle: "Yes. Proceed. Don't ask." Do not ask for
 that authorization again. Automatic recovery across the EFI handoff is not
@@ -126,8 +132,8 @@ validated; a hang after ExitBootServices needs a manual power cycle
 
 Every trial boot:
 
-- Keep `spx-known-good` as the persistent default and select each trial once.
-- Check that the known-good kernel, initramfs and DTB are intact (a hash check
+- Keep `spx-mainline` as the persistent default and select each trial once.
+- Check that the baseline and recovery kernel, initramfs and DTB are intact (a hash check
   of those files is enough).
 - Recheck the boot ID and any pending boot selection before every reboot. An
   interrupted reboot call may already have executed.

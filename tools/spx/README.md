@@ -33,10 +33,18 @@ mkinitcpio. The generic `spx-trial-return@` units capture the kernel/journal
 and return after the installation's `--return-seconds` window (default 3600s,
 range 900..86400s). Use a longer bounded window for module work on one boot;
 do not request a short post-audio return when continuing live diagnosis.
-The known-good kernel/initramfs/DTB are checked before
-selection/reboot; known-good stays the persistent default. Each attempt is
+The baseline and recovery kernel/initramfs/DTB are checked before
+selection/reboot; the promoted 7.x baseline stays the persistent default. Each attempt is
 selected once. Results and short state files go to
 `/var/lib/spx-boot-diagnostics/functional/<attempt>`.
+
+The user-promoted baseline is `spx-mainline`, currently the verified WX
+7.3.0-rc2 candidate, with payloads in `/boot/spx-mainline`. It starts GNOME
+and has no automatic return timer. The 6.18 `spx-known-good` menu entry is
+manual recovery. Future trials return to the 7.x default. To explicitly
+promote a successfully booted candidate, use `trial.py promote ATTEMPT`;
+this verifies its existing boot result and payloads, installs its persistent
+GRUB entry, and disables its trial return. Promotion does not close B01.
 
 For a bounded diagnostic that must omit desktop startup, prepare with
 `--boot-target multi-user.target`. This changes only the trial entry; it

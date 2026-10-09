@@ -82,12 +82,88 @@ def recovery(pending=''):
     for path, digest in r['payload_sha256'].items():
         assert sha(path) == digest, path
     cfg = Path('/boot/grub/grub.cfg').read_text()
-    assert r['entry'] in cfg and 'set default="spx-known-good"' in cfg
+    default = persistent_default()
+    assert r['entry'] in cfg and f'set default="{default}"' in cfg
+    if default == 'spx-mainline':
+        entry = Path('/etc/grub.d/40_custom').read_text()
+        baseline = re.findall(r'\bspx_baseline=([0-9]{8}[a-z0-9]+)\b', entry)
+        assert len(baseline) == 1
+        installed = json.loads((Path('/var/lib/spx-boot-diagnostics/functional') /
+                                baseline[0] / 'installed.json').read_text())
+        for name, digest in installed['boot_payloads'].items():
+            assert sha(Path('/boot/spx-mainline') / name) == digest, name
     env = dict(line.split('=', 1) for line in subprocess.check_output(
         ['grub-editenv', '/boot/grub/grubenv', 'list'], text=True).splitlines())
-    assert env['saved_entry'] == 'spx-known-good' and env.get('next_entry', '') == pending
+    assert env['saved_entry'] == default and env.get('next_entry', '') == pending
     assert 'BootNext:' not in subprocess.check_output(['efibootmgr'], text=True)
     return r
+
+
+def persistent_default():
+    env = dict(line.split('=', 1) for line in subprocess.check_output(
+        ['grub-editenv', '/boot/grub/grubenv', 'list'], text=True).splitlines())
+    default = env['saved_entry']
+    assert default in ('spx-known-good', 'spx-mainline')
+    return default
+
+
+def promote(args):
+    """Explicitly promote a booted candidate; retain 6.18 as manual recovery."""
+    assert os.geteuid() == 0
+    recovery()
+    checked = json.loads((OUT / 'functional.json').read_text())
+    installed = json.loads((OUT / 'installed.json').read_text())
+    assert checked.get('complete') and checked['release'] == RELEASE
+    assert checked['boot_id'] != installed['boot_id']
+    assert RELEASE.startswith('7.')
+    source = Path('/boot') / ('spx-trial-' + ATTEMPT)
+    target = Path('/boot/spx-mainline')
+    assert source.is_dir() and not target.exists()
+    for name, digest in installed['boot_payloads'].items():
+        assert sha(source / name) == digest, name
+    entry = (OUT / 'entry.cfg').read_text()
+    assert entry == Path('/boot/grub/custom.cfg').read_text()
+    entry = entry.replace('SPX bounded boot diagnostic ' + ATTEMPT,
+                          'Surface Pro X mainline ' + RELEASE)
+    entry = entry.replace('spx-trial-' + ATTEMPT, 'spx-mainline')
+    entry = re.sub(r' systemd\.unit=\S+', '', entry)
+    entry = entry.replace('spx_attempt=' + ATTEMPT,
+                          'spx_attempt=' + ATTEMPT + ' spx_baseline=' + ATTEMPT)
+    custom = Path('/etc/grub.d/40_custom')
+    defaults = Path('/etc/default/grub')
+    old_custom, old_defaults = custom.read_text(), defaults.read_text()
+    assert '--id spx-mainline' not in old_custom
+    new_defaults, count = re.subn(r'^GRUB_DEFAULT=.*$',
+                                  'GRUB_DEFAULT=spx-mainline', old_defaults,
+                                  count=1, flags=re.M)
+    assert count == 1
+    syntax = OUT / 'baseline-entry.cfg'
+    syntax.write_text(entry)
+    subprocess.run(['grub-script-check', str(syntax)], check=True)
+    source.rename(target)
+    try:
+        custom.write_text(old_custom.rstrip() + '\n\n' + entry)
+        defaults.write_text(new_defaults)
+        Path('/boot/grub/custom.cfg').write_text('# Baseline is in /etc/grub.d/40_custom.\n')
+        subprocess.run(['grub-mkconfig', '-o', '/boot/grub/grub.cfg'], check=True)
+        subprocess.run(['grub-script-check', '/boot/grub/grub.cfg'], check=True)
+    except BaseException:
+        custom.write_text(old_custom)
+        defaults.write_text(old_defaults)
+        Path('/boot/grub/custom.cfg').write_text((OUT / 'entry.cfg').read_text())
+        target.rename(source)
+        subprocess.run(['grub-mkconfig', '-o', '/boot/grub/grub.cfg'], check=True)
+        raise
+    subprocess.run(['grub-set-default', 'spx-mainline'], check=True)
+    subprocess.run(['grub-editenv', '/boot/grub/grubenv', 'unset', 'next_entry'], check=True)
+    subprocess.run(['systemctl', 'disable', '--now',
+                    'spx-trial-return@' + ATTEMPT + '.timer'], check=True)
+    # Keep the existing read-only startup collection; consumed audio requests
+    # do not repeat. The baseline marker also rejects accidental return calls.
+    recovery()
+    os.sync()
+    print('Promoted ' + RELEASE + ': persistent spx-mainline, GNOME startup, '
+          'no timed return; 6.18 remains a manual recovery entry.', flush=True)
 
 
 def require_source_boot():
@@ -539,7 +615,7 @@ def install(args):
     assert subprocess.check_output(['systemctl', 'is-enabled', 'spx-trial-return@' + ATTEMPT + '.timer'], text=True).strip() == 'enabled'
     recovery()
     assert Path('/proc/sys/kernel/random/boot_id').read_text().strip() == BOOT_ID
-    installed = dict(utc=datetime.now(timezone.utc).isoformat(), boot_id=BOOT_ID, release=RELEASE, source_commit=subprocess.check_output(['git', '-c', 'safe.directory=' + str(REPO), 'rev-parse', 'HEAD'], cwd=REPO, text=True).strip(), boot_payloads=expected, persistent_default='spx-known-good', next_entry_empty=True, return_timer_seconds=args.return_seconds, installed=True, boot_selected=False)
+    installed = dict(utc=datetime.now(timezone.utc).isoformat(), boot_id=BOOT_ID, release=RELEASE, source_commit=subprocess.check_output(['git', '-c', 'safe.directory=' + str(REPO), 'rev-parse', 'HEAD'], cwd=REPO, text=True).strip(), boot_payloads=expected, persistent_default=persistent_default(), next_entry_empty=True, return_timer_seconds=args.return_seconds, installed=True, boot_selected=False)
     (OUT / 'installed.json').write_text(json.dumps(installed, indent=2) + '\n')
     os.sync()
     print(f'{ATTEMPT} installed with {args.return_seconds}s return; known-good default retained, no selection', flush=True)
@@ -1427,6 +1503,9 @@ def usbc_reload(args):
 def return_to_default(args):
     os.umask(63)
     words = Path('/proc/cmdline').read_text().split()
+    if 'spx_baseline=' + ATTEMPT in words:
+        print('Promoted baseline: automatic trial return is disabled.', flush=True)
+        return
     attempts = [w.split('=', 1)[1] for w in words if w.startswith('spx_attempt=')]
     assert attempts == [ATTEMPT] and 'spx_boot=mainline-functional' in words
     out = Path('/var/lib/spx-boot-diagnostics/functional') / attempts[0]
@@ -1435,7 +1514,8 @@ def return_to_default(args):
     assert boot != prepared['preboot_id'] and os.uname().release == prepared['release']
     recovery = json.loads((out / 'working-recovery.json').read_text())
     cfg = Path('/boot/grub/grub.cfg').read_text()
-    assert recovery['entry'] in cfg and 'set default="spx-known-good"' in cfg
+    default = persistent_default()
+    assert recovery['entry'] in cfg and f'set default="{default}"' in cfg
     for path, expected in recovery['payload_sha256'].items():
         h = hashlib.sha256()
         with Path(path).open('rb') as stream:
@@ -1443,7 +1523,7 @@ def return_to_default(args):
                 h.update(data)
         assert h.hexdigest() == expected
     env = subprocess.check_output(['grub-editenv', '/boot/grub/grubenv', 'list'], text=True)
-    assert 'saved_entry=spx-known-good' in env.splitlines()
+    assert 'saved_entry=' + default in env.splitlines()
     assert not any((l.startswith('next_entry=') and l != 'next_entry=' for l in env.splitlines()))
     assert 'BootNext:' not in subprocess.check_output(['efibootmgr'], text=True)
     audio_stop = stop_desktop_audio(args)
@@ -1451,10 +1531,10 @@ def return_to_default(args):
         with (out / label).open('wb') as stream:
             subprocess.run(args, stdout=stream, stderr=subprocess.STDOUT, check=True, timeout=30)
     # This record precedes shutdown; only the next boot can establish recovery.
-    (out / 'return.json').write_text(json.dumps(dict(utc=datetime.now(timezone.utc).isoformat(), boot_id=boot, release=os.uname().release, uptime=Path('/proc/uptime').read_text().strip(), phase='reboot-request', shutdown_completion_verified=False, audio_stop_complete=audio_stop['complete'], audio_stop_result=str(out / 'audio-stop.json'), known_good_payloads_intact=True, persistent_default='spx-known-good', next_entry_empty=True), indent=2) + '\n')
+    (out / 'return.json').write_text(json.dumps(dict(utc=datetime.now(timezone.utc).isoformat(), boot_id=boot, release=os.uname().release, uptime=Path('/proc/uptime').read_text().strip(), phase='reboot-request', shutdown_completion_verified=False, audio_stop_complete=audio_stop['complete'], audio_stop_result=str(out / 'audio-stop.json'), known_good_payloads_intact=True, persistent_default=default, next_entry_empty=True), indent=2) + '\n')
     assert Path('/proc/sys/kernel/random/boot_id').read_text().strip() == boot
     env = dict((line.split('=', 1) for line in subprocess.check_output(['grub-editenv', '/boot/grub/grubenv', 'list'], text=True).splitlines()))
-    assert env['saved_entry'] == 'spx-known-good' and (not env.get('next_entry'))
+    assert env['saved_entry'] == default and (not env.get('next_entry'))
     os.sync()
     subprocess.run(['systemctl', 'reboot'], check=True)
 
@@ -2275,7 +2355,7 @@ def cdsp_capabilities(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'check', 'return', 'extend', 'audio', 'arm-audio', 'enable-desktop-audio', 'stop-audio', 'usbc-reload', 'wifi-band', 'display-power', 'srtc-timer', 'power-measure', 'sensors-lifecycle', 'thermal', 'cdsp-capabilities', 'tpm-sign', 'systemd-suspend', 'bluetooth-power'))
+    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'promote', 'check', 'return', 'extend', 'audio', 'arm-audio', 'enable-desktop-audio', 'stop-audio', 'usbc-reload', 'wifi-band', 'display-power', 'srtc-timer', 'power-measure', 'sensors-lifecycle', 'thermal', 'cdsp-capabilities', 'tpm-sign', 'systemd-suspend', 'bluetooth-power'))
     parser.add_argument('attempt')
     parser.add_argument('--build', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bg/work-build'))
     parser.add_argument('--parent', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bf'))
@@ -2511,7 +2591,7 @@ def main():
             elif record.get('camera_capture') and not (OUT / 'camera').exists():
                 camera_capture(args, record.get('camera_sensors', ['rear']))
         else:
-            {'install': install, 'boot': boot, 'return': return_to_default,
+            {'install': install, 'boot': boot, 'promote': promote, 'return': return_to_default,
              'extend': extend_window, 'audio': audio_check, 'arm-audio': arm_audio,
              'usbc-reload': usbc_reload, 'wifi-band': wifi_band, 'display-power': display_power,
              'enable-desktop-audio': enable_desktop_audio, 'stop-audio': stop_desktop_audio, 'power-measure': power_measure, 'sensors-lifecycle': sensors_lifecycle, 'thermal': thermal_check, 'cdsp-capabilities': cdsp_capabilities, 'tpm-sign': tpm_sign, 'systemd-suspend': systemd_suspend, 'bluetooth-power': bluetooth_power}[args.command](args)

@@ -3,6 +3,15 @@
 Boxes closed: 3 of 47 (B02, B03, D02). Run `tools/spx/progress` for the
 current number. The order below is set by the user; agents do not reorder it.
 
+## Persistent baseline: 7.x (user requested 2026-10-09)
+
+Verified WX is promoted to `spx-mainline`, with boot files in
+`/boot/spx-mainline`. Current boot `c7ebfe0d` runs 7.3.0-rc2 with GNOME active.
+Ordinary boots and future trial returns use 7.x; the promoted baseline has
+no automatic return. Keep 6.18 as manual recovery only. Do not demote the
+persistent default without the user's instruction. No extra audio test is
+needed. Two observed 7.x boots do not establish full B01 reliability.
+
 ## 1. Human session (pending, about 20 minutes)
 
 Ask the user for this first. Steps are in
@@ -126,13 +135,14 @@ tests. Leave the physical session pending; do not substitute synthetic checks.
    raw capture discarded. See `RESULT-20261009wx.md`.
 
 User reminder (2026-10-09): minimize reboots; use module reloads wherever
-possible. Current boot `11455cda` is mainline WX, with permanent clock
-retention and acoustic reopen verified. The requested fix is complete.
+possible. Current boot `c7ebfe0d` is the promoted mainline baseline, with
+GNOME active and permanent clock votes. Acoustic reopen was verified on WX
+boot `11455cda`. The requested fix is complete.
 Stop here; do not extend this successful audio test or select another
 blocker. Broader acceptance still includes useful volume, physical mapping,
-balance and lifecycle coverage. The user declined human testing. Known-good
-remains the default, no next boot is selected, and the existing two-hour
-automatic return remains armed.
+balance and lifecycle coverage. The user declined human testing. 7.x is
+now the persistent default, no next boot is selected, and the promoted
+baseline's automatic trial return is disabled.
 No card/Q6-stack unload or AFE STOP: retained mappings outlive PCM opens and
 AFE STOP has frozen the platform. Keep the existing reopen test.
 

@@ -37,5 +37,20 @@ class ShutdownPreparationTests(unittest.TestCase):
             self.exercise(start_error=subprocess.TimeoutExpired('systemctl', 60))
 
 
+class BaselineReturnTests(unittest.TestCase):
+    def test_promoted_baseline_cannot_be_rebooted_by_trial_return(self):
+        with patch.object(trial, 'ATTEMPT', '20261009wx', create=True), \
+             patch.object(trial, 'Path', return_value=SimpleNamespace(
+                 read_text=lambda: 'spx_attempt=20261009wx spx_baseline=20261009wx')), \
+             patch.object(trial.subprocess, 'run') as run:
+            trial.return_to_default(SimpleNamespace())
+            run.assert_not_called()
+
+    def test_mainline_is_accepted_as_persistent_default(self):
+        with patch.object(trial.subprocess, 'check_output',
+                          return_value='saved_entry=spx-mainline\n'):
+            self.assertEqual(trial.persistent_default(), 'spx-mainline')
+
+
 if __name__ == '__main__':
     unittest.main()
