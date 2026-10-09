@@ -38,6 +38,12 @@ selection/reboot; known-good stays the persistent default. Each attempt is
 selected once. Results and short state files go to
 `/var/lib/spx-boot-diagnostics/functional/<attempt>`.
 
+For a bounded diagnostic that must omit desktop startup, prepare with
+`--boot-target multi-user.target`. This changes only the trial entry; it
+does not change the system's default target or recovery entry. The baseline
+also syncs the journal so its userspace startup messages survive an abrupt
+restart. This does not establish the cause of an earlier interrupted boot.
+
 Camera trials retain packed RAW10 and write demosaiced `preview*.ppm` files
 using FFmpeg. Those diagnostic previews keep common percentile contrast levels
 and sensor pixel orientation. Queue all fitted sensors with

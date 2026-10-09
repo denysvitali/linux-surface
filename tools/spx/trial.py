@@ -296,6 +296,10 @@ def prepare(args):
     cmdline = audio_cmdline(cmdline, args.audio,
                            getattr(args, 'wsa_teardown_reset', False),
                            getattr(args, 'wcd_skip_speaker_reset', False))
+    boot_target = getattr(args, 'boot_target', None)
+    if boot_target:
+        cmdline = [word for word in cmdline if not word.startswith('systemd.unit=')]
+        cmdline.append('systemd.unit=' + boot_target)
     cmdline = [word for word in cmdline if not word.startswith('hci_uart.spx_qca_setup_trace=')]
     if args.qca_setup_trace:
         cmdline.append('hci_uart.spx_qca_setup_trace=1')
@@ -343,6 +347,7 @@ def prepare(args):
                     usbc_phy_orientation=args.usbc_phy_orientation,
                     wsa_teardown_reset=getattr(args, 'wsa_teardown_reset', False),
                     wcd_skip_speaker_reset=getattr(args, 'wcd_skip_speaker_reset', False),
+                    boot_target=boot_target,
                     speaker_drivers_blocked=not args.audio,
                     reuse_installed_modules=args.reuse_installed_modules,
                     camera_capture=args.camera_capture,
@@ -679,6 +684,7 @@ def functional_check(args):
                          '-w', 'bytes=%{size_download} seconds=%{time_total} bytes_per_second=%{speed_download}\n',
                          'https://speed.cloudflare.com/__down?bytes=25000000'], timeout=50)
     run('kernel-log', ['journalctl', '-b', '-k', '--no-pager', '-o', 'short-monotonic'])
+    run('journal-sync', ['journalctl', '--sync'])
     result['complete'] = True
     save()
 
@@ -2326,6 +2332,8 @@ def main():
     parser.add_argument('--qca-setup-trace', action='store_true',
                         help='prepare-only opt in to bounded Surface QCA firmware-setup parser metadata')
     parser.add_argument('--audio', action='store_true', help='enable codecs with both amplifiers parked; no playback')
+    parser.add_argument('--boot-target', choices=('graphical.target', 'multi-user.target'),
+                        help='prepare-only: override this trial startup target without changing the persistent default')
     parser.add_argument('--slim-s2idle-retain', action='store_true',
                         help='opt in to WIP powered-PIO retention during guarded s2idle; no energy claim')
     parser.add_argument('--usbc', action='store_true',

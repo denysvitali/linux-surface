@@ -94,12 +94,20 @@ tests. Leave the physical session pending; do not substitute synthetic checks.
    API restored real DSP completions (153/153, zero fallback), but no tone
    (0.350 RMS versus 0.383 baseline). Retained DMA mappings still work;
    native ASM restart plus matrix reconnection does not restore sound.
+6. **H-startup isolation, untested:** WV ended before audio testing, with no
+   reset cause in available logs. Boot the same candidate to `multi-user.target`
+   instead of starting GNOME, preserving parked amps and the two-hour return.
+   Expected: mainline remains available for native compander verification and
+   the existing microphone reopen test. Success makes that test possible; it
+   does not prove that GNOME caused the earlier reset. The Happy user daemon
+   has lingering enabled and starts from the user default target.
 
 User reminder (2026-10-09): minimize reboots; use module reloads wherever
 possible. Current boot `f3702ad4` is known-good 6.18 after WV ended before its
 test. No audio runs on recovery and no next boot selected. The mainline
 compander-control correction is committed and builds, but needs hardware
-validation. First resolve the interrupted boot; do not blindly re-arm WV.
+validation. Next is the changed startup-isolation trial above; WV itself
+must not be blindly re-armed unchanged.
 No card/Q6-stack unload or AFE STOP: retained mappings outlive PCM opens and
 AFE STOP has frozen the platform. Keep the existing reopen test.
 
