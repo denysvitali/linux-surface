@@ -59,6 +59,8 @@ Hypotheses:
    `RESULT-20261008ez.md`.
 12. **Refuted: v23 extra CCI pads (fb, boot `1a5a2dde`).** gpio31-34/41/42 as
    `cci_i2c` did not fix front bus 1. Untested: enable CCI1-3 as v23 did.
+13. **Refuted: CCI1 enabled (fc, boot `b1b3e2d9`).** Front bus 1 unchanged. No
+   untested hypothesis left for the front OV5693; rear and IR work with it off.
 11. **Open: scene.** Rear and IR scene frames are flat and dark (fa). Check
    the physical setup with the user before any sensor or ISP change.
 
