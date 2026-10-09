@@ -155,6 +155,12 @@ For speaker work, add `--audio` to preparation. This starts the native codecs
 with amplifier enables low (`GPIO 0x1e/0x18`) and suppresses desktop audio and
 old speaker bridges for that boot. `audio.py plan` is entirely offline.
 
+The experimental `--wsa-teardown-reset` option pairs digital reset at PA
+teardown with cold initialization and supply restoration in native stereo
+mode. It requires the updated WSA module. Use the existing `reopen` action
+to measure this hypothesis; WQ's legacy write-only configuration was rejected
+before any playback or microphone capture. This is not a verified fix.
+
 After the user requests that specific listening run, use the existing trial
 tool on the running candidate (substitute its attempt ID):
 

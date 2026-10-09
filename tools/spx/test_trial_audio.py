@@ -33,6 +33,23 @@ class AudioCmdlineTests(unittest.TestCase):
         result = trial.audio_cmdline(['module_blacklist=wcd934x'], True)
         self.assertFalse(any(w.startswith('module_blacklist=') for w in result))
 
+    def test_teardown_trial_keeps_native_stereo_and_pairs_reinitialization(self):
+        inherited = ['snd_soc_wsa881x.spx_write_only=1',
+                     'snd_soc_wsa881x.spx_init_on_pmu=0',
+                     'snd_soc_wsa881x.spx_win_teardown_reset=0']
+        result = trial.audio_cmdline(inherited, True, teardown_reset=True)
+        self.assertIn('snd_soc_wsa881x.spx_enumerated_mode=1', result)
+        self.assertIn('snd_soc_wsa881x.spx_write_only=0', result)
+        self.assertNotIn('snd_soc_wsa881x.spx_write_only=1', result)
+        self.assertIn('snd_soc_wsa881x.spx_init_on_pmu=1', result)
+        self.assertIn('snd_soc_wsa881x.spx_win_teardown_reset=1', result)
+        baseline = trial.audio_cmdline(result, True)
+        self.assertFalse(any(w.startswith(('snd_soc_wsa881x.spx_init_on_pmu=',
+                                          'snd_soc_wsa881x.spx_win_teardown_reset='))
+                             for w in baseline))
+        with self.assertRaises(AssertionError):
+            trial.audio_cmdline([], False, teardown_reset=True)
+
     def test_disable_preserves_unrelated_blocks_and_removes_audio_marker(self):
         result = trial.audio_cmdline(['spx_audio=parked',
                                       'module_blacklist=unrelated'], False)

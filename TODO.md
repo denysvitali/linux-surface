@@ -10,7 +10,25 @@ Ask the user for this first. Steps are in
 each. It decides, or partly decides: I02, I03, I04, I05, I06, D01, U01, N02,
 S01, S02, P03. Battery steps are left out (deferred by the user).
 
-## Current blocker: GTK window corruption (D01/D02, user requested 2026-10-09)
+2026-10-09 speaker session: user requests microphone feedback and no human
+tests. Leave the physical session pending; do not substitute synthetic checks.
+
+## Current blocker: speaker playback close and reopen (A01–A03, user requested 2026-10-09)
+
+- First playback works; reopened playback is silent despite real DSP
+  WRITE_DONE and successful clock writes (CB/DE/DG). The 6.18 stereo baseline
+  kept its PCM open and does not establish acoustic reopen.
+- Preserve parked DSP sessions. No unrelated audio/microphone variations.
+
+1. **H-WSA-reset, untested:** the amp needs the Windows digital reset at
+   teardown followed by complete native initialization. WQ boot `183438a1`
+   never reached playback: its legacy `spx_write_only=1` setting was rejected
+   by the native stereo guard. Correct that pairing in the native driver,
+   retain `spx_write_only=0`, and run the existing two-PCM microphone test.
+   Expected: independent tones remain detected after close/reopen with no
+   relaxed thresholds. Keep default reset behavior unchanged until measured.
+
+## GTK window corruption (D01/D02, workaround confirmed 2026-10-09)
 
 1. **Confirmed: H-renderer (FH, boot `1dd03623`).** The corrupted Text
    Editor lacked `GSK_RENDERER=opengl` and loaded Turnip Vulkan; Console and
@@ -190,14 +208,6 @@ waits for physical image validation.
    (`camss-video.c` bisect knob, 400/300 MHz PHY rates).
 3. If the frame is empty: IOMMU SID 0x0a00/0x04e0 fault or buffers never
    written; check `arm-smmu` faults and the CSID test generator path first.
-
-## 3. Next blocker: playback PCM close and reopen (A01–A03)
-
-- Known: the first playback cycle passes. After close and reopen the output is
-  silent although the DSP consumes data and clock writes succeed (trials CB,
-  DE, DG). The desktop works today only by holding one stream open.
-- Do not destroy parked DSP sessions on a live boot.
-- No other audio or microphone work until this is fixed.
 
 ## Parked (not finished; needs a new idea or the user's decision)
 

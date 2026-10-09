@@ -1302,7 +1302,7 @@ static ssize_t spx_late_init_store(struct device *dev,
 	stage = "profile";
 	ret = -EINVAL;
 	if (spx_win_pa_seq != 1 || spx_win_pa_profile ||
-	    spx_win_teardown_reset ||
+	    (spx_win_teardown_reset && !spx_init_on_pmu) ||
 	    !wsa881x->port_enable[WSA881X_PORT_DAC] ||
 	    !wsa881x->port_enable[WSA881X_PORT_BOOST] ||
 	    wsa881x->port_enable[WSA881X_PORT_COMP] ||
@@ -1828,9 +1828,12 @@ static int wsa881x_spkr_pa_event(struct snd_soc_dapm_widget *w,
 		 * watchdog does automatically). Replay the whole init table
 		 * before every PA enable so playback never runs on a
 		 * factory-reset amp; the writes are idempotent when the state
-		 * was already good.
+		 * was already good. Native stereo also needs this replay after an
+		 * opted-in reset.
+		 * The explicit late-init path already replays with the PA off.
 		 */
-		if (wsa881x->spx_write_only && spx_init_on_pmu) {
+		if (spx_pa && spx_init_on_pmu &&
+		    !wsa881x->spx_late_initializing) {
 			ret = wsa881x_init(wsa881x);
 			if (ret)
 				return ret;
@@ -1842,7 +1845,8 @@ static int wsa881x_spkr_pa_event(struct snd_soc_dapm_widget *w,
 		 * the essential supplies here; unlike wsa881x_init(), this is four
 		 * idempotent writes and does not delay an already-running stream.
 		 */
-		if (wsa881x->spx_write_only && spx_replay_supplies) {
+		if (spx_pa && spx_replay_supplies &&
+		    (wsa881x->spx_write_only || spx_init_on_pmu)) {
 			ret = wsa881x_update_bits(wsa881x,
 						  WSA881X_CDC_DIG_CLK_CTL,
 						  BIT(0), BIT(0));
@@ -2061,10 +2065,11 @@ static int wsa881x_spkr_pa_event(struct snd_soc_dapm_widget *w,
 			 * down. The next stream must re-run the full cold-init
 			 * table (see the spx_win_teardown_reset PARM_DESC).
 			 */
-			wsa881x_update_bits(wsa881x, WSA881X_SWR_RESET_EN,
-					     0xff, 0x07);
-			wsa881x_update_bits(wsa881x, WSA881X_CDC_RST_CTL,
-					     0xff, 0x00);
+			WSA881X_PA_WRITE(WSA881X_SWR_RESET_EN, 0xff, 0x07);
+			WSA881X_PA_WRITE(WSA881X_CDC_RST_CTL, 0xff, 0x00);
+			WRITE_ONCE(wsa881x->hw_init, false);
+			if (ret)
+				return ret;
 		}
 		break;
 	}
