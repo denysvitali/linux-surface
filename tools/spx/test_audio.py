@@ -423,7 +423,7 @@ class AudioTests(unittest.TestCase):
                 os.close(writer)
 
     def test_ordinary_monitor_attenuates_fullscale_stereo_without_channel_loss(self):
-        for limit in (1433, 4000):
+        for limit in (1433, 4000, 12000, 32768):
             with self.subTest(limit=limit):
                 reader, writer = os.pipe()
                 monitor = audio.DesktopMonitor(SimpleNamespace(
@@ -904,10 +904,12 @@ class AudioTests(unittest.TestCase):
         for value in ('1432', '12001'):
             with self.assertRaises(audio.argparse.ArgumentTypeError):
                 audio.desktop_peak_limit(value)
-            with self.assertRaisesRegex(RuntimeError, 'between 1433 and 12000'):
-                audio.DesktopMonitor(None, ordinary=True, desktop_peak=int(value))
+        for value in (1432, 32769):
+            with self.assertRaisesRegex(RuntimeError, 'between 1433 and 32768'):
+                audio.DesktopMonitor(None, ordinary=True, desktop_peak=value)
         self.assertEqual(audio.desktop_peak_limit('1433'), 1433)
         self.assertEqual(audio.desktop_peak_limit('12000'), 12000)
+        self.assertEqual(audio.desktop_peak_limit('32768', 32768), 32768)
         with self.assertRaisesRegex(RuntimeError, 'Only the ordinary'):
             audio.DesktopMonitor(None, desktop_peak=4000)
         with patch.object(audio.sys, 'argv', ['audio.py', 'desktop', '--desktop-peak', '4000']), \

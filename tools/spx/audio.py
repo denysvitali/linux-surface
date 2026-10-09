@@ -733,8 +733,8 @@ class DesktopMonitor:
     """Frame-aligned, level-checked monitor data; never amplify or reopen PCM."""
 
     def __init__(self, process, ordinary=False, desktop_peak=1433, *, queue_blocks=40):
-        need(isinstance(desktop_peak, int) and 1433 <= desktop_peak <= 12000,
-             'Desktop peak must be between 1433 and 12000')
+        need(isinstance(desktop_peak, int) and 1433 <= desktop_peak <= 32768,
+             'Desktop peak must be between 1433 and 32768')
         need(ordinary or desktop_peak == 1433,
              'Only the ordinary desktop path may change its peak limit')
         self.process = process
@@ -2439,7 +2439,9 @@ def serve_desktop(args, report, pcm, graph, paths, mapping):
         'gain': args.desktop_peak / 32768, 'peak_limit': args.desktop_peak, 'pa_gain': 0,
         'pcm_feed': dict(pcm.feed_stats),
         'monitor_max_interarrival_seconds': graph.monitor.max_interarrival_seconds,
-        'note': 'Conservative fixed attenuation; useful listening volume is not yet validated.'}
+        'note': ('Unity digital gain; desktop slider controls listening level. Factory maximum is uncalibrated.'
+                 if args.desktop_peak == 32768 else
+                 'Conservative fixed attenuation; useful listening volume is not yet validated.')}
     if microphone is not None:
         ready['microphone'] = dict(source=microphone.name, source_index=microphone.source_id,
             module=microphone.module, default_selected=microphone.default_selected,
@@ -3107,10 +3109,10 @@ def serve_duration(value):
     return seconds
 
 
-def desktop_peak_limit(value):
+def desktop_peak_limit(value, maximum=12000):
     peak = int(value)
-    if not 1433 <= peak <= 12000:
-        raise argparse.ArgumentTypeError('desktop peak must be between 1433 and 12000')
+    if not 1433 <= peak <= maximum:
+        raise argparse.ArgumentTypeError(f'desktop peak must be between 1433 and {maximum}')
     return peak
 
 
@@ -3146,8 +3148,8 @@ def main():
                         help='reopen-only second-cycle first channel; first cycle remains left/right/both')
     parser.add_argument('--serve-seconds', type=serve_duration, default=3600,
                         help='ordinary desktop session duration, 0 until stopped or 1..86400 seconds (default: 3600)')
-    parser.add_argument('--desktop-peak', type=desktop_peak_limit,
-                        help='serve-only ordinary PCM peak, 1433..12000 (default: 1433)')
+    parser.add_argument('--desktop-peak', type=lambda value: desktop_peak_limit(value, 32768),
+                        help='PCM peak: serve 1433..12000 (default 1433); play-desktop 1433..32768 (default unity)')
     parser.add_argument('--desktop-controls', action='store_true',
                         help='serve-only bounded acoustic software volume/mute/restoration test')
     args = parser.parse_args()
@@ -3175,11 +3177,13 @@ def main():
         parser.error('--microphone-source DMIC0 requires capture or feedback or desktop-mic')
     if args.desktop_peak is not None and args.action not in ('serve', 'play-desktop'):
         parser.error('--desktop-peak requires serve or play-desktop')
+    if args.action == 'serve' and args.desktop_peak is not None and args.desktop_peak > 12000:
+        parser.error('serve acoustic verification retains the maximum peak of 12000')
     if args.desktop_peak is None:
         # Ordinary listening needs a useful slider range. Acoustic diagnostic
         # actions retain the quiet default; --desktop-peak 1433 remains an
         # explicit night mode for ordinary playback.
-        args.desktop_peak = 12000 if args.action == 'play-desktop' else 1433
+        args.desktop_peak = 32768 if args.action == 'play-desktop' else 1433
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
     report = {'action': args.action, 'utc': stamp, 'playback_ready': False,
               'microphone_capture': False, 'success': False, 'parked': False,
