@@ -68,10 +68,12 @@ as JSON. The inferred schema is limited to the fitted blobs' Parameter Parser
 V1.3.2 format. Output is research data; RGB ordering and selector meanings
 remain to be established before producing an application tuning file.
 
-Add `--usbc` to preparation to load the experimental USC-to-DP0 forwarder
-from the initramfs and exercise its deferred startup. This provides no initial
-dock-state query; actual hotplug and monitor output still need a dock replug.
-PHY orientation switching and second-port routing remain unimplemented.
+Add `--usbc` to prepare the DP0 enable helper and experimental USC-to-DP0
+forwarder in the initramfs. The helper creates the DP0 platform device before
+the forwarder starts; `--usbc-phy-orientation` selects the tested primary-port
+orientation path. This reproduces the software setup that restored the current
+attached display, but does not query initial dock state. Physical replug,
+second-port routing and resume coverage remain untested.
 
 On a running `--usbc` trial after90seconds, `trial.py usbc-reload ATTEMPT`
 performs one bounded restart of only `surface_aggregator_usbc`. It requires

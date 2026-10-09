@@ -224,6 +224,15 @@ def prepare(args):
         shutil.copytree(installed, root, symlinks=True)
     else:
         run('modules-install', make + ['-j4', 'INSTALL_MOD_PATH=' + str(module_root), 'DEPMOD=true', 'modules_install'])
+    if args.usbc:
+        run('usbc-dp0-helper-build', ['make', '-C', str(HERE / 'live')])
+        helper = HERE / 'live/spx_dp0_enable.ko'
+        assert helper.is_file()
+        vermagic = subprocess.check_output(['modinfo', '-F', 'vermagic', str(helper)], text=True).split()[0]
+        assert vermagic == RELEASE, 'DP0 helper release mismatch: ' + vermagic
+        helper_target = root / 'extra/spx_dp0_enable.ko'
+        helper_target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(helper, helper_target)
     shutil.copy2(BUILD / 'arch/arm64/boot/Image', root / 'vmlinuz')
     with (OUT / 'vmlinuz').open('xb') as stream:
         with gzip.GzipFile(fileobj=stream, mode='wb', mtime=0) as compressed:
@@ -244,8 +253,9 @@ def prepare(args):
     assert 'MODULES=(' in text
     text = text.replace('MODULES=(', 'MODULES=(rtc_surface ', 1)
     if args.usbc:
-        # Exercise deferred SSAM/DRM startup during the existing early load.
-        text = text.replace('MODULES=(', 'MODULES=(surface_aggregator_usbc ', 1)
+        # Instantiate DP0 before the USC forwarding module asks for its
+        # deferred SSAM/DRM dependencies.
+        text = text.replace('MODULES=(', 'MODULES=(spx_dp0_enable surface_aggregator_usbc ', 1)
     for module in ('wcd934x', 'soundwire_qcom', 'snd_soc_wsa881x', 'snd_soc_wcd934x'):
         text = re.sub(r'\b' + module + r'\b', '', text)
     if args.sensors:
@@ -328,6 +338,7 @@ def prepare(args):
                     tpm_sign=args.tpm_sign, tpm_tools=str(args.tpm_tools.resolve()),
                     cdsp_capabilities=args.cdsp,
                     usbc_early_load=args.usbc,
+                    usbc_dp0_helper=args.usbc,
                     usbc_phy_orientation=args.usbc_phy_orientation,
                     wsa_teardown_reset=getattr(args, 'wsa_teardown_reset', False),
                     speaker_drivers_blocked=not args.audio,
