@@ -55,6 +55,20 @@ tests. Leave the physical session pending; do not substitute synthetic checks.
    Older findings (`spx-win-parity-knobs-implemented.md`, section 49.1) show
    RX0 overflow is a self-masking boundary flag, also present with audible
    output. It does not establish this hypothesis or justify a port reset.
+   WU boot `876ae499` held both clocks before any PCM. Its first run stopped
+   before tones: COMP7/8 mixer switches were off but hardware enable bits were
+   still set. Their setter updates only software until the next clock event,
+   which retention suppresses. Clearing the two bypass bits live preserved
+   the clock votes; a retry consumed 168/168 buffers but its first left tone
+   was absent (0.473 versus 0.342 baseline). No audible initial baseline was
+   established, so prevention remains inconclusive. Fix the native disable
+   control to apply bypass immediately before the first PCM, then repeat this
+   same hypothesis on a clean start. See `RESULT-20261009wu.md`.
+   WV boot `d717b2ee` included that fix and completed baseline collection,
+   but ended uncleanly before audio testing. No return record or crash dump
+   survived; restart cause is unknown. See `RESULT-20261009wv.md`. This is
+   neither a speaker failure nor a pass, and the image must not be blindly
+   re-armed unchanged.
 4. **H-ASM-flush, refuted as sufficient (WT):** retained playback reuses an EOS-ended session
    without the PAUSE/FLUSH used by Qualcomm's downstream same-stream reuse.
    Use a one-shot live module with exported q6asm APIs, holding the PCM open
@@ -82,18 +96,12 @@ tests. Leave the physical session pending; do not substitute synthetic checks.
    native ASM restart plus matrix reconnection does not restore sound.
 
 User reminder (2026-10-09): minimize reboots; use module reloads wherever
-possible. Current WT boot `2c78c7c8` is mainline; all live experiments above
-completed without another reboot. See `RESULT-20261009wt.md`. Amps are
-parked, FIFO empty, temporary clock/command modules unloaded, reset-skip flag
-disabled. The ASM-only header correction remains loaded; the corrected
-q6asm module is built and installed for the next candidate boot (it is not
-in the initramfs). The original two-hour return remains armed; no boot selected.
-Remaining clock-prevention test needs a fresh DSP session with the live
-module loaded before any playback. AFE/SLIM must also start clean: recreating
-ASM alone has now been tested and is insufficient. Do not unload the card/Q6
-stack or send AFE STOP to get that state: mappings outlive PCM opens and AFE
-STOP has frozen the platform. Stop live tests here; use the next clean
-mainline boot for clock prevention rather than rebooting after every test.
+possible. Current boot `f3702ad4` is known-good 6.18 after WV ended before its
+test. No audio runs on recovery and no next boot selected. The mainline
+compander-control correction is committed and builds, but needs hardware
+validation. First resolve the interrupted boot; do not blindly re-arm WV.
+No card/Q6-stack unload or AFE STOP: retained mappings outlive PCM opens and
+AFE STOP has frozen the platform. Keep the existing reopen test.
 
 ## GTK window corruption (D01/D02, workaround confirmed 2026-10-09)
 

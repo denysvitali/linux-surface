@@ -3313,10 +3313,24 @@ static int wcd934x_compander_set(struct snd_kcontrol *kc,
 	struct wcd934x_codec *wcd = dev_get_drvdata(component->dev);
 	int comp = ((struct soc_mixer_control *)kc->private_value)->shift;
 	int value = ucontrol->value.integer.value[0];
-	int sel;
+	int ret = 0, sel;
+
+	/* Retained speaker clocks may not deliver another PRE_PMU event.
+	 * Apply bypass immediately, including a repeated disabled setting:
+	 * firmware or an earlier clock vote can leave the hardware enabled.
+	 */
+	if (!value && (comp == COMPANDER_7 || comp == COMPANDER_8) &&
+	    of_machine_is_compatible("microsoft,surface-pro-x")) {
+		unsigned int reg = WCD934X_CDC_RX1_RX_PATH_CFG0 + comp * 20;
+
+		ret = snd_soc_component_update_bits(component, reg,
+					    WCD934X_HPH_CMP_EN_MASK, 0);
+		if (ret < 0)
+			return ret;
+	}
 
 	if (wcd->comp_enabled[comp] == value)
-		return 0;
+		return ret;
 
 	wcd->comp_enabled[comp] = value;
 	sel = value ? WCD934X_HPH_GAIN_SRC_SEL_COMPANDER :
