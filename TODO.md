@@ -66,7 +66,8 @@ Hypotheses:
    orientation, then resume/repeat start-stop. See `RESULT-20261008fd.md`.
 14. **Rear exposure (fe/ff).** Washed out = default exposure at the black level;
    libcamera AE converges over about 90 frames (mean 17 -> 80); DT rotation 180
-   reported to apps. Open: repeated start/stop and resume, black level tuning.
+   reported to apps. Open: physical image validation and full lifecycle.
+   Missing black correction was refuted in hypothesis 15 below.
    See `RESULT-20261008ff.md`.
 
 15. **Refuted without a boot: missing rear black correction.** FF's processed
@@ -81,11 +82,22 @@ Hypotheses:
     then test whichever real format libcamera exposes. **FG, boot `5c0eb87d`:**
     IR is listed and streams 90 native RAW10 frames; RGB processing is missing.
     See `RESULT-20261009fg.md`.
-17. **IR processed format:** libcamera's software ISP rejects monochrome
+17. **IR processed format (confirmed, FG):** libcamera's software ISP rejected monochrome
     `R10_CSI2P`. Add scalar RAW10 conversion and equal-channel statistics to
     its CPU path, using the existing black/exposure processing. Expect: real
     IR RGB output has equal channels and is written by the normal `cam` app.
-    Test offline packing/padding first; do not apply colour matrices to IR.
+    **Verified:** six offline format/gamma fixture cases; then 90 real 632x480
+    BGR888 IR frames near 30 fps, with identical RGB channels. Rear GPU
+    capture remains functional. Patch: `tools/spx/libcamera/`; private build
+    `/var/tmp/spx-libcamera-0.7.2/build`, package integration pending physical
+    image validation. Open: normalized gain helper, IR mounting metadata,
+    illuminator/control applicability and full lifecycle. See FG result.
+
+Current stopping point (FG): returned to known-good boot `276d70cb`; trial
+payloads and units removed. Need the user's IR scene/orientation check and
+the pending human session. Front hypotheses are exhausted; supply ownership
+needs authoritative wiring evidence. Keep C01–C05 open; package integration
+waits for physical image validation.
 
 5. RAW-to-display rendering omits black subtraction, AWB and transfer.
    **Implemented offline, physical acceptance pending:** `camera_render.py`

@@ -33,7 +33,7 @@ Rules for this file (see `AGENTS.md`):
 | Touch, pen (I02, I03) | **User confirms both work on BI** | Detailed gestures/pen capabilities and resume |
 | Speakers (A01) | **BY desktop playback; DP shutdown; DR controls; DX live resume pass** | Persistence, useful volume/mapping/balance, reopen and arbitrary shutdown |
 | Microphones (A02) | **DK array; EF native reopen; EC/ER resume; EI cold startup; EK boot opt-in** | Quality, physical mapping, persistence and full lifecycle |
-| Cameras (C01–C05) | Rear processed and IR raw frames captured; front identify times out | Processed IR, physical image quality, full lifecycle and supply ownership |
+| Cameras (C01–C05) | Rear and IR processed frames captured (IR: private libcamera); front identify times out | Physical image quality, full lifecycle, package integration and supply ownership |
 | Video decode (D03) | Not working, core start times out | **Parked** after 8 boots |
 | Keyboard, touchpad (I04, I05) | **BI keyboard works**; recovery keyboard restored after SSAM timeout | Startup reliability, full keys/gestures and resume |
 | Buttons (I06) | User: short power press opens shutdown prompt, boot pending | Volume/posture and intended wake |
