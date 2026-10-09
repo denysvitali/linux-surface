@@ -1156,6 +1156,7 @@ static irqreturn_t venus_isr_thread(struct venus_core *core)
 	const struct venus_resources *res;
 	void *pkt;
 	u32 msg_ret;
+	int read_ret;
 
 	if (!hdev)
 		return IRQ_NONE;
@@ -1164,7 +1165,7 @@ static irqreturn_t venus_isr_thread(struct venus_core *core)
 	pkt = hdev->pkt_buf;
 
 
-	while (!venus_iface_msgq_read(hdev, pkt)) {
+	while (!(read_ret = venus_iface_msgq_read(hdev, pkt))) {
 		msg_ret = hfi_process_msg_packet(core, pkt);
 		switch (msg_ret) {
 		case HFI_MSG_EVENT_NOTIFY:
@@ -1187,6 +1188,9 @@ static irqreturn_t venus_isr_thread(struct venus_core *core)
 		}
 	}
 
+	if (venus_hfi_startup_diag(core))
+		dev_info(core->dev, "SPX Venus HFI IRQ thread read_ret=%d state=%u\n",
+			 read_ret, hdev->state);
 	venus_flush_debug_queue(hdev);
 
 	return IRQ_HANDLED;
@@ -1244,6 +1248,33 @@ static irqreturn_t venus_isr(struct venus_core *core)
 		writel(status, wrapper_base + WRAPPER_INTR_CLEAR);
 
 	return IRQ_WAKE_THREAD;
+}
+
+void venus_hfi_startup_dump(struct venus_core *core)
+{
+	struct venus_hfi_device *hdev = to_hfi_priv(core);
+	unsigned int i;
+
+	if (!venus_hfi_startup_diag(core))
+		return;
+
+	dev_info(core->dev, "SPX Venus HFI timeout irq=%#x status=%#x mask=%#x ctrl=%#x\n",
+		 READ_ONCE(hdev->irq_status),
+		 readl(core->wrapper_base + WRAPPER_INTR_STATUS),
+		 readl(core->wrapper_base + WRAPPER_INTR_MASK),
+		 readl(core->cpu_cs_base + CPU_CS_SCIACMDARG0));
+	for (i = 0; i < IFACEQ_NUM; i++) {
+		struct hfi_queue_header *q = hdev->queues[i].qhdr;
+		u32 *data = hdev->queues[i].qmem.kva;
+
+		dev_info(core->dev, "SPX Venus HFI queue%u read=%u write=%u rx=%u tx=%u\n",
+			 i, READ_ONCE(q->read_idx), READ_ONCE(q->write_idx),
+			 READ_ONCE(q->rx_req), READ_ONCE(q->tx_req));
+		dev_info(core->dev, "SPX Venus HFI queue%u size=%u first=%#x/%#x/%#x/%#x\n",
+			 i, READ_ONCE(q->q_size), READ_ONCE(data[0]),
+			 READ_ONCE(data[1]), READ_ONCE(data[2]), READ_ONCE(data[3]));
+	}
+	venus_flush_debug_queue(hdev);
 }
 
 static int venus_core_init(struct venus_core *core)

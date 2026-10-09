@@ -3,6 +3,8 @@
  * Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
  * Copyright (C) 2017 Linaro Ltd.
  */
+#include <linux/delay.h>
+#include <linux/interrupt.h>
 #include <linux/slab.h>
 #include <linux/mutex.h>
 #include <linux/list.h>
@@ -62,8 +64,24 @@ int hfi_core_init(struct venus_core *core)
 	if (ret)
 		goto unlock;
 
-	ret = wait_for_completion_timeout(&core->done, TIMEOUT);
+	if (IS_IRIS1(core)) {
+		unsigned long deadline = jiffies + TIMEOUT;
+
+		/* SQ2 firmware startup replies are polled by the vendor driver. */
+		disable_irq(core->irq);
+		do {
+			core->ops->isr_thread(core);
+			ret = try_wait_for_completion(&core->done);
+			if (ret)
+				break;
+			usleep_range(1000, 2000);
+		} while (time_before(jiffies, deadline));
+		enable_irq(core->irq);
+	} else {
+		ret = wait_for_completion_timeout(&core->done, TIMEOUT);
+	}
 	if (!ret) {
+		venus_hfi_startup_dump(core);
 		ret = -ETIMEDOUT;
 		goto unlock;
 	}
