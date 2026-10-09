@@ -6,6 +6,40 @@ It reuses the completed kernel at
 `7.3.0-rc2-spx-mainline-20261004bg+` across attempts. Do not create another
 source copy, tar, release suffix or per-attempt script.
 
+## Persistent desktop speakers
+
+`spx-desktop-playback.service` starts native speakers on promoted mainline
+boots (`spx_baseline` and `spx_audio=parked`). It requires the local `dvitali`
+user manager (UID1000, lingering enabled), waits for the native card, holds the
+device lock during initialization and releases it after playback is ready.
+It does not run on experimental or manual recovery boots and does not retry
+failed hardware initialization automatically.
+
+Installed files:
+
+- `audio.py`, `desktop_audio_service.py`, `spx-lock` in `/usr/local/lib/spx/`.
+- `spx-desktop-playback.service` in `/etc/systemd/system/`, enabled under
+  `multi-user.target.wants`.
+- `audio-boot-guard.conf` as `/etc/systemd/user/UNIT.d/40-spx-native-speakers.conf`
+  for PipeWire service/socket, pipewire-pulse service/socket and WirePlumber.
+- Root-owned `/etc/spx/speaker-gain-step`, containing `2` for +3 dB on both
+  speakers. Values0/1/2 select0/+1.5/+3 dB. The owner applies changes on the
+  same PCM; do not restart playback merely to adjust gain.
+
+Startup uses +1.5 dB, then applies the saved +3 dB on the established stream
+after five seconds. Digital gain is unity; GNOME's slider and volume keys
+control the listening level. Startup and shutdown preserve the user's sink
+volume, balance and mute. The native amplifier protection settings are retained.
+There is no automated test signal or microphone capture during startup.
+
+Check `systemctl status spx-desktop-playback` and
+`/var/lib/spx-desktop-playback/serve-ready.json`. Existing transient playback
+can stay running when this unit is installed; the permanent unit takes over
+on the next promoted-baseline boot. This installation was checked without
+restarting the clear live PCM; actual automatic boot startup remains to be
+verified. See [the persistence result](boot-diagnostics/RESULT-20261010-speaker-persistence.md)
+and [the clear +3 dB comparison](boot-diagnostics/RESULT-20261010-speaker-glitch.md).
+
 GTK desktop applications currently need `GSK_RENDERER=opengl` on the Surface:
 the default Vulkan path can corrupt window contents. This selects the
 hardware-accelerated OpenGL renderer, as described in the

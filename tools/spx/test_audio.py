@@ -2514,6 +2514,56 @@ class OrdinaryDesktopPlaybackTests(unittest.TestCase):
             check.assert_called_with({}, {}, initialized=True, pa_gain_step=2)
             pcm.close.assert_not_called()
 
+    def test_saved_gain_survives_startup_and_applies_on_same_pcm_after_settling(self):
+        report = dict(action='play-desktop', playback_ready=True,
+                      microphone_capture=False, desktop={}, pcm=dict(card='1'),
+                      before=dict(boot_id='boot', release='kernel'))
+        pcm, graph = Mock(), Mock()
+        pcm.process.pid, pcm.feed_stats = 42, {}
+        graph.monitor.input_peak, graph.monitor.peak = 0, 0
+        graph.monitor.max_interarrival_seconds = 0
+        with tempfile.TemporaryDirectory() as directory:
+            saved = Path(directory) / 'saved-gain'
+            saved.write_text('2\n')
+            args = SimpleNamespace(output=Path(directory), serve_seconds=0,
+                                   desktop_peak=32768, desktop_microphone=False,
+                                   pa_gain_step=1, pa_gain_file=saved)
+            with patch.object(audio, 'check_stereo'), \
+                    patch.object(audio, 'set_desktop_pa_gain') as change, \
+                    patch.object(audio.signal, 'signal'), \
+                    patch.object(audio.time, 'monotonic', side_effect=[0, 0, 6, 7]), \
+                    patch.object(audio.threading, 'Event') as event:
+                event.return_value.wait.side_effect = [False, False, True]
+                audio.serve_desktop(args, report, pcm, graph, {}, {})
+            self.assertEqual(saved.read_text(), '2\n')
+            change.assert_called_once_with('1', 2)
+            self.assertEqual(report['serve']['gain_changes'][0]['monotonic'], 6)
+            self.assertEqual(report['serve']['gain_changes'][0]['pcm_pid'], 42)
+            pcm.close.assert_not_called()
+
+    def test_ordinary_connection_preserves_user_volume_balance_and_mute(self):
+        graph = audio.DesktopGraph.__new__(audio.DesktopGraph)
+        graph.monitor, graph.public_restore, graph.command, graph.report = None, [], [], {}
+        sink = dict(name='spx_speakers', index=1, mute=True,
+                    volume={'front-left': {'value': 20000}, 'front-right': {'value': 30000}})
+        source = dict(sink, name='spx_speakers.monitor', index=2)
+        def run(*args):
+            if args[-2:] == ('list', 'sinks'):
+                return json.dumps([sink])
+            if args[-2:] == ('list', 'sources'):
+                return json.dumps([source])
+            if args[-1] == 'get-default-sink':
+                return sink['name']
+            return ''
+        graph.run = Mock(side_effect=run)
+        with patch.object(audio.subprocess, 'Popen'), patch.object(audio, 'DesktopMonitor'):
+            graph.connect_public(Mock(), 32768, preserve_volume=True)
+        commands = [c.args for c in graph.run.call_args_list]
+        self.assertFalse(any(c[1] in ('set-sink-volume', 'set-sink-mute') for c in commands))
+        self.assertIn(('pactl', 'set-source-volume', source['name'], '65536'), commands)
+        self.assertFalse(any(c[1] in ('set-sink-volume', 'set-sink-mute', 'set-default-sink')
+                             for c in graph.public_restore))
+
     def test_handoff_rejects_uninitialized_or_capturing_state(self):
         for ready, capturing in ((False, False), (True, True)):
             report = dict(action='play-desktop', playback_ready=ready,

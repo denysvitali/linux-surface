@@ -1,0 +1,23 @@
+[Unit]
+Description=Surface Pro X native desktop speakers
+# Only promoted mainline boots; experiments and manual recovery stay isolated.
+ConditionKernelCommandLine=spx_baseline
+ConditionKernelCommandLine=spx_audio=parked
+Requires=user@1000.service
+After=user@1000.service sound.target
+RequiresMountsFor=/home/dvitali /var/lib/spx-desktop-playback
+
+[Service]
+Type=exec
+StateDirectory=spx-desktop-playback
+ExecStartPre=/usr/bin/python3 /usr/local/lib/spx/desktop_audio_service.py prepare
+ExecStart=/usr/bin/python3 /usr/local/lib/spx/audio.py play-desktop --owner spx-desktop --desktop-user dvitali --allow-amp-power --allow-playback --pa-gain-step 1 --pa-gain-file /etc/spx/speaker-gain-step --desktop-peak 32768 --serve-seconds 0 --output /var/lib/spx-desktop-playback
+ExecStartPost=/usr/bin/python3 /usr/local/lib/spx/desktop_audio_service.py ready
+ExecStopPost=/usr/bin/python3 /usr/local/lib/spx/desktop_audio_service.py release
+KillMode=mixed
+TimeoutStartSec=150
+TimeoutStopSec=20
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

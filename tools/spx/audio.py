@@ -1029,7 +1029,7 @@ class DesktopGraph:
         entry.update(exit_code=process.returncode, stderr=error.decode(errors='replace'))
         need(process.returncode == 0, f'Desktop application failed: {entry}')
 
-    def connect_public(self, pcm, desktop_peak=1433, *, low_latency=False):
+    def connect_public(self, pcm, desktop_peak=1433, *, low_latency=False, preserve_volume=False):
         """Transfer the already initialized PCM to the existing desktop sink."""
         need(self.monitor is None, 'Acoustic monitor must be detached before handoff')
         sinks = json.loads(self.run('pactl', '--format=json', 'list', 'sinks'))
@@ -1039,17 +1039,19 @@ class DesktopGraph:
         need(sink is not None and source is not None, 'Existing spx_speakers sink/monitor missing')
         need(not any(key.startswith(('alsa.', 'api.alsa.'))
                      for key in sink.get('properties', {})), 'Public sink must remain virtual')
-        self.public_restore.append(('pactl', 'set-default-sink',
-                                    self.run('pactl', 'get-default-sink')))
+        if not preserve_volume:
+            self.public_restore.append(('pactl', 'set-default-sink',
+                                        self.run('pactl', 'get-default-sink')))
         for kind, item in (('sink', sink), ('source', source)):
             volumes = item['volume']
             need(set(volumes) == {'front-left', 'front-right'}, 'Public endpoint must be stereo')
-            self.public_restore.extend([
-                ('pactl', f'set-{kind}-volume', item['name'],
-                 str(volumes['front-left']['value']), str(volumes['front-right']['value'])),
-                ('pactl', f'set-{kind}-mute', item['name'], str(int(item['mute'])))])
-            self.run('pactl', f'set-{kind}-volume', item['name'], '65536')
-            self.run('pactl', f'set-{kind}-mute', item['name'], '0')
+            if kind != 'sink' or not preserve_volume:
+                self.public_restore.extend([
+                    ('pactl', f'set-{kind}-volume', item['name'],
+                     str(volumes['front-left']['value']), str(volumes['front-right']['value'])),
+                    ('pactl', f'set-{kind}-mute', item['name'], str(int(item['mute'])))])
+                self.run('pactl', f'set-{kind}-volume', item['name'], '65536')
+                self.run('pactl', f'set-{kind}-mute', item['name'], '0')
         self.run('pactl', 'set-default-sink', 'spx_speakers')
         self.sink = 'spx_speakers'
         self.public_sink_id = sink['index']
@@ -2459,12 +2461,20 @@ def serve_desktop(args, report, pcm, graph, paths, mapping):
             bounded_clients_passed=microphone.report['microphone_client_passed'], recording=None,
             source_lifetime='serve-owner', all_automated_recordings_bounded=True)
         ready['microphone_identity_retained_120s'] = False
-    gain_control = args.output / 'pa-gain-step' if playback_only else None
+    saved_gain = getattr(args, 'pa_gain_file', None) if playback_only else None
+    gain_control = (saved_gain or args.output / 'pa-gain-step') if playback_only else None
     if gain_control is not None:
-        gain_control.write_text(str(pa_gain_step) + '\n')
-        gain_control.chmod(0o600)
+        if saved_gain is not None:
+            need(gain_control.read_text().strip() in ('0', '1', '2'),
+                 'Saved amplifier gain must be 0, 1 or 2')
+        else:
+            gain_control.write_text(str(pa_gain_step) + '\n')
+            gain_control.chmod(0o600)
         ready['gain_control'] = str(gain_control)
         ready['gain_changes'] = []
+    # Preserve the working sequence: start at the chosen initial gain, then
+    # apply the saved listening gain on the established stream.
+    gain_apply_after = started + 5 if saved_gain is not None else started
     stop = threading.Event()
 
     def terminate(signum, frame):
@@ -2499,7 +2509,7 @@ def serve_desktop(args, report, pcm, graph, paths, mapping):
                     # Serialized in this owner: mixer changes cannot race the
                     # exact-gain health check. No PCM or graph restart needed.
                     value = gain_control.read_text().strip()
-                    if value in ('0', '1', '2') and int(value) != pa_gain_step:
+                    if now >= gain_apply_after and value in ('0', '1', '2') and int(value) != pa_gain_step:
                         requested = int(value)
                         set_desktop_pa_gain(report['pcm']['card'], requested)
                         check_stereo(mapping, paths, initialized=True, pa_gain_step=requested)
@@ -2643,7 +2653,7 @@ def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder
         graph = DesktopGraph(args.desktop_user, evidence)
         desktop_holder.append(graph)
         graph.start(public_only=True)
-        graph.connect_public(pcm, args.desktop_peak, low_latency=True)
+        graph.connect_public(pcm, args.desktop_peak, low_latency=True, preserve_volume=True)
         # Use the initialization verified on WX without another acoustic test.
         serve_desktop(args, report, pcm, graph, paths, mapping)
         report['pcm']['log'] = pcm.close()
@@ -3203,9 +3213,13 @@ def main():
                         help='PCM peak: serve 1433..12000 (default 1433); play-desktop 1433..32768 (default unity)')
     parser.add_argument('--pa-gain-step', type=int, choices=(0, 1, 2), default=0,
                         help='play-desktop only: equal amplifier gain in 1.5 dB steps (default 0)')
+    parser.add_argument('--pa-gain-file', type=Path,
+                        help='play-desktop only: persistent requested gain step, applied after startup')
     parser.add_argument('--desktop-controls', action='store_true',
                         help='serve-only bounded acoustic software volume/mute/restoration test')
     args = parser.parse_args()
+    if args.pa_gain_file is not None and args.action != 'play-desktop':
+        parser.error('--pa-gain-file requires play-desktop')
     if args.pa_gain_step and args.action != 'play-desktop':
         parser.error('--pa-gain-step requires play-desktop')
     if args.action == 'play-desktop' and args.output is None:
