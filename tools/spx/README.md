@@ -43,6 +43,10 @@ For a bounded diagnostic that must omit desktop startup, prepare with
 does not change the system's default target or recovery entry. The baseline
 also syncs the journal so its userspace startup messages survive an abrupt
 restart. This does not establish the cause of an earlier interrupted boot.
+Omitting `--boot-target` uses the system default; inherited diagnostic target
+overrides are removed. After console-only testing, restore the desktop on
+the same boot with `systemctl start graphical.target` before handing the
+device back, and remove the console override from its saved trial entry.
 
 Camera trials retain packed RAW10 and write demosaiced `preview*.ppm` files
 using FFmpeg. Those diagnostic previews keep common percentile contrast levels

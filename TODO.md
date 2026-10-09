@@ -136,6 +136,18 @@ automatic return remains armed.
 No card/Q6-stack unload or AFE STOP: retained mappings outlive PCM opens and
 AFE STOP has frozen the platform. Keep the existing reopen test.
 
+## GNOME after the speaker trial (D01, restored 2026-10-09)
+
+- **H-console-target, confirmed:** WX explicitly selected
+  `systemd.unit=multi-user.target` for audio startup isolation, so GDM was
+  enabled but never started. User requested the desktop back. Started
+  `graphical.target` on the same boot: GNOME Shell runs in the user's active
+  Wayland session on foreground VT2, with display power on.
+- Removed the console override from WX's saved boot entry. Future trial
+  preparation discards inherited target overrides unless explicitly selected.
+  No reboot, display-module reload, sound or capture was needed. No further
+  desktop checks are needed for this restoration; full D01 remains open.
+
 ## GTK window corruption (D01/D02, workaround confirmed 2026-10-09)
 
 1. **Confirmed: H-renderer (FH, boot `1dd03623`).** The corrupted Text

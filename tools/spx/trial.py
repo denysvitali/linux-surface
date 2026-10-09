@@ -297,8 +297,9 @@ def prepare(args):
                            getattr(args, 'wsa_teardown_reset', False),
                            getattr(args, 'wcd_skip_speaker_reset', False))
     boot_target = getattr(args, 'boot_target', None)
+    # Startup isolation belongs to one trial, never to its descendants.
+    cmdline = [word for word in cmdline if not word.startswith('systemd.unit=')]
     if boot_target:
-        cmdline = [word for word in cmdline if not word.startswith('systemd.unit=')]
         cmdline.append('systemd.unit=' + boot_target)
     cmdline = [word for word in cmdline if not word.startswith('hci_uart.spx_qca_setup_trace=')]
     if args.qca_setup_trace:
