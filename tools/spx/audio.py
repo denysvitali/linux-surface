@@ -2387,6 +2387,7 @@ def verify_public_playback(report, pcm, graph, capture, desktop_peak=1433, *, co
 def serve_desktop(args, report, pcm, graph, paths, mapping):
     """Ordinary desktop session with optional stock microphone demand/idle."""
     playback_only = report.get('action') == 'play-desktop'
+    pa_gain_step = getattr(args, 'pa_gain_step', 0) if playback_only else 0
     if playback_only:
         need(report.get('playback_ready') and not report.get('microphone_capture'),
              'Desktop playback requires native initialization without microphone capture')
@@ -2399,7 +2400,7 @@ def serve_desktop(args, report, pcm, graph, paths, mapping):
     graph.monitor.forward = True
     pcm.settle(0.5)
     graph.monitor.healthy()
-    check_stereo(mapping, paths, initialized=True)
+    check_stereo(mapping, paths, initialized=True, pa_gain_step=pa_gain_step)
     microphone = getattr(graph, 'microphone', None) if getattr(args, 'desktop_microphone', False) else None
     if microphone is not None:
         need(not getattr(args, 'native_mic_app_formats', False) or microphone.default_selected,
@@ -2436,7 +2437,8 @@ def serve_desktop(args, report, pcm, graph, paths, mapping):
         'deadline_utc': (datetime.fromtimestamp(time.time() + args.serve_seconds,
                                                timezone.utc).isoformat()
                          if args.serve_seconds else None),
-        'gain': args.desktop_peak / 32768, 'peak_limit': args.desktop_peak, 'pa_gain': 0,
+        'gain': args.desktop_peak / 32768, 'peak_limit': args.desktop_peak, 'pa_gain': pa_gain_step,
+        'pa_gain_db': pa_gain_step * 1.5,
         'pcm_feed': dict(pcm.feed_stats),
         'monitor_max_interarrival_seconds': graph.monitor.max_interarrival_seconds,
         'note': ('Unity digital gain; desktop slider controls listening level. Factory maximum is uncalibrated.'
@@ -2478,7 +2480,7 @@ def serve_desktop(args, report, pcm, graph, paths, mapping):
                 ready['microphone_identity_retained_120s'] = now - started >= 120
                 next_microphone_check = now + 1
             if now >= next_hardware_check:
-                check_stereo(mapping, paths, initialized=True)
+                check_stereo(mapping, paths, initialized=True, pa_gain_step=pa_gain_step)
                 next_hardware_check = now + 5
         pcm.healthy()
         graph.monitor.healthy()
@@ -2508,7 +2510,9 @@ def playback_state(path):
             (line.split('=', 1) for line in read_text(path / 'spx_playback_state').splitlines())}
 
 
-def check_stereo(mapping, paths, initialized=False, observations=None):
+def check_stereo(mapping, paths, initialized=False, observations=None, *, pa_gain_step=0):
+    need(type(pa_gain_step) is int and 0 <= pa_gain_step <= 2,
+         'Ordinary amplifier gain must be 0, 1.5 or 3 dB')
     snapshot = state()
     codecs = {unit: playback_state(path) for unit, path in paths.items()}
     observation = {'master': snapshot, 'codec_shadows': codecs, 'passed': False}
@@ -2526,7 +2530,7 @@ def check_stereo(mapping, paths, initialized=False, observations=None):
         for key, expected in (('UNIT', unit), ('DEV_NUM', mapping[unit]), ('ATTACHED', 1),
                               ('STREAM_CONFIGURED', 1), ('STREAM_ENABLED', 1),
                               ('DAC_PREPARED', 1), ('DAC_MASTER_PORT', 1 if unit == 3 else 4),
-                              ('SHADOW_PA_GAIN', 0xc9), ('SHADOW_COMP_ENABLE', 0),
+                              ('SHADOW_PA_GAIN', 0xc9 - (pa_gain_step << 4)), ('SHADOW_COMP_ENABLE', 0),
                               ('SHADOW_VISENSE_ENABLE', 0)):
             need(codec[key] == expected, f'Unit {unit}: {key}={codec[key]}, expected {expected}')
         if initialized:
@@ -2594,6 +2598,18 @@ def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder
     report['remaining_prerequisites'] = [UNMET[-1]]
     report['playback_ready'] = True
     if args.action == 'play-desktop':
+        pa_gain_step = getattr(args, 'pa_gain_step', 0)
+        if pa_gain_step:
+            need(type(pa_gain_step) is int and 0 <= pa_gain_step <= 2,
+                 'Ordinary amplifier gain must be 0, 1.5 or 3 dB')
+            # Change both addressed codecs on digital silence, after native
+            # initialization. Driver performs the required ramp; any failure
+            # unwinds through the existing park-first cleanup.
+            for side in ('Left', 'Right'):
+                subprocess.run(['amixer', '-q', '-c', str(card), 'cset',
+                                f'name=Spkr{side} PA Volume', str(pa_gain_step)],
+                               check=True, timeout=5)
+            check_stereo(mapping, paths, initialized=True, pa_gain_step=pa_gain_step)
         evidence = report['desktop'] = {'acoustic_passed': None}
         graph = DesktopGraph(args.desktop_user, evidence)
         desktop_holder.append(graph)
@@ -3150,9 +3166,13 @@ def main():
                         help='ordinary desktop session duration, 0 until stopped or 1..86400 seconds (default: 3600)')
     parser.add_argument('--desktop-peak', type=lambda value: desktop_peak_limit(value, 32768),
                         help='PCM peak: serve 1433..12000 (default 1433); play-desktop 1433..32768 (default unity)')
+    parser.add_argument('--pa-gain-step', type=int, choices=(0, 1, 2), default=0,
+                        help='play-desktop only: equal amplifier gain in 1.5 dB steps (default 0)')
     parser.add_argument('--desktop-controls', action='store_true',
                         help='serve-only bounded acoustic software volume/mute/restoration test')
     args = parser.parse_args()
+    if args.pa_gain_step and args.action != 'play-desktop':
+        parser.error('--pa-gain-step requires play-desktop')
     if args.action == 'play-desktop' and args.output is None:
         parser.error('play-desktop requires --output for runtime status')
     if args.desktop_microphone and args.action != 'serve':
