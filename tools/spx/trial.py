@@ -26,9 +26,10 @@ REPO = Path('/home/dvitali/Documents/git/linux-surface-next')
 HERE = Path(__file__).resolve().parent
 
 
-def audio_cmdline(words, enabled, teardown_reset=False):
+def audio_cmdline(words, enabled, teardown_reset=False, skip_speaker_reset=False):
     """Select blocked or parked audio, including when inheriting a trial."""
     assert not teardown_reset or enabled, '--wsa-teardown-reset requires --audio'
+    assert not skip_speaker_reset or enabled, '--wcd-skip-speaker-reset requires --audio'
     audio_modules = {'wcd934x', 'soundwire_qcom', 'snd_soc_wsa881x',
                      'snd_soc_wcd934x'}
     blocked = []
@@ -48,6 +49,7 @@ def audio_cmdline(words, enabled, teardown_reset=False):
             'snd_soc_wsa881x.spx_write_only=', 'snd_soc_wcd934x.spx_persist_stream=',
             'snd_soc_wsa881x.spx_init_on_pmu=',
             'snd_soc_wsa881x.spx_win_teardown_reset=',
+            'snd_soc_wcd934x.spx_skip_speaker_reset=',
             'q6asm_dai.spx_force_timer_pacing='))]
         cmdline += ['spx_audio=parked', 'wcd934x.spx_wsa_en_pin=-1',
                     'wcd934x.spx_wsa_gpio_mask=0x1e', 'wcd934x.spx_wsa_gpio_dir=0x1e',
@@ -58,6 +60,8 @@ def audio_cmdline(words, enabled, teardown_reset=False):
         if teardown_reset:
             cmdline += ['snd_soc_wsa881x.spx_init_on_pmu=1',
                         'snd_soc_wsa881x.spx_win_teardown_reset=1']
+        if skip_speaker_reset:
+            cmdline.append('snd_soc_wcd934x.spx_skip_speaker_reset=1')
     else:
         blocked += sorted(audio_modules)
     if blocked:
@@ -290,7 +294,8 @@ def prepare(args):
     # Park both amplifier enables when audio is allowed. Remove any inherited
     # audio blacklist so --audio can actually load the drivers.
     cmdline = audio_cmdline(cmdline, args.audio,
-                           getattr(args, 'wsa_teardown_reset', False))
+                           getattr(args, 'wsa_teardown_reset', False),
+                           getattr(args, 'wcd_skip_speaker_reset', False))
     cmdline = [word for word in cmdline if not word.startswith('hci_uart.spx_qca_setup_trace=')]
     if args.qca_setup_trace:
         cmdline.append('hci_uart.spx_qca_setup_trace=1')
@@ -337,6 +342,7 @@ def prepare(args):
                     usbc_dp0_helper=args.usbc,
                     usbc_phy_orientation=args.usbc_phy_orientation,
                     wsa_teardown_reset=getattr(args, 'wsa_teardown_reset', False),
+                    wcd_skip_speaker_reset=getattr(args, 'wcd_skip_speaker_reset', False),
                     speaker_drivers_blocked=not args.audio,
                     reuse_installed_modules=args.reuse_installed_modules,
                     camera_capture=args.camera_capture,
@@ -2321,6 +2327,8 @@ def main():
                         help='opt in to firmware-grounded primary QMP orientation switching')
     parser.add_argument('--wsa-teardown-reset', action='store_true',
                         help='pair WSA digital teardown reset with native stereo cold-init replay for one playback-reopen trial')
+    parser.add_argument('--wcd-skip-speaker-reset', action='store_true',
+                        help='test retaining RX7/RX8 reset state across playback close on the persistent SLIMbus path')
     parser.add_argument('--replace-module', action='append', default=[],
                         help='changed unloaded/blacklisted module to install while this release runs')
     parser.add_argument('--return-seconds', type=int, default=3600)

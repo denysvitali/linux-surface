@@ -510,6 +510,12 @@ module_param(spx_persist_stream, bool, 0444);
 MODULE_PARM_DESC(spx_persist_stream,
 		 "Surface Pro X: keep the WCD SLIMbus stream prepared after STOP");
 
+/* Test whether resetting a live retained SLIMbus path breaks its next open. */
+static bool spx_skip_speaker_reset;
+module_param(spx_skip_speaker_reset, bool, 0644);
+MODULE_PARM_DESC(spx_skip_speaker_reset,
+		 "Surface Pro X: skip RX7/RX8 reset while the playback SLIMbus stream is retained");
+
 static bool wcd934x_spx_persist(const struct snd_soc_dai *dai)
 {
 	return spx_persist_stream && dai->id == AIF1_PB &&
@@ -4396,6 +4402,7 @@ static int wcd934x_codec_enable_interp_clk(struct snd_soc_dapm_widget *w,
 					 struct snd_kcontrol *kc, int event)
 {
 	struct snd_soc_component *comp = snd_soc_dapm_to_component(w->dapm);
+	struct wcd934x_codec *wcd = snd_soc_component_get_drvdata(comp);
 	int interp_idx = w->shift;
 	int ret;
 	u16 main_reg = WCD934X_CDC_RX0_RX_PATH_CTL + (interp_idx * 20);
@@ -4428,6 +4435,20 @@ static int wcd934x_codec_enable_interp_clk(struct snd_soc_dapm_widget *w,
 				"SPX lifecycle interp=%d event=0x%x reg=0x%x mask=0x%x value=0x%x ret=%d\n",
 				interp_idx, event, main_reg,
 				(unsigned int) WCD934X_RX_CLK_EN_MASK, 0, ret);
+		/*
+		 * The retained SLIMbus stream still feeds these interpolators.
+		 * Leave all ordinary clock, compander and amplifier teardown in
+		 * place; this experiment suppresses only the destructive reset.
+		 */
+		if (READ_ONCE(spx_skip_speaker_reset) && spx_persist_stream &&
+		    (interp_idx == 7 || interp_idx == 8) &&
+		    wcd->dai[AIF1_PB].spx_stream_started &&
+		    of_machine_is_compatible("microsoft,surface-pro-x")) {
+			dev_info(comp->dev,
+				 "SPX: skipping RX%d reset on retained SLIMbus playback\n",
+				 interp_idx);
+			goto reset_rate;
+		}
 		/* Reset enable and disable */
 		ret = snd_soc_component_update_bits(comp, main_reg,
 						    WCD934X_RX_RESET_MASK,
@@ -4445,6 +4466,7 @@ static int wcd934x_codec_enable_interp_clk(struct snd_soc_dapm_widget *w,
 				"SPX lifecycle interp=%d event=0x%x reg=0x%x mask=0x%x value=0x%x ret=%d\n",
 				interp_idx, event, main_reg,
 				(unsigned int) WCD934X_RX_RESET_MASK, (unsigned int) WCD934X_RX_RESET_DISABLE, ret);
+reset_rate:
 		/* Reset rate to 48K*/
 		ret = snd_soc_component_update_bits(comp, main_reg,
 						    WCD934X_RX_PCM_RATE_MASK,

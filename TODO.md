@@ -20,13 +20,24 @@ tests. Leave the physical session pending; do not substitute synthetic checks.
   kept its PCM open and does not establish acoustic reopen.
 - Preserve parked DSP sessions. No unrelated audio/microphone variations.
 
-1. **H-WSA-reset, untested:** the amp needs the Windows digital reset at
+1. **H-WSA-reset, refuted as a sufficient fix (WR):** the amp needs the Windows digital reset at
    teardown followed by complete native initialization. WQ boot `183438a1`
    never reached playback: its legacy `spx_write_only=1` setting was rejected
    by the native stereo guard. Correct that pairing in the native driver,
    retain `spx_write_only=0`, and run the existing two-PCM microphone test.
-   Expected: independent tones remain detected after close/reopen with no
-   relaxed thresholds. Keep default reset behavior unchanged until measured.
+   WR boot `f7854ae1` detected both speakers initially, then reopened left
+   fell to the noise floor (0.262 versus 0.233 RMS) despite successful native
+   reinitialization. See `RESULT-20261009wr.md`. Do not repeat this reset trial.
+2. **H-WCD-reset, untested:** WCD keeps its SLIMbus playback stream active,
+   but DAPM still resets RX7/RX8 on close. Suppress only those interpolator
+   resets with `spx_skip_speaker_reset=1`, leaving clock/PA shutdown intact.
+   Expected: existing microphone reopen test detects both channels on its
+   second PCM. This switch is writable live; do not destroy parked DSP sessions.
+
+User reminder (2026-10-09): minimize reboots; use module reloads wherever
+possible. Current boot is recovery 6.18 (`cd43dcb0`), so latest-kernel testing
+requires one transition to mainline. Keep a longer bounded mainline window
+for subsequent module work instead of returning after each acoustic check.
 
 ## GTK window corruption (D01/D02, workaround confirmed 2026-10-09)
 
