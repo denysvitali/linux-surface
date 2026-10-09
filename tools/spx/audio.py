@@ -2384,6 +2384,15 @@ def verify_public_playback(report, pcm, graph, capture, desktop_peak=1433, *, co
         evidence['seconds'] = time.monotonic() - started
 
 
+def set_desktop_pa_gain(card, step):
+    need(type(step) is int and 0 <= step <= 2,
+         'Ordinary amplifier gain must be 0, 1.5 or 3 dB')
+    for side in ('Left', 'Right'):
+        subprocess.run(['amixer', '-q', '-c', str(card), 'cset',
+                        f'name=Spkr{side} PA Volume', str(step)],
+                       check=True, timeout=5)
+
+
 def serve_desktop(args, report, pcm, graph, paths, mapping):
     """Ordinary desktop session with optional stock microphone demand/idle."""
     playback_only = report.get('action') == 'play-desktop'
@@ -2450,6 +2459,12 @@ def serve_desktop(args, report, pcm, graph, paths, mapping):
             bounded_clients_passed=microphone.report['microphone_client_passed'], recording=None,
             source_lifetime='serve-owner', all_automated_recordings_bounded=True)
         ready['microphone_identity_retained_120s'] = False
+    gain_control = args.output / 'pa-gain-step' if playback_only else None
+    if gain_control is not None:
+        gain_control.write_text(str(pa_gain_step) + '\n')
+        gain_control.chmod(0o600)
+        ready['gain_control'] = str(gain_control)
+        ready['gain_changes'] = []
     stop = threading.Event()
 
     def terminate(signum, frame):
@@ -2480,6 +2495,23 @@ def serve_desktop(args, report, pcm, graph, paths, mapping):
                 ready['microphone_identity_retained_120s'] = now - started >= 120
                 next_microphone_check = now + 1
             if now >= next_hardware_check:
+                if gain_control is not None:
+                    # Serialized in this owner: mixer changes cannot race the
+                    # exact-gain health check. No PCM or graph restart needed.
+                    value = gain_control.read_text().strip()
+                    if value in ('0', '1', '2') and int(value) != pa_gain_step:
+                        requested = int(value)
+                        set_desktop_pa_gain(report['pcm']['card'], requested)
+                        check_stereo(mapping, paths, initialized=True, pa_gain_step=requested)
+                        pa_gain_step = requested
+                        ready.update(pa_gain=pa_gain_step, pa_gain_db=pa_gain_step * 1.5)
+                        ready['gain_changes'].append(dict(monotonic=now,
+                            pa_gain_db=pa_gain_step * 1.5,
+                            pcm_pid=pcm.process.pid,
+                            monitor_max_interarrival_seconds=graph.monitor.max_interarrival_seconds))
+                        temporary = args.output / f'.serve-ready.{os.getpid()}'
+                        temporary.write_text(json.dumps(ready, indent=2) + '\n')
+                        temporary.replace(args.output / 'serve-ready.json')
                 check_stereo(mapping, paths, initialized=True, pa_gain_step=pa_gain_step)
                 next_hardware_check = now + 5
         pcm.healthy()
@@ -2605,10 +2637,7 @@ def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder
             # Change both addressed codecs on digital silence, after native
             # initialization. Driver performs the required ramp; any failure
             # unwinds through the existing park-first cleanup.
-            for side in ('Left', 'Right'):
-                subprocess.run(['amixer', '-q', '-c', str(card), 'cset',
-                                f'name=Spkr{side} PA Volume', str(pa_gain_step)],
-                               check=True, timeout=5)
+            set_desktop_pa_gain(card, pa_gain_step)
             check_stereo(mapping, paths, initialized=True, pa_gain_step=pa_gain_step)
         evidence = report['desktop'] = {'acoustic_passed': None}
         graph = DesktopGraph(args.desktop_user, evidence)
@@ -2841,8 +2870,12 @@ def initialize(args, report, *, live_resume=None):
     need(args.action not in ('capture', 'feedback', 'desktop', 'serve', 'reopen', 'desktop-mic') or args.allow_capture,
          'Microphone recording requires --allow-capture')
     need(args.owner and args.desktop_user, 'initialize requires --owner and --desktop-user')
-    need(read_text('/tmp/spx-locks/spx-device.lock/owner') == args.owner,
-         'Coordinator must own the device lock')
+    if getattr(args, 'ignore_device_lock', False):
+        need(args.action == 'play-desktop', 'Lock override is limited to desktop playback')
+        report['device_lock_override'] = 'explicit user authorization; existing lock left intact'
+    else:
+        need(read_text('/tmp/spx-locks/spx-device.lock/owner') == args.owner,
+             'Coordinator must own the device lock')
     need('microsoft,surface-pro-x' in
          Path('/sys/firmware/devicetree/base/compatible').read_bytes().decode().split('\0'),
          'This test is only for the Surface Pro X')
@@ -3137,6 +3170,8 @@ def main():
     parser.add_argument('action', nargs='?', choices=('plan', 'inspect', 'initialize', 'listen', 'recover', 'capture', 'feedback', 'desktop', 'serve', 'reopen', 'desktop-mic', 'play-desktop'), default='plan')
     parser.add_argument('--output', type=Path, help='directory for result JSON')
     parser.add_argument('--owner', help='coordinator device-lock owner (initialize)')
+    parser.add_argument('--ignore-device-lock', action='store_true',
+                        help='play-desktop only, requires explicit user authorization to override the device lock')
     parser.add_argument('--desktop-user', help='user whose audio units the caller has paused')
     parser.add_argument('--allow-amp-power', action='store_true',
                         help='explicitly authorize this bounded initialization run')

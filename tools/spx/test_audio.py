@@ -2483,6 +2483,37 @@ class OrdinaryDesktopPlaybackTests(unittest.TestCase):
             self.assertTrue(report['serve']['stopped'])
             pcm.close.assert_not_called()
 
+    def test_gain_change_keeps_pcm_and_checks_exact_new_gain(self):
+        report = dict(action='play-desktop', playback_ready=True,
+                      microphone_capture=False, desktop={}, pcm=dict(card='1'),
+                      before=dict(boot_id='boot', release='kernel'))
+        pcm, graph = Mock(), Mock()
+        pcm.process.pid, pcm.feed_stats = 42, {}
+        graph.monitor.input_peak, graph.monitor.peak = 0, 0
+        graph.monitor.max_interarrival_seconds = 0
+        with tempfile.TemporaryDirectory() as directory:
+            args = SimpleNamespace(output=Path(directory), serve_seconds=0,
+                                   desktop_peak=32768, desktop_microphone=False,
+                                   pa_gain_step=1)
+            calls = []
+            def wait(_):
+                if calls:
+                    return True
+                calls.append(True)
+                (args.output / 'pa-gain-step').write_text('2\n')
+                return False
+            with patch.object(audio, 'check_stereo') as check, \
+                    patch.object(audio, 'set_desktop_pa_gain') as change, \
+                    patch.object(audio.signal, 'signal'), \
+                    patch.object(audio.threading, 'Event') as event:
+                event.return_value.wait.side_effect = wait
+                audio.serve_desktop(args, report, pcm, graph, {}, {})
+            change.assert_called_once_with('1', 2)
+            self.assertEqual(report['serve']['pa_gain_db'], 3)
+            self.assertEqual(report['serve']['gain_changes'][0]['pcm_pid'], 42)
+            check.assert_called_with({}, {}, initialized=True, pa_gain_step=2)
+            pcm.close.assert_not_called()
+
     def test_handoff_rejects_uninitialized_or_capturing_state(self):
         for ready, capturing in ((False, False), (True, True)):
             report = dict(action='play-desktop', playback_ready=ready,
