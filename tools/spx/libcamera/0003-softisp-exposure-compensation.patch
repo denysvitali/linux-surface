@@ -1,0 +1,110 @@
+Subject: [PATCH] ipa: simple: support standard exposure compensation
+
+The whole-scene meter overexposes a bright monitor surrounded by darkness.
+Expose ExposureValue (-4..4 EV), compensate the black-subtracted histogram,
+and report the requested EV in per-frame metadata. EV0 preserves the
+existing bin mapping, and each new session starts at EV0. This is an
+application control, not a sensor calibration or automatic highlight fix.
+
+Verified on SPX front OV5693: -2 EV reduced gain20 to5 with the same
+16511us shutter; near-clipping in the screen ROI fell56.8% to0%.
+
+diff --git a/src/ipa/simple/algorithms/agc.cpp b/src/ipa/simple/algorithms/agc.cpp
+index a13a755..a9ec02d 100644
+--- a/src/ipa/simple/algorithms/agc.cpp
++++ b/src/ipa/simple/algorithms/agc.cpp
+@@ -65,6 +65,32 @@ Agc::Agc()
+ {
+ }
+ 
++int Agc::init(IPAContext &context, [[maybe_unused]] const ValueNode &tuningData)
++{
++	context.ctrlMap[&controls::ExposureValue] = ControlInfo(-4.0f, 4.0f, 0.0f);
++	return 0;
++}
++
++int Agc::configure(IPAContext &context, [[maybe_unused]] const IPAConfigInfo &configInfo)
++{
++	context.activeState.agc.exposureValue = 0.0f;
++	return 0;
++}
++
++void Agc::queueRequest(IPAContext &context, [[maybe_unused]] uint32_t frame,
++		       [[maybe_unused]] IPAFrameContext &frameContext,
++		       const ControlList &controls)
++{
++	if (const auto ev = controls.get(controls::ExposureValue); ev && std::isfinite(*ev))
++		context.activeState.agc.exposureValue = std::clamp(*ev, -4.0f, 4.0f);
++}
++
++void Agc::prepare(IPAContext &context, [[maybe_unused]] uint32_t frame,
++		  IPAFrameContext &frameContext, [[maybe_unused]] DebayerParams *params)
++{
++	frameContext.exposureValue = context.activeState.agc.exposureValue;
++}
++
+ void Agc::updateExposure(IPAContext &context, IPAFrameContext &frameContext, double exposureMSV)
+ {
+ 	int32_t &exposure = frameContext.sensor.exposure;
+@@ -134,6 +160,7 @@ void Agc::process(IPAContext &context,
+ 		context.configuration.agc.lineDuration * frameContext.sensor.exposure;
+ 	metadata.set(controls::ExposureTime, exposureTime.get<std::micro>());
+ 	metadata.set(controls::AnalogueGain, frameContext.sensor.gain);
++	metadata.set(controls::ExposureValue, frameContext.exposureValue);
+ 
+ 	if (!context.activeState.agc.valid) {
+ 		/*
+@@ -177,8 +204,14 @@ void Agc::process(IPAContext &context,
+ 		return;
+ 	}
+ 
++	/* A negative EV makes the scene meter brighter, reducing exposure. */
++	const double meteringGain = std::exp2(-frameContext.exposureValue);
+ 	for (unsigned int i = 0; i < histogramSize; i++) {
+-		unsigned int idx = (i - (i / yHistValsPerBinMod)) / yHistValsPerBin;
++		/* Meter in the compensated domain, after black subtraction. */
++		const unsigned int compensated = std::min(
++			static_cast<unsigned int>(std::lround(i * meteringGain)),
++			histogramSize - 1);
++		unsigned int idx = (compensated - (compensated / yHistValsPerBinMod)) / yHistValsPerBin;
+ 		exposureBins[idx] += histogram[blackLevelHistIdx + i];
+ 	}
+ 
+diff --git a/src/ipa/simple/algorithms/agc.h b/src/ipa/simple/algorithms/agc.h
+index 112d9f5..5d20a03 100644
+--- a/src/ipa/simple/algorithms/agc.h
++++ b/src/ipa/simple/algorithms/agc.h
+@@ -19,6 +19,13 @@ public:
+ 	Agc();
+ 	~Agc() = default;
+ 
++	int init(IPAContext &context, const ValueNode &tuningData) override;
++	int configure(IPAContext &context, const IPAConfigInfo &configInfo) override;
++	void queueRequest(IPAContext &context, uint32_t frame,
++			  IPAFrameContext &frameContext, const ControlList &controls) override;
++	void prepare(IPAContext &context, uint32_t frame,
++		     IPAFrameContext &frameContext, DebayerParams *params) override;
++
+ 	void process(IPAContext &context, const uint32_t frame,
+ 		     IPAFrameContext &frameContext,
+ 		     const SwIspStats *stats,
+diff --git a/src/ipa/simple/ipa_context.h b/src/ipa/simple/ipa_context.h
+index 8ccfacb..6737405 100644
+--- a/src/ipa/simple/ipa_context.h
++++ b/src/ipa/simple/ipa_context.h
+@@ -40,6 +40,7 @@ struct IPAActiveState {
+ 		int32_t exposure;
+ 		double again;
+ 		bool valid;
++		float exposureValue;
+ 	} agc;
+ 
+ 	struct {
+@@ -72,6 +73,7 @@ struct IPAFrameContext : public FrameContext {
+ 	} sensor;
+ 
+ 	RGB<float> gains;
++	float exposureValue;
+ 
+ 	float gamma;
+ 	std::optional<float> contrast;

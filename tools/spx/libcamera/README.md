@@ -43,3 +43,26 @@ the register scaling). Apply after the monochrome patch and rebuild
 patches; the distro package is unchanged. Lit front capture on 2026-10-10
 produced 120 processed frames at about 29 fps. Physical colour validation
 and suspend/resume remain open; see RESULT-20261010-camera-status.md.
+
+Front exposure: `0003-softisp-exposure-compensation.patch` adds the standard
+`ExposureValue` request control (-4..4 EV) to the simple IPA. Apply after
+patches 0001/0002 and rebuild `src/ipa/simple/ipa_soft_simple.so.sign`.
+It rescales the black-subtracted metering histogram; EV0 retains the original
+mapping. Each new session defaults to EV0; it reports the request in metadata.
+No white balance multipliers, sensor registers or colour matrices are changed.
+
+For a bright screen surrounded by darkness, pass this capture configuration
+with the existing cam option `--script=/path/to/exposure.yaml`:
+
+```yaml
+frames:
+  - 0:
+      ExposureValue: -2.0
+```
+
+On the stationary front-camera chart, EV0 used gain 20 and -2 EV used gain 5,
+both at 16511us. Near-clipping (any RGB channel >=250) in the visible screen
+ROI fell from 56.8% to 0%; chart details returned. This is user-selected exposure
+compensation, not general colour calibration. Colours remain muted and neutral
+patch ratios vary spatially. Full C02 acceptance remains open.
+See [the result](../boot-diagnostics/RESULT-20261010-front-exposure.md).
