@@ -1515,6 +1515,14 @@
 	status = "okay";
 
 	ports {
+		port@0 {
+			csiphy0_ep: endpoint {
+				clock-lanes = <7>;
+				data-lanes = <0 1>;
+				remote-endpoint = <&cam_front_ep>;
+			};
+		};
+
 		port@2 {
 			csiphy2_ep: endpoint {
 				clock-lanes = <7>;
@@ -1601,7 +1609,6 @@
 &cci0_i2c1 {
 	camera@36 {
 		compatible = "ovti,ov5693";
-		status = "disabled";
 		reg = <0x36>;
 		clocks = <&camcc CAM_CC_MCLK2_CLK>;
 		clock-names = "xvclk";
@@ -1617,8 +1624,16 @@
 		leds = <&front_privacy_led>;
 		led-names = "privacy";
 		orientation = <0>;
-		rotation = <0>;
+		rotation = <180>;
 
+		port {
+			cam_front_ep: endpoint {
+				data-lanes = <1 2>;
+				clock-lanes = <7>;
+				link-frequencies = /bits/ 64 <419200000>;
+				remote-endpoint = <&csiphy0_ep>;
+			};
+		};
 	};
 };
 

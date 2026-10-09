@@ -35,3 +35,11 @@ checks packing/low bits, poisoned row padding, cropping, first-frame gamma,
 RGB/BGR/32-bit output and equal-channel statistics using memory-backed frames.
 
 Upstream [software ISP source](https://github.com/libcamera-org/libcamera/tree/v0.7.2/src/libcamera/software_isp).
+
+Front OV5693: `0002-ov5693-gain-units.patch` corrects the sensor helper for
+the kernel control's whole-unit gain representation (the driver performs
+the register scaling). Apply after the monochrome patch and rebuild
+`src/ipa/simple/ipa_soft_simple.so.sign`. The private build contains both
+patches; the distro package is unchanged. Lit front capture on 2026-10-10
+produced 120 processed frames at about 29 fps. Physical colour validation
+and suspend/resume remain open; see RESULT-20261010-camera-status.md.

@@ -552,14 +552,26 @@ static const struct v4l2_ctrl_ops ov5693_ctrl_ops = {
 static int ov5693_mode_configure(struct ov5693_device *ov5693)
 {
 	const struct ov5693_mode *mode = &ov5693->mode;
+	/*
+	 * The vendor 1296x972 mode reads the complete native array and uses
+	 * two-pixel ISP offsets. Trimming the readout to the active rectangle
+	 * makes flipped binned streams stall; merely extending it yields
+	 * buffers without a usable scene.
+	 */
+	bool default_binned = mode->binning_x && mode->binning_y &&
+		mode->crop.left == OV5693_ACTIVE_START_LEFT &&
+		mode->crop.top == OV5693_ACTIVE_START_TOP &&
+		mode->crop.width == OV5693_ACTIVE_WIDTH &&
+		mode->crop.height == OV5693_ACTIVE_HEIGHT;
 	int ret = 0;
 
 	/* Crop Start X */
-	cci_write(ov5693->regmap, OV5693_CROP_START_X_REG, mode->crop.left,
-		  &ret);
+	cci_write(ov5693->regmap, OV5693_CROP_START_X_REG,
+		  default_binned ? 0 : mode->crop.left, &ret);
 
 	/* Offset X */
-	cci_write(ov5693->regmap, OV5693_OFFSET_START_X_REG, 0, &ret);
+	cci_write(ov5693->regmap, OV5693_OFFSET_START_X_REG,
+		  default_binned ? 2 : 0, &ret);
 
 	/* Output Size X */
 	cci_write(ov5693->regmap, OV5693_OUTPUT_SIZE_X_REG, mode->format.width,
@@ -567,6 +579,7 @@ static int ov5693_mode_configure(struct ov5693_device *ov5693)
 
 	/* Crop End X */
 	cci_write(ov5693->regmap, OV5693_CROP_END_X_REG,
+		  default_binned ? OV5693_NATIVE_WIDTH - 1 :
 		  mode->crop.left + mode->crop.width, &ret);
 
 	/* Horizontal Total Size */
@@ -574,11 +587,12 @@ static int ov5693_mode_configure(struct ov5693_device *ov5693)
 		  &ret);
 
 	/* Crop Start Y */
-	cci_write(ov5693->regmap, OV5693_CROP_START_Y_REG, mode->crop.top,
-		  &ret);
+	cci_write(ov5693->regmap, OV5693_CROP_START_Y_REG,
+		  default_binned ? 0 : mode->crop.top, &ret);
 
 	/* Offset Y */
-	cci_write(ov5693->regmap, OV5693_OFFSET_START_Y_REG, 0, &ret);
+	cci_write(ov5693->regmap, OV5693_OFFSET_START_Y_REG,
+		  default_binned ? 2 : 0, &ret);
 
 	/* Output Size Y */
 	cci_write(ov5693->regmap, OV5693_OUTPUT_SIZE_Y_REG, mode->format.height,
@@ -586,6 +600,7 @@ static int ov5693_mode_configure(struct ov5693_device *ov5693)
 
 	/* Crop End Y */
 	cci_write(ov5693->regmap, OV5693_CROP_END_Y_REG,
+		  default_binned ? OV5693_NATIVE_HEIGHT - 1 :
 		  mode->crop.top + mode->crop.height, &ret);
 
 	/* Subsample X increase */
@@ -594,6 +609,11 @@ static int ov5693_mode_configure(struct ov5693_device *ov5693)
 	/* Subsample Y increase */
 	cci_write(ov5693->regmap, OV5693_SUB_INC_Y_REG,
 		  ((mode->inc_y_odd << 4) & 0xf0) | 0x01, &ret);
+
+	/* Mode-dependent analogue readout settings from the vendor tables. */
+	cci_write(ov5693->regmap, CCI_REG8(0x3708),
+		  mode->binning_x ? 0xe6 : 0xe2, &ret);
+	cci_write(ov5693->regmap, CCI_REG8(0x3709), 0xc3, &ret);
 
 	/* Binning */
 	cci_update_bits(ov5693->regmap, OV5693_FORMAT1_REG,
@@ -666,32 +686,37 @@ static void ov5693_sensor_powerdown(struct ov5693_device *ov5693)
 
 static int ov5693_sensor_powerup(struct ov5693_device *ov5693)
 {
-	int ret;
+	int ret, i;
 
 	gpiod_set_value_cansleep(ov5693->reset, 1);
 	gpiod_set_value_cansleep(ov5693->powerdown, 1);
 
+	/*
+	 * External DVDD must rise after DOVDD (datasheet section 2.8.1).
+	 * Bulk enabling runs in parallel and cannot enforce that ordering.
+	 * The supply array is ordered AVDD, DOVDD, DVDD.
+	 */
+	for (i = 0; i < OV5693_NUM_SUPPLIES; i++) {
+		ret = regulator_enable(ov5693->supplies[i].consumer);
+		if (ret)
+			goto disable_supplies;
+	}
+
 	ret = clk_prepare_enable(ov5693->xvclk);
-	if (ret) {
-		dev_err(ov5693->dev, "Failed to enable clk\n");
-		goto fail_power;
-	}
+	if (ret)
+		goto disable_supplies;
 
-	ret = regulator_bulk_enable(OV5693_NUM_SUPPLIES, ov5693->supplies);
-	if (ret) {
-		dev_err(ov5693->dev, "Failed to enable regulators\n");
-		goto fail_power;
-	}
-
+	/* Keep reset asserted while the supplies and clock settle. */
+	usleep_range(1000, 2000);
 	gpiod_set_value_cansleep(ov5693->powerdown, 0);
 	gpiod_set_value_cansleep(ov5693->reset, 0);
-
 	usleep_range(5000, 7500);
 
 	return 0;
 
-fail_power:
-	ov5693_sensor_powerdown(ov5693);
+disable_supplies:
+	while (i--)
+		regulator_disable(ov5693->supplies[i].consumer);
 	return ret;
 }
 
