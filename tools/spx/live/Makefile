@@ -14,6 +14,8 @@ SSAM_KO ?= /lib/modules/$(shell uname -r)/kernel/drivers/platform/surface/aggreg
 obj-m += spx_usc_observe.o
 obj-m += spx_dp0_enable.o
 obj-m += spx_audio_rx_hold.o
+obj-m += spx_asm_flush.o
+obj-m += spx_asm_header_fix.o
 
 all: ssam.symvers spx_dp0_dtbo.inc
 	$(MAKE) -C $(KDIR) M=$(CURDIR) KBUILD_EXTRA_SYMBOLS=$(CURDIR)/ssam.symvers modules

@@ -168,6 +168,21 @@ connections and clears its forced votes. WT verified load/unload but found
 that this did not restore an already-silent stream. Prevention before the
 first playback remains untested; do not present this module as a speaker fix.
 
+`live/spx_asm_header_fix.ko` applies the `q6asm_add_hdr()` source-service fix
+to the running ASM driver using a narrow APR-entry kprobe. WT proved that
+uninitialized stack command headers misroute replies: PAUSE timed out with
+unregistered service 16; corrected PAUSE/FLUSH/CLOSE/OPEN all acknowledged.
+The corrected q6asm module is installed for the next candidate boot, when
+this temporary helper is no longer needed. It does not fix speaker silence.
+
+`live/spx_asm_flush.ko` was the one-shot experiment, using exported APIs and
+requiring a closed MM1 playback PCM. Default is PAUSE/FLUSH only; `restart=1`
+adds acknowledged CLOSE/OPEN/format and `remap=1` reconnects the retained
+speaker COPP to session 1. Neither frees mappings or starts playback. WT
+showed that restart requires matrix reconnection to resume WRITE_DONE, but
+even then the microphone detected no speaker tone. These experiments are
+finished; do not repeat them on the failed retained session.
+
 The experimental `--wsa-teardown-reset` option pairs digital reset at PA
 teardown with cold initialization and supply restoration in native stereo
 mode. It requires the updated WSA module. Use the existing `reopen` action

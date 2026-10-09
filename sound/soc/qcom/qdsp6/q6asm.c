@@ -310,6 +310,8 @@ static inline void q6asm_add_hdr(struct audio_client *ac, struct apr_hdr *hdr,
 				 uint32_t stream_id)
 {
 	hdr->hdr_field = APR_SEQ_CMD_HDR_FIELD;
+	/* APR preserves explicit client identities; ASM uses its native service. */
+	hdr->src_svc = 0;
 	hdr->src_port = ((ac->session << 8) & 0xFF00) | (stream_id);
 	hdr->dest_port = ((ac->session << 8) & 0xFF00) | (stream_id);
 	hdr->pkt_size = pkt_size;

@@ -18,7 +18,9 @@ tests. Leave the physical session pending; do not substitute synthetic checks.
 - First playback works; reopened playback is silent despite real DSP
   WRITE_DONE and successful clock writes (CB/DE/DG). The 6.18 stereo baseline
   kept its PCM open and does not establish acoustic reopen.
-- Preserve parked DSP sessions. No unrelated audio/microphone variations.
+- Preserve parked DSP mappings. Corrected APR headers now allow playback
+  CLOSE/OPEN, but UNMAP and AFE STOP remain unsafe/unverified. No unrelated
+  audio/microphone variations.
 
 1. **H-WSA-reset, refuted as a sufficient fix (WR):** the amp needs the Windows digital reset at
    teardown followed by complete native initialization. WQ boot `183438a1`
@@ -40,8 +42,8 @@ tests. Leave the physical session pending; do not substitute synthetic checks.
    WT boot `2c78c7c8` stayed available with automatic audio omitted. The manual
    reopen test detected both initial channels, but second left was absent
    (0.097 RMS versus 0.340 baseline). Both reset skips were logged.
-3. **H-RX-clock, live restoration failed; prevention untested:** the retained SLIM stream overflows when DAPM
-   stops the RX interpolator clocks (WT logs RX0 overflow at PCM close).
+3. **H-RX-clock, live restoration failed; prevention untested:** stopping
+   interpolator clocks while retaining SLIM playback may disrupt the path.
    Use a live module to force only INT7_CLK/INT8_CLK supplies through DAPM,
    preserving the card and DSP mappings. Expected: the existing acoustic
    reopen test detects both channels across close; unload restores the votes.
@@ -50,17 +52,48 @@ tests. Leave the physical session pending; do not substitute synthetic checks.
    already-failed route was absent (0.204 RMS versus 0.449 baseline). Module
    unloaded and votes restored. This does not test prevention before the first
    playback on a fresh DSP session. Do not repeat restoration on this session.
+   Older findings (`spx-win-parity-knobs-implemented.md`, section 49.1) show
+   RX0 overflow is a self-masking boundary flag, also present with audible
+   output. It does not establish this hypothesis or justify a port reset.
+4. **H-ASM-flush, refuted as sufficient (WT):** retained playback reuses an EOS-ended session
+   without the PAUSE/FLUSH used by Qualcomm's downstream same-stream reuse.
+   Use a one-shot live module with exported q6asm APIs, holding the PCM open
+   mutex and requiring no open playback owner. Pause/flush playback only;
+   no CLOSE/UNMAP/RUN or callback replacement. Expected: the unchanged
+   microphone reopen test restores its first tone; a second-close failure
+   would then support integrating flush at each retained prepare.
+   PAUSE initially timed out with a reply to unregistered service 16.
+   `q6asm_add_hdr()` leaves `src_svc` uninitialized on stack commands while
+   APR preserves nonzero source IDs. After initializing it through a live
+   ASM-only header correction, PAUSE/FLUSH both ACKed status 0, but the first
+   left tone remained absent (0.658 versus 1.172 baseline).
+5. **H-ASM-native-close, refuted as sufficient (WT):** the proven header defect also affects
+   CLOSE, invalidating earlier attribution of all CLOSE timeouts to firmware.
+   With corrected headers and no PCM owner, pause/flush then CLOSE playback;
+   only if acknowledged, recreate the same playback format using retained
+   memory mappings. Do not UNMAP, alter capture or unload the card. Expected:
+   the existing acoustic test restores its first stereo playback. Stop on
+   any command failure instead of discarding the retained client.
+   CLOSE/OPEN/format all ACKed status 0 on the same boot. The first tone
+   remained absent and WRITE_DONE stopped (158 submissions, 0 completions).
+   Remapping session 1 to the retained speaker COPP through the native ADM
+   API restored real DSP completions (153/153, zero fallback), but no tone
+   (0.350 RMS versus 0.383 baseline). Retained DMA mappings still work;
+   native ASM restart plus matrix reconnection does not restore sound.
 
 User reminder (2026-10-09): minimize reboots; use module reloads wherever
-possible. Current WT boot `2c78c7c8` is mainline; startup and both manual
-experiments completed without reboot. See `RESULT-20261009wt.md`. Amps are
-parked, FIFO empty, temporary clock module unloaded, reset-skip flag disabled,
-and the original two-hour return remains armed. No further boot selected.
+possible. Current WT boot `2c78c7c8` is mainline; all live experiments above
+completed without another reboot. See `RESULT-20261009wt.md`. Amps are
+parked, FIFO empty, temporary clock/command modules unloaded, reset-skip flag
+disabled. The ASM-only header correction remains loaded; the corrected
+q6asm module is built and installed for the next candidate boot (it is not
+in the initramfs). The original two-hour return remains armed; no boot selected.
 Remaining clock-prevention test needs a fresh DSP session with the live
-module loaded before any playback. Do not unload the card/Q6 stack to get
-one: parked ASM mappings outlive the PCM opens. No more acoustic variants
-on the failed retained session; use the next clean mainline boot for that
-specific remaining hypothesis rather than rebooting after every test.
+module loaded before any playback. AFE/SLIM must also start clean: recreating
+ASM alone has now been tested and is insufficient. Do not unload the card/Q6
+stack or send AFE STOP to get that state: mappings outlive PCM opens and AFE
+STOP has frozen the platform. Stop live tests here; use the next clean
+mainline boot for clock prevention rather than rebooting after every test.
 
 ## GTK window corruption (D01/D02, workaround confirmed 2026-10-09)
 
