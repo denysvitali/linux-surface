@@ -1005,6 +1005,11 @@ static const struct venus_resources sc8180x_res = {
 	.vpu_version = VPU_VERSION_IRIS1,
 	.vmem_id = VIDC_RESOURCE_NONE,
 	.dma_mask = 0xc0000000 - 1,
+	/* SQ2 Venus510 table: CP boundary and internal/nonpixel VA range. */
+	.cp_start = 0,
+	.cp_size = 0x25800000,
+	.cp_nonpixel_start = 0x01000000,
+	.cp_nonpixel_size = 0x24800000,
 	.fwname = "qcom/sc8180x/qcvss8180.mbn",
 	.dec_nodename = "video-decoder",
 	.enc_nodename = "video-encoder",

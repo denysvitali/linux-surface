@@ -268,6 +268,10 @@ int venus_boot(struct venus_core *core)
 						     res->cp_size,
 						     res->cp_nonpixel_start,
 						     res->cp_nonpixel_size);
+		if (venus_hfi_startup_diag(core))
+			dev_info(dev, "SPX Venus startup video VA ranges cp=%#x/%#x nonpixel=%#x/%#x ret=%d\n",
+				 res->cp_start, res->cp_size,
+				 res->cp_nonpixel_start, res->cp_nonpixel_size, ret);
 		if (ret) {
 			qcom_pas_shutdown(VENUS_PAS_ID);
 			dev_err(dev, "set virtual address ranges fail (%d)\n",
