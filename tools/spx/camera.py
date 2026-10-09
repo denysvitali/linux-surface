@@ -333,7 +333,7 @@ def exercise(out, attempt, release, sensor_kind='rear'):
     return result
 
 
-def libcamera_exercise(out, frames=20):
+def libcamera_exercise(out, frames=90):
     """Bounded processed captures through libcamera's software ISP.
 
     Runs after the raw captures, so a failure here cannot cost their evidence.

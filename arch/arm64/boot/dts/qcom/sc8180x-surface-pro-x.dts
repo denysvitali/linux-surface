@@ -1569,7 +1569,7 @@
 		leds = <&rear_privacy_led>;
 		led-names = "privacy";
 		orientation = <1>;
-		rotation = <0>;
+		rotation = <180>;
 
 		port {
 			cam_rear_ep: endpoint {
