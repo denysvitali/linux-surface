@@ -13,11 +13,12 @@ S01, S02, P03. Battery steps are left out (deferred by the user).
 2026-10-09 speaker session: user requests microphone feedback and no human
 tests. Leave the physical session pending; do not substitute synthetic checks.
 
-## Current blocker: speaker playback close and reopen (A01–A03, user requested 2026-10-09)
+## Speaker playback close and reopen: resolved on WX (A01–A03 remain open)
 
-- First playback works; reopened playback is silent despite real DSP
-  WRITE_DONE and successful clock writes (CB/DE/DG). The 6.18 stereo baseline
-  kept its PCM open and does not establish acoustic reopen.
+- WX verifies the permanent fix after reboot: the codec automatically holds
+  INT7/8 without a helper, and the microphone detects both speakers before
+  and after close. The requested reopen fix is complete; full A01–A03
+  acceptance stays open. No further reopen tests or trial boots are needed.
 - Preserve parked DSP mappings. Corrected APR headers now allow playback
   CLOSE/OPEN, but UNMAP and AFE STOP remain unsafe/unverified. No unrelated
   audio/microphone variations.
@@ -42,7 +43,7 @@ tests. Leave the physical session pending; do not substitute synthetic checks.
    WT boot `2c78c7c8` stayed available with automatic audio omitted. The manual
    reopen test detected both initial channels, but second left was absent
    (0.097 RMS versus 0.340 baseline). Both reset skips were logged.
-3. **H-RX-clock, live restoration failed; prevention untested:** stopping
+3. **H-RX-clock, prevention confirmed on WW; live restoration failed:** stopping
    interpolator clocks while retaining SLIM playback may disrupt the path.
    Use a live module to force only INT7_CLK/INT8_CLK supplies through DAPM,
    preserving the card and DSP mappings. Expected: the existing acoustic
@@ -69,6 +70,15 @@ tests. Leave the physical session pending; do not substitute synthetic checks.
    survived; restart cause is unknown. See `RESULT-20261009wv.md`. This is
    neither a speaker failure nor a pass, and the image must not be blindly
    re-armed unchanged.
+   WW boot `74d5cfa5`: before any PCM, the native controls cleared both
+   compander bits from 2 to 0 with INT7/8 forced on. All six acoustic phases
+   were detected across two distinct PCM owners; DSP consumed 332/332 and
+   325/325 buffers without fallback. Amps parked, FIFO empty, raw audio
+   discarded; the helper remains loaded to preserve the working route.
+   The codec probe now applies the same two DAPM votes when SPX retained
+   playback is enabled. WX verified that integration without the helper.
+   Do not unload the live codec/card or repeat the successful experiment.
+   See WW and WX results.
 4. **H-ASM-flush, refuted as sufficient (WT):** retained playback reuses an EOS-ended session
    without the PAUSE/FLUSH used by Qualcomm's downstream same-stream reuse.
    Use a one-shot live module with exported q6asm APIs, holding the PCM open
@@ -94,20 +104,35 @@ tests. Leave the physical session pending; do not substitute synthetic checks.
    API restored real DSP completions (153/153, zero fallback), but no tone
    (0.350 RMS versus 0.383 baseline). Retained DMA mappings still work;
    native ASM restart plus matrix reconnection does not restore sound.
-6. **H-startup isolation, untested:** WV ended before audio testing, with no
+6. **H-startup isolation, test completed on WW:** WV ended before audio testing, with no
    reset cause in available logs. Boot the same candidate to `multi-user.target`
    instead of starting GNOME, preserving parked amps and the two-hour return.
    Expected: mainline remains available for native compander verification and
    the existing microphone reopen test. Success makes that test possible; it
    does not prove that GNOME caused the earlier reset. The Happy user daemon
    has lingering enabled and starts from the user default target.
+   WW completed native control verification and the acoustic reopen test in
+   multi-user mode. The earlier reset cause remains unknown.
+7. **H-native clock activation, confirmed on WX:** the codec probe must establish
+   the same INT7/8 DAPM votes without the helper. User requested immediate
+   completion after being told this reboot verification remains. Boot the
+   installed driver with WW's configuration and run the existing quiet
+   microphone reopen test once. Expected: no helper loaded, both clocks
+   forced on, and both speakers detected before and after a real PCM close.
+   WX boot `11455cda`: no helper loaded; both supplies forced automatically.
+   All six acoustic phases detected the expected tones, including reopened
+   left/right at 2.688/20.412 RMS versus 0.257/0.083 noise references. DSP
+   consumed 326/326 then 328/328 buffers, no fallback. Amps parked, FIFO zero,
+   raw capture discarded. See `RESULT-20261009wx.md`.
 
 User reminder (2026-10-09): minimize reboots; use module reloads wherever
-possible. Current boot `f3702ad4` is known-good 6.18 after WV ended before its
-test. No audio runs on recovery and no next boot selected. The mainline
-compander-control correction is committed and builds, but needs hardware
-validation. Next is the changed startup-isolation trial above; WV itself
-must not be blindly re-armed unchanged.
+possible. Current boot `11455cda` is mainline WX, with permanent clock
+retention and acoustic reopen verified. The requested fix is complete.
+Stop here; do not extend this successful audio test or select another
+blocker. Broader acceptance still includes useful volume, physical mapping,
+balance and lifecycle coverage. The user declined human testing. Known-good
+remains the default, no next boot is selected, and the existing two-hour
+automatic return remains armed.
 No card/Q6-stack unload or AFE STOP: retained mappings outlive PCM opens and
 AFE STOP has frozen the platform. Keep the existing reopen test.
 

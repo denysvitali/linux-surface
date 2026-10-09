@@ -164,15 +164,21 @@ For speaker work, add `--audio` to preparation. This starts the native codecs
 with amplifier enables low (`GPIO 0x1e/0x18`) and suppresses desktop audio and
 old speaker bridges for that boot. `audio.py plan` is entirely offline.
 
-`live/spx_audio_rx_hold.ko` is an unverified clock-retention experiment for
-mainline. It uses DAPM to hold only `INT7_CLK` and `INT8_CLK`, without
+`live/spx_audio_rx_hold.ko` established the speaker reopen fix on WW mainline.
+It uses DAPM to hold only `INT7_CLK` and `INT8_CLK`, without
 unregistering the codec/card or touching amplifier widgets. Build just it:
 `sudo make -C /var/tmp/spx-mainline-trial-20261004bg/work-build M="$PWD/tools/spx/live" ARCH=arm64 LOCALVERSION=+ spx_audio_rx_hold.ko`.
 Take the device lock, load with `sudo insmod tools/spx/live/spx_audio_rx_hold.ko`,
 and unload with `sudo rmmod spx_audio_rx_hold`. Unload restores the prior pin
-connections and clears its forced votes. WT verified load/unload but found
-that this did not restore an already-silent stream. Prevention before the
-first playback remains untested; do not present this module as a speaker fix.
+connections and clears its forced votes. WT found that this cannot restore
+an already-silent stream. WW loaded it before the first PCM, verified native
+COMP7/8 bypass in hardware, and detected both speakers across close/reopen.
+The codec driver now requests the same votes during component probe when
+`spx_persist_stream=1` on SPX. WX verified that activation after reboot:
+both supplies were forced without the helper, and all six acoustic reopen
+phases detected their expected tones. The helper is no longer needed with
+this driver. Do not load it when the native driver already holds the
+supplies. Neither path forces the PAs. Full A01 acceptance remains open.
 
 `live/spx_asm_header_fix.ko` applies the `q6asm_add_hdr()` source-service fix
 to the running ASM driver using a narrow APR-entry kprobe. WT proved that

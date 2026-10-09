@@ -3125,6 +3125,7 @@ static void wcd934x_mbhc_deinit(struct snd_soc_component *component)
 
 static int wcd934x_comp_probe(struct snd_soc_component *component)
 {
+	struct snd_soc_dapm_context *dapm = snd_soc_component_to_dapm(component);
 	struct wcd934x_codec *wcd = dev_get_drvdata(component->dev);
 	int i, ret;
 
@@ -3151,10 +3152,32 @@ static int wcd934x_comp_probe(struct snd_soc_component *component)
 		return ret;
 	}
 
+	/*
+	 * SPX retains its SLIMbus playback stream between PCM opens. Gating
+	 * either speaker interpolator while that stream remains active makes
+	 * later playback silent, even though DSP buffers keep completing.
+	 * Hold only the digital supplies; amplifier widgets still power down.
+	 * The card's initial DAPM sync applies these votes before any PCM opens.
+	 */
+	if (spx_persist_stream &&
+	    of_machine_is_compatible("microsoft,surface-pro-x")) {
+		ret = snd_soc_dapm_force_enable_pin(dapm, "INT7_CLK");
+		if (ret)
+			goto err_clsh;
+		ret = snd_soc_dapm_force_enable_pin(dapm, "INT8_CLK");
+		if (ret)
+			goto err_clsh;
+	}
+
 	if (wcd934x_mbhc_init(component))
 		dev_err(component->dev, "Failed to Initialize MBHC\n");
 
 	return 0;
+
+err_clsh:
+	/* ASoC frees the widgets, including any forced vote, on probe failure. */
+	wcd_clsh_ctrl_free(wcd->clsh_ctrl);
+	return ret;
 }
 
 static void wcd934x_comp_remove(struct snd_soc_component *comp)
