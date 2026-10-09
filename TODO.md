@@ -64,6 +64,10 @@ Hypotheses:
 11. **Answered: scene (fd, boot `89f87251`).** Lit scene: rear and IR show real
    frames; the dark frames were the scene. Open: user confirms colours and IR
    orientation, then resume/repeat start-stop. See `RESULT-20261008fd.md`.
+14. **Rear exposure (fe/ff).** Washed out = default exposure at the black level;
+   libcamera AE converges over about 90 frames (mean 17 -> 80); DT rotation 180
+   reported to apps. Open: repeated start/stop and resume, black level tuning.
+   See `RESULT-20261008ff.md`.
 
 5. RAW-to-display rendering omits black subtraction, AWB and transfer.
    **Implemented offline, physical acceptance pending:** `camera_render.py`
