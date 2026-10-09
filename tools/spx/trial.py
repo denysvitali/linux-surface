@@ -157,9 +157,10 @@ def promote(args):
     subprocess.run(['grub-set-default', 'spx-mainline'], check=True)
     subprocess.run(['grub-editenv', '/boot/grub/grubenv', 'unset', 'next_entry'], check=True)
     subprocess.run(['systemctl', 'disable', '--now',
-                    'spx-trial-return@' + ATTEMPT + '.timer'], check=True)
-    # Keep the existing read-only startup collection; consumed audio requests
-    # do not repeat. The baseline marker also rejects accidental return calls.
+                    'spx-trial-return@' + ATTEMPT + '.timer',
+                    'spx-trial-check@' + ATTEMPT + '.timer'], check=True)
+    # The checker changes CPU policy and probes devices: it is a trial workload,
+    # not a passive boot logger. Promoted boots use the ordinary journal only.
     recovery()
     os.sync()
     print('Promoted ' + RELEASE + ': persistent spx-mainline, GNOME startup, '
@@ -2559,6 +2560,9 @@ def main():
         elif args.command in ('boot', 'arm-audio'):
             BOOT_ID = json.loads((OUT / 'installed.json').read_text())['boot_id']
         if args.command == 'check':
+            if 'spx_baseline=' + ATTEMPT in Path('/proc/cmdline').read_text().split():
+                print('Promoted baseline: automatic trial checks are disabled.', flush=True)
+                return
             lock = str(REPO / 'tools/spx/spx-lock')
             owner = 'functional-' + ATTEMPT
             subprocess.run([lock, 'acquire', 'device', owner], check=True)

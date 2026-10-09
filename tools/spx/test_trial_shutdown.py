@@ -4,6 +4,7 @@ import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -38,6 +39,24 @@ class ShutdownPreparationTests(unittest.TestCase):
 
 
 class BaselineReturnTests(unittest.TestCase):
+    def test_promoted_boot_check_cannot_dispatch_hardware_work(self):
+        def read(path, *args, **kwargs):
+            if path.name == 'prepared.json':
+                return '{"preboot_id":"old-boot","release":"7.3.0-test"}'
+            if str(path) == '/proc/cmdline':
+                return 'spx_attempt=20261009wx spx_baseline=20261009wx'
+            raise AssertionError(path)
+
+        with patch.object(sys, 'argv', ['trial.py', 'check', '20261009wx']), \
+             patch.object(Path, 'read_text', autospec=True, side_effect=read), \
+             patch.object(trial, 'functional_check') as check, \
+             patch.object(trial, 'dispatch_audio') as audio, \
+             patch.object(trial.subprocess, 'run') as run:
+            trial.main()
+            check.assert_not_called()
+            audio.assert_not_called()
+            run.assert_not_called()
+
     def test_promoted_baseline_cannot_be_rebooted_by_trial_return(self):
         with patch.object(trial, 'ATTEMPT', '20261009wx', create=True), \
              patch.object(trial, 'Path', return_value=SimpleNamespace(
