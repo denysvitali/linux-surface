@@ -4,6 +4,7 @@
  * Copyright (C) 2017 Linaro Ltd.
  */
 #include <linux/delay.h>
+#include <linux/hash.h>
 #include <linux/interrupt.h>
 #include <linux/slab.h>
 #include <linux/mutex.h>
@@ -15,6 +16,7 @@
 #include "core.h"
 #include "hfi.h"
 #include "hfi_cmds.h"
+#include "hfi_platform.h"
 #include "hfi_venus.h"
 
 #define TIMEOUT		msecs_to_jiffies(1000)
@@ -173,6 +175,8 @@ static int wait_session_msg(struct venus_inst *inst)
 int hfi_session_create(struct venus_inst *inst, const struct hfi_inst_ops *ops)
 {
 	struct venus_core *core = inst->core;
+	struct venus_inst *other;
+	unsigned long used = 0;
 	bool max;
 	int ret;
 
@@ -188,6 +192,18 @@ int hfi_session_create(struct venus_inst *inst, const struct hfi_inst_ops *ops)
 	if (test_bit(0, &inst->core->sys_error)) {
 		ret = -EIO;
 		goto unlock;
+	}
+
+	inst->session_id = hash32_ptr(inst);
+	if (IS_IRIS1(core)) {
+		/* SQ2 firmware indexes a session table with this field. */
+		list_for_each_entry(other, &core->instances, list)
+			used |= BIT(other->session_id);
+		inst->session_id = find_first_zero_bit(&used, MAX_SESSIONS);
+		if (inst->session_id == MAX_SESSIONS) {
+			ret = -EAGAIN;
+			goto unlock;
+		}
 	}
 
 	max = atomic_add_unless(&core->insts_count, 1,

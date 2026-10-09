@@ -395,6 +395,7 @@ enum venus_inst_modes {
  * @list:	used for attach an instance to the core
  * @lock:	instance lock
  * @core:	a reference to the core struct
+ * @session_id:	firmware session identifier
  * @clk_data:	clock data per core ID
  * @dpbbufs:	a list of decoded picture buffers
  * @internalbufs:	a list of internal bufferes
@@ -463,6 +464,7 @@ struct venus_inst {
 	struct list_head list;
 	struct mutex lock;
 	struct venus_core *core;
+	u32 session_id;
 	struct clock_data clk_data;
 	struct list_head dpbbufs;
 	struct list_head internalbufs;

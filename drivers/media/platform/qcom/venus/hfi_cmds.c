@@ -7,9 +7,17 @@
 #include <linux/errno.h>
 #include <linux/hash.h>
 
+#include "core.h"
 #include "hfi_cmds.h"
 
 static enum hfi_version hfi_ver;
+
+static u32 session_id(void *cookie)
+{
+	struct venus_inst *inst = cookie;
+
+	return inst->session_id;
+}
 
 void pkt_sys_init(struct hfi_sys_init_pkt *pkt, u32 arch_type)
 {
@@ -167,7 +175,7 @@ int pkt_session_init(struct hfi_session_init_pkt *pkt, void *cookie,
 
 	pkt->shdr.hdr.size = sizeof(*pkt);
 	pkt->shdr.hdr.pkt_type = HFI_CMD_SYS_SESSION_INIT;
-	pkt->shdr.session_id = hash32_ptr(cookie);
+	pkt->shdr.session_id = session_id(cookie);
 	pkt->session_domain = session_type;
 	pkt->session_codec = codec;
 
@@ -178,7 +186,7 @@ void pkt_session_cmd(struct hfi_session_pkt *pkt, u32 pkt_type, void *cookie)
 {
 	pkt->shdr.hdr.size = sizeof(*pkt);
 	pkt->shdr.hdr.pkt_type = pkt_type;
-	pkt->shdr.session_id = hash32_ptr(cookie);
+	pkt->shdr.session_id = session_id(cookie);
 }
 
 int pkt_session_set_buffers(struct hfi_session_set_buffers_pkt *pkt,
@@ -190,7 +198,7 @@ int pkt_session_set_buffers(struct hfi_session_set_buffers_pkt *pkt,
 		return -EINVAL;
 
 	pkt->shdr.hdr.pkt_type = HFI_CMD_SESSION_SET_BUFFERS;
-	pkt->shdr.session_id = hash32_ptr(cookie);
+	pkt->shdr.session_id = session_id(cookie);
 	pkt->buffer_size = bd->buffer_size;
 	pkt->min_buffer_size = bd->buffer_size;
 	pkt->num_buffers = bd->num_buffers;
@@ -229,7 +237,7 @@ int pkt_session_unset_buffers(struct hfi_session_release_buffer_pkt *pkt,
 		return -EINVAL;
 
 	pkt->shdr.hdr.pkt_type = HFI_CMD_SESSION_RELEASE_BUFFERS;
-	pkt->shdr.session_id = hash32_ptr(cookie);
+	pkt->shdr.session_id = session_id(cookie);
 	pkt->buffer_size = bd->buffer_size;
 	pkt->num_buffers = bd->num_buffers;
 
@@ -269,7 +277,7 @@ int pkt_session_etb_decoder(struct hfi_session_empty_buffer_compressed_pkt *pkt,
 
 	pkt->shdr.hdr.size = sizeof(*pkt);
 	pkt->shdr.hdr.pkt_type = HFI_CMD_SESSION_EMPTY_BUFFER;
-	pkt->shdr.session_id = hash32_ptr(cookie);
+	pkt->shdr.session_id = session_id(cookie);
 	pkt->time_stamp_hi = upper_32_bits(in_frame->timestamp);
 	pkt->time_stamp_lo = lower_32_bits(in_frame->timestamp);
 	pkt->flags = in_frame->flags;
@@ -293,7 +301,7 @@ int pkt_session_etb_encoder(
 
 	pkt->shdr.hdr.size = sizeof(*pkt);
 	pkt->shdr.hdr.pkt_type = HFI_CMD_SESSION_EMPTY_BUFFER;
-	pkt->shdr.session_id = hash32_ptr(cookie);
+	pkt->shdr.session_id = session_id(cookie);
 	pkt->view_id = 0;
 	pkt->time_stamp_hi = upper_32_bits(in_frame->timestamp);
 	pkt->time_stamp_lo = lower_32_bits(in_frame->timestamp);
@@ -318,7 +326,7 @@ int pkt_session_ftb(struct hfi_session_fill_buffer_pkt *pkt, void *cookie,
 
 	pkt->shdr.hdr.size = sizeof(*pkt);
 	pkt->shdr.hdr.pkt_type = HFI_CMD_SESSION_FILL_BUFFER;
-	pkt->shdr.session_id = hash32_ptr(cookie);
+	pkt->shdr.session_id = session_id(cookie);
 
 	if (out_frame->buffer_type == HFI_BUFFER_OUTPUT)
 		pkt->stream_id = 0;
@@ -345,7 +353,7 @@ int pkt_session_parse_seq_header(
 
 	pkt->shdr.hdr.size = sizeof(*pkt);
 	pkt->shdr.hdr.pkt_type = HFI_CMD_SESSION_PARSE_SEQUENCE_HEADER;
-	pkt->shdr.session_id = hash32_ptr(cookie);
+	pkt->shdr.session_id = session_id(cookie);
 	pkt->header_len = seq_hdr_len;
 	pkt->packet_buffer = seq_hdr;
 
@@ -360,7 +368,7 @@ int pkt_session_get_seq_hdr(struct hfi_session_get_sequence_header_pkt *pkt,
 
 	pkt->shdr.hdr.size = sizeof(*pkt);
 	pkt->shdr.hdr.pkt_type = HFI_CMD_SESSION_GET_SEQUENCE_HEADER;
-	pkt->shdr.session_id = hash32_ptr(cookie);
+	pkt->shdr.session_id = session_id(cookie);
 	pkt->buffer_len = seq_hdr_len;
 	pkt->packet_buffer = seq_hdr;
 
@@ -381,7 +389,7 @@ int pkt_session_flush(struct hfi_session_flush_pkt *pkt, void *cookie, u32 type)
 
 	pkt->shdr.hdr.size = sizeof(*pkt);
 	pkt->shdr.hdr.pkt_type = HFI_CMD_SESSION_FLUSH;
-	pkt->shdr.session_id = hash32_ptr(cookie);
+	pkt->shdr.session_id = session_id(cookie);
 	pkt->flush_type = type;
 
 	return 0;
@@ -400,7 +408,7 @@ static int pkt_session_get_property_1x(struct hfi_session_get_property_pkt *pkt,
 
 	pkt->shdr.hdr.size = sizeof(*pkt);
 	pkt->shdr.hdr.pkt_type = HFI_CMD_SESSION_GET_PROPERTY;
-	pkt->shdr.session_id = hash32_ptr(cookie);
+	pkt->shdr.session_id = session_id(cookie);
 	pkt->num_properties = 1;
 	pkt->data = ptype;
 
@@ -420,7 +428,7 @@ static int pkt_session_set_property_1x(struct hfi_session_set_property_pkt *pkt,
 
 	pkt->shdr.hdr.size = sizeof(*pkt);
 	pkt->shdr.hdr.pkt_type = HFI_CMD_SESSION_SET_PROPERTY;
-	pkt->shdr.session_id = hash32_ptr(cookie);
+	pkt->shdr.session_id = session_id(cookie);
 	pkt->num_properties = 1;
 	pkt->data[0] = ptype;
 
@@ -1105,7 +1113,7 @@ pkt_session_get_property_3xx(struct hfi_session_get_property_pkt *pkt,
 
 	pkt->shdr.hdr.size = sizeof(struct hfi_session_get_property_pkt);
 	pkt->shdr.hdr.pkt_type = HFI_CMD_SESSION_GET_PROPERTY;
-	pkt->shdr.session_id = hash32_ptr(cookie);
+	pkt->shdr.session_id = session_id(cookie);
 	pkt->num_properties = 1;
 
 	switch (ptype) {
@@ -1134,7 +1142,7 @@ pkt_session_set_property_3xx(struct hfi_session_set_property_pkt *pkt,
 
 	pkt->shdr.hdr.size = sizeof(*pkt);
 	pkt->shdr.hdr.pkt_type = HFI_CMD_SESSION_SET_PROPERTY;
-	pkt->shdr.session_id = hash32_ptr(cookie);
+	pkt->shdr.session_id = session_id(cookie);
 	pkt->num_properties = 1;
 	pkt->data[0] = ptype;
 
@@ -1198,7 +1206,7 @@ pkt_session_set_property_4xx(struct hfi_session_set_property_pkt *pkt,
 
 	pkt->shdr.hdr.size = sizeof(*pkt);
 	pkt->shdr.hdr.pkt_type = HFI_CMD_SESSION_SET_PROPERTY;
-	pkt->shdr.session_id = hash32_ptr(cookie);
+	pkt->shdr.session_id = session_id(cookie);
 	pkt->num_properties = 1;
 	pkt->data[0] = ptype;
 
@@ -1309,7 +1317,7 @@ pkt_session_set_property_6xx(struct hfi_session_set_property_pkt *pkt,
 
 	pkt->shdr.hdr.size = sizeof(*pkt);
 	pkt->shdr.hdr.pkt_type = HFI_CMD_SESSION_SET_PROPERTY;
-	pkt->shdr.session_id = hash32_ptr(cookie);
+	pkt->shdr.session_id = session_id(cookie);
 	pkt->num_properties = 1;
 	pkt->data[0] = ptype;
 

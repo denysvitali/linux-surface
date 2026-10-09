@@ -795,7 +795,7 @@ static struct venus_inst *to_instance(struct venus_core *core, u32 session_id)
 
 	mutex_lock(&core->lock);
 	list_for_each_entry(inst, &core->instances, list)
-		if (hash32_ptr(inst) == session_id) {
+		if (inst->session_id == session_id) {
 			mutex_unlock(&core->lock);
 			return inst;
 		}
