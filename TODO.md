@@ -69,6 +69,24 @@ Hypotheses:
    reported to apps. Open: repeated start/stop and resume, black level tuning.
    See `RESULT-20261008ff.md`.
 
+15. **Refuted without a boot: missing rear black correction.** FF's processed
+    metadata already reports `SensorBlackLevels = [4096,4096,4096,4096]`,
+    equivalent to RAW10 level 64. The installed fallback includes BlackLevel,
+    AWB and AGC. A duplicate tuning file cannot fix the reported quality gap.
+16. **IR application integration (confirmed, FG):** libcamera rejected OV7251 because mandatory
+    `V4L2_CID_ANALOGUE_GAIN` (0x009e0903) is absent; the driver exposes the
+    same sensor gain as `V4L2_CID_GAIN`. Change that control ID, leaving the
+    gain range and register writes unchanged. Expect: the missing-control
+    error disappears and IR progresses to format negotiation in `cam -l`;
+    then test whichever real format libcamera exposes. **FG, boot `5c0eb87d`:**
+    IR is listed and streams 90 native RAW10 frames; RGB processing is missing.
+    See `RESULT-20261009fg.md`.
+17. **IR processed format:** libcamera's software ISP rejects monochrome
+    `R10_CSI2P`. Add scalar RAW10 conversion and equal-channel statistics to
+    its CPU path, using the existing black/exposure processing. Expect: real
+    IR RGB output has equal channels and is written by the normal `cam` app.
+    Test offline packing/padding first; do not apply colour matrices to IR.
+
 5. RAW-to-display rendering omits black subtraction, AWB and transfer.
    **Implemented offline, physical acceptance pending:** `camera_render.py`
    adds full RAW10 decoding, provisional common black subtraction, bounded
