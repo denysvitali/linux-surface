@@ -619,12 +619,13 @@ class OwnedCapture:
 class OwnedPCM:
     """One fresh aplay, continuously fed silence unless a finite tone is queued."""
 
-    def __init__(self, card):
+    def __init__(self, card, *, pipe_bytes=None):
         self.log = tempfile.TemporaryFile()
         self.process = subprocess.Popen(
             ['aplay', '--fatal-errors', '-D', f'hw:{card},0', '-t', 'raw', '-f', 'S16_LE',
              '-r', '48000', '-c', '2', '--period-size=2400', '--buffer-size=12000'],
-            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=self.log, bufsize=0)
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=self.log, bufsize=0,
+            pipesize=pipe_bytes if pipe_bytes is not None else -1)
         os.set_blocking(self.process.stdin.fileno(), False)
         self.status = Path(f'/proc/asound/card{card}/pcm0p/sub0/status')
         self.stop = threading.Event()
@@ -731,13 +732,13 @@ class OwnedPCM:
 class DesktopMonitor:
     """Frame-aligned, level-checked monitor data; never amplify or reopen PCM."""
 
-    def __init__(self, process, ordinary=False, desktop_peak=1433):
+    def __init__(self, process, ordinary=False, desktop_peak=1433, *, queue_blocks=40):
         need(isinstance(desktop_peak, int) and 1433 <= desktop_peak <= 12000,
              'Desktop peak must be between 1433 and 12000')
         need(ordinary or desktop_peak == 1433,
              'Only the ordinary desktop path may change its peak limit')
         self.process = process
-        self.blocks = queue.Queue(maxsize=40)  # At most 200 ms, never unbounded.
+        self.blocks = queue.Queue(maxsize=queue_blocks)  # Each block holds 5 ms.
         self.stop = threading.Event()
         self.error = None
         self.ordinary = ordinary
@@ -1028,7 +1029,7 @@ class DesktopGraph:
         entry.update(exit_code=process.returncode, stderr=error.decode(errors='replace'))
         need(process.returncode == 0, f'Desktop application failed: {entry}')
 
-    def connect_public(self, pcm, desktop_peak=1433):
+    def connect_public(self, pcm, desktop_peak=1433, *, low_latency=False):
         """Transfer the already initialized PCM to the existing desktop sink."""
         need(self.monitor is None, 'Acoustic monitor must be detached before handoff')
         sinks = json.loads(self.run('pactl', '--format=json', 'list', 'sinks'))
@@ -1056,8 +1057,9 @@ class DesktopGraph:
             'parec', '--raw', '--device=spx_speakers.monitor', '--format=s16le',
             '--rate=48000', '--channels=2', '--latency-msec=5', '--process-time-msec=5'],
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0,
-            start_new_session=True)
-        self.monitor = DesktopMonitor(process, ordinary=True, desktop_peak=desktop_peak)
+            start_new_session=True, pipesize=4096 if low_latency else -1)
+        self.monitor = DesktopMonitor(process, ordinary=True, desktop_peak=desktop_peak,
+                                      queue_blocks=4 if low_latency else 40)
         self.monitor.thread.start()
         pcm.set_source(self.monitor)
         self.report['ordinary_sink'] = 'spx_speakers'
@@ -2547,7 +2549,7 @@ def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder
     card = report['before']['internal_cards'][0]
     configure_stereo(card, report)
     assert_pcm_idle()
-    pcm = OwnedPCM(card)
+    pcm = OwnedPCM(card, pipe_bytes=4096) if args.action == 'play-desktop' else OwnedPCM(card)
     pcm_holder.append(pcm)  # Outer cleanup parks amplifiers before closing PCM.
     report['pcm'] = {'pid': pcm.process.pid, 'card': card, 'format': 'S16_LE/48000/stereo'}
     report['pcm']['feed'] = pcm.feed_stats
@@ -2594,7 +2596,7 @@ def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder
         graph = DesktopGraph(args.desktop_user, evidence)
         desktop_holder.append(graph)
         graph.start(public_only=True)
-        graph.connect_public(pcm, args.desktop_peak)
+        graph.connect_public(pcm, args.desktop_peak, low_latency=True)
         # Use the initialization verified on WX without another acoustic test.
         serve_desktop(args, report, pcm, graph, paths, mapping)
         report['pcm']['log'] = pcm.close()
