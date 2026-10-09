@@ -10,7 +10,22 @@ Ask the user for this first. Steps are in
 each. It decides, or partly decides: I02, I03, I04, I05, I06, D01, U01, N02,
 S01, S02, P03. Battery steps are left out (deferred by the user).
 
-## 2. Current blocker: camera first frame (C01, then C02–C05)
+## Current blocker: GTK window corruption (D01/D02, user requested 2026-10-09)
+
+1. **Confirmed: H-renderer (FH, boot `1dd03623`).** The corrupted Text
+   Editor lacked `GSK_RENDERER=opengl` and loaded Turnip Vulkan; Console and
+   GNOME inherited the existing systemd OpenGL setting. The user confirmed
+   the OpenGL editor is clear. Added the same setting to `/etc/environment`
+   for PAM launches and reopened the editor with its saved draft intact.
+   This is a working accelerated workaround, not an underlying Vulkan fix.
+   See `RESULT-20261009-graphics.md`; full D01 acceptance remains open.
+
+Graphics stopping point: the reported window corruption is resolved through
+OpenGL. Continue the pending human session; no additional successful OpenGL
+checks or kernel trial are needed. Vulkan investigation needs a specific
+request for that path.
+
+## 2. Camera first frame (parked for user-requested graphics fix; C01, then C02–C05)
 
 - Known: the rear sensor identifies. Receiver SID and mask are resolved.
 - Missing: resolved ownership of the `vdda-phy` and `vdda-pll` supplies,

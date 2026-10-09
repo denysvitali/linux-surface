@@ -6,6 +6,18 @@ It reuses the completed kernel at
 `7.3.0-rc2-spx-mainline-20261004bg+` across attempts. Do not create another
 source copy, tar, release suffix or per-attempt script.
 
+GTK desktop applications currently need `GSK_RENDERER=opengl` on the Surface:
+the default Vulkan path can corrupt window contents. This selects the
+hardware-accelerated OpenGL renderer, as described in the
+[GTK documentation](https://docs.gtk.org/gtk4/running.html#gsk_renderer).
+Install `gtk-renderer.conf` as `/etc/environment.d/99-gtk-renderer.conf` and
+merge its `GSK_RENDERER=opengl` line into `/etc/environment`, preserving other
+settings. Both are needed: systemd's user environment covers ordinary GNOME
+launches, while PAM reads `/etc/environment` for `runuser` launches. The
+environment.d file alone left the hands-on Text Editor using Vulkan.
+Existing applications need reopening; explicit renderer overrides still win.
+See [the live result](boot-diagnostics/RESULT-20261009-graphics.md).
+
 The current non-audio feature test supplies the existing installation's
 Bluetooth address to a copied DTB. Shared UC/PAS trial diagnostics stay off;
 the WCD/SoundWire/speaker modules are blocked. No sound or capture runs.
