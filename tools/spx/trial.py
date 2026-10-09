@@ -111,14 +111,20 @@ def promote(args):
     """Explicitly promote a booted candidate; retain 6.18 as manual recovery."""
     assert os.geteuid() == 0
     recovery()
-    checked = json.loads((OUT / 'functional.json').read_text())
     installed = json.loads((OUT / 'installed.json').read_text())
-    assert checked.get('complete') and checked['release'] == RELEASE
-    assert checked['boot_id'] != installed['boot_id']
-    assert RELEASE.startswith('7.')
+    words = Path('/proc/cmdline').read_text().split()
+    # Promotion follows explicit verification of the running candidate. Do not
+    # require rerunning the hardware trial workload on an ordinary desktop.
+    assert os.uname().release == RELEASE and RELEASE.startswith('7.')
+    assert 'spx_attempt=' + ATTEMPT in words
+    assert Path('/proc/sys/kernel/random/boot_id').read_text().strip() != installed['boot_id']
+    assert float(Path('/proc/uptime').read_text().split()[0]) > 120
+    subprocess.run(['systemctl', 'is-active', '--quiet', 'display-manager.service'], check=True)
     source = Path('/boot') / ('spx-trial-' + ATTEMPT)
     target = Path('/boot/spx-mainline')
-    assert source.is_dir() and not target.exists()
+    assert source.is_dir()
+    backup = Path('/boot/spx-mainline.previous')
+    assert not backup.exists()
     for name, digest in installed['boot_payloads'].items():
         assert sha(source / name) == digest, name
     entry = (OUT / 'entry.cfg').read_text()
@@ -132,7 +138,9 @@ def promote(args):
     custom = Path('/etc/grub.d/40_custom')
     defaults = Path('/etc/default/grub')
     old_custom, old_defaults = custom.read_text(), defaults.read_text()
-    assert '--id spx-mainline' not in old_custom
+    base_custom, old_entries = re.subn(r'^menuentry [^\n]*--id spx-mainline \{\n.*?^}\n?',
+                                       '', old_custom, flags=re.M | re.S)
+    assert old_entries == int(target.exists())
     new_defaults, count = re.subn(r'^GRUB_DEFAULT=.*$',
                                   'GRUB_DEFAULT=spx-mainline', old_defaults,
                                   count=1, flags=re.M)
@@ -140,9 +148,11 @@ def promote(args):
     syntax = OUT / 'baseline-entry.cfg'
     syntax.write_text(entry)
     subprocess.run(['grub-script-check', str(syntax)], check=True)
-    source.rename(target)
+    if target.exists():
+        target.rename(backup)
     try:
-        custom.write_text(old_custom.rstrip() + '\n\n' + entry)
+        source.rename(target)
+        custom.write_text(base_custom.rstrip() + '\n\n' + entry)
         defaults.write_text(new_defaults)
         Path('/boot/grub/custom.cfg').write_text('# Baseline is in /etc/grub.d/40_custom.\n')
         subprocess.run(['grub-mkconfig', '-o', '/boot/grub/grub.cfg'], check=True)
@@ -151,7 +161,10 @@ def promote(args):
         custom.write_text(old_custom)
         defaults.write_text(old_defaults)
         Path('/boot/grub/custom.cfg').write_text((OUT / 'entry.cfg').read_text())
-        target.rename(source)
+        if target.exists():
+            target.rename(source)
+        if backup.exists():
+            backup.rename(target)
         subprocess.run(['grub-mkconfig', '-o', '/boot/grub/grub.cfg'], check=True)
         raise
     subprocess.run(['grub-set-default', 'spx-mainline'], check=True)
@@ -163,6 +176,8 @@ def promote(args):
     # not a passive boot logger. Promoted boots use the ordinary journal only.
     recovery()
     os.sync()
+    if backup.exists():
+        shutil.rmtree(backup)
     print('Promoted ' + RELEASE + ': persistent spx-mainline, GNOME startup, '
           'no timed return; 6.18 remains a manual recovery entry.', flush=True)
 
@@ -177,6 +192,11 @@ def require_source_boot():
     assert os.uname().release == RELEASE and 'spx_boot=mainline-functional' in words
     attempts = [word.split('=', 1)[1] for word in words if word.startswith('spx_attempt=')]
     assert len(attempts) == 1 and re.fullmatch(r'[0-9]{8}[a-z0-9]+', attempts[0])
+    if 'spx_baseline=' + attempts[0] in words:
+        # Promoted boots deliberately do not rerun trial hardware workloads.
+        assert persistent_default() == 'spx-mainline'
+        recovery()
+        return
     current = json.loads((OUT.parent / attempts[0] / 'functional.json').read_text())
     assert current.get('complete') and current['boot_id'] == BOOT_ID
 
@@ -311,6 +331,16 @@ def prepare(args):
         shutil.copytree(installed, root, symlinks=True)
     else:
         run('modules-install', make + ['-j4', 'INSTALL_MOD_PATH=' + str(module_root), 'DEPMOD=true', 'modules_install'])
+    for module in args.initramfs_module:
+        assert args.reuse_installed_modules, '--initramfs-module requires retained root modules'
+        name = subprocess.check_output(['modinfo', '-F', 'name', str(module)], text=True).strip()
+        vermagic = subprocess.check_output(['modinfo', '-F', 'vermagic', str(module)], text=True).split()[0]
+        assert vermagic == RELEASE, 'initramfs module release mismatch'
+        target = Path(subprocess.check_output(['modinfo', '-b', str(module_root),
+                      '-k', RELEASE, '-n', name], text=True).strip())
+        target.resolve().relative_to(root.resolve())
+        assert target.suffix == '.ko' and module.suffix == '.ko'
+        shutil.copy2(module, target)
     if args.usbc:
         run('usbc-dp0-helper-build', ['make', '-C', str(HERE / 'live'),
             'KDIR=' + str(BUILD),
@@ -342,6 +372,9 @@ def prepare(args):
     # clock is initialized before root userspace, without waiting for NTP.
     assert 'MODULES=(' in text
     text = text.replace('MODULES=(', 'MODULES=(rtc_surface ', 1)
+    for module in args.initramfs_module:
+        name = subprocess.check_output(['modinfo', '-F', 'name', str(module)], text=True).strip()
+        text = text.replace('MODULES=(', 'MODULES=(' + name + ' ', 1)
     if args.usbc:
         # Instantiate DP0 before the USC forwarding module asks for its
         # deferred SSAM/DRM dependencies.
@@ -651,7 +684,9 @@ def boot(args):
         assert sha(Path('/boot/spx-trial-{ATTEMPT}'.format(ATTEMPT=ATTEMPT)) / name) == digest
     assert Path('/boot/grub/custom.cfg').read_bytes() == (OUT / 'entry.cfg').read_bytes()
     assert subprocess.check_output(['systemctl', 'is-enabled', 'spx-trial-return@' + ATTEMPT + '.timer'], text=True).strip() == 'enabled'
-    assert subprocess.check_output(['git', '-c', 'safe.directory=' + str(REPO), 'status', '--porcelain', '--untracked-files=no'], cwd=REPO, text=True).strip() == ''
+    changes = subprocess.check_output(['git', '-c', 'safe.directory=' + str(REPO), 'status', '--porcelain', '--untracked-files=no'], cwd=REPO, text=True).splitlines()
+    # Local progress and concurrent task notes may remain uncommitted.
+    assert all(line[3:].endswith('.md') for line in changes), changes
     # Retain the current mainline result before choosing the next trial.
     for word in Path('/proc/cmdline').read_text().split():
         if word.startswith('spx_attempt='):
@@ -2426,6 +2461,8 @@ def main():
                         help='pair WSA digital teardown reset with native stereo cold-init replay for one playback-reopen trial')
     parser.add_argument('--wcd-skip-speaker-reset', action='store_true',
                         help='test retaining RX7/RX8 reset state across playback close on the persistent SLIMbus path')
+    parser.add_argument('--initramfs-module', type=Path, action='append', default=[],
+                        help='with retained root modules, load this same-release module only in the trial initramfs')
     parser.add_argument('--replace-module', action='append', default=[],
                         help='changed unloaded/blacklisted module to install while this release runs')
     parser.add_argument('--return-seconds', type=int, default=3600)

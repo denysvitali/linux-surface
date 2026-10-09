@@ -2616,8 +2616,12 @@ int msm_dp_ctrl_on_stream(struct msm_dp_ctrl *msm_dp_ctrl, struct msm_dp_panel *
 	msm_dp_write_link(ctrl, REG_DP_STATE_CTRL, DP_STATE_CTRL_SEND_VIDEO);
 
 	ret = msm_dp_ctrl_wait4video_ready(ctrl);
-	if (ret)
+	if (ret) {
+		/* power_on stays false, so normal disable will skip this stream. */
+		msm_dp_write_link(ctrl, REG_DP_STATE_CTRL, 0);
+		msm_dp_ctrl_off_pixel_clk(msm_dp_ctrl);
 		return ret;
+	}
 
 	mainlink_ready = msm_dp_ctrl_mainlink_ready(ctrl);
 	drm_dbg_dp(ctrl->drm_dev,

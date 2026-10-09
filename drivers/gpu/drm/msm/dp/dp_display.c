@@ -54,6 +54,8 @@ struct msm_dp_display_private {
 	bool phy_initialized;
 	bool audio_supported;
 
+	/* Serialize HPD link maintenance against atomic stream transitions. */
+	struct mutex event_mutex;
 	struct mutex plugged_lock;
 	bool plugged;
 
@@ -513,7 +515,7 @@ static int msm_dp_irq_hpd_handle(struct msm_dp_display_private *dp)
 		drm_dbg_dp(dp->drm_dev, "sink_request=%d\n", sink_request);
 		if (sink_request & DS_PORT_STATUS_CHANGED)
 			rc = msm_dp_display_process_hpd_high(dp);
-		else
+		else if (dp->msm_dp_display.power_on)
 			rc = msm_dp_display_handle_irq_hpd(dp);
 	}
 
@@ -1216,6 +1218,7 @@ static int msm_dp_display_probe(struct platform_device *pdev)
 		(dp->msm_dp_display.connector_type == DRM_MODE_CONNECTOR_eDP);
 	dp->hpd_isr_status = 0;
 
+	mutex_init(&dp->event_mutex);
 	mutex_init(&dp->plugged_lock);
 
 	rc = msm_dp_display_get_io(dp);
@@ -1413,6 +1416,8 @@ void msm_dp_display_atomic_pre_enable(struct msm_dp *msm_dp_display,
 
 	dp = container_of(msm_dp_display, struct msm_dp_display_private, msm_dp_display);
 
+	guard(mutex)(&dp->event_mutex);
+
 	crtc = drm_atomic_get_new_crtc_for_encoder(state, msm_dp_display->bridge->encoder);
 	if (!crtc)
 		return;
@@ -1434,6 +1439,8 @@ void msm_dp_display_atomic_enable(struct msm_dp *msm_dp_display,
 
 	dp = container_of(msm_dp_display, struct msm_dp_display_private, msm_dp_display);
 
+	guard(mutex)(&dp->event_mutex);
+
 	rc = msm_dp_display_prepare_link(dp);
 	if (rc) {
 		DRM_ERROR("DP display prepare failed, rc=%d\n", rc);
@@ -1441,8 +1448,10 @@ void msm_dp_display_atomic_enable(struct msm_dp *msm_dp_display,
 	}
 
 	rc = msm_dp_display_enable(dp, dp->panel);
-	if (rc)
+	if (rc) {
 		DRM_ERROR("DP display enable failed, rc=%d\n", rc);
+		return;
+	}
 
 	rc = msm_dp_display_post_enable(msm_dp_display);
 	if (rc) {
@@ -1458,6 +1467,8 @@ void msm_dp_display_atomic_disable(struct msm_dp *dp)
 	struct msm_dp_display_private *msm_dp_display;
 
 	msm_dp_display = container_of(dp, struct msm_dp_display_private, msm_dp_display);
+
+	guard(mutex)(&msm_dp_display->event_mutex);
 
 	msm_dp_ctrl_push_idle(msm_dp_display->ctrl);
 }
@@ -1476,6 +1487,8 @@ void msm_dp_display_atomic_post_disable(struct msm_dp *dp)
 	struct msm_dp_display_private *msm_dp_display;
 
 	msm_dp_display = container_of(dp, struct msm_dp_display_private, msm_dp_display);
+
+	guard(mutex)(&msm_dp_display->event_mutex);
 
 	if (dp->is_edp)
 		msm_dp_hpd_unplug_handle(msm_dp_display);
@@ -1530,6 +1543,8 @@ void msm_dp_bridge_hpd_notify(struct drm_bridge *bridge,
 	struct msm_dp *msm_dp_display = msm_dp_bridge->msm_dp_display;
 	struct msm_dp_display_private *dp = container_of(msm_dp_display, struct msm_dp_display_private, msm_dp_display);
 	u32 hpd_link_status = 0;
+
+	guard(mutex)(&dp->event_mutex);
 
 	if (pm_runtime_resume_and_get(&msm_dp_display->pdev->dev)) {
 		DRM_ERROR("failed to pm_runtime_resume\n");
@@ -1594,6 +1609,7 @@ int msm_dp_bridge_hpd_irq(struct drm_bridge *bridge)
 
 	display = to_dp_bridge(bridge)->msm_dp_display;
 	dp = container_of(display, struct msm_dp_display_private, msm_dp_display);
+	mutex_lock(&dp->event_mutex);
 	mutex_lock(&dp->plugged_lock);
 	if (!dp->plugged) {
 		ret = -ENOTCONN;
@@ -1609,6 +1625,7 @@ int msm_dp_bridge_hpd_irq(struct drm_bridge *bridge)
 
 unlock_plugged:
 	mutex_unlock(&dp->plugged_lock);
+	mutex_unlock(&dp->event_mutex);
 unlock_hpd:
 	mutex_unlock(&bridge->hpd_mutex);
 	mutex_unlock(&bridge->hpd_state_mutex);

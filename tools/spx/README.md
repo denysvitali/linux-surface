@@ -38,6 +38,12 @@ selection/reboot; the promoted 7.x baseline stays the persistent default. Each a
 selected once. Results and short state files go to
 `/var/lib/spx-boot-diagnostics/functional/<attempt>`.
 
+For a display module that cannot be unloaded safely, combine
+`--reuse-installed-modules --initramfs-module /absolute/path/to/msm.ko`.
+The same-release replacement is loaded from the candidate initramfs; the
+installed root module and baseline initramfs remain unchanged. Keep the
+replacement in the promoted initramfs if the trial succeeds.
+
 The user-promoted baseline is `spx-mainline`, currently the verified WX
 7.3.0-rc2 candidate, with payloads in `/boot/spx-mainline`. It starts GNOME
 and has no automatic return timer. The 6.18 `spx-known-good` menu entry is

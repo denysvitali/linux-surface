@@ -32,3 +32,15 @@ The check completed again; that does not exclude delayed effects of its work.
 Journald now flushes every second rather than five minutes to preserve the
 last seconds of an abrupt failure. This hypothesis still needs a 7.x boot;
 the reset cause is not proven. Watchdog, GNOME and 7.x default remain enabled.
+
+**Display follow-up:** `2891a916` remained up past three minutes with the
+checker disabled, then reset after live DP mode and EDID refresh operations.
+The mode switch logged `msm_dp_ctrl_on_pixel_clk` warning at 191.7s (stream
+clocks already active); later hotplug refresh at 225.5s preceded lost contact.
+No retained panic proves the reset mechanism. Thus disabling trial work is
+not a complete bootloop fix. The legacy monitor helper also used card0 while
+this boot used card1 and required an absent helper. Its attempted replacement
+was withdrawn; its installed files were recovered after reset left them empty.
+Automatic override is disabled/masked. Boot `5a945344` remains on 7.x, with
+3440x1440 at 50Hz and user-confirmed eventual external display. Link training
+errors and the same clock warning recur; further live modesets are parked.

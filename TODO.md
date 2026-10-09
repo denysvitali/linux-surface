@@ -3,14 +3,26 @@
 Boxes closed: 3 of 47 (B02, B03, D02). Run `tools/spx/progress` for the
 current number. The order below is set by the user; agents do not reorder it.
 
+## Latest fix: baseline bootloop / external display (B01, U03)
+
+20261010a boot `c8158f7d` runs the patched MSM driver on 7.3.0-rc2. User
+confirms external display works; no prior DP training/clock errors appear.
+Promoted to persistent `spx-mainline`, both automatic trial timers disabled.
+6.18 remains manual recovery. Full B01/U03 acceptance remains open.
+
+- Desktop audio startup isolation was refuted: reset occurred with it skipped.
+- Removing automatic trial workloads was insufficient: later live DP changes
+  still reset. Keep those workloads off ordinary baseline boots.
+- DP event serialization and failed-stream clock cleanup now verify on a real
+  boot. Keep the automatic EDID override disabled. Do not repeat live modesets
+  just to extend this result. See `RESULT-20261010a.md`.
+
 ## Persistent baseline: 7.x (user requested 2026-10-09)
 
-Verified WX is promoted to `spx-mainline`, with boot files in
-`/boot/spx-mainline`. Current boot `c7ebfe0d` runs 7.3.0-rc2 with GNOME active.
-Ordinary boots and future trial returns use 7.x; the promoted baseline has
-no automatic return. Keep 6.18 as manual recovery only. Do not demote the
-persistent default without the user's instruction. No extra audio test is
-needed. Two observed 7.x boots do not establish full B01 reliability.
+20261010a is the persistent `spx-mainline` in `/boot/spx-mainline`.
+Ordinary boots and trial returns use 7.x. Promoted boots have no automatic
+return or functional workload. Do not demote the default to 6.18 without
+user instruction. The patched MSM module is installed for future initramfs builds.
 
 ## 1. Human session (pending, about 20 minutes)
 
