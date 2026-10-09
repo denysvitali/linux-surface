@@ -3176,7 +3176,10 @@ def main():
     if args.desktop_peak is not None and args.action not in ('serve', 'play-desktop'):
         parser.error('--desktop-peak requires serve or play-desktop')
     if args.desktop_peak is None:
-        args.desktop_peak = 1433
+        # Ordinary listening needs a useful slider range. Acoustic diagnostic
+        # actions retain the quiet default; --desktop-peak 1433 remains an
+        # explicit night mode for ordinary playback.
+        args.desktop_peak = 12000 if args.action == 'play-desktop' else 1433
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
     report = {'action': args.action, 'utc': stamp, 'playback_ready': False,
               'microphone_capture': False, 'success': False, 'parked': False,
