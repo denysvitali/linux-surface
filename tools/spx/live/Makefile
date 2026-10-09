@@ -1,7 +1,8 @@
-# Out-of-tree modules for the running known-good kernel.
+# Out-of-tree modules for the selected kernel (KDIR).
 # Build: make -C tools/spx/live
 # Load:  sudo insmod tools/spx/live/spx_usc_observe.ko
 # These are not installed over /lib/modules and are not part of the boot path.
+# spx_audio_rx_hold is a mainline WIP; see ../README.md before loading it.
 #
 # The 6.18 build tree's Module.symvers does not list the Surface Aggregator
 # exports this module calls. ssam.symvers is generated from the installed
@@ -12,6 +13,7 @@ SSAM_KO ?= /lib/modules/$(shell uname -r)/kernel/drivers/platform/surface/aggreg
 
 obj-m += spx_usc_observe.o
 obj-m += spx_dp0_enable.o
+obj-m += spx_audio_rx_hold.o
 
 all: ssam.symvers spx_dp0_dtbo.inc
 	$(MAKE) -C $(KDIR) M=$(CURDIR) KBUILD_EXTRA_SYMBOLS=$(CURDIR)/ssam.symvers modules

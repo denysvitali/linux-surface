@@ -28,7 +28,7 @@ tests. Leave the physical session pending; do not substitute synthetic checks.
    WR boot `f7854ae1` detected both speakers initially, then reopened left
    fell to the noise floor (0.262 versus 0.233 RMS) despite successful native
    reinitialization. See `RESULT-20261009wr.md`. Do not repeat this reset trial.
-2. **H-WCD-reset, untested (WS interrupted):** WCD keeps its SLIMbus playback stream active,
+2. **H-WCD-reset, refuted as sufficient (WT):** WCD keeps its SLIMbus playback stream active,
    but DAPM still resets RX7/RX8 on close. Suppress only those interpolator
    resets with `spx_skip_speaker_reset=1`, leaving clock/PA shutdown intact.
    Expected: existing microphone reopen test detects both channels on its
@@ -37,17 +37,30 @@ tests. Leave the physical session pending; do not substitute synthetic checks.
    acoustic result, return record or retained crash dump. The user does not
    know the restart cause. See `RESULT-20261009ws.md`; do not count this as
    an acoustic failure or blindly re-arm the same image.
+   WT boot `2c78c7c8` stayed available with automatic audio omitted. The manual
+   reopen test detected both initial channels, but second left was absent
+   (0.097 RMS versus 0.340 baseline). Both reset skips were logged.
+3. **H-RX-clock, live restoration failed; prevention untested:** the retained SLIM stream overflows when DAPM
+   stops the RX interpolator clocks (WT logs RX0 overflow at PCM close).
+   Use a live module to force only INT7_CLK/INT8_CLK supplies through DAPM,
+   preserving the card and DSP mappings. Expected: the existing acoustic
+   reopen test detects both channels across close; unload restores the votes.
+   WT: loaded `spx_audio_rx_hold` on the same boot; both supplies stayed on.
+   Guarded parked FIFO recovery succeeded, but the first left tone on the
+   already-failed route was absent (0.204 RMS versus 0.449 baseline). Module
+   unloaded and votes restored. This does not test prevention before the first
+   playback on a fresh DSP session. Do not repeat restoration on this session.
 
 User reminder (2026-10-09): minimize reboots; use module reloads wherever
-possible. Current boot is recovery 6.18 (`83ea2424`); latest-kernel modules
-cannot be loaded into that kernel. WS had a verified two-hour return window,
-but no normal return was recorded. No trial is armed. Further acoustic work
-needs a stable mainline session; first resolve or localize the interrupted
-startup instead of repeating the consumed automatic audio request.
-WT localization: keep the same candidate and WCD switch, but omit the
-automatic audio request. If mainline remains available after baseline
-checks, invoke the existing reopen test manually on that boot. This
-separates startup from playback without another audio-test variation.
+possible. Current WT boot `2c78c7c8` is mainline; startup and both manual
+experiments completed without reboot. See `RESULT-20261009wt.md`. Amps are
+parked, FIFO empty, temporary clock module unloaded, reset-skip flag disabled,
+and the original two-hour return remains armed. No further boot selected.
+Remaining clock-prevention test needs a fresh DSP session with the live
+module loaded before any playback. Do not unload the card/Q6 stack to get
+one: parked ASM mappings outlive the PCM opens. No more acoustic variants
+on the failed retained session; use the next clean mainline boot for that
+specific remaining hypothesis rather than rebooting after every test.
 
 ## GTK window corruption (D01/D02, workaround confirmed 2026-10-09)
 

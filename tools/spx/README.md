@@ -158,6 +158,16 @@ For speaker work, add `--audio` to preparation. This starts the native codecs
 with amplifier enables low (`GPIO 0x1e/0x18`) and suppresses desktop audio and
 old speaker bridges for that boot. `audio.py plan` is entirely offline.
 
+`live/spx_audio_rx_hold.ko` is an unverified clock-retention experiment for
+mainline. It uses DAPM to hold only `INT7_CLK` and `INT8_CLK`, without
+unregistering the codec/card or touching amplifier widgets. Build just it:
+`sudo make -C /var/tmp/spx-mainline-trial-20261004bg/work-build M="$PWD/tools/spx/live" ARCH=arm64 LOCALVERSION=+ spx_audio_rx_hold.ko`.
+Take the device lock, load with `sudo insmod tools/spx/live/spx_audio_rx_hold.ko`,
+and unload with `sudo rmmod spx_audio_rx_hold`. Unload restores the prior pin
+connections and clears its forced votes. WT verified load/unload but found
+that this did not restore an already-silent stream. Prevention before the
+first playback remains untested; do not present this module as a speaker fix.
+
 The experimental `--wsa-teardown-reset` option pairs digital reset at PA
 teardown with cold initialization and supply restoration in native stereo
 mode. It requires the updated WSA module. Use the existing `reopen` action
