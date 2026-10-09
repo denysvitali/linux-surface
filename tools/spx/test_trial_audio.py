@@ -15,6 +15,35 @@ trial = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(trial)
 
 
+class AudioCmdlineTests(unittest.TestCase):
+    def test_enable_removes_only_audio_blacklist_and_parks_amplifiers(self):
+        original = ['root=/dev/spx/root', 'wcd934x.spx_wsa_en_pin=2',
+                    'module_blacklist=wcd934x,soundwire_qcom,unrelated',
+                    'module_blacklist=snd-soc-wsa881x,snd_soc_wcd934x']
+        result = trial.audio_cmdline(original, True)
+        self.assertIn('module_blacklist=unrelated', result)
+        self.assertIn('root=/dev/spx/root', result)
+        self.assertNotIn('wcd934x.spx_wsa_en_pin=2', result)
+        self.assertIn('wcd934x.spx_wsa_en_pin=-1', result)
+        self.assertIn('wcd934x.spx_wsa_gpio_val=0x18', result)
+        self.assertIn('spx_audio=parked', result)
+        self.assertEqual(trial.audio_cmdline(result, True), result)
+
+    def test_enable_drops_empty_blacklist(self):
+        result = trial.audio_cmdline(['module_blacklist=wcd934x'], True)
+        self.assertFalse(any(w.startswith('module_blacklist=') for w in result))
+
+    def test_disable_preserves_unrelated_blocks_and_removes_audio_marker(self):
+        result = trial.audio_cmdline(['spx_audio=parked',
+                                      'module_blacklist=unrelated'], False)
+        self.assertNotIn('spx_audio=parked', result)
+        block = [w for w in result if w.startswith('module_blacklist=')]
+        self.assertEqual(len(block), 1)
+        self.assertEqual(set(block[0].split('=', 1)[1].split(',')),
+                         {'unrelated', 'wcd934x', 'soundwire_qcom',
+                          'snd_soc_wsa881x', 'snd_soc_wcd934x'})
+
+
 class TrialAudioFixture(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()

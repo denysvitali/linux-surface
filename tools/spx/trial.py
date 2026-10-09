@@ -26,6 +26,39 @@ REPO = Path('/home/dvitali/Documents/git/linux-surface-next')
 HERE = Path(__file__).resolve().parent
 
 
+def audio_cmdline(words, enabled):
+    """Select blocked or parked audio, including when inheriting a trial."""
+    audio_modules = {'wcd934x', 'soundwire_qcom', 'snd_soc_wsa881x',
+                     'snd_soc_wcd934x'}
+    blocked = []
+    cmdline = []
+    for word in words:
+        if word.startswith('module_blacklist='):
+            for name in word.split('=', 1)[1].split(','):
+                if name and name.replace('-', '_') not in audio_modules:
+                    if name not in blocked:
+                        blocked.append(name)
+        elif not word.startswith('spx_audio='):
+            cmdline.append(word)
+    if enabled:
+        cmdline = [word for word in cmdline if not word.startswith((
+            'wcd934x.spx_wsa_en_pin=', 'wcd934x.spx_wsa_gpio_',
+            'soundwire_qcom.spx_force_attach=', 'snd_soc_wsa881x.spx_enumerated_mode=',
+            'snd_soc_wsa881x.spx_write_only=', 'snd_soc_wcd934x.spx_persist_stream=',
+            'q6asm_dai.spx_force_timer_pacing='))]
+        cmdline += ['spx_audio=parked', 'wcd934x.spx_wsa_en_pin=-1',
+                    'wcd934x.spx_wsa_gpio_mask=0x1e', 'wcd934x.spx_wsa_gpio_dir=0x1e',
+                    'wcd934x.spx_wsa_gpio_val=0x18', 'soundwire_qcom.spx_force_attach=0',
+                    'snd_soc_wsa881x.spx_enumerated_mode=1', 'snd_soc_wsa881x.spx_write_only=0',
+                    'snd_soc_wcd934x.spx_persist_stream=1',
+                    'q6asm_dai.spx_force_timer_pacing=0']
+    else:
+        blocked += sorted(audio_modules)
+    if blocked:
+        cmdline.append('module_blacklist=' + ','.join(blocked))
+    return cmdline
+
+
 def sha(path):
     h = hashlib.sha256()
     with Path(path).open('rb') as stream:
@@ -235,22 +268,9 @@ def prepare(args):
             continue
         cmdline.append(word.replace('spx_attempt=20261004bf', 'spx_attempt={ATTEMPT}'.format(ATTEMPT=ATTEMPT)).replace('spx_boot=mainline-trial', 'spx_boot=mainline-functional'))
     assert not any(('spx_uc_shared_alloc' in word for word in cmdline))
-    if args.audio:
-        # Both amplifier SD_N pins stay low. Power-up needs a separately
-        # requested action, including a consumed-once acoustic feedback request.
-        cmdline = [word for word in cmdline if not word.startswith((
-            'wcd934x.spx_wsa_en_pin=', 'wcd934x.spx_wsa_gpio_',
-            'soundwire_qcom.spx_force_attach=', 'snd_soc_wsa881x.spx_enumerated_mode=',
-            'snd_soc_wsa881x.spx_write_only=', 'snd_soc_wcd934x.spx_persist_stream=',
-            'q6asm_dai.spx_force_timer_pacing='))]
-        cmdline += ['spx_audio=parked', 'wcd934x.spx_wsa_en_pin=-1',
-                    'wcd934x.spx_wsa_gpio_mask=0x1e', 'wcd934x.spx_wsa_gpio_dir=0x1e',
-                    'wcd934x.spx_wsa_gpio_val=0x18', 'soundwire_qcom.spx_force_attach=0',
-                    'snd_soc_wsa881x.spx_enumerated_mode=1', 'snd_soc_wsa881x.spx_write_only=0',
-                    'snd_soc_wcd934x.spx_persist_stream=1',
-                    'q6asm_dai.spx_force_timer_pacing=0']
-    else:
-        cmdline.append('module_blacklist=wcd934x,soundwire_qcom,snd_soc_wsa881x,snd_soc_wcd934x')
+    # Park both amplifier enables when audio is allowed. Remove any inherited
+    # audio blacklist so --audio can actually load the drivers.
+    cmdline = audio_cmdline(cmdline, args.audio)
     cmdline = [word for word in cmdline if not word.startswith('hci_uart.spx_qca_setup_trace=')]
     if args.qca_setup_trace:
         cmdline.append('hci_uart.spx_qca_setup_trace=1')
