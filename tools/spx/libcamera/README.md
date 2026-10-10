@@ -66,3 +66,21 @@ ROI fell from 56.8% to 0%; chart details returned. This is user-selected exposur
 compensation, not general colour calibration. Colours remain muted and neutral
 patch ratios vary spatially. Full C02 acceptance remains open.
 See [the result](../boot-diagnostics/RESULT-20261010-front-exposure.md).
+
+The explicit `tuning/daylight/simple/ov5693.yaml` option enables the front
+sensor's vendor normal-light daylight CCM through the existing simple IPA.
+Set `LIBCAMERA_IPA_CONFIG_PATH` to the absolute `tuning/daylight` directory
+when launching the private cam application. Keep `LIBCAMERA_SOFTISP_MODE=cpu`
+for the verified path. The single matrix is for the validated daylight scene,
+not a complete temperature/exposure-dependent tuning profile; it is not loaded
+by default. Source coefficients are identical across three front IPE profiles
+in the 4600..10000K region; offsets are zero and RGB ordering is supported by
+vendor conversion code. BPS/IFE matrices are identity.
+
+Verified: 240 front frames around29fps with the requested matrix in metadata;
+chart colours are visibly more saturated, but neutral ratios vary spatially.
+GNOME Night Light was2700K; temporarily disabling it changed the scene estimate
+from3176K to5059K. Restored afterward. Capture viewing requires the desktop
+unlocked and displays on; hold a normal GNOME idle inhibitor during a bounded
+capture. Screen-off noise is not a colour result. See
+[the colour result](../boot-diagnostics/RESULT-20261010-front-colour.md).
