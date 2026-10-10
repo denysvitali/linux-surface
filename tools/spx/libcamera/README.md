@@ -1,5 +1,15 @@
 # Surface Pro X monochrome software ISP
 
+`0004-ov7251-gain-units.patch` adds the missing OV7251 libipa sensor helper.
+It reuses the existing Raspberry Pi OV7251 conversion: gain code16 is1x,
+code96 is6x. The native V4L2 driver writes the code directly. The helper
+leaves black-level estimation and illumination unchanged. Without it, the
+fallback reports code16 as16x and prevents normal low-gain AE adjustments.
+Private build capture on2026-10-10 verified120 processed IR frames around
+30fps, equal RGB channels, metadata gain6x matching native control96; the
+viewed image resolves scene edges. This is a gain-unit fix, not calibration.
+See [the three-camera result](../boot-diagnostics/RESULT-20261010-camera-images.md).
+
 `0001-softisp-mono-raw10.patch` applies to upstream libcamera **v0.7.2**.
 It converts CSI-2 packed monochrome RAW10 to RGB/BGR with equal channels,
 retains all ten input bits, and provides scalar statistics for the existing
