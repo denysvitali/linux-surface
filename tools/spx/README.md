@@ -1,5 +1,21 @@
 # Surface Pro X trial tool
 
+## Read-only hardware gap report
+
+`python3 tools/spx/hw_validation.py --output /tmp/spx-hardware` writes Markdown
+and JSON with current boot/kernel identity, interface observations, and every
+remaining requirement from the frozen `PORT-CHECKLIST.md`. It never ticks boxes.
+It reuses `../hw-validation/hwv.py` (override with `--suite`), under the shared
+device lock. Suspected gaps are leads, not hardware-failure verdicts. Probe
+errors remain unknown. Some interfaces have no safe automatic probe.
+
+No active tests, camera probing/capture, raw sensor sampling, EGL contexts,
+sound, load, suspend, module changes or reboots run. The sibling `../validation`
+app supplies hands-on input/panel/sensor tests; it does not establish full box
+acceptance either. Use `TODO.md` for blocker order and current findings.
+
+Offline checks: `python3 -m unittest discover -s tools/spx -p test_hw_validation.py`.
+
 Use `trial.py` for preparation, installation, one-shot boot and bounded return.
 It reuses the completed kernel at
 `/var/tmp/spx-mainline-trial-20261004bg/work-build` and keeps its release
@@ -22,14 +38,19 @@ Installed files:
   `multi-user.target.wants`.
 - `audio-boot-guard.conf` as `/etc/systemd/user/UNIT.d/40-spx-native-speakers.conf`
   for PipeWire service/socket, pipewire-pulse service/socket and WirePlumber.
-- Root-owned `/etc/spx/speaker-gain-step`, containing `2` for +3 dB on both
-  speakers. Values0/1/2 select0/+1.5/+3 dB. The owner applies changes on the
-  same PCM; do not restart playback merely to adjust gain.
+- Root-owned `/etc/spx/speaker-gain-step`; values0..12 select0..18 dB
+  in1.5 dB steps. The2026-10-11 handoff records6 (+9 dB), not yet assessed
+  for distortion. There is no validated speaker protection; do not raise it
+  automatically. The owner applies changes on the same PCM; do not restart
+  playback merely to adjust gain.
+- `pcm_feed.c` builds the native ALSA feeder used for10 ms periods. Current
+  boot uses a runtime MultiMedia2 override; installed MultiMedia1 startup
+  is unverified. See `RESULT-20261011-speaker-latency.md`.
 
-Startup uses +1.5 dB, then applies the saved +3 dB on the established stream
+Startup uses +1.5 dB, then applies the saved gain on the established stream
 after five seconds. Digital gain is unity; GNOME's slider and volume keys
 control the listening level. Startup and shutdown preserve the user's sink
-volume, balance and mute. The native amplifier protection settings are retained.
+volume, balance and mute. Protection and distortion at the higher gain remain unvalidated.
 There is no automated test signal or microphone capture during startup.
 
 Check `systemctl status spx-desktop-playback` and
