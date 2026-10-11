@@ -26,7 +26,7 @@ def release():
 def prepare():
     subprocess.run([str(LOCK_TOOL), 'acquire', 'device', OWNER], check=True)
     try:
-        audio.need(GAIN.read_text().strip() in ('0', '1', '2'), 'Invalid saved gain')
+        audio.need(GAIN.read_text().strip() in audio.PA_GAIN_STEPS, 'Invalid saved gain')
         deadline = time.monotonic() + 60
         while True:
             try:

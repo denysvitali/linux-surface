@@ -192,7 +192,7 @@ def save_run_result(directory, report):
     temporary.replace(directory / name)
 
 
-def configure_stereo(card, report):
+def configure_stereo(card, report, device=0):
     """Use discovered control IDs, including ALSA's DAPM name variants."""
     base = ['amixer', '-c', str(card)]
     result = subprocess.run(base + ['controls'], text=True, capture_output=True,
@@ -219,7 +219,9 @@ def configure_stereo(card, report):
         for input_number in range(3):
             settings.append((f'RX INT{chain}_1 MIX1 INP{input_number}',
                              f'RX{channel}' if input_number == 0 else 'ZERO'))
-    settings.append(('SLIMBUS_2_RX Audio Mixer MultiMedia1', '1'))
+    for index in range(3):
+        settings.append((f'SLIMBUS_2_RX Audio Mixer MultiMedia{index + 1}',
+                         '1' if index == device else '0'))
     report['mixer'] = []
     for name, value in settings:
         variants = [name]
@@ -619,15 +621,30 @@ class OwnedCapture:
 class OwnedPCM:
     """One fresh aplay, continuously fed silence unless a finite tone is queued."""
 
-    def __init__(self, card, *, pipe_bytes=None):
+    def __init__(self, card, *, pipe_bytes=None, device=0, feeder=None,
+                 period_frames=480, periods=8, stats=None):
         self.log = tempfile.TemporaryFile()
+        # The low-latency feeder owns timing: it supplies silence itself,
+        # never stops the PCM and takes the desktop monitor on stdin directly.
+        self.direct = feeder is not None
+        self.stats = stats
+        if self.direct:
+            # Small periods complete in bursts; keep the kernel's missing
+            # WRITE_DONE watchdog well clear of ordinary DSP jitter.
+            Path('/sys/module/q6asm_dai/parameters/spx_period_adjust_ms').write_text('40\n')
+            command = [str(feeder), f'hw:{card},{device}', str(period_frames), str(periods)]
+            if stats is not None:
+                command.append(str(stats))
+        else:
+            command = ['aplay', '--fatal-errors', '-D', f'hw:{card},{device}', '-t', 'raw',
+                       '-f', 'S16_LE', '-r', '48000', '-c', '2',
+                       '--period-size=2400', '--buffer-size=12000']
         self.process = subprocess.Popen(
-            ['aplay', '--fatal-errors', '-D', f'hw:{card},0', '-t', 'raw', '-f', 'S16_LE',
-             '-r', '48000', '-c', '2', '--period-size=2400', '--buffer-size=12000'],
+            command,
             stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=self.log, bufsize=0,
             pipesize=pipe_bytes if pipe_bytes is not None else -1)
         os.set_blocking(self.process.stdin.fileno(), False)
-        self.status = Path(f'/proc/asound/card{card}/pcm0p/sub0/status')
+        self.status = Path(f'/proc/asound/card{card}/pcm{device}p/sub0/status')
         self.stop = threading.Event()
         self.pending = queue.Queue()
         self.error = None
@@ -640,6 +657,9 @@ class OwnedPCM:
     def feed(self):
         try:
             fd = self.process.stdin.fileno()
+            if getattr(self, 'direct', False):
+                self.stop.wait()
+                return
             while not self.stop.is_set():
                 try:
                     data, done = self.pending.get_nowait()
@@ -858,6 +878,27 @@ class DesktopMonitor:
         self.closed = True
 
 
+class DirectMonitor:
+    """Monitor process wired straight into the low-latency PCM feeder."""
+
+    def __init__(self, process):
+        self.process = process
+        self.error = None
+        self.forward = True
+        self.peak = self.input_peak = None  # Samples never pass through Python.
+        self.max_interarrival_seconds = None
+        self.closed = False
+
+    def healthy(self):
+        need(self.process.poll() is None, 'Desktop monitor process exited')
+
+    def close(self):
+        if self.closed:
+            return
+        stop_desktop_process(self.process)
+        self.closed = True
+
+
 def stop_desktop_process(process):
     """Each desktop child owns a session, including its runuser child."""
     if process.poll() is None:
@@ -1055,14 +1096,21 @@ class DesktopGraph:
         self.run('pactl', 'set-default-sink', 'spx_speakers')
         self.sink = 'spx_speakers'
         self.public_sink_id = sink['index']
-        process = subprocess.Popen(self.command + [
+        command = self.command + [
             'parec', '--raw', '--device=spx_speakers.monitor', '--format=s16le',
-            '--rate=48000', '--channels=2', '--latency-msec=5', '--process-time-msec=5'],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0,
-            start_new_session=True, pipesize=4096 if low_latency else -1)
-        self.monitor = DesktopMonitor(process, ordinary=True, desktop_peak=desktop_peak,
-                                      queue_blocks=4 if low_latency else 40)
-        self.monitor.thread.start()
+            '--rate=48000', '--channels=2', '--latency-msec=5', '--process-time-msec=5']
+        if getattr(pcm, 'direct', False):
+            need(desktop_peak == 32768, 'Direct desktop playback is unity gain only')
+            process = subprocess.Popen(command, stdout=pcm.process.stdin,
+                                       stderr=subprocess.DEVNULL, start_new_session=True)
+            self.monitor = DirectMonitor(process)
+        else:
+            process = subprocess.Popen(command,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0,
+                start_new_session=True, pipesize=4096 if low_latency else -1)
+            self.monitor = DesktopMonitor(process, ordinary=True, desktop_peak=desktop_peak,
+                                          queue_blocks=4 if low_latency else 40)
+            self.monitor.thread.start()
         pcm.set_source(self.monitor)
         self.report['ordinary_sink'] = 'spx_speakers'
 
@@ -2386,9 +2434,13 @@ def verify_public_playback(report, pcm, graph, capture, desktop_peak=1433, *, co
         evidence['seconds'] = time.monotonic() - started
 
 
+# Windows runs these amplifiers at code 0 (+18 dB, step 12) in register mode.
+PA_GAIN_STEPS = tuple(str(step) for step in range(13))
+
+
 def set_desktop_pa_gain(card, step):
-    need(type(step) is int and 0 <= step <= 2,
-         'Ordinary amplifier gain must be 0, 1.5 or 3 dB')
+    need(type(step) is int and 0 <= step <= 12,
+         'Ordinary amplifier gain step must be 0..12 (1.5 dB each)')
     for side in ('Left', 'Right'):
         subprocess.run(['amixer', '-q', '-c', str(card), 'cset',
                         f'name=Spkr{side} PA Volume', str(step)],
@@ -2465,8 +2517,8 @@ def serve_desktop(args, report, pcm, graph, paths, mapping):
     gain_control = (saved_gain or args.output / 'pa-gain-step') if playback_only else None
     if gain_control is not None:
         if saved_gain is not None:
-            need(gain_control.read_text().strip() in ('0', '1', '2'),
-                 'Saved amplifier gain must be 0, 1 or 2')
+            need(gain_control.read_text().strip() in PA_GAIN_STEPS,
+                 'Saved amplifier gain step must be 0..12')
         else:
             gain_control.write_text(str(pa_gain_step) + '\n')
             gain_control.chmod(0o600)
@@ -2509,7 +2561,7 @@ def serve_desktop(args, report, pcm, graph, paths, mapping):
                     # Serialized in this owner: mixer changes cannot race the
                     # exact-gain health check. No PCM or graph restart needed.
                     value = gain_control.read_text().strip()
-                    if now >= gain_apply_after and value in ('0', '1', '2') and int(value) != pa_gain_step:
+                    if now >= gain_apply_after and value in PA_GAIN_STEPS and int(value) != pa_gain_step:
                         requested = int(value)
                         set_desktop_pa_gain(report['pcm']['card'], requested)
                         check_stereo(mapping, paths, initialized=True, pa_gain_step=requested)
@@ -2553,8 +2605,8 @@ def playback_state(path):
 
 
 def check_stereo(mapping, paths, initialized=False, observations=None, *, pa_gain_step=0):
-    need(type(pa_gain_step) is int and 0 <= pa_gain_step <= 2,
-         'Ordinary amplifier gain must be 0, 1.5 or 3 dB')
+    need(type(pa_gain_step) is int and 0 <= pa_gain_step <= 12,
+         'Ordinary amplifier gain step must be 0..12 (1.5 dB each)')
     snapshot = state()
     codecs = {unit: playback_state(path) for unit, path in paths.items()}
     observation = {'master': snapshot, 'codec_shadows': codecs, 'passed': False}
@@ -2595,11 +2647,20 @@ def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder
         need((path / 'spx_late_init').exists() and (path / 'spx_playback_state').exists(),
              'Per-codec late initialization interface is missing')
     card = report['before']['internal_cards'][0]
-    configure_stereo(card, report)
+    device = getattr(args, 'pcm_device', 0) if args.action == 'play-desktop' else 0
+    configure_stereo(card, report, device)
     assert_pcm_idle()
-    pcm = OwnedPCM(card, pipe_bytes=4096) if args.action == 'play-desktop' else OwnedPCM(card)
+    if args.action == 'play-desktop':
+        feeder = getattr(args, 'feeder', None)
+        pcm = OwnedPCM(card, pipe_bytes=4096, device=device, feeder=feeder,
+                       period_frames=getattr(args, 'period_frames', 480),
+                       periods=getattr(args, 'periods', 8),
+                       stats=args.output / 'feeder.json' if feeder else None)
+    else:
+        pcm = OwnedPCM(card)
     pcm_holder.append(pcm)  # Outer cleanup parks amplifiers before closing PCM.
-    report['pcm'] = {'pid': pcm.process.pid, 'card': card, 'format': 'S16_LE/48000/stereo'}
+    report['pcm'] = {'pid': pcm.process.pid, 'card': card, 'device': device,
+                     'direct': pcm.direct, 'format': 'S16_LE/48000/stereo'}
     report['pcm']['feed'] = pcm.feed_stats
     deadline = time.monotonic() + 8
     while True:
@@ -2642,8 +2703,8 @@ def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder
     if args.action == 'play-desktop':
         pa_gain_step = getattr(args, 'pa_gain_step', 0)
         if pa_gain_step:
-            need(type(pa_gain_step) is int and 0 <= pa_gain_step <= 2,
-                 'Ordinary amplifier gain must be 0, 1.5 or 3 dB')
+            need(type(pa_gain_step) is int and 0 <= pa_gain_step <= 12,
+                 'Ordinary amplifier gain step must be 0..12 (1.5 dB each)')
             # Change both addressed codecs on digital silence, after native
             # initialization. Driver performs the required ramp; any failure
             # unwinds through the existing park-first cleanup.
@@ -3211,8 +3272,15 @@ def main():
                         help='ordinary desktop session duration, 0 until stopped or 1..86400 seconds (default: 3600)')
     parser.add_argument('--desktop-peak', type=lambda value: desktop_peak_limit(value, 32768),
                         help='PCM peak: serve 1433..12000 (default 1433); play-desktop 1433..32768 (default unity)')
-    parser.add_argument('--pa-gain-step', type=int, choices=(0, 1, 2), default=0,
+    parser.add_argument('--pa-gain-step', type=int, choices=range(13), default=0,
                         help='play-desktop only: equal amplifier gain in 1.5 dB steps (default 0)')
+    parser.add_argument('--pcm-device', type=int, choices=(0, 1, 2), default=0,
+                        help='play-desktop only: MultiMedia front end (a fresh one takes a new geometry)')
+    parser.add_argument('--feeder', type=Path,
+                        help='play-desktop only: low-latency spx-pcm-feed binary replacing aplay')
+    parser.add_argument('--period-frames', type=int, default=480,
+                        help='play-desktop feeder period (fixed per front end until reboot)')
+    parser.add_argument('--periods', type=int, choices=range(4, 9), default=8)
     parser.add_argument('--pa-gain-file', type=Path,
                         help='play-desktop only: persistent requested gain step, applied after startup')
     parser.add_argument('--desktop-controls', action='store_true',
@@ -3220,6 +3288,10 @@ def main():
     args = parser.parse_args()
     if args.pa_gain_file is not None and args.action != 'play-desktop':
         parser.error('--pa-gain-file requires play-desktop')
+    if (args.pcm_device or args.feeder) and args.action != 'play-desktop':
+        parser.error('--pcm-device/--feeder require play-desktop')
+    if args.feeder and (args.desktop_peak or 32768) != 32768:
+        parser.error('--feeder forwards at unity gain only')
     if args.pa_gain_step and args.action != 'play-desktop':
         parser.error('--pa-gain-step requires play-desktop')
     if args.action == 'play-desktop' and args.output is None:
