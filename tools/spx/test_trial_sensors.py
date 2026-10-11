@@ -76,6 +76,41 @@ class SensorStaging(unittest.TestCase):
             generator.generate(root, 'spx_boot=mainline-functional spx_sensors=1')
             self.assertIn('BindsTo=spx-sensors.service', (root / 'iio-sensor-proxy.service.d/50-spx-sensors.conf').read_text())
 
+    def test_persistent_baseline_opt_in_and_trial_isolation(self):
+        cases = [
+            ('spx_baseline=20261010a', 'private', True),
+            ('spx_baseline=20261010a', 'system', True),
+            ('spx_baseline=20261010a spx_sensors=0', 'private', False),
+            ('spx_baseline=20261010a spx_sensors=1 spx_sensors=0', 'private', False),
+            ('spx_baseline=20261010a', None, False),
+            ('spx_baseline=20261010a', 'typo', False),
+            ('spx_boot=known-good', 'private', False),
+            ('spx_boot=mainline-functional spx_attempt=20261011a', 'private', False),
+        ]
+        for cmdline, config, enabled in cases:
+            with self.subTest(cmdline=cmdline, config=config), tempfile.TemporaryDirectory() as directory:
+                out = Path(directory)
+                generator.generate(out, cmdline, config)
+                provider = out / 'spx-sensors.service.d/50-spx-baseline.conf'
+                self.assertEqual(provider.exists(), enabled)
+                if not enabled:
+                    self.assertEqual(list(out.iterdir()), [])
+                    continue
+                self.assertIn('ConditionKernelCommandLine=\n', provider.read_text())
+                self.assertEqual((out / 'multi-user.target.wants/spx-sensors.service').readlink(),
+                                 Path('/etc/systemd/system/spx-sensors.service'))
+                for unit in ('spx-sensors.service', 'iio-sensor-proxy.service'):
+                    private = out / (unit + '.d/60-spx-libssc.conf')
+                    self.assertEqual(private.exists(), config == 'private')
+                self.assertFalse((out / 'spx-sensors-recovery.service.d').exists())
+
+    def test_trial_library_choice_overrides_persistent_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)
+            generator.generate(out, 'spx_sensors=1', 'private')
+            self.assertFalse((out / 'spx-sensors.service.d/60-spx-libssc.conf').exists())
+            self.assertFalse((out / 'spx-sensors.service.d/50-spx-baseline.conf').exists())
+
     def test_private_library_is_scoped_to_opted_in_service_jobs(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

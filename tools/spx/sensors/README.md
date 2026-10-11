@@ -1,8 +1,8 @@
 # Surface Pro X SensorsPD startup
 
 This opt-in service retains the first SensorsPD listener for the entire desktop
-session. It runs only with `spx_sensors=1`, keeps the secure FastRPC device private
-to root, and does not retry attachments. A libssc metadata probe gates systemd
+session. It runs with `spx_sensors=1` or the explicit persistent baseline opt-in
+below, keeps the secure FastRPC device private to root, and does not retry attachments. A libssc metadata probe gates systemd
 readiness; a systemd generator adds proxy dependencies only on opted-in boots.
 The scoped udev rule adds the missing `ssc-accel` discovery tag; the existing
 iio-sensor-proxy rule pulls in the proxy. No sensor stream or desktop policy
@@ -35,6 +35,39 @@ properties after boot. Keep polkit's desktop claim policy intact.
 
 Offline tests: `python3 -B tools/spx/sensors/test_supervise.py` and
 `python3 -B tools/spx/test_trial_sensors.py`.
+
+## Persistent baseline opt-in (WIP, not deployed)
+
+The generator also accepts `/etc/spx/sensors-enabled`, containing `private`
+for the installed private libssc or `system` for the system library. This is an
+explicit coordinator opt-in, not a default. It applies only to promoted boots
+with `spx_baseline=...`; `spx_sensors=0` disables it. Recovery and ordinary
+trial boots ignore the file. Trials keep their existing command-line library
+selection. No microphone source, recording or speaker action is added.
+
+Before opting in, confirm the promoted DTB exposes the working SLPI/SDSP
+backend and ownership lease, and the installed vendor configuration, daemon,
+readiness binary and chosen library match the CO/DD working stack. A file
+cannot repair a missing DT backend or firmware contract. Install this generator
+through the existing sensor staging path; do not restart the retained listener
+merely to update its files. For the next ordinary baseline startup, the generated
+unit override replaces the trial-only condition, queues the provider and keeps
+the proxy bound to its real readiness. Startup failure still has `Restart=no`;
+automatic reset/recovery remains separately trial-opted-in and unvalidated.
+
+Remove the file or use `spx_sensors=0` to opt out on the next boot. Removal is
+not an instruction to stop live SensorsPD or SLPI. Coordinated same-boot
+activation requires exclusive device ownership, confirmed absence of an old
+attachment and the established backend prerequisites; do not automatically
+restart either service. Expected functional check: provider reaches READY once,
+the initial host remains retained, and the desktop exposes motion/compass to an
+ordinary seated client without recovery or new DSP faults. Physical axes and
+calibration still need the user.
+
+TCS3430 exposes X/Y/Z/IR channels, not a verified lux conversion. Existing
+BW evidence had all-zero channels and no physical light stimulus. This change
+does not invent a lux source or close S01. Microphone integration remains
+explicitly opt-in under the existing audio policy; this service never captures.
 
 ## Private libssc matrix compatibility fix
 
