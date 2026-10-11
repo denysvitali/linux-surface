@@ -2,19 +2,30 @@
 
 ## Read-only hardware gap report
 
-`python3 tools/spx/hw_validation.py --output /tmp/spx-hardware` writes Markdown
-and JSON with current boot/kernel identity, interface observations, and every
-remaining requirement from the frozen `PORT-CHECKLIST.md`. It never ticks boxes.
-It reuses `../hw-validation/hwv.py` (override with `--suite`), under the shared
-device lock. Suspected gaps are leads, not hardware-failure verdicts. Probe
-errors remain unknown. Some interfaces have no safe automatic probe.
+The validator is standalone Go, with no Python or sibling runtime dependency.
+Build and test it in its own module:
 
-No active tests, camera probing/capture, raw sensor sampling, EGL contexts,
-sound, load, suspend, module changes or reboots run. The sibling `../validation`
-app supplies hands-on input/panel/sensor tests; it does not establish full box
-acceptance either. Use `TODO.md` for blocker order and current findings.
+```sh
+cd tools/spx/hw-validation
+go test ./...
+go build -o /tmp/spx-hw-validation .
+```
 
-Offline checks: `python3 -m unittest discover -s tools/spx -p test_hw_validation.py`.
+From the kernel repository root, run:
+
+```sh
+/tmp/spx-hw-validation --repo . --output /tmp/spx-hardware
+```
+
+Markdown and JSON include current boot/kernel identity, cached interface
+observations, kernel configuration and every remaining requirement from the
+frozen `PORT-CHECKLIST.md`. It never ticks boxes. It takes the shared device
+lock; missing tools and unreadable evidence remain unknown. Suspected gaps
+are leads, not hardware-failure verdicts. No active tests, camera probing,
+capture, raw sensor sampling, EGL contexts, sound, load, sleep, module changes
+or reboots run. The sibling `../validation` app supplies hands-on tests;
+`../hw-validation` informed the probe design but is not required to run.
+Use `TODO.md` for blocker order and current findings.
 
 Use `trial.py` for preparation, installation, one-shot boot and bounded return.
 It reuses the completed kernel at
