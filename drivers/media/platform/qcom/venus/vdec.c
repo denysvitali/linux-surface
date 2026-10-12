@@ -1570,6 +1570,10 @@ static void vdec_event_change(struct venus_inst *inst,
 	inst->next_buf_last = true;
 	inst->reconfig = true;
 	v4l2_event_queue_fh(&inst->fh, &ev);
+	if (venus_hfi_session_diag(inst->core))
+		dev_info(dev, "session diag source_change queued sid=%#x state=%u width=%u height=%u count=%u error=%#x\n",
+			 inst->session_id, inst->codec_state, inst->width,
+			 inst->height, inst->fw_min_cnt, inst->error);
 	wake_up(&inst->reconf_wait);
 
 	mutex_unlock(&inst->lock);

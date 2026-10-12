@@ -1367,12 +1367,15 @@ void venus_hfi_session_timeout(struct venus_inst *inst, u32 command)
 	struct venus_hfi_device *hdev = to_hfi_priv(core);
 	struct hfi_queue_header *cmd, *msg;
 	u32 cmd_read, cmd_write, msg_read, msg_write, irq_status;
+	u32 irq_live, irq_mask, msg_rx_req, msg_tx_req, qsize;
+	u32 words[3] = { 0 }, nwords = 0, pending, i;
+	u32 *data;
 
 	/* Timeout evidence must survive exhaustion of the startup line budget. */
 	if (!READ_ONCE(spx_hfi_startup_diag) || !IS_IRIS1(core))
 		return;
 
-	/* Observe shared queue headers only; do not consume a late reply. */
+	/* Observe shared queues only; do not consume a late reply. */
 	mutex_lock(&hdev->lock);
 	cmd = hdev->queues[IFACEQ_CMD_IDX].qhdr;
 	msg = hdev->queues[IFACEQ_MSG_IDX].qhdr;
@@ -1380,13 +1383,29 @@ void venus_hfi_session_timeout(struct venus_inst *inst, u32 command)
 	cmd_write = READ_ONCE(cmd->write_idx);
 	msg_read = READ_ONCE(msg->read_idx);
 	msg_write = READ_ONCE(msg->write_idx);
+	msg_rx_req = READ_ONCE(msg->rx_req);
+	msg_tx_req = READ_ONCE(msg->tx_req);
+	qsize = READ_ONCE(msg->q_size);
 	irq_status = READ_ONCE(hdev->irq_status);
+	irq_live = readl(core->wrapper_base + WRAPPER_INTR_STATUS);
+	irq_mask = readl(core->wrapper_base + WRAPPER_INTR_MASK);
+	if (qsize && qsize <= IFACEQ_QUEUE_SIZE / 4 &&
+	    msg_read < qsize && msg_write < qsize && msg_read != msg_write) {
+		pending = (msg_write + qsize - msg_read) % qsize;
+		nwords = min_t(u32, pending, ARRAY_SIZE(words));
+		data = hdev->queues[IFACEQ_MSG_IDX].qmem.kva;
+		/* The firmware write index publishes the queued packet data. */
+		rmb();
+		for (i = 0; i < nwords; i++)
+			words[i] = READ_ONCE(data[(msg_read + i) % qsize]);
+	}
 	mutex_unlock(&hdev->lock);
 
 	dev_info(core->dev,
-		 "SPX Venus session timeout cmd=%#x sid=%u state=%u irq=%#x cmdq=%u/%u msgq=%u/%u (read/write)\n",
+		 "SPX Venus session timeout cmd=%#x sid=%u state=%u irq=%#x live=%#x mask=%#x cmdq=%u/%u msgq=%u/%u (read/write) rx=%u tx=%u head[%u]=%#x/%#x/%#x\n",
 		 command, inst->session_id, inst->state, irq_status,
-		 cmd_read, cmd_write, msg_read, msg_write);
+		 irq_live, irq_mask, cmd_read, cmd_write, msg_read, msg_write,
+		 msg_rx_req, msg_tx_req, nwords, words[0], words[1], words[2]);
 }
 
 void venus_hfi_queue_setup_timeout(struct venus_inst *inst, const char *phase,

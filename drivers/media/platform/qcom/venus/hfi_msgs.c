@@ -25,7 +25,7 @@ static void event_seq_changed(struct venus_core *core, struct venus_inst *inst,
 {
 	enum hfi_version ver = core->res->hfi_version;
 	struct hfi_event_data event = {0};
-	int num_properties_changed;
+	int num_properties_changed = pkt->event_data2;
 	struct hfi_framesize *frame_sz;
 	struct hfi_profile_level *profile_level;
 	struct hfi_bit_depth *pixel_depth;
@@ -34,9 +34,10 @@ static void event_seq_changed(struct venus_core *core, struct venus_inst *inst,
 	struct hfi_buffer_requirements *bufreq;
 	struct hfi_extradata_input_crop *crop;
 	struct hfi_dpb_counts *dpb_count;
-	u32 ptype, rem_bytes;
+	u32 ptype = 0, rem_bytes = 0;
 	u32 size_read = 0;
 	u8 *data_ptr;
+	bool diag = venus_hfi_session_diag(core);
 
 	inst->error = HFI_ERR_NONE;
 
@@ -46,8 +47,7 @@ static void event_seq_changed(struct venus_core *core, struct venus_inst *inst,
 		break;
 	default:
 		inst->error = HFI_ERR_SESSION_INVALID_PARAMETER;
-		inst->ops->event_notify(inst, EVT_SYS_EVENT_CHANGE, &event);
-		return;
+		goto done;
 	}
 
 	event.event_type = pkt->event_data1;
@@ -153,11 +153,16 @@ static void event_seq_changed(struct venus_core *core, struct venus_inst *inst,
 		num_properties_changed--;
 	} while (num_properties_changed > 0);
 
-	inst->ops->event_notify(inst, EVT_SYS_EVENT_CHANGE, &event);
-	return;
+	goto done;
 
 error:
 	inst->error = HFI_ERR_SESSION_INSUFFICIENT_RESOURCES;
+done:
+	if (diag)
+		dev_info(core->dev, "session diag sequence sid=%#x error=%#x event=%#x width=%u height=%u count=%u ptype=%#x remaining=%u properties_left=%d\n",
+			 pkt->shdr.session_id, inst->error, event.event_type,
+			 event.width, event.height, event.buf_count, ptype,
+			 rem_bytes, num_properties_changed);
 	inst->ops->event_notify(inst, EVT_SYS_EVENT_CHANGE, &event);
 }
 
@@ -845,10 +850,17 @@ u32 hfi_process_msg_packet(struct venus_core *core, struct hfi_pkt_hdr *hdr)
 	case HFI_MSG_EVENT_NOTIFY: {
 		struct hfi_msg_event_notify_pkt *pkt = (void *)hdr;
 
-		if (hdr->size >= sizeof(*pkt) && venus_hfi_session_diag(core))
+		if (hdr->size >= sizeof(*pkt) && venus_hfi_session_diag(core)) {
 			dev_info(dev, "session diag event type=%#x sid=%#x size=%u event=%#x data1=%#x data2=%#x\n",
 				 hdr->pkt_type, pkt->shdr.session_id, hdr->size,
 				 pkt->event_id, pkt->event_data1, pkt->event_data2);
+			if (pkt->event_id == HFI_EVENT_SESSION_SEQUENCE_CHANGED)
+				print_hex_dump(KERN_INFO, "SPX Venus sequence payload: ",
+					       DUMP_PREFIX_OFFSET, 16, 4,
+					       pkt->ext_event_data,
+					       min_t(u32, hdr->size - sizeof(*pkt),
+						     32 * sizeof(u32)), false);
+		}
 		break;
 	}
 	default:
