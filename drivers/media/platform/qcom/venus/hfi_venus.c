@@ -180,6 +180,7 @@ bool venus_hfi_sequence_diag(struct venus_core *core)
 
 	return atomic_inc_return(&hdev->sequence_diag_lines) <= 12;
 }
+EXPORT_SYMBOL_GPL(venus_hfi_sequence_diag);
 
 bool venus_hfi_encoder_buf_diag(struct venus_inst *inst)
 {
