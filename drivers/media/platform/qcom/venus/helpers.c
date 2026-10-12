@@ -1173,10 +1173,6 @@ static u32 venus_helper_get_work_mode(struct venus_inst *inst)
 	u32 num_mbs;
 
 	mode = VIDC_WORK_MODE_2;
-	if (IS_IRIS1(inst->core) &&
-	    inst->session_type == VIDC_SESSION_TYPE_DEC)
-		return mode;
-
 	if (inst->session_type == VIDC_SESSION_TYPE_DEC) {
 		num_mbs = (ALIGN(inst->height, 16) * ALIGN(inst->width, 16)) / 256;
 		if (inst->hfi_codec == HFI_VIDEO_CODEC_MPEG2 ||
