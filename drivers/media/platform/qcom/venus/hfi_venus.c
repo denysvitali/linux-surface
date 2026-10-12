@@ -147,6 +147,8 @@ struct venus_hfi_device {
 	struct mutex session_poll_lock;
 	/* Independent budget for command/response evidence, not startup logs. */
 	atomic_t session_diag_lines;
+	atomic_t encoder_buf_diag_lines;
+	unsigned long encoder_frame_diag_seen;
 	struct completion pwr_collapse_prep;
 	struct completion release_resource;
 	struct mem_desc ifaceq_table;
@@ -167,6 +169,40 @@ bool venus_hfi_session_diag(struct venus_core *core)
 		return false;
 
 	return atomic_inc_return(&hdev->session_diag_lines) <= 32;
+}
+
+bool venus_hfi_encoder_buf_diag(struct venus_inst *inst)
+{
+	struct venus_core *core = inst->core;
+	struct venus_hfi_device *hdev = to_hfi_priv(core);
+
+	if (!READ_ONCE(spx_hfi_startup_diag) || !IS_IRIS1(core) ||
+	    inst->session_type != VIDC_SESSION_TYPE_ENC ||
+	    atomic_read(&hdev->encoder_buf_diag_lines) >= 32)
+		return false;
+
+	return atomic_inc_return(&hdev->encoder_buf_diag_lines) <= 32;
+}
+
+static void venus_trace_encoder_frame(struct venus_inst *inst,
+				      struct hfi_frame_data *frame, bool input)
+{
+	struct venus_core *core = inst->core;
+	struct venus_hfi_device *hdev = to_hfi_priv(core);
+
+	/* First ETB and FTB only, for this HFI device's lifetime. */
+	if (!READ_ONCE(spx_hfi_startup_diag) || !IS_IRIS1(core) ||
+	    inst->session_type != VIDC_SESSION_TYPE_ENC ||
+	    test_and_set_bit(input ? 0 : 1, &hdev->encoder_frame_diag_seen))
+		return;
+
+	dev_info(core->dev, "encoder diag %s enqueue sid=%#x core=%#x type=%#x da=%#x alloc=%u filled=%u offset=%u raw_fmt=%#x raw=%ux%u stride=%u plane_h=%u/%u coded=%ux%u\n",
+		 input ? "ETB" : "FTB", inst->session_id, inst->clk_data.core_id,
+		 frame->buffer_type, frame->device_addr, frame->alloc_len,
+		 frame->filled_len, frame->offset, inst->fmt_out->pixfmt,
+		 inst->out_width, inst->out_height, inst->out_width,
+		 inst->out_height, inst->out_height / 2,
+		 inst->width, inst->height);
 }
 
 static void venus_trace_session_cmd(struct venus_hfi_device *hdev, void *packet)
@@ -1563,6 +1599,7 @@ static int venus_session_etb(struct venus_inst *inst,
 		if (ret)
 			return ret;
 
+		venus_trace_encoder_frame(inst, in_frame, true);
 		ret = venus_iface_cmdq_write(hdev, &pkt, false);
 	} else {
 		ret = -EINVAL;
@@ -1582,6 +1619,7 @@ static int venus_session_ftb(struct venus_inst *inst,
 	if (ret)
 		return ret;
 
+	venus_trace_encoder_frame(inst, out_frame, false);
 	return venus_iface_cmdq_write(hdev, &pkt, false);
 }
 
@@ -1955,6 +1993,7 @@ int venus_hfi_create(struct venus_core *core)
 	mutex_init(&hdev->lock);
 	mutex_init(&hdev->session_poll_lock);
 
+	atomic_set(&hdev->encoder_buf_diag_lines, 0);
 	hdev->core = core;
 	hdev->suspended = true;
 	core->priv = hdev;

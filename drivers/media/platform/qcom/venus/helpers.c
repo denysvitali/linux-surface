@@ -18,6 +18,7 @@
 #include "pm_helpers.h"
 #include "hfi_platform.h"
 #include "hfi_parser.h"
+#include "hfi_venus.h"
 
 #define NUM_MBS_720P	(((ALIGN(1280, 16)) >> 4) * ((ALIGN(736, 16)) >> 4))
 #define NUM_MBS_4K	(((ALIGN(4096, 16)) >> 4) * ((ALIGN(2304, 16)) >> 4))
@@ -241,8 +242,18 @@ static int intbufs_set_buffer(struct venus_inst *inst, u32 type)
 	int ret;
 
 	ret = venus_helper_get_bufreq(inst, type, &bufreq);
-	if (ret)
+	if (ret) {
+		if (venus_hfi_encoder_buf_diag(inst))
+			dev_info(dev, "encoder diag bufreq sid=%#x query_type=%#x ret=%d skipped\n",
+				 inst->session_id, type, ret);
 		return 0;
+	}
+
+	if (venus_hfi_encoder_buf_diag(inst))
+		dev_info(dev, "encoder diag bufreq sid=%#x query_type=%#x ret=0 type=%#x size=%u region=%u count=%u alignment=%u contiguous=%u\n",
+			 inst->session_id, type, bufreq.type, bufreq.size,
+			 bufreq.region_size, bufreq.count_actual,
+			 bufreq.alignment, bufreq.contiguous);
 
 	if (!bufreq.size)
 		return 0;
@@ -270,6 +281,13 @@ static int intbufs_set_buffer(struct venus_inst *inst, u32 type)
 		bd.buffer_type = buf->type;
 		bd.num_buffers = 1;
 		bd.device_addr = buf->da;
+
+		if (venus_hfi_encoder_buf_diag(inst))
+			dev_info(dev, "encoder diag intbuf sid=%#x type=%#x index=%u size=%zu dma=[%#llx,%#llx) fwaddr=%#x\n",
+				 inst->session_id, buf->type, i, buf->size,
+				 (unsigned long long)buf->da,
+				 (unsigned long long)buf->da + buf->size,
+				 bd.device_addr);
 
 		ret = hfi_session_set_buffers(inst, &bd);
 		if (ret) {
