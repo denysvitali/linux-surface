@@ -1,0 +1,91 @@
+--- a/src/freedreno/vulkan/tu_cmd_buffer.cc
++++ b/src/freedreno/vulkan/tu_cmd_buffer.cc
+@@ -8,6 +8,8 @@
+  */
+ 
+ #include "tu_cmd_buffer.h"
++
++#include <inttypes.h>
+ 
+ #include "vk_common_entrypoints.h"
+ #include "vk_log.h"
+@@ -4055,7 +4057,48 @@
+    tu_autotune::rp_key_opt rp_key = cmd_buffer->device->autotune->emit_preempt_latency_tracking_rp_hash(cmd_buffer);
+ 
+    tu_autotune::rp_ctx_t rp_ctx = NULL;
+-   if (use_sysmem_rendering(cmd_buffer, &rp_ctx, rp_key))
++   bool sysmem = use_sysmem_rendering(cmd_buffer, &rp_ctx, rp_key);
++   if (TU_DEBUG(LAYOUT)) {
++      /* CPU-side witness only: no packets or render-mode changes. */
++      static std::atomic<unsigned> records{0};
++      unsigned record = records.fetch_add(1, std::memory_order_relaxed);
++      if (record < 256) {
++         struct tu_cmd_buffer *cmd = cmd_buffer;
++         mesa_logi("gmem-witness select=%u cmd=%p pass=%p mode=%s reason=%s "
++                   "layout=%u fb=%ux%u draws=%u",
++                   record, cmd, cmd->state.pass, sysmem ? "sysmem" : "gmem",
++                   sysmem ? cmd->state.rp.gmem_disable_reason : "-",
++                   cmd->state.gmem_layout, cmd->state.framebuffer->width,
++                   cmd->state.framebuffer->height, cmd->state.rp.drawcall_count);
++         unsigned views = cmd->state.per_layer_render_area ?
++                          cmd->state.pass->num_views : 1;
++         for (unsigned v = 0; v < views; v++) {
++            const VkRect2D *area = &cmd->state.render_areas[v];
++            mesa_logi("gmem-witness select=%u area[%u]=%d,%d+%ux%u",
++                      record, v, area->offset.x, area->offset.y,
++                      area->extent.width, area->extent.height);
++         }
++         for (unsigned a = 0; a < cmd->state.pass->attachment_count; a++) {
++            const struct tu_render_pass_attachment *att = &cmd->state.pass->attachments[a];
++            const struct tu_image_view *iview = cmd->state.attachments[a];
++            if (!iview)
++               continue;
++            mesa_logi("gmem-witness select=%u att=%u image=%p format=%u "
++                      "view=%ux%u samples=%u load=%u store=%u stencil-store=%u "
++                      "gmem=%u tiling=%u modifier=0x%016" PRIx64 " "
++                      "tile=%u ubwc=%u mutable=%u",
++                      record, a, iview->image, att->format,
++                      iview->view.width, iview->view.height, att->samples,
++                      att->load, att->store, att->store_stencil, att->gmem,
++                      iview->image->vk.tiling, iview->image->vk.drm_format_mod,
++                      iview->image->layout[0].tile_mode, iview->view.ubwc_enabled,
++                      iview->view.is_mutable);
++         }
++      } else if (record == 256) {
++         mesa_logi("gmem-witness select limit reached");
++      }
++   }
++   if (sysmem)
+       tu_cmd_render_sysmem<CHIP>(cmd_buffer, rp_ctx);
+    else
+       tu_cmd_render_tiles<CHIP>(cmd_buffer, rp_ctx, fdm_offsets);
+--- a/src/freedreno/vulkan/tu_clear_blit.cc
++++ b/src/freedreno/vulkan/tu_clear_blit.cc
+@@ -5969,6 +5969,27 @@
+     * which could have happened either by load_op or via vkCmdClearAttachments.
+     */
+    bool cond_exec = cond_exec_allowed && src->cond_store_allowed;
++   if (TU_DEBUG(LAYOUT)) {
++      static std::atomic<unsigned> records{0};
++      unsigned record = records.fetch_add(1, std::memory_order_relaxed);
++      if (record < 512) {
++         const VkRect2D *area = &cmd->state.render_areas[0];
++         const char *slow_path = dst->samples > 1 ? "3d-blit" : "cp-blit";
++         mesa_logi("gmem-witness store=%u cmd=%p pass=%p dst=%u src=%u "
++                   "path=%s%s unaligned=%u mutability-mismatch=%u "
++                   "conditional=%u resolve=%u layers=%u mask=0x%x "
++                   "per-layer-area=%u area[0]=%d,%d+%ux%u",
++                   record, cmd, cmd->state.pass, a, gmem_a,
++                   use_fast_path ? "event-store" : slow_path,
++                   fast_path_conditional ? "+conditional-slow" : "",
++                   unaligned, mismatched_mutability, cond_exec, resolve,
++                   layers, layer_mask, per_layer_render_area,
++                   area->offset.x, area->offset.y,
++                   area->extent.width, area->extent.height);
++      } else if (record == 512) {
++         mesa_logi("gmem-witness store limit reached");
++      }
++   }
+    if (cond_exec) {
+       tu_begin_load_store_cond_exec(cmd, cs, false);
+    }
