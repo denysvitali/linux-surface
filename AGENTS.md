@@ -123,7 +123,9 @@ the older standing reboot authorization below. Venus/Chromium work is offline
 only after repeated hangs/resets; no live browser or module trials without
 new explicit user authorization. User later authorized one decoder-only
 Venus/Chromium retry on 2026-10-12 after being warned it may hang/reset.
-This does not authorize any reboot command or encoder test.
+This does not authorize any reboot command or encoder test. The user then
+requested continuing work to fix the remaining playback defect; bounded
+Venus decoder/browser validation is allowed, with no reboot commands or encoder.
 
 **Baseline policy (user requested 2026-10-09):** the verified 7.x candidate
 is the persistent `spx-mainline` baseline. Keep 6.18 (`spx-known-good`) as a
