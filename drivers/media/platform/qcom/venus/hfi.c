@@ -158,13 +158,15 @@ int hfi_core_trigger_ssr(struct venus_core *core, u32 type)
 	return core->ops->core_trigger_ssr(core, type);
 }
 
-static int wait_session_msg(struct venus_inst *inst)
+static int wait_session_msg(struct venus_inst *inst, u32 command)
 {
 	int ret;
 
 	ret = wait_for_completion_timeout(&inst->done, TIMEOUT);
-	if (!ret)
+	if (!ret) {
+		venus_hfi_session_timeout(inst, command);
 		return -ETIMEDOUT;
+	}
 
 	if (inst->error != HFI_ERR_NONE)
 		return -EIO;
@@ -250,7 +252,7 @@ int hfi_session_init(struct venus_inst *inst, u32 pixfmt)
 	if (ret)
 		return ret;
 
-	ret = wait_session_msg(inst);
+	ret = wait_session_msg(inst, HFI_CMD_SYS_SESSION_INIT);
 	if (ret)
 		return ret;
 
@@ -292,7 +294,7 @@ int hfi_session_deinit(struct venus_inst *inst)
 	if (ret)
 		return ret;
 
-	ret = wait_session_msg(inst);
+	ret = wait_session_msg(inst, HFI_CMD_SYS_SESSION_END);
 	if (ret)
 		return ret;
 
@@ -320,7 +322,7 @@ int hfi_session_start(struct venus_inst *inst)
 	if (ret)
 		return ret;
 
-	ret = wait_session_msg(inst);
+	ret = wait_session_msg(inst, HFI_CMD_SESSION_START);
 	if (ret)
 		return ret;
 
@@ -347,7 +349,7 @@ int hfi_session_stop(struct venus_inst *inst)
 	if (ret)
 		return ret;
 
-	ret = wait_session_msg(inst);
+	ret = wait_session_msg(inst, HFI_CMD_SESSION_STOP);
 	if (ret)
 		return ret;
 
@@ -385,7 +387,7 @@ int hfi_session_abort(struct venus_inst *inst)
 	if (ret)
 		return ret;
 
-	ret = wait_session_msg(inst);
+	ret = wait_session_msg(inst, HFI_CMD_SYS_SESSION_ABORT);
 	if (ret)
 		return ret;
 
@@ -410,7 +412,7 @@ int hfi_session_load_res(struct venus_inst *inst)
 	if (ret)
 		return ret;
 
-	ret = wait_session_msg(inst);
+	ret = wait_session_msg(inst, HFI_CMD_SESSION_LOAD_RESOURCES);
 	if (ret)
 		return ret;
 
@@ -436,7 +438,7 @@ int hfi_session_unload_res(struct venus_inst *inst)
 	if (ret)
 		return ret;
 
-	ret = wait_session_msg(inst);
+	ret = wait_session_msg(inst, HFI_CMD_SESSION_RELEASE_RESOURCES);
 	if (ret)
 		return ret;
 
@@ -461,7 +463,7 @@ int hfi_session_flush(struct venus_inst *inst, u32 type, bool block)
 		return ret;
 
 	if (block) {
-		ret = wait_session_msg(inst);
+		ret = wait_session_msg(inst, HFI_CMD_SESSION_FLUSH);
 		if (ret)
 			return ret;
 	}
@@ -498,7 +500,7 @@ int hfi_session_unset_buffers(struct venus_inst *inst,
 	if (!bd->response_required)
 		return 0;
 
-	ret = wait_session_msg(inst);
+	ret = wait_session_msg(inst, HFI_CMD_SESSION_RELEASE_BUFFERS);
 	if (ret)
 		return ret;
 
@@ -523,7 +525,7 @@ int hfi_session_get_property(struct venus_inst *inst, u32 ptype,
 	if (ret)
 		return ret;
 
-	ret = wait_session_msg(inst);
+	ret = wait_session_msg(inst, HFI_CMD_SESSION_GET_PROPERTY);
 	if (ret)
 		return ret;
 

@@ -6,8 +6,14 @@
 #ifndef __VENUS_HFI_VENUS_H__
 #define __VENUS_HFI_VENUS_H__
 
-struct venus_core;
+#include <linux/types.h>
 
+struct venus_core;
+struct venus_inst;
+
+void venus_hfi_session_timeout(struct venus_inst *inst, u32 command);
+void venus_hfi_queue_setup_timeout(struct venus_inst *inst, const char *phase,
+				   int ret);
 void venus_hfi_startup_dump(struct venus_core *core);
 void venus_hfi_destroy(struct venus_core *core);
 int venus_hfi_create(struct venus_core *core);

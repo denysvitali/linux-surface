@@ -8,6 +8,7 @@
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
+#include <linux/export.h>
 #include <linux/interrupt.h>
 #include <linux/iopoll.h>
 #include <linux/kernel.h>
@@ -1249,6 +1250,47 @@ static irqreturn_t venus_isr(struct venus_core *core)
 
 	return IRQ_WAKE_THREAD;
 }
+
+void venus_hfi_session_timeout(struct venus_inst *inst, u32 command)
+{
+	struct venus_core *core = inst->core;
+	struct venus_hfi_device *hdev = to_hfi_priv(core);
+	struct hfi_queue_header *cmd, *msg;
+	u32 cmd_read, cmd_write, msg_read, msg_write, irq_status;
+
+	/* Timeout evidence must survive exhaustion of the startup line budget. */
+	if (!READ_ONCE(spx_hfi_startup_diag) || !IS_IRIS1(core))
+		return;
+
+	/* Observe shared queue headers only; do not consume a late reply. */
+	mutex_lock(&hdev->lock);
+	cmd = hdev->queues[IFACEQ_CMD_IDX].qhdr;
+	msg = hdev->queues[IFACEQ_MSG_IDX].qhdr;
+	cmd_read = READ_ONCE(cmd->read_idx);
+	cmd_write = READ_ONCE(cmd->write_idx);
+	msg_read = READ_ONCE(msg->read_idx);
+	msg_write = READ_ONCE(msg->write_idx);
+	irq_status = READ_ONCE(hdev->irq_status);
+	mutex_unlock(&hdev->lock);
+
+	dev_info(core->dev,
+		 "SPX Venus session timeout cmd=%#x sid=%u state=%u irq=%#x cmdq=%u/%u msgq=%u/%u (read/write)\n",
+		 command, inst->session_id, inst->state, irq_status,
+		 cmd_read, cmd_write, msg_read, msg_write);
+}
+
+void venus_hfi_queue_setup_timeout(struct venus_inst *inst, const char *phase,
+				   int ret)
+{
+	if (ret != -ETIMEDOUT || !READ_ONCE(spx_hfi_startup_diag) ||
+	    !IS_IRIS1(inst->core))
+		return;
+
+	dev_info(inst->core->dev,
+		 "SPX Venus queue_setup timeout phase=%s sid=%u state=%u\n",
+		 phase, inst->session_id, inst->state);
+}
+EXPORT_SYMBOL_GPL(venus_hfi_queue_setup_timeout);
 
 void venus_hfi_startup_dump(struct venus_core *core)
 {

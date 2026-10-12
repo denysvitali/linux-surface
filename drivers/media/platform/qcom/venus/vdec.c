@@ -15,6 +15,7 @@
 #include <media/videobuf2-dma-contig.h>
 
 #include "hfi_venus_io.h"
+#include "hfi_venus.h"
 #include "hfi_parser.h"
 #include "core.h"
 #include "helpers.h"
@@ -901,12 +902,14 @@ static int vdec_num_buffers(struct venus_inst *inst, unsigned int *in_num,
 	*in_num = *out_num = 0;
 
 	ret = venus_helper_get_bufreq(inst, HFI_BUFFER_INPUT, &bufreq);
+	venus_hfi_queue_setup_timeout(inst, "bufreq-input", ret);
 	if (ret)
 		return ret;
 
 	*in_num = hfi_bufreq_get_count_min(&bufreq, ver);
 
 	ret = venus_helper_get_bufreq(inst, HFI_BUFFER_OUTPUT, &bufreq);
+	venus_hfi_queue_setup_timeout(inst, "bufreq-output", ret);
 	if (ret)
 		return ret;
 
@@ -957,10 +960,12 @@ static int vdec_queue_setup(struct vb2_queue *q,
 	}
 
 	ret = vdec_pm_get(inst);
+	venus_hfi_queue_setup_timeout(inst, "pm-get", ret);
 	if (ret)
 		return ret;
 
 	ret = vdec_session_init(inst);
+	venus_hfi_queue_setup_timeout(inst, "session-init", ret);
 	if (ret)
 		goto put_power;
 
@@ -969,6 +974,7 @@ static int vdec_queue_setup(struct vb2_queue *q,
 		goto put_power;
 
 	ret = vdec_pm_put(inst, false);
+	venus_hfi_queue_setup_timeout(inst, "pm-put", ret);
 	if (ret)
 		return ret;
 
@@ -1006,7 +1012,8 @@ static int vdec_queue_setup(struct vb2_queue *q,
 	return ret;
 
 put_power:
-	vdec_pm_put(inst, false);
+	venus_hfi_queue_setup_timeout(inst, "pm-put-unwind",
+				      vdec_pm_put(inst, false));
 	return ret;
 }
 
