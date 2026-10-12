@@ -145,6 +145,8 @@ struct venus_hfi_device {
 	struct mutex lock;
 	/* Serialize session pollers using the shared parser packet buffer. */
 	struct mutex session_poll_lock;
+	/* Independent budget for command/response evidence, not startup logs. */
+	atomic_t session_diag_lines;
 	struct completion pwr_collapse_prep;
 	struct completion release_resource;
 	struct mem_desc ifaceq_table;
@@ -155,6 +157,76 @@ struct venus_hfi_device {
 	u8 pkt_buf[IFACEQ_VAR_HUGE_PKT_SIZE];
 	u8 dbg_buf[IFACEQ_VAR_HUGE_PKT_SIZE];
 };
+
+bool venus_hfi_session_diag(struct venus_core *core)
+{
+	struct venus_hfi_device *hdev = to_hfi_priv(core);
+
+	if (!READ_ONCE(spx_hfi_startup_diag) || !IS_IRIS1(core) ||
+	    atomic_read(&hdev->session_diag_lines) >= 32)
+		return false;
+
+	return atomic_inc_return(&hdev->session_diag_lines) <= 32;
+}
+
+static void venus_trace_session_cmd(struct venus_hfi_device *hdev, void *packet)
+{
+	struct hfi_pkt_hdr *hdr = packet;
+	struct device *dev = hdev->core->dev;
+
+	if (!READ_ONCE(spx_hfi_startup_diag) || !IS_IRIS1(hdev->core))
+		return;
+
+	switch (hdr->pkt_type) {
+	case HFI_CMD_SYS_SESSION_INIT: {
+		struct hfi_session_init_pkt *pkt = packet;
+
+		if (hdr->size < sizeof(*pkt) ||
+		    !venus_hfi_session_diag(hdev->core))
+			return;
+
+		dev_info(dev, "session diag enqueue type=%#x sid=%#x size=%u domain=%#x codec=%#x\n",
+			 hdr->pkt_type, pkt->shdr.session_id, hdr->size,
+			 pkt->session_domain, pkt->session_codec);
+		break;
+	}
+	case HFI_CMD_SESSION_SET_PROPERTY: {
+		struct hfi_session_set_property_pkt *pkt = packet;
+		struct hfi_framesize *fsize = (void *)&pkt->data[1];
+
+		if (hdr->size < sizeof(*pkt) + sizeof(u32) ||
+		    !pkt->num_properties || !venus_hfi_session_diag(hdev->core))
+			return;
+
+		if (pkt->num_properties == 1 &&
+		    pkt->data[0] == HFI_PROPERTY_PARAM_FRAME_SIZE &&
+		    hdr->size >= sizeof(*pkt) + sizeof(u32) + sizeof(*fsize))
+			dev_info(dev, "session diag enqueue type=%#x sid=%#x size=%u count=%u property=%#x buffer=%#x width=%u height=%u\n",
+				 hdr->pkt_type, pkt->shdr.session_id, hdr->size,
+				 pkt->num_properties, pkt->data[0],
+				 fsize->buffer_type, fsize->width, fsize->height);
+		else
+			dev_info(dev, "session diag enqueue type=%#x sid=%#x size=%u count=%u property=%#x\n",
+				 hdr->pkt_type, pkt->shdr.session_id, hdr->size,
+				 pkt->num_properties, pkt->data[0]);
+		break;
+	}
+	case HFI_CMD_SESSION_GET_PROPERTY: {
+		struct hfi_session_get_property_pkt *pkt = packet;
+
+		if (hdr->size < sizeof(*pkt) ||
+		    !pkt->num_properties || !venus_hfi_session_diag(hdev->core))
+			return;
+
+		dev_info(dev, "session diag enqueue type=%#x sid=%#x size=%u count=%u property=%#x\n",
+			 hdr->pkt_type, pkt->shdr.session_id, hdr->size,
+			 pkt->num_properties, pkt->data);
+		break;
+	}
+	default:
+		break;
+	}
+}
 
 static bool venus_pkt_debug;
 int venus_fw_debug = HFI_DEBUG_MSG_ERROR | HFI_DEBUG_MSG_FATAL;
@@ -437,6 +509,8 @@ static int venus_iface_cmdq_write_nolock(struct venus_hfi_device *hdev,
 		dev_err(dev, "write to iface cmd queue failed (%d)\n", ret);
 		return ret;
 	}
+
+	venus_trace_session_cmd(hdev, pkt);
 
 	if (sync) {
 		/*
@@ -1342,6 +1416,9 @@ static int venus_core_init(struct venus_core *core)
 	struct hfi_sys_get_property_pkt version_pkt;
 	struct hfi_sys_init_pkt pkt;
 	int ret;
+
+	/* A new core init starts a trace; PM resume does not replenish it. */
+	atomic_set(&hdev->session_diag_lines, 0);
 
 	pkt_sys_init(&pkt, core->res->hfi_video_arch ?: HFI_VIDEO_ARCH_OX);
 

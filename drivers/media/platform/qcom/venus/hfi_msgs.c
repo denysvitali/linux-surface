@@ -14,6 +14,7 @@
 #include "hfi_helper.h"
 #include "hfi_msgs.h"
 #include "hfi_parser.h"
+#include "hfi_venus.h"
 
 #define SMEM_IMG_VER_TBL	469
 #define VER_STR_SZ		128
@@ -829,6 +830,29 @@ u32 hfi_process_msg_packet(struct venus_core *core, struct hfi_pkt_hdr *hdr)
 			hdr->size, handler->pkt_sz, hdr->pkt_type);
 
 		return hdr->pkt_type;
+	}
+
+	switch (hdr->pkt_type) {
+	case HFI_MSG_SYS_SESSION_INIT: {
+		struct hfi_msg_session_init_done_pkt *pkt = (void *)hdr;
+
+		if (hdr->size >= sizeof(*pkt) && venus_hfi_session_diag(core))
+			dev_info(dev, "session diag init done type=%#x sid=%#x size=%u error=%#x\n",
+				 hdr->pkt_type, pkt->shdr.session_id, hdr->size,
+				 pkt->error_type);
+		break;
+	}
+	case HFI_MSG_EVENT_NOTIFY: {
+		struct hfi_msg_event_notify_pkt *pkt = (void *)hdr;
+
+		if (hdr->size >= sizeof(*pkt) && venus_hfi_session_diag(core))
+			dev_info(dev, "session diag event type=%#x sid=%#x size=%u event=%#x data1=%#x data2=%#x\n",
+				 hdr->pkt_type, pkt->shdr.session_id, hdr->size,
+				 pkt->event_id, pkt->event_data1, pkt->event_data2);
+		break;
+	}
+	default:
+		break;
 	}
 
 	if (handler->is_sys_pkt) {
