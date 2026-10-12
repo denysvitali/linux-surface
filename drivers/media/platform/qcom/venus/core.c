@@ -1001,7 +1001,6 @@ static const struct venus_resources sc8180x_res = {
 	.resets = { "bus", "core" },
 	.resets_num = 2,
 	.hfi_version = HFI_VERSION_4XX,
-	.hfi_video_arch = 2,
 	.vpu_version = VPU_VERSION_IRIS1,
 	.vmem_id = VIDC_RESOURCE_NONE,
 	.dma_mask = 0xc0000000 - 1,
