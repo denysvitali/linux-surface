@@ -162,20 +162,7 @@ static int wait_session_msg(struct venus_inst *inst, u32 command)
 {
 	int ret;
 
-	if (IS_IRIS1(inst->core)) {
-		unsigned long deadline = jiffies + TIMEOUT;
-
-		ret = 0;
-		while (time_before(jiffies, deadline)) {
-			venus_hfi_session_poll(inst->core);
-			ret = try_wait_for_completion(&inst->done);
-			if (ret)
-				break;
-			usleep_range(1000, 2000);
-		}
-	} else {
-		ret = wait_for_completion_timeout(&inst->done, TIMEOUT);
-	}
+	ret = wait_for_completion_timeout(&inst->done, TIMEOUT);
 	if (!ret) {
 		venus_hfi_session_timeout(inst, command);
 		return -ETIMEDOUT;

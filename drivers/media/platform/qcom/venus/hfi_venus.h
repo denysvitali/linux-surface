@@ -13,7 +13,6 @@ struct venus_inst;
 
 bool venus_hfi_session_diag(struct venus_core *core);
 bool venus_hfi_encoder_buf_diag(struct venus_inst *inst);
-void venus_hfi_session_poll(struct venus_core *core);
 void venus_hfi_session_timeout(struct venus_inst *inst, u32 command);
 void venus_hfi_queue_setup_timeout(struct venus_inst *inst, const char *phase,
 				   int ret);
