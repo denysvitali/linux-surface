@@ -37,7 +37,12 @@ static void event_seq_changed(struct venus_core *core, struct venus_inst *inst,
 	u32 ptype = 0, rem_bytes = 0;
 	u32 size_read = 0;
 	u8 *data_ptr;
-	bool diag = venus_hfi_session_diag(core);
+
+	if (venus_hfi_sequence_diag(core) && pkt->shdr.hdr.size >= sizeof(*pkt))
+		print_hex_dump(KERN_INFO, "SPX Venus sequence payload: ",
+			       DUMP_PREFIX_OFFSET, 16, 4, pkt->ext_event_data,
+			       min_t(u32, pkt->shdr.hdr.size - sizeof(*pkt),
+				     32 * sizeof(u32)), false);
 
 	inst->error = HFI_ERR_NONE;
 
@@ -158,7 +163,7 @@ static void event_seq_changed(struct venus_core *core, struct venus_inst *inst,
 error:
 	inst->error = HFI_ERR_SESSION_INSUFFICIENT_RESOURCES;
 done:
-	if (diag)
+	if (venus_hfi_sequence_diag(core))
 		dev_info(core->dev, "session diag sequence sid=%#x error=%#x event=%#x width=%u height=%u count=%u ptype=%#x remaining=%u properties_left=%d\n",
 			 pkt->shdr.session_id, inst->error, event.event_type,
 			 event.width, event.height, event.buf_count, ptype,
@@ -854,12 +859,6 @@ u32 hfi_process_msg_packet(struct venus_core *core, struct hfi_pkt_hdr *hdr)
 			dev_info(dev, "session diag event type=%#x sid=%#x size=%u event=%#x data1=%#x data2=%#x\n",
 				 hdr->pkt_type, pkt->shdr.session_id, hdr->size,
 				 pkt->event_id, pkt->event_data1, pkt->event_data2);
-			if (pkt->event_id == HFI_EVENT_SESSION_SEQUENCE_CHANGED)
-				print_hex_dump(KERN_INFO, "SPX Venus sequence payload: ",
-					       DUMP_PREFIX_OFFSET, 16, 4,
-					       pkt->ext_event_data,
-					       min_t(u32, hdr->size - sizeof(*pkt),
-						     32 * sizeof(u32)), false);
 		}
 		break;
 	}

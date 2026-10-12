@@ -145,6 +145,7 @@ struct venus_hfi_device {
 	struct mutex lock;
 	/* Independent budget for command/response evidence, not startup logs. */
 	atomic_t session_diag_lines;
+	atomic_t sequence_diag_lines;
 	atomic_t encoder_buf_diag_lines;
 	unsigned long encoder_frame_diag_seen;
 	struct completion pwr_collapse_prep;
@@ -167,6 +168,17 @@ bool venus_hfi_session_diag(struct venus_core *core)
 		return false;
 
 	return atomic_inc_return(&hdev->session_diag_lines) <= 32;
+}
+
+bool venus_hfi_sequence_diag(struct venus_core *core)
+{
+	struct venus_hfi_device *hdev = to_hfi_priv(core);
+
+	if (!READ_ONCE(spx_hfi_startup_diag) || !IS_IRIS1(core) ||
+	    atomic_read(&hdev->sequence_diag_lines) >= 12)
+		return false;
+
+	return atomic_inc_return(&hdev->sequence_diag_lines) <= 12;
 }
 
 bool venus_hfi_encoder_buf_diag(struct venus_inst *inst)
@@ -1458,6 +1470,7 @@ static int venus_core_init(struct venus_core *core)
 
 	/* A new core init starts a trace; PM resume does not replenish it. */
 	atomic_set(&hdev->session_diag_lines, 0);
+	atomic_set(&hdev->sequence_diag_lines, 0);
 
 	pkt_sys_init(&pkt, core->res->hfi_video_arch ?: HFI_VIDEO_ARCH_OX);
 
