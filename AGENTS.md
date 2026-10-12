@@ -121,7 +121,9 @@ reboot. It may spawn agents for bounded work (`spx-port`).
 **2026-10-12 user stop:** Do not reboot this device anymore. This overrides
 the older standing reboot authorization below. Venus/Chromium work is offline
 only after repeated hangs/resets; no live browser or module trials without
-new explicit user authorization.
+new explicit user authorization. User later authorized one decoder-only
+Venus/Chromium retry on 2026-10-12 after being warned it may hang/reset.
+This does not authorize any reboot command or encoder test.
 
 **Baseline policy (user requested 2026-10-09):** the verified 7.x candidate
 is the persistent `spx-mainline` baseline. Keep 6.18 (`spx-known-good`) as a
