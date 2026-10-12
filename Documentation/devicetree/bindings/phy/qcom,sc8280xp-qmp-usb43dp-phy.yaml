@@ -90,6 +90,13 @@ properties:
   mode-switch: true
   orientation-switch: true
 
+  qcom,firmware-managed-typec:
+    type: boolean
+    description: |
+      Connector orientation and DisplayPort lane allocation are controlled
+      by platform firmware. Firmware reports connector routing changes
+      asynchronously to the host.
+
   ports:
     $ref: /schemas/graph.yaml#/properties/ports
 
@@ -186,6 +193,17 @@ required:
 
 allOf:
   - $ref: /schemas/usb/usb-switch.yaml#
+  - if:
+      required:
+        - qcom,firmware-managed-typec
+    then:
+      properties:
+        compatible:
+          const: qcom,sc8180x-qmp-usb3-dp-phy
+      required:
+        - mode-switch
+        - orientation-switch
+
   - if:
       properties:
         compatible:

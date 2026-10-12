@@ -3,7 +3,7 @@
  * Experimental Surface Pro X USC-to-DP0 hotplug forwarding.
  * Probe waits for SSAM and MSM startup. A pre-connected dock has supplied
  * startup events, but there is no initial-state query or guaranteed replay.
- * PHY orientation is opt-in; lane switching and second-port routing are absent;
+ * PHY orientation and lane switching are opt-in; second-port routing is absent;
  * DP-only mux forwarding and visible output remain unverified.
  * Never unbind/reload live MSM components when testing this driver.
  */
@@ -14,6 +14,7 @@
 #include <linux/slab.h>
 #include <linux/unaligned.h>
 #include <linux/workqueue.h>
+#include <linux/usb/typec_dp.h>
 #include <linux/usb/typec_mux.h>
 #include <linux/surface_aggregator/controller.h>
 
@@ -28,6 +29,10 @@ static bool phy_orientation;
 module_param(phy_orientation, bool, 0444);
 MODULE_PARM_DESC(phy_orientation, "Enable experimental port-zero PHY orientation switching");
 
+static bool phy_lane_mode;
+module_param(phy_lane_mode, bool, 0444);
+MODULE_PARM_DESC(phy_lane_mode, "Enable experimental port-zero DP PHY lane-mode forwarding");
+
 #define SPX_DP0_PATH "/soc@0/display-subsystem@ae00000/displayport-controller@ae90000"
 
 struct spx_usbc {
@@ -40,6 +45,9 @@ struct spx_usbc {
 	struct typec_switch *sw;
 	enum typec_orientation orientation;
 	bool orientation_valid;
+	struct typec_mux *mux;
+	unsigned long lane_mode;
+	bool lane_mode_valid;
 };
 
 struct spx_usbc_ack {
@@ -141,6 +149,37 @@ static int spx_usbc_orientation(struct spx_usbc *usbc,
 	return 0;
 }
 
+static int spx_usbc_lane_mode(struct spx_usbc *usbc,
+			      const struct spx_usbc_event *event)
+{
+	/* Only a synchronous mux descriptor, not a registered PD altmode. */
+	struct typec_altmode alt = { .svid = USB_TYPEC_DP_SID };
+	struct typec_mux_state state = { .alt = &alt };
+	int ret;
+
+	if (!usbc->mux)
+		return 0;
+
+	/*
+	 * C/D denote lane classes here, not a negotiated pin assignment.
+	 * Validated mux2 selects DP-only; mux3 selects DP plus USB3.
+	 */
+	state.mode = event->mux_mode == 2 ? TYPEC_DP_STATE_C : TYPEC_DP_STATE_D;
+
+	/* Never reset a live DP link; QMP also guards pre-existing active DP. */
+	if (usbc->connected &&
+	    (!usbc->lane_mode_valid || state.mode != usbc->lane_mode))
+		return -EBUSY;
+
+	ret = typec_mux_set(usbc->mux, &state);
+	if (ret)
+		return ret;
+
+	usbc->lane_mode = state.mode;
+	usbc->lane_mode_valid = true;
+	return 0;
+}
+
 static void spx_usbc_event_work(struct work_struct *work)
 {
 	struct spx_usbc_event *event = container_of(work, struct spx_usbc_event, work);
@@ -159,14 +198,6 @@ static void spx_usbc_event_work(struct work_struct *work)
 
 	/* Only USC port zero is known to route to the primary DP controller. */
 	if (le32_to_cpu(event->ack.port) == 0) {
-		if (spx_usbc_dp_event(event) ||
-		    (event->mux_mode == 0 && event->cc_state == 2)) {
-			ret = spx_usbc_orientation(usbc, event);
-			if (ret) {
-				dev_warn_ratelimited(usbc->dev, "USC PHY orientation unavailable: %d\n", ret);
-				goto ack;
-			}
-		}
 		if (spx_usbc_dp_event(event)) {
 			connected = event->hpd_level == 1;
 			/* IRQ delivery is separate from a real level transition. */
@@ -174,11 +205,33 @@ static void spx_usbc_event_work(struct work_struct *work)
 		} else if (event->mux_mode == 0 && event->cc_state == 2) {
 			notify = true;
 		}
+
+		/* HPD-low must reach DP even if the reported routing changed. */
+		if (connected) {
+			ret = spx_usbc_orientation(usbc, event);
+			if (ret) {
+				dev_warn_ratelimited(usbc->dev, "USC PHY orientation unavailable: %d\n", ret);
+				goto ack;
+			}
+			ret = spx_usbc_lane_mode(usbc, event);
+			if (ret) {
+				dev_warn_ratelimited(usbc->dev,
+						     "USC PHY lane mode unavailable: %d\n", ret);
+				goto ack;
+			}
+		}
 	}
 
 	if (notify) {
 		if (spx_usbc_hpd(usbc, connected)) {
 			usbc->connected = connected;
+			/* NONE preserves hardware routing; do not reset lanes here. */
+			if (event->mux_mode == 0 && event->cc_state == 2) {
+				ret = spx_usbc_orientation(usbc, event);
+				if (ret)
+					dev_warn_ratelimited(usbc->dev,
+							     "USC PHY detach unavailable: %d\n", ret);
+			}
 			/* A firmware IRQ still needs explicit sink request handling. */
 			if (!event->hpd_irq)
 				event->ack.handled = cpu_to_le32(1);
@@ -319,6 +372,11 @@ static int spx_usbc_probe(struct platform_device *pdev)
 	put_device(&dpdev->dev);
 	usbc->bridge = bridge;
 
+	if (phy_lane_mode && !phy_orientation) {
+		ret = -EINVAL;
+		goto err_bridge;
+	}
+
 	if (phy_orientation) {
 		node = of_find_node_by_path(SPX_USBC0_PATH);
 		if (!node) {
@@ -326,14 +384,18 @@ static int spx_usbc_probe(struct platform_device *pdev)
 			goto err_bridge;
 		}
 		usbc->sw = fwnode_typec_switch_get(of_fwnode_handle(node));
-		of_node_put(node);
-		if (IS_ERR(usbc->sw)) {
-			ret = PTR_ERR(usbc->sw);
+		if (IS_ERR_OR_NULL(usbc->sw)) {
+			ret = usbc->sw ? PTR_ERR(usbc->sw) : -ENODEV;
 			usbc->sw = NULL;
+			of_node_put(node);
 			goto err_bridge;
 		}
-		if (!usbc->sw) {
-			ret = -ENODEV;
+		if (phy_lane_mode)
+			usbc->mux = fwnode_typec_mux_get(of_fwnode_handle(node));
+		of_node_put(node);
+		if (phy_lane_mode && IS_ERR_OR_NULL(usbc->mux)) {
+			ret = usbc->mux ? PTR_ERR(usbc->mux) : -ENODEV;
+			usbc->mux = NULL;
 			goto err_bridge;
 		}
 	}
@@ -357,13 +419,15 @@ static int spx_usbc_probe(struct platform_device *pdev)
 		goto err_wq;
 
 	platform_set_drvdata(pdev, usbc);
-	dev_info(dev, "experimental DP0 forwarding ready; replug dock (PHY orientation %s)\n",
-		 phy_orientation ? "enabled" : "disabled");
+	dev_info(dev, "experimental DP0 forwarding ready; replug dock (PHY orientation %s, lane mode %s)\n",
+		 phy_orientation ? "enabled" : "disabled",
+		 phy_lane_mode ? "enabled" : "disabled");
 	return 0;
 
 err_wq:
 	destroy_workqueue(usbc->wq);
 err_bridge:
+	typec_mux_put(usbc->mux);
 	typec_switch_put(usbc->sw);
 	drm_bridge_put(bridge);
 	return ret;
@@ -383,6 +447,7 @@ static void spx_usbc_remove(struct platform_device *pdev)
 	ssam_notifier_unregister(usbc->ctrl, &usbc->notifier);
 	destroy_workqueue(usbc->wq);
 	usbc->wq = NULL;
+	typec_mux_put(usbc->mux);
 	typec_switch_put(usbc->sw);
 	drm_bridge_put(usbc->bridge);
 }

@@ -1379,6 +1379,8 @@
 
 &usb_prim_qmpphy {
 	orientation-switch;
+	mode-switch;
+	qcom,firmware-managed-typec;
 	status = "okay";
 	vdda-phy-supply = <&vreg_l3c_1p2>;
 	vdda-pll-supply = <&vreg_l9e_0p88>;

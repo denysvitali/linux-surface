@@ -2597,6 +2597,7 @@ struct qmp_combo {
 	struct phy_configure_opts_dp dp_opts;
 	unsigned int dp_init_count;
 	bool dp_powered_on;
+	bool firmware_managed_typec;
 
 	struct clk_fixed_rate pipe_clk_fixed;
 	struct clk_hw dp_link_hw;
@@ -4783,6 +4784,10 @@ static int qmp_combo_typec_switch_set(struct typec_switch_dev *sw,
 		return 0;
 
 	mutex_lock(&qmp->phy_mutex);
+	if (qmp->firmware_managed_typec && qmp->dp_powered_on) {
+		mutex_unlock(&qmp->phy_mutex);
+		return -EBUSY;
+	}
 	qmp->orientation = orientation;
 
 	if (qmp->init_count) {
@@ -4841,6 +4846,9 @@ static int qmp_combo_typec_mux_set(struct typec_mux_dev *mux, struct typec_mux_s
 		dev_dbg(qmp->dev, "typec_mux_set: same qmpphy mode, bail out\n");
 		return 0;
 	}
+
+	if (qmp->firmware_managed_typec && qmp->dp_powered_on)
+		return -EBUSY;
 
 	if (qmp->qmpphy_mode != QMPPHY_MODE_USB3_ONLY && qmp->dp_powered_on) {
 		dev_dbg(qmp->dev, "typec_mux_set: DP PHY is still in use, delaying switch\n");
@@ -5212,6 +5220,9 @@ static int qmp_combo_probe(struct platform_device *pdev)
 	dev_set_drvdata(dev, qmp);
 
 	qmp->orientation = TYPEC_ORIENTATION_NORMAL;
+	qmp->firmware_managed_typec =
+		of_device_is_compatible(dev->of_node, "qcom,sc8180x-qmp-usb3-dp-phy") &&
+		of_property_read_bool(dev->of_node, "qcom,firmware-managed-typec");
 
 	qmp->cfg = of_device_get_match_data(dev);
 	if (!qmp->cfg)
@@ -5251,9 +5262,11 @@ static int qmp_combo_probe(struct platform_device *pdev)
 
 	if (of_property_present(dev->of_node, "mode-switch") ||
 	    of_property_present(dev->of_node, "orientation-switch")) {
-		ret = qmp_combo_typec_register(qmp);
-		if (ret)
-			goto err_node_put;
+		if (!qmp->firmware_managed_typec) {
+			ret = qmp_combo_typec_register(qmp);
+			if (ret)
+				goto err_node_put;
+		}
 	} else {
 		enum typec_orientation dp_orientation = TYPEC_ORIENTATION_NONE;
 		enum typec_orientation usb3_orientation = TYPEC_ORIENTATION_NONE;
@@ -5333,6 +5346,13 @@ static int qmp_combo_probe(struct platform_device *pdev)
 	if (IS_ERR(phy_provider)) {
 		ret = PTR_ERR(phy_provider);
 		goto err_pm_put;
+	}
+
+	/* Firmware-event consumers must not see callbacks before PHY creation. */
+	if (qmp->firmware_managed_typec) {
+		ret = qmp_combo_typec_register(qmp);
+		if (ret)
+			goto err_pm_put;
 	}
 
 	of_node_put(usb_np);
