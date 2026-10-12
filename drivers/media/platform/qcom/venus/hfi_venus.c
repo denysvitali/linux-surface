@@ -143,6 +143,8 @@ struct venus_hfi_device {
 	enum venus_state state;
 	/* serialize read / write to the shared memory */
 	struct mutex lock;
+	/* Serialize session pollers using the shared parser packet buffer. */
+	struct mutex session_poll_lock;
 	struct completion pwr_collapse_prep;
 	struct completion release_resource;
 	struct mem_desc ifaceq_table;
@@ -1197,6 +1199,20 @@ static irqreturn_t venus_isr_thread(struct venus_core *core)
 	return IRQ_HANDLED;
 }
 
+void venus_hfi_session_poll(struct venus_core *core)
+{
+	struct venus_hfi_device *hdev = to_hfi_priv(core);
+
+	/* Neither queue nor core locks may span the native response parser. */
+	if (!mutex_trylock(&hdev->session_poll_lock))
+		return;
+
+	disable_irq(core->irq);
+	core->ops->isr_thread(core);
+	enable_irq(core->irq);
+	mutex_unlock(&hdev->session_poll_lock);
+}
+
 static irqreturn_t venus_isr(struct venus_core *core)
 {
 	struct venus_hfi_device *hdev = to_hfi_priv(core);
@@ -1843,6 +1859,7 @@ void venus_hfi_destroy(struct venus_core *core)
 
 	core->priv = NULL;
 	venus_interface_queues_release(hdev);
+	mutex_destroy(&hdev->session_poll_lock);
 	mutex_destroy(&hdev->lock);
 	kfree(hdev);
 	disable_irq(core->irq);
@@ -1859,6 +1876,7 @@ int venus_hfi_create(struct venus_core *core)
 		return -ENOMEM;
 
 	mutex_init(&hdev->lock);
+	mutex_init(&hdev->session_poll_lock);
 
 	hdev->core = core;
 	hdev->suspended = true;
