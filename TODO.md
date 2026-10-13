@@ -9,6 +9,17 @@ layout and storms (never decode it until a single-output layout is sourced).
 See `RESULT-20261013-venus-codecs.md`. No automatic failure remains on this
 boot (18/48, 43 blocked). The speaker-feeder EIO has not recurred on this
 boot; its origin logging is installed and waits for the next failure.
+**Current defect: front OV5693 first transfer after power-up stalls
+intermittently (C02/C05).** Baseline is now 20261014ff (front DTB promoted).
+CAMSS links each sensor at bind, so rear/IR survive a failed front (verified
+at boot 7638f0cb). CCI retries once after its timeout recovery (f2917d87cf2b,
+not yet exercised). Root cause unproven; refuted: probe concurrency, CCI
+re-init order, clock rate/gating, reset overlap, unpowered time, controller
+pinned active. See RESULT-20261014ff.md.
+1. H-retry-recovers: on ordinary boots `dmesg | grep SPX` shows a
+   cci-timeout followed by `cci-retry ... result=ok` and front,rear,ir in
+   camera.graph. If result is an error, the stall is not cleared by reset:
+   record the lines and look at the pad/pull configuration of gpio19/20.
 Next candidates, each blocked on the stated prerequisite:
 Parked with briefs in /var/tmp/spx-codex/: IPA (no sourced IPA version/tables),
 Type-C class ports (no firmware initial-state query; ADSP has no PMIC_RTR
