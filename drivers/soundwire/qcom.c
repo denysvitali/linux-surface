@@ -2061,7 +2061,10 @@ static int spx_audio_state_get(char *buffer, const struct kernel_param *kp)
 	struct qcom_swrm_ctrl *ctrl;
 	u32 values[ARRAY_SIZE(registers)], canary, gpio_dir, gpio_val;
 	u32 codec_values[ARRAY_SIZE(codec_registers)], ports[2][2], offset, fifo;
-	int i, bank, len = 0, ret;
+	const char *stage = NULL;
+	u32 target = 0, sample = 0;
+	bool canary_mismatch = false;
+	int i, bank, len = 0, ret, source_ret = 0;
 
 	mutex_lock(&spx_dbg_lock);
 	ctrl = spx_dbg_ctrl;
@@ -2073,14 +2076,24 @@ static int spx_audio_state_get(char *buffer, const struct kernel_param *kp)
 
 	mutex_lock(&ctrl->controller_lock);
 	for (i = 0; i < ARRAY_SIZE(registers); i++) {
-		ret = ctrl->reg_read(ctrl, registers[i].reg, &values[i]);
+		stage = "master-register";
+		target = registers[i].reg;
+		ret = ctrl->reg_read(ctrl, target, &values[i]);
+		source_ret = ret;
 		if (ret || (!i && values[i] != 0x016840c6)) {
+			if (!ret) {
+				stage = "initial-canary";
+				sample = values[i];
+				canary_mismatch = true;
+			}
 			ret = -EIO;
 			goto unlock_controller;
 		}
 	}
-	ret = ctrl->reg_read(ctrl, ctrl->reg_layout[SWRM_REG_CMD_FIFO_STATUS],
-			     &fifo);
+	stage = "fifo-status";
+	target = ctrl->reg_layout[SWRM_REG_CMD_FIFO_STATUS];
+	ret = ctrl->reg_read(ctrl, target, &fifo);
+	source_ret = ret;
 	if (ret) {
 		ret = -EIO;
 		goto unlock_controller;
@@ -2088,9 +2101,10 @@ static int spx_audio_state_get(char *buffer, const struct kernel_param *kp)
 	offset = ctrl->reg_layout[SWRM_OFFSET_DP_PORT_CTRL_BANK];
 	for (i = 0; i < ARRAY_SIZE(ports); i++) {
 		for (bank = 0; bank < ARRAY_SIZE(ports[i]); bank++) {
-			ret = ctrl->reg_read(ctrl,
-				SWRM_DPn_PORT_CTRL_BANK(offset, i ? 4 : 1, bank),
-				&ports[i][bank]);
+			stage = "port-control";
+			target = SWRM_DPn_PORT_CTRL_BANK(offset, i ? 4 : 1, bank);
+			ret = ctrl->reg_read(ctrl, target, &ports[i][bank]);
+			source_ret = ret;
 			if (ret) {
 				ret = -EIO;
 				goto unlock_controller;
@@ -2103,28 +2117,47 @@ static int spx_audio_state_get(char *buffer, const struct kernel_param *kp)
 	 * 0x0c, so the next bridge transaction would access the wrong page.
 	 * Refresh only the GPIO values and preserve normal selector tracking.
 	 */
-	ret = regcache_drop_region(ctrl->regmap, WCD934X_GPIO_DIR_CTL,
+	stage = "gpio-cache-drop";
+	target = WCD934X_GPIO_DIR_CTL;
+	ret = regcache_drop_region(ctrl->regmap, target,
 				   WCD934X_GPIO_VAL_CTL);
+	source_ret = ret;
 	if (ret)
 		goto unlock_controller;
-	ret = regmap_read(ctrl->regmap, WCD934X_GPIO_DIR_CTL, &gpio_dir);
+	stage = "gpio-direction";
+	ret = regmap_read(ctrl->regmap, target, &gpio_dir);
+	source_ret = ret;
 	if (ret)
 		goto unlock_controller;
-	ret = regmap_read(ctrl->regmap, WCD934X_GPIO_VAL_CTL, &gpio_val);
+	stage = "gpio-value";
+	target = WCD934X_GPIO_VAL_CTL;
+	ret = regmap_read(ctrl->regmap, target, &gpio_val);
+	source_ret = ret;
 	if (ret)
 		goto unlock_controller;
 	for (i = 0; i < ARRAY_SIZE(codec_registers); i++) {
-		ret = regcache_drop_region(ctrl->regmap, codec_registers[i].reg,
-					   codec_registers[i].reg);
+		stage = "codec-cache-drop";
+		target = codec_registers[i].reg;
+		ret = regcache_drop_region(ctrl->regmap, target, target);
+		source_ret = ret;
 		if (ret)
 			goto unlock_controller;
-		ret = regmap_read(ctrl->regmap, codec_registers[i].reg,
-				  &codec_values[i]);
+		stage = "codec-register";
+		ret = regmap_read(ctrl->regmap, target, &codec_values[i]);
+		source_ret = ret;
 		if (ret)
 			goto unlock_controller;
 	}
-	ret = ctrl->reg_read(ctrl, SWRM_COMP_PARAMS, &canary);
+	stage = "final-canary-read";
+	target = SWRM_COMP_PARAMS;
+	ret = ctrl->reg_read(ctrl, target, &canary);
+	source_ret = ret;
 	if (ret || canary != values[0]) {
+		if (!ret) {
+			stage = "final-canary";
+			sample = canary;
+			canary_mismatch = true;
+		}
 		ret = -EIO;
 		goto unlock_controller;
 	}
@@ -2150,6 +2183,16 @@ static int spx_audio_state_get(char *buffer, const struct kernel_param *kp)
 	ret = len;
 
 unlock_controller:
+	if (ret < 0) {
+		if (canary_mismatch)
+			dev_err_ratelimited(ctrl->dev,
+					    "SPX audio state failure: stage=%s reg=%#x sample=%#x expected=%#x result=%d\n",
+					    stage, target, sample, 0x016840c6, ret);
+		else
+			dev_err_ratelimited(ctrl->dev,
+					    "SPX audio state failure: stage=%s reg=%#x source_rc=%d result=%d\n",
+					    stage, target, source_ret, ret);
+	}
 	mutex_unlock(&ctrl->controller_lock);
 out:
 	mutex_unlock(&spx_dbg_lock);

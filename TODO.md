@@ -33,9 +33,16 @@ are voluntary when a human wants them; do not prompt or wait for them.
   Its strongest source match is periodic SoundWire `state()` bridge/canary read,
   not proved ALSA underrun. Persist traceback basename/function/line+errno on
   the next failure; do not mask/retry health reads or change buffers/watchdogs.
-  No sound/amp restart or parked-DSP mutation in this round. Next primary test
-  requires a separately authorized playback run or a normal boot, with the
-  installed diagnostic; stop rather than repeat unrelated successful tests.
+  Six offline avenues found no supported primary correction: the old page
+  bug is fixed, PM is held, and observed FIFO errors follow teardown. A separate
+  u32 ring-position wrap defect does not match this EIO boundary; parked, not
+  an EIO fix. H-state-origin: if the Python traceback identifies state(), the
+  callback's failure stage/register/return or successful-but-bad canary sample
+  distinguishes the next hypothesis. Failure-only logging prepared offline;
+  no new reads, retries, settings or fatal-check changes, and not installed.
+  See `RESULT-20261013-audio-eio-investigation.md`. No sound/amp restart or
+  parked-DSP mutation. Primary evidence needs a separately authorized playback
+  run or normal boot; stop rather than repeat unrelated successful tests.
 - Missing support, missing tools/fixtures and known unsafe paths stay separate
   blocked results, never passes or omitted rows. Wi-Fi/BT scans and one H264
   decode fixture do not establish all networking/codec/lifecycle support.
