@@ -2,6 +2,7 @@
 // Copyright (c) 2012-2016, The Linux Foundation. All rights reserved.
 // Copyright (c) 2017-2022 Linaro Limited.
 
+#include <linux/atomic.h>
 #include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/delay.h>
@@ -9,6 +10,7 @@
 #include <linux/i2c.h>
 #include <linux/io.h>
 #include <linux/interrupt.h>
+#include <linux/ktime.h>
 #include <linux/module.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
@@ -113,6 +115,8 @@ struct cci_master {
 	int status;
 	struct completion irq_complete;
 	struct cci *cci;
+	bool xfer_in_flight;
+	atomic64_t last_xfer_end;
 };
 
 struct cci_data {
@@ -130,6 +134,7 @@ struct cci {
 	struct clk_bulk_data *clocks;
 	int nclocks;
 	struct cci_master master[NUM_MASTERS];
+	atomic64_t last_init_reset;
 };
 
 static bool spx_irq_debug;
@@ -188,8 +193,10 @@ static irqreturn_t cci_isr(int irq, void *dev)
 		ret = IRQ_HANDLED;
 	}
 
-	if (unlikely(reset))
+	if (unlikely(reset)) {
+		atomic64_set(&cci->last_init_reset, ktime_to_ns(ktime_get()));
 		writel(reset, cci->base + CCI_RESET_CMD);
+	}
 
 	if (unlikely(val & CCI_IRQ_STATUS_0_I2C_M0_ERROR)) {
 		if (val & CCI_IRQ_STATUS_0_I2C_M0_Q0_NACK_ERR ||
@@ -281,6 +288,7 @@ static void cci_init(struct cci *cci)
 		val = hw->scl_stretch_en << 8 | hw->trdhld << 4 | hw->tsp;
 		writel(val, cci->base + CCI_I2C_Mm_MISC_CTL(i));
 	}
+	atomic64_set(&cci->last_init_reset, ktime_to_ns(ktime_get()));
 }
 
 static int cci_reset(struct cci *cci)
@@ -290,6 +298,7 @@ static int cci_reset(struct cci *cci)
 	 * master[0].xxx for waiting on it.
 	 */
 	reinit_completion(&cci->master[0].irq_complete);
+	atomic64_set(&cci->last_init_reset, ktime_to_ns(ktime_get()));
 	writel(CCI_RESET_CMD_MASK, cci->base + CCI_RESET_CMD);
 
 	if (!wait_for_completion_timeout(&cci->master[0].irq_complete,
@@ -301,6 +310,61 @@ static int cci_reset(struct cci *cci)
 	cci_init(cci);
 
 	return 0;
+}
+
+static s64 cci_age_ms(ktime_t now, atomic64_t *stamp)
+{
+	s64 ns = atomic64_read(stamp);
+
+	return ns ? ktime_ms_delta(now, ns_to_ktime(ns)) : -1;
+}
+
+static void cci_log_timeout(struct cci *cci, u8 master, u8 queue)
+{
+	ktime_t now = ktime_get();
+	char queues[448], clocks[256];
+	u32 irq, mask, halt, reset, start;
+	s64 age[NUM_MASTERS], init_age;
+	bool active[NUM_MASTERS];
+	int m, q, i, pos = 0;
+
+	/* Non-destructive registers only; the transfer still holds its PM ref. */
+	irq = readl(cci->base + CCI_IRQ_STATUS_0);
+	mask = readl(cci->base + CCI_IRQ_MASK_0);
+	halt = readl(cci->base + CCI_HALT_REQ);
+	reset = readl(cci->base + CCI_RESET_CMD);
+	start = readl(cci->base + CCI_QUEUE_START);
+	init_age = cci_age_ms(now, &cci->last_init_reset);
+	for (m = 0; m < cci->data->num_masters; m++) {
+		active[m] = READ_ONCE(cci->master[m].xfer_in_flight);
+		age[m] = cci_age_ms(now, &cci->master[m].last_xfer_end);
+		pos += scnprintf(queues + pos, sizeof(queues) - pos,
+				 " m%d(sw_status=%d,rd_buf=%u)", m,
+				 READ_ONCE(cci->master[m].status),
+				 readl(cci->base + CCI_I2C_Mm_READ_BUF_LEVEL(m)));
+		for (q = 0; q < NUM_QUEUES; q++)
+			pos += scnprintf(queues + pos, sizeof(queues) - pos,
+					 " m%dq%d(cur=%u,exec=%u,cmd=%08x,report=%08x)",
+					 m, q,
+					 readl(cci->base + CCI_I2C_Mm_Qn_CUR_WORD_CNT(m, q)),
+					 readl(cci->base + CCI_I2C_Mm_Qn_EXEC_WORD_CNT(m, q)),
+					 readl(cci->base + CCI_I2C_Mm_Qn_CUR_CMD(m, q)),
+					 readl(cci->base + CCI_I2C_Mm_Qn_REPORT_STATUS(m, q)));
+	}
+	dev_err(cci->dev,
+		"SPX cci-timeout: master=%u queue=%u irq0=%08x mask0=%08x halt=%08x reset=%08x start=%08x%s\n",
+		master, queue, irq, mask, halt, reset, start, queues);
+
+	pos = 0;
+	for (i = 0; i < cci->nclocks; i++)
+		pos += scnprintf(clocks + pos, sizeof(clocks) - pos, " %s=%lu",
+				 cci->clocks[i].id, clk_get_rate(cci->clocks[i].clk));
+	dev_err(cci->dev,
+		"SPX cci-timeout: master=%u queue=%u pm_status=%d init_reset_ms=%lld m0(in_flight=%d,last_end_ms=%lld) m1(in_flight=%d,last_end_ms=%lld) clocks_hz:%s%s\n",
+		master, queue, READ_ONCE(cci->dev->power.runtime_status), init_age,
+		active[0], age[0], cci->data->num_masters > 1 ? active[1] : 0,
+		cci->data->num_masters > 1 ? age[1] : -1, clocks,
+		pos == sizeof(clocks) - 1 ? " [truncated]" : "");
 }
 
 static int cci_run_queue(struct cci *cci, u8 master, u8 queue)
@@ -371,8 +435,7 @@ static int cci_run_queue(struct cci *cci, u8 master, u8 queue)
 
 	if (!wait_for_completion_timeout(&cci->master[master].irq_complete,
 					 CCI_TIMEOUT)) {
-		dev_err(cci->dev, "master %d queue %d timeout\n",
-			master, queue);
+		cci_log_timeout(cci, master, queue);
 		cci_reset(cci);
 		return -ETIMEDOUT;
 	}
@@ -498,6 +561,7 @@ static int cci_xfer(struct i2c_adapter *adap, struct i2c_msg msgs[], int num)
 	if (ret < 0)
 		goto err;
 
+	WRITE_ONCE(cci_master->xfer_in_flight, true);
 	for (i = 0; i < num; i++) {
 		if (msgs[i].flags & I2C_M_RD)
 			ret = cci_i2c_read(cci, cci_master->master,
@@ -515,6 +579,8 @@ static int cci_xfer(struct i2c_adapter *adap, struct i2c_msg msgs[], int num)
 	if (!ret)
 		ret = num;
 
+	atomic64_set(&cci_master->last_xfer_end, ktime_to_ns(ktime_get()));
+	WRITE_ONCE(cci_master->xfer_in_flight, false);
 err:
 	pm_runtime_put_autosuspend(cci->dev);
 
@@ -581,6 +647,9 @@ static int cci_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	cci->dev = dev;
+	atomic64_set(&cci->last_init_reset, 0);
+	for (i = 0; i < NUM_MASTERS; i++)
+		atomic64_set(&cci->master[i].last_xfer_end, 0);
 	platform_set_drvdata(pdev, cci);
 	cci->data = device_get_match_data(dev);
 	if (!cci->data)

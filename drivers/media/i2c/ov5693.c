@@ -17,6 +17,7 @@
 #include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/i2c.h>
+#include <linux/ktime.h>
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
 #include <linux/regulator/consumer.h>
@@ -143,6 +144,7 @@ struct ov5693_device {
 	struct gpio_desc *powerdown;
 	struct regulator_bulk_data supplies[OV5693_NUM_SUPPLIES];
 	struct clk *xvclk;
+	ktime_t reset_released;
 
 	struct ov5693_mode {
 		struct v4l2_rect crop;
@@ -710,6 +712,7 @@ static int ov5693_sensor_powerup(struct ov5693_device *ov5693)
 	usleep_range(1000, 2000);
 	gpiod_set_value_cansleep(ov5693->powerdown, 0);
 	gpiod_set_value_cansleep(ov5693->reset, 0);
+	ov5693->reset_released = ktime_get();
 	usleep_range(5000, 7500);
 
 	return 0;
@@ -759,12 +762,28 @@ out_unlock:
 
 static int ov5693_detect(struct ov5693_device *ov5693)
 {
+	ktime_t transfer_start;
 	int ret;
 	u64 id;
 
+	transfer_start = ktime_get();
 	ret = cci_read(ov5693->regmap, OV5693_REG_CHIP_ID, &id, NULL);
-	if (ret)
+	if (ret) {
+		int enabled[OV5693_NUM_SUPPLIES], voltage[OV5693_NUM_SUPPLIES];
+		int i;
+
+		for (i = 0; i < OV5693_NUM_SUPPLIES; i++) {
+			enabled[i] = regulator_is_enabled(ov5693->supplies[i].consumer);
+			voltage[i] = regulator_get_voltage(ov5693->supplies[i].consumer);
+		}
+		dev_err(ov5693->dev,
+			"SPX ov5693-identify: err=%d avdd(enabled=%d,uV=%d) dovdd(enabled=%d,uV=%d) dvdd(enabled=%d,uV=%d) xvclk_hz=%lu reset=%d reset_to_xfer_us=%lld\n",
+			ret, enabled[0], voltage[0], enabled[1], voltage[1],
+			enabled[2], voltage[2], clk_get_rate(ov5693->xvclk),
+			ov5693->reset ? gpiod_get_value_cansleep(ov5693->reset) : -ENOENT,
+			ktime_us_delta(transfer_start, ov5693->reset_released));
 		return ret;
+	}
 
 	if (id != OV5693_CHIP_ID)
 		return dev_err_probe(ov5693->dev, -ENODEV,
