@@ -38,6 +38,72 @@ func platformCheck(t *testing.T, c *AutoContext, id string) AutoResult {
 	t.Fatal("Missing check " + id)
 	return AutoResult{}
 }
+
+func platformWatchdogFixture(t *testing.T, attrs bool, driver bool) *AutoContext {
+	t.Helper()
+	c := platformFixture(t, nil)
+	device := filepath.Join(c.Root, "sys/devices/platform/soc/17c10000.watchdog/watchdog/watchdog0")
+	if err := os.MkdirAll(device, 0700); err != nil {
+		t.Fatal(err)
+	}
+	classParent := filepath.Join(c.Root, "sys/class/watchdog")
+	if err := os.MkdirAll(classParent, 0700); err != nil {
+		t.Fatal(err)
+	}
+	class := filepath.Join(classParent, "watchdog0")
+	if err := os.Symlink("../../devices/platform/soc/17c10000.watchdog/watchdog/watchdog0", class); err != nil {
+		t.Fatal(err)
+	}
+	if attrs {
+		if err := os.WriteFile(filepath.Join(device, "identity"), []byte("qcom_wdt"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	parent := filepath.Join(c.Root, "sys/devices/platform/soc/17c10000.watchdog")
+	if err := os.MkdirAll(filepath.Join(parent, "of_node"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, "of_node/compatible"), []byte("qcom,sc8180x-wdt\x00qcom,kpss-wdt"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("../..", filepath.Join(device, "device")); err != nil {
+		t.Fatal(err)
+	}
+	if driver {
+		driverPath := filepath.Join(c.Root, "sys/bus/platform/drivers/qcom_wdt")
+		if err := os.MkdirAll(driverPath, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("../../../../bus/platform/drivers/qcom_wdt", filepath.Join(device, "device/driver")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return c
+}
+
+func TestPlatformWatchdogIdentityAttributes(t *testing.T) {
+	result := platformCheck(t, platformWatchdogFixture(t, true, false), "diag.watchdog")
+	if result.Status != "observed" || !strings.Contains(result.Detail, "watchdog0 identity=qcom_wdt") || strings.Contains(result.Detail, "attributes unavailable") {
+		t.Fatalf("got %+v", result)
+	}
+}
+
+func TestPlatformWatchdogDriverFallback(t *testing.T) {
+	result := platformCheck(t, platformWatchdogFixture(t, false, true), "diag.watchdog")
+	for _, fact := range []string{"driver=qcom_wdt", "parent=17c10000.watchdog", "compatible=qcom,sc8180x-wdt,qcom,kpss-wdt", "identity/state/timeout attributes unavailable", "capability inventory only", "no device open"} {
+		if result.Status != "observed" || !strings.Contains(result.Detail, fact) {
+			t.Fatalf("missing %q in %+v", fact, result)
+		}
+	}
+}
+
+func TestPlatformWatchdogWithoutAttributesOrDriverBlocked(t *testing.T) {
+	result := platformCheck(t, platformWatchdogFixture(t, false, false), "diag.watchdog")
+	if result.Status != "blocked" || !strings.Contains(result.Detail, "no bound parent driver") {
+		t.Fatalf("got %+v", result)
+	}
+}
+
 func TestPlatformMissingSupportBlocked(t *testing.T) {
 	c := platformFixture(t, nil)
 	for _, id := range []string{"cpu.cores", "cpu.memory", "cpu.cpufreq", "storage.nvme", "fw.remoteproc", "accel.cdsp-fastrpc", "rtc.read-time", "security.tpm", "security.tpm-capability", "security.secureboot", "thermal.metadata", "diag.boot", "diag.taint", "cpu.workload", "cpu.frequency-transitions", "fw.stability", "security.tpm-signing", "accel.cdsp-workload", "thermal.response", "pwr.supplies", "pwr.support", "diag.watchdog", "pwr.suspend-recovery", "pwr.hibernate-recovery", "diag.watchdog-recovery"} {

@@ -184,7 +184,7 @@ func TestGraphicsGLRenderRequiresHardwareAndPixelOracle(t *testing.T) {
 				if es {
 					tool, version = "glmark2-es2-gbm", "OpenGL ES 3.2 Mesa"
 				}
-				if args[0] != tool || graphicsTestArgument(args, "--size") != "800x600" || graphicsTestArgument(args, "--benchmark") != "build:use-vbo=true:duration=1" || !strings.Contains(strings.Join(args, " "), "--off-screen --winsys-options=drm-device=/dev/dri/renderD128") {
+				if args[0] != tool || graphicsTestArgument(args, "--size") != "800x600" || graphicsTestArgument(args, "--benchmark") != "build:use-vbo=true:duration=1" || !strings.Contains(strings.Join(args, " "), "--winsys-options=drm-device=/dev/dri/renderD128") || strings.Contains(strings.Join(args, " "), "--off-screen") {
 					t.Fatal("unsafe/different fixture command", args)
 				}
 				resultPath = graphicsTestArgument(args, "--results-file")

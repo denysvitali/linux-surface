@@ -431,7 +431,9 @@ func graphicsGLRender(c *AutoContext, es bool) AutoResult {
 	}
 	defer os.RemoveAll(dir)
 	resultFile := filepath.Join(dir, "result.xml")
-	out, err := c.Command(tool, "--off-screen", "--winsys-options=drm-device="+nodes[0], "--size", "800x600", "--frame-end=finish", "--validate", "--benchmark", "build:use-vbo=true:duration=1", "--results-file", resultFile)
+	// No --off-screen: its FBO path makes --validate read an empty buffer even on
+	// llvmpipe. The GBM flavour is already windowless and never touches a display.
+	out, err := c.Command(tool, "--winsys-options=drm-device="+nodes[0], "--size", "800x600", "--frame-end=finish", "--validate", "--benchmark", "build:use-vbo=true:duration=1", "--results-file", resultFile)
 	if err != nil {
 		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
 			// Locate installed flavours without executing them. In particular,

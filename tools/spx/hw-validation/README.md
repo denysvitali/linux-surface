@@ -258,3 +258,13 @@ match catalog order and IDs. Markdown is derived from these fields, for example:
 ```
 
 These examples describe semantics, not results on this device.
+
+### GL/GLES offscreen tool
+
+`graphics.gl.render` and `graphics.gles.render` need `glmark2-gbm` and
+`glmark2-es2-gbm`. The distribution package has no GBM flavour, so they are
+a private upstream build in `/var/tmp/spx-glmark2/prefix` (flavours
+`gbm-gl,gbm-glesv2`, data path compiled in) linked into `/usr/local/bin`.
+The check does not pass `--off-screen`: that FBO path makes `--validate` read
+an empty buffer and fail even on llvmpipe. The GBM flavour opens only the
+render node and never sets a mode.

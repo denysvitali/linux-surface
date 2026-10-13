@@ -663,14 +663,64 @@ func platformWatchdog(c *AutoContext) AutoResult {
 		return platformBlocked(id, "Watchdog sysfs interface is not exposed/readable; no watchdog device opened")
 	}
 	var parts []string
+	usedFallback := false
 	for _, p := range paths {
 		identity, err := c.Read(p + "/identity")
-		if err != nil {
-			return platformBlocked(id, "Watchdog identity metadata is not readable; no watchdog device opened")
+		if err == nil && identity != "" {
+			parts = append(parts, filepath.Base(p)+" identity="+identity)
+			continue
 		}
-		parts = append(parts, filepath.Base(p)+" identity="+identity)
+		usedFallback = true
+		driver, err := platformReadlink(c, p+"/device/driver")
+		if err != nil || filepath.Base(driver) == "." || filepath.Base(driver) == string(filepath.Separator) {
+			return platformBlocked(id, "Watchdog identity metadata is not readable and no bound parent driver can be established; no watchdog device opened")
+		}
+		device, _ := platformReadlink(c, p+"/device")
+		deviceName := filepath.Base(device)
+		if device == "" {
+			deviceName = "unknown"
+		}
+		compatible, _ := c.Read(p + "/device/of_node/compatible")
+		fact := filepath.Base(p) + " driver=" + filepath.Base(driver) + " parent=" + deviceName
+		if compatible != "" {
+			fact += " compatible=" + strings.ReplaceAll(compatible, " ", ",")
+		}
+		parts = append(parts, fact)
 	}
-	return platformResult(id, "observed", strings.Join(parts, "; ")+"; capability only; no device open, watchdog arm, reset or recovery test")
+	detail := strings.Join(parts, "; ")
+	if usedFallback {
+		detail += "; identity/state/timeout attributes unavailable because the kernel lacks watchdog sysfs attributes; capability inventory only; no device open, arm, reset or recovery test"
+	} else {
+		detail += "; capability only; no device open, watchdog arm, reset or recovery test"
+	}
+	return platformResult(id, "observed", detail)
+}
+
+func platformReadlink(c *AutoContext, path string) (string, error) {
+	p, err := c.path(path)
+	if err != nil {
+		return "", err
+	}
+	if err = c.withinRoot(p); err != nil {
+		return "", err
+	}
+	target, err := os.Readlink(p)
+	if err != nil {
+		return "", err
+	}
+	linkParent, err := filepath.EvalSymlinks(filepath.Dir(p))
+	if err != nil {
+		return "", err
+	}
+	if filepath.IsAbs(target) {
+		target = filepath.Join(c.Root, strings.TrimPrefix(target, string(filepath.Separator)))
+	} else {
+		target = filepath.Join(linkParent, target)
+	}
+	if err = c.withinRoot(target); err != nil {
+		return "", err
+	}
+	return target, nil
 }
 func platformBoot(c *AutoContext) AutoResult {
 	const id = "diag.boot"
