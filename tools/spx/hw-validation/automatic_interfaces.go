@@ -45,9 +45,7 @@ func automaticInterfacesChecks() []AutoCheck {
 		{ID: "sensors.light-lux", Title: "Calibrated ambient-light report delivery", Area: "Sensors", Kind: "functional", Boxes: []string{"S01"}, Run: func(c *AutoContext) AutoResult {
 			return interfacesResult("sensors.light-lux", "blocked", "No verified TCS3430 lux conversion or desktop ambient-light source is implemented; raw XYZ/IR reads do not establish calibrated light delivery. No stimulus or brightness change requested")
 		}},
-		{ID: "sensors.desktop-delivery", Title: "Fresh desktop motion and compass delivery", Area: "Sensors", Kind: "functional", Boxes: []string{"S02"}, Run: func(c *AutoContext) AutoResult {
-			return interfacesResult("sensors.desktop-delivery", "blocked", "Fresh desktop delivery probe is not implemented and desktop compass support remains missing; cached SensorProxy properties and native SSC samples cover different paths. No service Claim, start, reset or physical orientation action attempted")
-		}},
+		{ID: "sensors.desktop-delivery", Title: "Fresh desktop motion and compass delivery", Area: "Sensors", Kind: "functional", Boxes: []string{"S02"}, Run: interfacesSensorDesktopDelivery},
 	}
 	for _, feature := range []struct{ id, title, box string }{
 		{"touch", "Touchscreen direct multi-touch capabilities", "I02"},
@@ -776,6 +774,15 @@ func interfacesSensorBackend(c *AutoContext) AutoResult {
 		return interfacesResult("sensors.backend", "blocked", detail+"; SDSP/service startup prerequisites unavailable; no DSP activation, reload or restart")
 	}
 	return interfacesResult("sensors.backend", "observed", detail+"; endpoint/service metadata only, not sensor delivery or CDSP workload")
+}
+
+// SensorProxy claims belong to the caller's unique bus name. Separate busctl
+// call/monitor processes cannot retain that owner, and monitor mode cannot make
+// method calls. gdbus likewise offers no combined claim/monitor/release command.
+// This dependency-free module has no vendored Go D-Bus client; do not pretend
+// that a cached property or another client's signal validates our claim.
+func interfacesSensorDesktopDelivery(c *AutoContext) AutoResult {
+	return interfacesResult("sensors.desktop-delivery", "blocked", "Fresh desktop accelerometer delivery workload unavailable: busctl/gdbus cannot ClaimAccelerometer, monitor PropertiesChanged and ReleaseAccelerometer on one persistent D-Bus connection; no Go D-Bus client is vendored and new dependencies are excluded. Compass delivery separately blocked: desktop compass support/fresh delivery remains unverified. No service activation, claim or physical stimulus attempted. A stationary device may legitimately emit no AccelerometerOrientation change in 5 s; without a fresh raw-reading path, no stimulus; fresh delivery cannot be distinguished from a stationary device (blocked, not fail). Cached SensorProxy properties and native SSC samples are not fresh desktop delivery")
 }
 
 func interfacesSensorDesktop(c *AutoContext) AutoResult {

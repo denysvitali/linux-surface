@@ -205,6 +205,61 @@ func TestGraphicsGLRenderRequiresHardwareAndPixelOracle(t *testing.T) {
 	}
 }
 
+func TestGraphicsGLMissingGBMFlavours(t *testing.T) {
+	root := t.TempDir()
+	graphicsFixture(t, root, "/dev/dri/renderD128", nil)
+	for _, es := range []bool{false, true} {
+		for _, flavour := range strings.Fields("glmark2 glmark2-drm glmark2-egl glmark2-es2 glmark2-es2-drm glmark2-wayland glmark2-es2-wayland") {
+			t.Run(fmt.Sprintf("es=%t/%s", es, flavour), func(t *testing.T) {
+				calls := 0
+				tool := "glmark2-gbm"
+				if es {
+					tool = "glmark2-es2-gbm"
+				}
+				c := &AutoContext{Root: root, Run: func(args ...string) (string, error) {
+					calls++
+					if calls == 1 && args[0] == tool {
+						return "", fmt.Errorf("missing: %w", exec.ErrNotFound)
+					}
+					if calls == 2 && len(args) == 3 && args[0] == "sh" && args[1] == "-c" && args[2] == graphicsGLInstalledLookup {
+						return "/usr/bin/" + flavour, nil
+					}
+					t.Fatalf("unexpected/fallback command: %v", args)
+					return "", nil
+				}}
+				got := graphicsGLRender(c, es)
+				if got.Status != "blocked" || calls != 2 || !strings.Contains(got.Detail, "installed glmark2 has no GBM offscreen flavour; DRM flavour is excluded because it requests a modeset") || strings.Contains(got.Detail, "/usr/bin/") {
+					t.Fatal(got, calls)
+				}
+			})
+		}
+		for _, tc := range []struct {
+			name, output, want string
+			err                error
+		}{
+			{"not installed", "", "glmark2 tool not installed", errors.New("exit status 1")},
+			{"lookup unavailable", "", "package presence is unknown", os.ErrPermission},
+			{"empty successful lookup", "", "package presence is unknown", nil},
+		} {
+			t.Run(fmt.Sprintf("es=%t/%s", es, tc.name), func(t *testing.T) {
+				lookupErr := tc.err
+				c := &AutoContext{Root: root, Run: func(args ...string) (string, error) {
+					if args[0] == "glmark2-gbm" || args[0] == "glmark2-es2-gbm" {
+						return "", exec.ErrNotFound
+					}
+					if args[0] != "sh" || len(args) != 3 || args[2] != graphicsGLInstalledLookup {
+						t.Fatalf("unexpected/fallback command: %v", args)
+					}
+					return tc.output, lookupErr
+				}}
+				if got := graphicsGLRender(c, es); got.Status != "blocked" || !strings.Contains(got.Detail, tc.want) {
+					t.Fatal(got)
+				}
+			})
+		}
+	}
+}
+
 func graphicsTestPNG(path string, corrupt *image.Point) error {
 	im := image.NewRGBA(image.Rect(0, 0, 64, 64))
 	for y := 0; y < 64; y++ {

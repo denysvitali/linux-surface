@@ -169,6 +169,25 @@ run parked encoders. Sound is not authorized by these flags.
 
 ## Sensor delivery
 
+`sensors.desktop-delivery` remains blocked by a validator dependency: the module
+has no vendored Go D-Bus client, and separate `busctl`/`gdbus` call and monitor
+commands cannot claim, receive signals and release on one persistent connection.
+SensorProxy tracks claims by the caller's unique bus name; a short-lived claim
+command cannot supply that session. No claim or service activation is attempted.
+This is distinct from missing sensor hardware or backend support. Desktop
+compass support and fresh compass delivery remain separately unverified.
+
+A future client must use the already-owned system bus name
+`net.hadess.SensorProxy`, root path `/net/hadess/SensorProxy` and compass path
+`/net/hadess/SensorProxy/Compass`, disable activation, require HasAccelerometer,
+subscribe before claiming and release on every path. Only a fresh
+PropertiesChanged carrying AccelerometerOrientation within five seconds can
+establish orientation delivery; cached properties cannot. No rotation or other
+physical stimulus is requested. A stationary device may legitimately produce
+no orientation change: require a fresh raw-reading path if exposed, otherwise
+report blocked (`no stimulus; fresh delivery cannot be distinguished from a
+stationary device`), never infer a delivery failure from silence alone.
+
 `sensors.motion-read` uses the existing `ssccli` client against an already
 running SensorsPD provider. It samples accelerometer, gyroscope and magnetometer
 for three seconds each, sequentially. Each needs at least20 finite XYZ samples,
@@ -178,6 +197,19 @@ physical movement or calibration judgement is part of this check. Raw values
 and protocol logs stay in memory; the report retains only counts and scope.
 The provider's existing private libssc selection is reused, not installed or
 changed by the validator. Service/library/tool failures remain blocked or failed.
+
+## GL/GLES offscreen tools
+
+`graphics.gl.render` and `graphics.gles.render` require `glmark2-gbm` and
+`glmark2-es2-gbm`, respectively. If the required executable is absent, a bounded
+shell builtin PATH lookup distinguishes an installed glmark2 flavour without
+GBM from no glmark2 tool installed. Distribution glmark2 2023.01 builds provide
+other flavours, not these GBM executables. Those builds stay blocked:
+`installed glmark2 has no GBM offscreen flavour; DRM flavour is excluded because
+it requests a modeset`. Lookup failures leave installation status unknown.
+The lookup only locates executables; it never runs DRM, EGL, desktop or Wayland
+flavours. There is no DRM or Wayland fallback. Render-node prerequisites,
+hardware-renderer selection and pixel-validation requirements still apply.
 
 ## Fixture contract and tests
 

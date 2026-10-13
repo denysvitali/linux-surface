@@ -433,6 +433,19 @@ func graphicsGLRender(c *AutoContext, es bool) AutoResult {
 	resultFile := filepath.Join(dir, "result.xml")
 	out, err := c.Command(tool, "--off-screen", "--winsys-options=drm-device="+nodes[0], "--size", "800x600", "--frame-end=finish", "--validate", "--benchmark", "build:use-vbo=true:duration=1", "--results-file", resultFile)
 	if err != nil {
+		if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
+			// Locate installed flavours without executing them. In particular,
+			// neither DRM (modesetting) nor Wayland is a safe offscreen fallback.
+			installed, lookupErr := c.Command("sh", "-c", graphicsGLInstalledLookup)
+			if lookupErr == nil && strings.TrimSpace(installed) != "" {
+				return graphicsResult(id, "blocked", api+": installed glmark2 has no GBM offscreen flavour; DRM flavour is excluded because it requests a modeset; no DRM or Wayland fallback attempted")
+			}
+			var exitErr *exec.ExitError
+			if (errors.As(lookupErr, &exitErr) && exitErr.ExitCode() == 1) || (lookupErr != nil && lookupErr.Error() == "exit status 1") {
+				return graphicsResult(id, "blocked", api+": glmark2 tool not installed; the required "+tool+" GBM offscreen flavour is unavailable; no DRM or Wayland fallback attempted")
+			}
+			return graphicsResult(id, "blocked", api+": required "+tool+" GBM offscreen tool is absent; installed glmark2 flavour lookup unavailable, so package presence is unknown; DRM flavour is excluded because it requests a modeset")
+		}
 		return graphicsCommandIssue(id, api+" offscreen expected-image test", out, err)
 	}
 	data, err := os.ReadFile(resultFile)
@@ -464,6 +477,10 @@ func graphicsGLRender(c *AutoContext, es bool) AutoResult {
 		return graphicsResult(id, "blocked", "Offscreen scene lacks a recognized pixel validation oracle/result")
 	}
 }
+
+// Static shell builtins only: command -v searches PATH without opening a
+// display or running any of the discovered tools. Exit 1 means none was found.
+const graphicsGLInstalledLookup = `for tool in glmark2 glmark2-drm glmark2-egl glmark2-es2 glmark2-es2-drm glmark2-wayland glmark2-es2-wayland; do command -v "$tool" && exit 0; done; exit 1`
 
 func graphicsGLScene(name string) bool {
 	parts := strings.SplitN(name, "] ", 2)

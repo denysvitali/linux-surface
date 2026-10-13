@@ -13,6 +13,30 @@ import (
 	"testing"
 )
 
+func TestDesktopDeliveryBlockedWithoutPersistentDBusClient(t *testing.T) {
+	c := interfacesFixture(t, nil)
+	c.Run = func(args ...string) (string, error) {
+		t.Fatalf("dependency block must not claim, activate or monitor: %v", args)
+		return "", nil
+	}
+	for _, check := range automaticInterfacesChecks() {
+		if check.ID != "sensors.desktop-delivery" {
+			continue
+		}
+		got := check.Run(c)
+		if got.ID != check.ID || got.Status != "blocked" {
+			t.Fatal(got)
+		}
+		for _, reason := range []string{"one persistent D-Bus connection", "no Go D-Bus client is vendored", "Compass delivery separately blocked", "stationary device", "no stimulus; fresh delivery cannot be distinguished from a stationary device"} {
+			if !strings.Contains(got.Detail, reason) {
+				t.Fatalf("missing reason %q: %+v", reason, got)
+			}
+		}
+		return
+	}
+	t.Fatal("desktop delivery requirement missing from catalog")
+}
+
 func TestExposedSensorFailuresAreNotMissingPrerequisites(t *testing.T) {
 	for _, test := range []struct {
 		output string
