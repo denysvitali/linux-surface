@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -117,6 +119,46 @@ func TestGraphicsVulkanInventoryIsNotSelection(t *testing.T) {
 	}
 }
 
+func TestGraphicsCommandFailuresDistinguishPrerequisitesAndWorkloads(t *testing.T) {
+	failed := errors.New("exit status 1")
+	for _, tc := range []struct {
+		name, output string
+		err          error
+		want         string
+	}{
+		{"missing executable", "", exec.ErrNotFound, "blocked"},
+		{"missing file", "/home/private/fixture: No such file or directory", failed, "blocked"},
+		{"missing library", "error while loading shared libraries: private.so", failed, "blocked"},
+		{"permission error", "", os.ErrPermission, "blocked"},
+		{"permission output", "Operation not permitted", failed, "blocked"},
+		{"no display", "Cannot open display", failed, "blocked"},
+		{"no driver", "VK_ERROR_INCOMPATIBLE_DRIVER", failed, "blocked"},
+		{"no desktop session", "", errors.New("existing desktop user manager display environment unavailable"), "blocked"},
+		{"fixture execution", "", errors.New("external commands disabled for fixture root"), "blocked"},
+		{"device loss", "VK_ERROR_DEVICE_LOST", failed, "fail"},
+		{"context loss", "Context lost", failed, "fail"},
+		{"wrapped deadline", "", fmt.Errorf("render: %w", context.DeadlineExceeded), "fail"},
+		{"bounded command", "", errors.New("gtk4-rendernode-tool exceeded 1m0s command limit"), "fail"},
+		{"timeout output", "GPU fence wait timed out", failed, "fail"},
+		{"render failure", "Failed to render public fixture", failed, "fail"},
+		{"submission failure", "Failed to submit command buffer", failed, "fail"},
+		{"workload beats prerequisite warning", "Cannot open display warning; VK_ERROR_DEVICE_LOST", failed, "fail"},
+		{"unrecognized not-found text", "private atlas entry not found", failed, "error"},
+		{"output limit", "", errors.New("command output exceeded in-memory limit"), "error"},
+		{"unexpected exit", "private serial secret-123", failed, "error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := graphicsCommandIssue("graphics.vulkan.render", "Vulkan render", tc.output, tc.err)
+			if got.Status != tc.want {
+				t.Fatalf("got %+v, want %s", got, tc.want)
+			}
+			if strings.Contains(got.Detail, "private") || strings.Contains(got.Detail, "secret-123") {
+				t.Fatal("raw private command output leaked", got)
+			}
+		})
+	}
+}
+
 func graphicsTestArgument(args []string, key string) string {
 	for i, a := range args {
 		if a == key && i+1 < len(args) {
@@ -163,7 +205,7 @@ func TestGraphicsGLRenderRequiresHardwareAndPixelOracle(t *testing.T) {
 	}
 }
 
-func graphicsTestPNG(path string, corrupt bool) error {
+func graphicsTestPNG(path string, corrupt *image.Point) error {
 	im := image.NewRGBA(image.Rect(0, 0, 64, 64))
 	for y := 0; y < 64; y++ {
 		for x := 0; x < 64; x++ {
@@ -171,7 +213,7 @@ func graphicsTestPNG(path string, corrupt bool) error {
 			if x >= 32 {
 				pixel = color.RGBA{G: 255, A: 255}
 			}
-			if corrupt && x == 48 && y == 32 {
+			if corrupt != nil && x == corrupt.X && y == corrupt.Y {
 				pixel = color.RGBA{B: 255, A: 255}
 			}
 			im.SetRGBA(x, y, pixel)
@@ -193,13 +235,18 @@ func TestGraphicsWindowlessVulkanRejectsSelectedCPUAndBadPixels(t *testing.T) {
 	hardware := "Vulkan Device 0:\n    Turnip Adreno (TM) 680 (Integrated GPU)\nVulkan Device 1:\n    llvmpipe (CPU)\n"
 	for _, tc := range []struct {
 		selection string
-		corrupt   bool
+		corrupt   *image.Point
 		want      string
 	}{
-		{"Using Vulkan device 0, queue 0\n", false, "pass"},
-		{"Using Vulkan device 1, queue 0\n", false, "fail"},
-		{"", false, "blocked"},
-		{"Using Vulkan device 0, queue 0\n", true, "fail"},
+		{"Using Vulkan device 0, queue 0\n", nil, "pass"},
+		{"Using Vulkan device 1, queue 0\n", nil, "fail"},
+		{"", nil, "blocked"},
+		{"Using Vulkan device 0, queue 0\n", &image.Point{X: 48, Y: 32}, "fail"},
+		// Corruption away from the former two samples must also reject a pass.
+		{"Using Vulkan device 0, queue 0\n", &image.Point{X: 1, Y: 1}, "fail"},
+		{"Using Vulkan device 0, queue 0\n", &image.Point{X: 63, Y: 63}, "fail"},
+		{"Using Vulkan device 0, queue 0\n", &image.Point{X: 31, Y: 0}, "fail"},
+		{"Using Vulkan device 0, queue 0\n", &image.Point{X: 32, Y: 63}, "fail"},
 	} {
 		resultDir := ""
 		c := &AutoContext{Run: func(args ...string) (string, error) {

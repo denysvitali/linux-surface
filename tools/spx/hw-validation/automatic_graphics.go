@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"encoding/xml"
@@ -372,19 +373,31 @@ func graphicsValue(text, key string) string {
 
 func graphicsCommandIssue(id, action, output string, err error) AutoResult {
 	low := strings.ToLower(output)
+	if err != nil {
+		low += " " + strings.ToLower(err.Error())
+	}
 	if strings.Contains(low, "vk_error_device_lost") || strings.Contains(low, "gpu hang") || strings.Contains(low, "context lost") {
 		return graphicsResult(id, "fail", action+" reported device/context loss")
 	}
-	if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) || strings.Contains(strings.ToLower(err.Error()), "executable file not found") || strings.Contains(low, "no such file or directory") || strings.Contains(low, "not found") {
+	if errors.Is(err, context.DeadlineExceeded) || strings.Contains(low, "timed out") || strings.Contains(low, "deadline exceeded") || strings.Contains(low, "command limit") {
+		return graphicsResult(id, "fail", action+" did not complete its bounded workload before the deadline")
+	}
+	if strings.Contains(low, "failed to render") || strings.Contains(low, "render failed") || strings.Contains(low, "failed to submit") || strings.Contains(low, "failed to wait for fence") {
+		return graphicsResult(id, "fail", action+" reported rendering/submission failure")
+	}
+	if errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) || strings.Contains(low, "executable file not found") || strings.Contains(low, "no such file or directory") || strings.Contains(low, "command not found") || strings.Contains(low, "error while loading shared libraries") || strings.Contains(low, "cannot open shared object file") {
 		return graphicsResult(id, "blocked", action+" requires an installed tool/fixture")
 	}
-	if strings.Contains(low, "permission denied") || errors.Is(err, os.ErrPermission) {
+	if strings.Contains(low, "permission denied") || strings.Contains(low, "operation not permitted") || errors.Is(err, os.ErrPermission) {
 		return graphicsResult(id, "blocked", action+" requires graphics device/session permissions")
 	}
 	if strings.Contains(low, "could not initialize windowing") || strings.Contains(low, "cannot open display") || strings.Contains(low, "failed to create renderer") || strings.Contains(low, "eglinitialize failed") || strings.Contains(low, "failed to create gbm") || strings.Contains(low, "failed to open drm") || strings.Contains(low, "vk_error_incompatible_driver") {
 		return graphicsResult(id, "blocked", action+" needs a usable graphics driver/context and, for GTK, an existing display session")
 	}
-	return graphicsResult(id, "blocked", action+" did not complete; usable tool/context support is needed (no functional verdict)")
+	if strings.Contains(low, "existing desktop user manager display environment unavailable") || strings.Contains(low, "requested desktop user cannot be resolved") || strings.Contains(low, "external commands disabled for fixture root") {
+		return graphicsResult(id, "blocked", action+" requires an accessible existing desktop session and live execution context")
+	}
+	return graphicsResult(id, "error", action+" failed without a recognized prerequisite or workload-failure reason; no raw log retained in report")
 }
 
 type graphicsGLXML struct {
@@ -533,16 +546,19 @@ func graphicsVulkanRender(c *AutoContext) AutoResult {
 	if im.Bounds().Dx() != 64 || im.Bounds().Dy() != 64 {
 		return graphicsResult(id, "fail", "GTK Vulkan readback dimensions differ from the 64x64 fixture")
 	}
-	for _, sample := range []struct {
-		x, y    int
-		r, g, b uint32
-	}{{16, 32, 65535, 0, 0}, {48, 32, 0, 65535, 0}} {
-		r, g, b, a := im.At(sample.x, sample.y).RGBA()
-		if r != sample.r || g != sample.g || b != sample.b || a != 65535 {
-			return graphicsResult(id, "fail", "GTK Vulkan public static-color pixel readback differs from the fixture")
+	for y := 0; y < 64; y++ {
+		for x := 0; x < 64; x++ {
+			wantR, wantG := uint32(65535), uint32(0)
+			if x >= 32 {
+				wantR, wantG = 0, 65535
+			}
+			r, g, b, a := im.At(x, y).RGBA()
+			if r != wantR || g != wantG || b != 0 || a != 65535 {
+				return graphicsResult(id, "fail", "GTK Vulkan public static-color pixel readback differs from the fixture")
+			}
 		}
 	}
-	return graphicsResult(id, "pass", "Adreno 680 Vulkan rendered a public 64x64 color fixture windowlessly and matched pixel readback; output discarded. Static path only: recorded GMEM scrolling/partial-damage corruption remains unresolved")
+	return graphicsResult(id, "pass", "Adreno 680 Vulkan rendered a public 64x64 color fixture windowlessly and matched all 4096 pixels; output discarded. Static path only: recorded GMEM scrolling/partial-damage corruption remains unresolved")
 }
 
 var graphicsVulkanDevice = regexp.MustCompile(`(?m)^Vulkan Device ([0-9]+):\s*\n\s*([^\r\n]+)`)
