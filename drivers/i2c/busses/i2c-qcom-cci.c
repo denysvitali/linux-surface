@@ -116,6 +116,7 @@ struct cci_master {
 	struct completion irq_complete;
 	struct cci *cci;
 	bool xfer_in_flight;
+	atomic64_t xfer_start;
 	atomic64_t last_xfer_end;
 };
 
@@ -135,6 +136,9 @@ struct cci {
 	int nclocks;
 	struct cci_master master[NUM_MASTERS];
 	atomic64_t last_init_reset;
+	atomic64_t last_reset_request;
+	atomic64_t last_reset_ack;
+	u32 last_reset_mask;
 };
 
 static bool spx_irq_debug;
@@ -161,6 +165,7 @@ static irqreturn_t cci_isr(int irq, void *dev)
 			(val & CCI_IRQ_STATUS_0_I2C_M0_Q0_NACK_ERR) ? " M0_NACK" : "");
 
 	if (val & CCI_IRQ_STATUS_0_RST_DONE_ACK) {
+		atomic64_set(&cci->last_reset_ack, ktime_to_ns(ktime_get()));
 		complete(&cci->master[0].irq_complete);
 		if (cci->master[1].master)
 			complete(&cci->master[1].irq_complete);
@@ -194,6 +199,8 @@ static irqreturn_t cci_isr(int irq, void *dev)
 	}
 
 	if (unlikely(reset)) {
+		WRITE_ONCE(cci->last_reset_mask, reset);
+		atomic64_set(&cci->last_reset_request, ktime_to_ns(ktime_get()));
 		atomic64_set(&cci->last_init_reset, ktime_to_ns(ktime_get()));
 		writel(reset, cci->base + CCI_RESET_CMD);
 	}
@@ -298,6 +305,8 @@ static int cci_reset(struct cci *cci)
 	 * master[0].xxx for waiting on it.
 	 */
 	reinit_completion(&cci->master[0].irq_complete);
+	WRITE_ONCE(cci->last_reset_mask, CCI_RESET_CMD_MASK);
+	atomic64_set(&cci->last_reset_request, ktime_to_ns(ktime_get()));
 	atomic64_set(&cci->last_init_reset, ktime_to_ns(ktime_get()));
 	writel(CCI_RESET_CMD_MASK, cci->base + CCI_RESET_CMD);
 
@@ -323,6 +332,7 @@ static void cci_log_timeout(struct cci *cci, u8 master, u8 queue)
 {
 	ktime_t now = ktime_get();
 	char queues[448], clocks[256];
+	struct clk_hw *hw;
 	u32 irq, mask, halt, reset, start;
 	s64 age[NUM_MASTERS], init_age;
 	bool active[NUM_MASTERS];
@@ -365,6 +375,31 @@ static void cci_log_timeout(struct cci *cci, u8 master, u8 queue)
 		active[0], age[0], cci->data->num_masters > 1 ? active[1] : 0,
 		cci->data->num_masters > 1 ? age[1] : -1, clocks,
 		pos == sizeof(clocks) - 1 ? " [truncated]" : "");
+
+	/* Reuse the queue buffer for gates and software enables on the CCI path. */
+	pos = 0;
+	queues[0] = '\0';
+	for (i = 0; i < cci->nclocks; i++) {
+		if (strcmp(cci->clocks[i].id, "cci"))
+			continue;
+		for (hw = __clk_get_hw(cci->clocks[i].clk); hw;
+		     hw = clk_hw_get_parent(hw)) {
+			pos += scnprintf(queues + pos, sizeof(queues) - pos,
+					 " %s(hz=%lu,on=%d)", clk_hw_get_name(hw),
+					 clk_hw_get_rate(hw), clk_hw_is_enabled(hw));
+			if (pos == sizeof(queues) - 1)
+				break;
+		}
+		break;
+	}
+	/* Sample before timeout recovery writes RESET_CMD. No success-path log. */
+	dev_err(cci->dev,
+		"SPX cci-lifecycle: master=%u xfer_ms=%lld reset_req_ms=%lld reset_ack_ms=%lld last_reset_mask=%08x cci_path:%s%s\n",
+		master, cci_age_ms(now, &cci->master[master].xfer_start),
+		cci_age_ms(now, &cci->last_reset_request),
+		cci_age_ms(now, &cci->last_reset_ack),
+		READ_ONCE(cci->last_reset_mask), queues,
+		pos == sizeof(queues) - 1 ? " [truncated]" : "");
 }
 
 static int cci_run_queue(struct cci *cci, u8 master, u8 queue)
@@ -561,6 +596,7 @@ static int cci_xfer(struct i2c_adapter *adap, struct i2c_msg msgs[], int num)
 	if (ret < 0)
 		goto err;
 
+	atomic64_set(&cci_master->xfer_start, ktime_to_ns(ktime_get()));
 	WRITE_ONCE(cci_master->xfer_in_flight, true);
 	for (i = 0; i < num; i++) {
 		if (msgs[i].flags & I2C_M_RD)
@@ -648,8 +684,12 @@ static int cci_probe(struct platform_device *pdev)
 
 	cci->dev = dev;
 	atomic64_set(&cci->last_init_reset, 0);
-	for (i = 0; i < NUM_MASTERS; i++)
+	atomic64_set(&cci->last_reset_request, 0);
+	atomic64_set(&cci->last_reset_ack, 0);
+	for (i = 0; i < NUM_MASTERS; i++) {
+		atomic64_set(&cci->master[i].xfer_start, 0);
 		atomic64_set(&cci->master[i].last_xfer_end, 0);
+	}
 	platform_set_drvdata(pdev, cci);
 	cci->data = device_get_match_data(dev);
 	if (!cci->data)
