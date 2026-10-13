@@ -1,0 +1,95 @@
+--- a/PKGBUILD
++++ b/PKGBUILD
+@@ -17,12 +17,13 @@
+ 
+ pkgname=chromium
+ pkgver=152.0.7977.64
+-pkgrel=1
++pkgrel=2
+ _launcher_ver=8
+ _manual_clone=0
+ _system_clang=1
++_ninja_jobs=4
+ pkgdesc="A web browser built for speed, simplicity, and security"
+-arch=('x86_64')
++arch=('aarch64')
+ url="https://www.chromium.org/Home"
+ license=('BSD-3-Clause')
+ depends=(
+@@ -108,7 +109,11 @@
+         use-oauth2-client-switches-as-default.patch
+         glibc-2.42-baud-rate-fix.patch
+         0001-Run-blink-bindings-generation-single-threaded.patch
+-        0002-Fix-distcc.patch)
++        0002-Fix-distcc.patch
++        0001-h264-stateful-access-unit-reassembly-WIP.patch
++        0002-h264-reassembler-regression-tests-WIP.patch
++        "chromium-test-fonts.tar.gz::https://storage.googleapis.com/chromium-fonts/9c07d19d9c5ee1ff94f717e6fb17e0c8c354e6f9?generation=1775663926405386")
++noextract=(chromium-test-fonts.tar.gz)
+ sha256sums=('0afede9e15101678eb11277098cc2f181a84a5f532f7f46758b981a4a7585f78'
+             '213e50f48b67feb4441078d50b0fd431df34323be15be97c55302d3fdac4483a'
+             '11a96ffa21448ec4c63dd5c8d6795a1998d8e5cd5a689d91aea4d2bdd13fb06e'
+@@ -130,7 +135,10 @@
+             '9343afa1a4308a7cfb3317229f5aff7778688debcc03c4a74a85908aa1d0cc3a'
+             '1c1898f263eaacbc069a8e1a3e732852350350d1dad4cb1a6bba430e3b796cd0'
+             '113aeca23adc6641249cf3c601f89c2094b11d6e857574b8aac72e08e0f2653b'
+-            'e853af57bd7e8e0ae91b1a6f963c21ca1a8e1e2eb8df9bf348b1fca12b5310c3')
++            'e853af57bd7e8e0ae91b1a6f963c21ca1a8e1e2eb8df9bf348b1fca12b5310c3'
++            'f6ee75f5abfeb9fee6444817d8ea229ee007da322512a51775e116159d7e0f2c'
++            'bab9da87f7b03db42f0d69b1c8f123fff4e1e897e4c83c2fa1df5af770ffa7fa'
++            'f0e9628f9e43e3f3476cde06a1849058de460e0e037b7449ce0d42b9a73c37d5')
+ 
+ if (( _manual_clone )); then
+   source[0]=fetch-chromium-release
+@@ -196,8 +204,8 @@
+   # Arch Linux ARM fixes
+   patch -p1 -i ../0001-Run-blink-bindings-generation-single-threaded.patch
+   patch -p1 -i ../0002-Fix-distcc.patch
+-  export ALARM_NINJA_JOBS="16"
+-  export MAKEFLAGS="-j16"
++  export ALARM_NINJA_JOBS="$_ninja_jobs"
++  export MAKEFLAGS="-j$_ninja_jobs"
+ 
+   # https://crbug.com/893950
+   sed -i -e 's/\<xmlMalloc\>/malloc/' -e 's/\<xmlFree\>/free/' \
+@@ -311,6 +319,13 @@
+       -s third_party/dawn --revision gpu/webgpu/DAWN_VERSION \
+       --header gpu/webgpu/dawn_commit_hash.h
+   fi
++
++  mkdir -p third_party/test_fonts/test_fonts
++  tar -xf "$srcdir/chromium-test-fonts.tar.gz" -C third_party/test_fonts/test_fonts
++
++  # Stateful H.264 access units and real-parser regression coverage (WIP).
++  patch -Np1 -i "$srcdir/0001-h264-stateful-access-unit-reassembly-WIP.patch"
++  patch -Np1 -i "$srcdir/0002-h264-reassembler-regression-tests-WIP.patch"
+ }
+ 
+ build() {
+@@ -336,7 +351,8 @@
+     'host_toolchain="//build/toolchain/linux/unbundle:default"'
+     'clang_use_default_sample_profile=false'
+     'is_official_build=true' # implies is_cfi=true on x86_64
+-    'symbol_level=0' # sufficient for backtraces on x86(_64)
++    'symbol_level=0' # bound local build memory and disk use
++    'use_thin_lto=false'
+     'is_cfi=false'
+     'treat_warnings_as_errors=false'
+     'fatal_linker_warnings=false'
+@@ -425,7 +441,15 @@
+   fi
+ 
+   gn gen out/Release --args="${_flags[*]}"
+-  ninja -C out/Release chrome chrome_sandbox chromedriver.unstripped
++  ninja -j "$_ninja_jobs" -C out/Release chrome chrome_sandbox chromedriver.unstripped
++}
++
++check() {
++  cd chromium-$pkgver
++  export CC=clang CXX=clang++ AR=ar NM=nm RUSTC_BOOTSTRAP=1
++  ninja -j "$_ninja_jobs" -C out/Release media_unittests
++  out/Release/media_unittests --gtest_filter=H264FrameReassemblerTest.* \
++    --test-launcher-jobs=1
+ }
+ 
+ package() {
