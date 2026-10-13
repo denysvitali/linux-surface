@@ -119,6 +119,18 @@ net. Commands must not toggle/disconnect radios, modeset or reload MSM,
 read unsafe debugfs/MMIO, suspend, reboot, load modules, test the battery or
 run parked encoders. Sound is not authorized by these flags.
 
+## Sensor delivery
+
+`sensors.motion-read` uses the existing `ssccli` client against an already
+running SensorsPD provider. It samples accelerometer, gyroscope and magnetometer
+for three seconds each, sequentially. Each needs at least20 finite XYZ samples,
+acknowledged enable/disable and the same active provider afterward. The client
+has a12-second process bound. No host restart, DSP reset, raw IIO motion read,
+physical movement or calibration judgement is part of this check. Raw values
+and protocol logs stay in memory; the report retains only counts and scope.
+The provider's existing private libssc selection is reused, not installed or
+changed by the validator. Service/library/tool failures remain blocked or failed.
+
 ## Fixture contract and tests
 
 `--root PATH` maps logical `/proc`, `/sys`, etc. to PATH. `AutoContext.Read`

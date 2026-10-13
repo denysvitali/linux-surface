@@ -1,13 +1,13 @@
 # Automatic hardware checklist
 
-Date: 2026-10-13T16:31:53+02:00
+Date: 2026-10-13T18:14:06+02:00
 Boot: `93f93c82-cdc5-40a6-a7ea-3fdeb4ec784d`
 Kernel: `7.3.0-rc2-spx-mainline-20261004bg+`
 Mode: run; fixture: false
 
 Report JSON: [JSON](/var/lib/spx-boot-diagnostics/boots/93f93c82-cdc5-40a6-a7ea-3fdeb4ec784d/hw-validation/report.json)
 
-Functional checks passed: **10 of 40**. Inventory observations: 34 of 52. Blocked: 46. Failed: 2. Errors: 0.
+Functional checks passed: **11 of 40**. Inventory observations: 36 of 52. Blocked: 44. Failed: 1. Errors: 0.
 
 Implemented checks are validator coverage, not proof that hardware drivers are implemented. Only a functional pass from this boot completes a check. Inventory is never a functional pass.
 
@@ -16,11 +16,11 @@ All catalog rows remain visible, including unsupported or blocked checks. This a
 ## Platform
 
 - **cpu.cores — CPU online/present inventory** (inventory; observed): online=8; present=8; enumeration only; no CPU load or frequency-transition test
-- **cpu.memory — Memory capacity inventory** (inventory; observed): total=15373 MiB; available=12583 MiB; no memory load test
-- **cpu.cpufreq — CPU frequency policy inventory** (inventory; observed): policy0 driver=qcom-cpufreq-hw governor=schedutil min/current/max=300000/883200/1766400 kHz; policy4 driver=qcom-cpufreq-hw governor=schedutil min/current/max=825600/1881600/3148800 kHz; no transitions or idle recovery exercised
+- **cpu.memory — Memory capacity inventory** (inventory; observed): total=15373 MiB; available=12955 MiB; no memory load test
+- **cpu.cpufreq — CPU frequency policy inventory** (inventory; observed): policy0 driver=qcom-cpufreq-hw governor=schedutil min/current/max=300000/1766400/1766400 kHz; policy4 driver=qcom-cpufreq-hw governor=schedutil min/current/max=825600/3148800/3148800 kHz; no transitions or idle recovery exercised
 - [x] **cpu.workload — AC-only bounded CPU/memory consistency** (functional; pass): External power online; 8 concurrent workers, 1 MiB private buffer each, 512 total consistency rounds; &lt;=64 rounds/worker and one-second work deadline; no affinity/clock changes; not frequency, thermal, sustained or all-core placement validation
 - [ ] **cpu.frequency-transitions — Loaded frequency transitions and idle recovery** (functional; blocked): Frequency-transition/idle-recovery workload is deferred; policy metadata alone cannot validate transitions
-- [x] **rtc.read-time — RTC accessible time agrees with system clock** (functional; pass): Surface rtc0 time read; wall-clock difference=1 s (limit 5 s); 1 other RTC(s) not compared; no power-off/suspend retention or independence from network time established
+- [x] **rtc.read-time — RTC accessible time agrees with system clock** (functional; pass): Surface rtc0 time read; wall-clock difference=0 s (limit 5 s); 1 other RTC(s) not compared; no power-off/suspend retention or independence from network time established
 
 ## Storage
 
@@ -44,7 +44,7 @@ All catalog rows remain visible, including unsupported or blocked checks. This a
 
 ## Thermal
 
-- **thermal.metadata — Thermal temperatures, trips and cooling states (no load)** (inventory; observed): aoss0-thermal=34100 mC, cpu0-thermal=35200 mC, cpu7-top-thermal=34900 mC, cpu4-bottom-thermal=34900 mC, cpu5-bottom-thermal=34900 mC, cpu6-bottom-thermal=35200 mC, cpu7-bottom-thermal=35200 mC, gpu-top-thermal=33700 mC, aoss1-thermal=35100 mC, wlan-thermal=34300 mC, video-thermal=34700 mC, mem-thermal=34300 mC, cpu1-thermal=35600 mC, q6-hvx-thermal=34300 mC, camera-thermal=34300 mC, compute-thermal=34700 mC, mdm-dsp-thermal=34700 mC, npu-thermal=33600 mC, pmc8180a-thermal=33759 mC, pmc8180c-thermal=34765 mC, pmc8180e-thermal=33305 mC, cpu2-thermal=34500 mC, cpu3-thermal=35600 mC, cluster0-thermal=34500 mC, cluster1-thermal=35600 mC, cpu4-top-thermal=35200 mC, cpu5-top-thermal=34900 mC, cpu6-top-thermal=35600 mC; 38 trip(s), 4 cooling device(s); instantaneous metadata only; no load or policy changes; thermal names do not establish compute capability
+- **thermal.metadata — Thermal temperatures, trips and cooling states (no load)** (inventory; observed): aoss0-thermal=33300 mC, cpu0-thermal=34100 mC, cpu7-top-thermal=34500 mC, cpu4-bottom-thermal=34100 mC, cpu5-bottom-thermal=33700 mC, cpu6-bottom-thermal=34100 mC, cpu7-bottom-thermal=34100 mC, gpu-top-thermal=32100 mC, aoss1-thermal=33600 mC, wlan-thermal=33600 mC, video-thermal=33600 mC, mem-thermal=33600 mC, cpu1-thermal=34100 mC, q6-hvx-thermal=33600 mC, camera-thermal=33200 mC, compute-thermal=33600 mC, mdm-dsp-thermal=33200 mC, npu-thermal=32400 mC, pmc8180a-thermal=32689 mC, pmc8180c-thermal=33500 mC, pmc8180e-thermal=32137 mC, cpu2-thermal=33300 mC, cpu3-thermal=34500 mC, cluster0-thermal=33300 mC, cluster1-thermal=34900 mC, cpu4-top-thermal=33700 mC, cpu5-top-thermal=33700 mC, cpu6-top-thermal=34100 mC; 38 trip(s), 4 cooling device(s); instantaneous metadata only; no load or policy changes; thermal names do not establish compute capability
 - [ ] **thermal.response — Automatic thermal response under load** (functional; blocked): Thermal-response workload is parked; this suite does not heat the device or change thermal policy
 
 ## Power
@@ -61,7 +61,7 @@ All catalog rows remain visible, including unsupported or blocked checks. This a
 - **diag.boot — Boot identity and retained fault-record inventory** (inventory; observed): Current boot identity available; kernel=7.3.0-rc2-spx-mainline-20261004bg+; 0 retained pstore record(s); prior-boot records are not a current-boot fault verdict; no startup/shutdown repeatability test
 - [x] **diag.kernel-faults — Current boot warning-priority kernel fault scan** (functional; pass): Accessible current-boot warning-priority kernel journal scanned; no recognized BUG/oops/panic, warning, storage, IOMMU, firmware, critical thermal or lockup signatures; lower-priority messages not scanned; not a load/lifecycle test
 - **diag.taint — Kernel taint inventory** (inventory; observed): kernel taint bitmask=4096 (0x1000); taint is context, not a functional pass/fault verdict
-- [ ] **diag.failed-units — Current systemd failed-unit scan** (functional; fail): 2 failed system unit(s), excluding 0 prior validator unit(s); private unit names/logs omitted; not user-service or repeat-startup validation
+- [ ] **diag.failed-units — Current systemd failed-unit scan** (functional; fail): 1 failed system unit(s), excluding 0 prior validator unit(s); private unit names/logs omitted; not user-service or repeat-startup validation
 
 ## Network
 
@@ -77,7 +77,7 @@ All catalog rows remain visible, including unsupported or blocked checks. This a
 ## Bluetooth
 
 - **bluetooth.inventory — Bluetooth paired, connected and service capability counts** (inventory; observed): adapters=1; powered=1; discovering=0; cached peers=1; paired=1; connected=0; cached HID-capable=1; cached audio-capable=0; cached service metadata only; pairing, reconnect and peripheral use are not tested
-- [x] **bluetooth.discovery — Bounded Bluetooth discovery starts and releases its own session** (functional; pass): Bounded 5-second discovery started; owned scanner exited and discovery is inactive; fresh reports=12 from peers=12; prior connections retained; no power, pairing or disconnect changes
+- [x] **bluetooth.discovery — Bounded Bluetooth discovery starts and releases its own session** (functional; pass): Bounded 5-second discovery started; owned scanner exited and discovery is inactive; fresh reports=15 from peers=15; prior connections retained; no power, pairing or disconnect changes
 
 ## Graphics
 
@@ -160,7 +160,7 @@ All catalog rows remain visible, including unsupported or blocked checks. This a
 ## Sensors
 
 - **sensors.channels — Light and motion channel capabilities** (inventory; observed): Allowlisted light channels=4, motion channels=0, TCS3430 interfaces=1; PMIC ADCs excluded; TCS3430 XYZ/IR is not proximity or a verified lux conversion; SDSP motion may be outside IIO; advertised capability only, not stimulus, axes or calibration
-- **sensors.backend — SDSP sensor backend and startup services** (inventory; fail): SDSP FastRPC endpoints=1, CDSP endpoints=0; sensor provider=failed, proxy=inactive; running DT disables CDSP FastRPC: compute transport intentionally parked, not missing silicon and not the SDSP sensor path; service reports startup/backend failure; no automatic repair
-- **sensors.desktop — Already-running SensorProxy cached properties** (inventory; blocked): SensorProxy is not already active/readable; no D-Bus auto-start or policy bypass
-- [x] **sensors.light-read — One-shot light-channel numeric read** (functional; pass): One-shot finite light-channel reads=4, zero-valued=0; raw values discarded; zero is not a light/stimulus failure; no scale/lux, physical axes, calibration, rotation, proximity or lifecycle claim
-- [ ] **sensors.motion-read — One-shot motion-channel numeric read** (functional; blocked): No permitted motion sample path: safe raw reads are restricted to known TCS3430 light channels; SDSP motion needs a supported fresh service-delivery sample, not arbitrary IIO or PMIC ADC substitutes; cached properties are not delivery
+- **sensors.backend — SDSP sensor backend and startup services** (inventory; observed): SDSP FastRPC endpoints=1, CDSP endpoints=0; sensor provider=active, proxy=active; running DT disables CDSP FastRPC: compute transport intentionally parked, not missing silicon and not the SDSP sensor path; endpoint/service metadata only, not sensor delivery or CDSP workload
+- **sensors.desktop — Already-running SensorProxy cached properties** (inventory; observed): Already-running SensorProxy advertised capability groups=1, finite cached numeric properties=0; read-only, no Claim/stream/start; cached values may be stale, not fresh delivery, axes/calibration or brightness response
+- [x] **sensors.light-read — One-shot light-channel numeric read** (functional; pass): One-shot finite light-channel reads=4, zero-valued=1; raw values discarded; zero is not a light/stimulus failure; no scale/lux, physical axes, calibration, rotation, proximity or lifecycle claim
+- [x] **sensors.motion-read — Bounded SSC accelerometer/gyro/magnetometer delivery** (functional; pass): Fresh finite XYZ rows: accelerometer=89, gyroscope=69, magnetometer=29; each CLI exit0 with enable/disable ACKs, requested stream=3s, outer TERM=12s/KILL-after=2s; same already-running provider; raw samples/logs discarded; no physical axes, mounting, calibration, rotation or resume claim

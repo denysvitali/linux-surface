@@ -49,7 +49,7 @@ func automaticInterfacesChecks() []AutoCheck {
 	}
 	for _, group := range []struct{ id, title, box string }{
 		{"light", "One-shot light-channel numeric read", "S01"},
-		{"motion", "One-shot motion-channel numeric read", "S02"},
+		{"motion", "Bounded SSC accelerometer/gyro/magnetometer delivery", "S02"},
 	} {
 		group := group
 		checks = append(checks, AutoCheck{ID: "sensors." + group.id + "-read", Title: group.title, Area: "Sensors", Kind: "functional", Boxes: []string{group.box}, Run: func(c *AutoContext) AutoResult { return interfacesSensorRead(c, group.id) }})
@@ -816,10 +816,13 @@ func interfacesBoundedSensorRead(c *AutoContext, path string) (string, error) {
 }
 
 func interfacesSensorRead(c *AutoContext, group string) AutoResult {
+	if group == "motion" {
+		return automaticSSCMotion(c)
+	}
 	id := "sensors." + group + "-read"
 	count, zero := 0, 0
 	for _, sensor := range interfacesSensors(c) {
-		if group == "motion" || !sensor.tcs {
+		if !sensor.tcs {
 			continue
 		}
 		channels := sensor.light

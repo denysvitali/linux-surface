@@ -13,11 +13,18 @@ are voluntary when a human wants them; do not prompt or wait for them.
   Current-boot result: `/var/lib/spx-boot-diagnostics/boots/<boot-id>/hw-validation/`;
   its catalog/results generate the active checklist. This is validator coverage,
   not a claim that all fitted drivers/features are implemented.
-- Next port defect: the current boot reports `spx-sensors.service` failed and
-  SensorProxy inactive; light reads work, but the SDSP motion path is not
-  delivered. Diagnose the existing service failure from its logs before changing
-  kernel/DT. Native speaker feeder is also failed and desktop audio inactive;
-  preserve parked mappings and sound permissions, record it as a real gap.
+- Sensor startup H-device-order confirmed in place: unit79d4b25d0b65 requires
+  and follows secure SDSP `.device`, preserving closed access and no capabilities.
+  One first attachment reachesREADY; native3s accel/gyro/mag deliver84/74/38
+  finite samples and acknowledge disable; retained host and proxy stay active.
+  No DSP reset, module/DT change or reboot. Future-boot ordering is unverified;
+  axes/calibration and physical checks remain separate, not automatic gates.
+  See `RESULT-20261013-sensor-startup.md`; canonical motion row passes89/69/29
+  finite samples and whole-catalog result11/40,36inventory,44blocked,1fail,0error.
+  The sensor backend failure is resolved; full physical acceptance not claimed.
+- Next remaining recorded failure: native desktop speaker feeder and inactive
+  desktop audio. Diagnose its logs without restarting playback or amplifiers;
+  preserve parked DSP mappings and scoped sound permissions.
 - Missing support, missing tools/fixtures and known unsafe paths stay separate
   blocked results, never passes or omitted rows. Wi-Fi/BT scans and one H264
   decode fixture do not establish all networking/codec/lifecycle support.
