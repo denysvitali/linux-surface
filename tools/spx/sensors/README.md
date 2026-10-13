@@ -2,8 +2,11 @@
 
 This opt-in service retains the first SensorsPD listener for the entire desktop
 session. It runs with `spx_sensors=1` or the explicit persistent baseline opt-in
-below, keeps the secure FastRPC device private to root, and does not retry attachments. A libssc metadata probe gates systemd
-readiness; a systemd generator adds proxy dependencies only on opted-in boots.
+below, keeps the secure FastRPC device private to root, and does not retry
+attachments. The service requires and follows the secure SDSP device unit so
+its closed device-access filter is created only after the node exists. Waiting
+in the supervisor is too late to establish that filter. A libssc metadata probe
+gates systemd readiness; a generator adds proxy dependencies only on opted-in boots.
 The scoped udev rule adds the missing `ssc-accel` discovery tag; the existing
 iio-sensor-proxy rule pulls in the proxy. No sensor stream or desktop policy
 claim is made by the probe. A listener exit, even status zero, fails the service

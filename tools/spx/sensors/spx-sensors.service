@@ -1,7 +1,8 @@
 [Unit]
 Description=Surface Pro X initial SensorsPD listener and SSC readiness
 ConditionKernelCommandLine=spx_sensors=1
-After=local-fs.target systemd-modules-load.service
+Requires=dev-fastrpc\x2dsdsp\x2dsecure.device
+After=local-fs.target systemd-modules-load.service dev-fastrpc\x2dsdsp\x2dsecure.device
 Before=iio-sensor-proxy.service
 RequiresMountsFor=/usr/share/qcom/sc8180x/Microsoft/spx /usr/local/libexec/spx-sensors
 
