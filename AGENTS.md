@@ -46,11 +46,11 @@ tests, the one feature it could score without a person.
    information that is not available. Stopping with a one-page report is a
    correct outcome. An open-ended goal such as "continue until all hardware
    works" does not require inventing work or picking an easier feature.
-6. **The human session comes first when it is pending.** Many boxes need a
-   person: typing, touch, pen, buttons, USB, looking at the panel. Ask for the
-   session in `TODO.md` at the start of a session and whenever the user is
-   present. If the user declines, do not substitute automated stand-ins.
-   Follow `spx-human-session`.
+6. **Human checks are deferred until the end (user requested 2026-10-13).**
+   Do not ask for a hands-on session during porting. Keep observations needed
+   for typing, touch, pen, buttons, USB and the panel recorded in `TODO.md`;
+   boxes needing those observations remain open. Do not substitute automated
+   stand-ins. Follow `spx-human-session` when the user starts the final checks.
 7. **Reuse known findings.** The 6.18 tree in `../linux-surface-kernel` has
    working audio, camera and display. Port those instead of re-deriving them.
    The findings index is
@@ -117,6 +117,11 @@ reboot. It may spawn agents for bounded work (`spx-port`).
   for charger unplugging or run battery load or endurance tests.
 
 ## Reboots
+
+**2026-10-13 user authorization:** "Reboot is allowed." This supersedes the
+2026-10-12 prohibition on reboot commands. Prefer module tests in place and
+retain the baseline, one-shot trial and recovery rules below. This does not
+restart the parked, fault-producing encoder experiments.
 
 **2026-10-12 user stop:** Do not reboot this device anymore. This overrides
 the older standing reboot authorization below. Venus/Chromium work is offline

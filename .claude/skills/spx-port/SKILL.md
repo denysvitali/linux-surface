@@ -14,9 +14,10 @@ Read `AGENTS.md` and `TODO.md` first. The other playbooks are `spx-blocker`,
 1. **Status.** Run `tools/spx/progress`. If it reports the checklist is not
    frozen, fix that before anything else (move the sub-boxes to the result
    files or the history file).
-2. **Human session.** If the session in `TODO.md` is pending and the user is
-   reachable, ask for it now and follow `spx-human-session`. If they decline or
-   do not answer, go on. Do not replace it with automated tests.
+2. **Human session.** User deferred hands-on checks until the end on
+   2026-10-13. Do not ask during porting; retain missing observations in
+   `TODO.md` and leave their boxes open. Follow `spx-human-session` when the
+   user starts the final checks. Do not replace them with automated tests.
 3. **Blocker.** Take the current blocker from `TODO.md`, or the ID the user
    gave. Follow `spx-blocker`. Do not pick a different feature because it is
    easier or testable without a person.

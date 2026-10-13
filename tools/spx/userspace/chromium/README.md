@@ -21,4 +21,6 @@ candidate or claim playback works until a real browser build/test succeeds.
 
 Retained source/report: /var/tmp/spx-chromium-au-fixed-20261012.{cc,md}.
 Current result: tools/spx/boot-diagnostics/RESULT-20261012-chromium-venus-events.md.
-No reboot commands or encoder tests are authorized.
+Reboots were authorized again on 2026-10-13; follow current `AGENTS.md` trial
+rules. Fault-producing encoder tests remain parked. Human checks are deferred
+until the end by the user.
