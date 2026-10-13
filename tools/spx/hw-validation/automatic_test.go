@@ -55,6 +55,36 @@ func TestAutomaticCatalogValidation(t *testing.T) {
 	}
 }
 
+func TestCurrentBootRequirementRejectsHistoricalAndMixedEvidence(t *testing.T) {
+	root := t.TempDir()
+	autoFixture(t, root, "proc/sys/kernel/random/boot_id", "current-boot")
+	autoFixture(t, root, "proc/sys/kernel/osrelease", "current-kernel")
+	c := &AutoContext{Root: root}
+	base := AutoReport{Meta: AutoMetadata{Mode: "run", BootID: "current-boot", BootIDAfter: "current-boot", Kernel: "current-kernel", KernelAfter: "current-kernel"}}
+	if err := automaticRequireCurrentBoot(base, c); err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range []func(*AutoReport){
+		func(r *AutoReport) { r.Meta.Fixture = true },
+		func(r *AutoReport) { r.Meta.Mode = "catalog" },
+		func(r *AutoReport) { r.Meta.BootID = "old-boot" },
+		func(r *AutoReport) { r.Meta.BootIDAfter = "" },
+		func(r *AutoReport) { r.Meta.KernelAfter = "another-kernel" },
+		func(r *AutoReport) { r.Errors = []string{"identity unavailable"} },
+	} {
+		report := base
+		change(&report)
+		if err := automaticRequireCurrentBoot(report, c); err == nil {
+			t.Fatalf("historical, fixture or incomplete boot evidence accepted: %+v", report.Meta)
+		}
+	}
+	// Real hardware failures are useful current-boot evidence for a corrective trial.
+	base.Counts.Failed = 1
+	if err := automaticRequireCurrentBoot(base, c); err != nil {
+		t.Fatal("hardware failures must not prevent corrective trials", err)
+	}
+}
+
 func TestAutomaticContextFixtureIsolation(t *testing.T) {
 	root := t.TempDir()
 	autoFixture(t, root, "sys/test/node1/value", " value\x00one\n")

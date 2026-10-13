@@ -19,7 +19,7 @@ func automaticNetworkChecks() []AutoCheck {
 		{ID: "net.ip.families", Title: "Wi-Fi address and default-route families", Area: "Network", Kind: "inventory", Boxes: []string{"N01"}, Run: automaticNetworkIP},
 		{ID: "net.dns.config", Title: "Configured DNS resolver families", Area: "Network", Kind: "inventory", Boxes: []string{"N01"}, Run: automaticNetworkDNS},
 		{ID: "net.dns.lookup", Title: "Bounded DNS lookup of a deliberate public fixture", Area: "Network", Kind: "functional", Boxes: []string{"N01"}, Run: func(c *AutoContext) AutoResult {
-			return automaticNetworkResult("net.dns.lookup", "blocked", "a deliberate public DNS lookup fixture is not configured; resolver settings do not prove working DNS")
+			return automaticNetworkResult("net.dns.lookup", "blocked", "Public DNS fixture/lookup probe is not implemented or configurable yet; resolver settings do not prove working DNS. No lookup attempted")
 		}},
 		{ID: "net.wifi.gateway4", Title: "Local IPv4 gateway replies over Wi-Fi", Area: "Network", Kind: "functional", Boxes: []string{"N01"}, Run: func(c *AutoContext) AutoResult { return automaticNetworkGateway(c, 4) }},
 		{ID: "net.wifi.gateway6", Title: "Local IPv6 gateway replies over Wi-Fi", Area: "Network", Kind: "functional", Boxes: []string{"N01"}, Run: func(c *AutoContext) AutoResult { return automaticNetworkGateway(c, 6) }},

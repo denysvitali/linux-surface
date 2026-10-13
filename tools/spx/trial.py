@@ -110,6 +110,7 @@ def persistent_default():
 def promote(args):
     """Explicitly promote a booted candidate; retain 6.18 as manual recovery."""
     assert os.geteuid() == 0
+    require_automatic_validation()
     recovery()
     installed = json.loads((OUT / 'installed.json').read_text())
     words = Path('/proc/cmdline').read_text().split()
@@ -496,6 +497,14 @@ def ensure_automatic_validation():
                     '--repo', str(REPO)], check=True)
 
 
+def require_automatic_validation():
+    """Refuse a new boot selection without this boot's complete hardware report."""
+    helper = HERE / 'boot-diagnostics/automatic-validation.py'
+    if not helper.is_file():
+        helper = HERE / 'automatic-validation.py'
+    subprocess.run(['/usr/bin/python3', '-B', str(helper), 'verify'], check=True)
+
+
 def install(args):
     os.umask(63)
     assert os.geteuid() == 0
@@ -684,6 +693,7 @@ def prepare_shutdown_ramfs():
 
 def boot(args):
     require_source_boot()
+    require_automatic_validation()
     assert float(Path('/proc/uptime').read_text().split()[0]) > 120
     recovery()
     prepare_shutdown_ramfs()
@@ -1574,11 +1584,16 @@ def return_to_default(args):
     assert not any((l.startswith('next_entry=') and l != 'next_entry=' for l in env.splitlines()))
     assert 'BootNext:' not in subprocess.check_output(['efibootmgr'], text=True)
     audio_stop = stop_desktop_audio(args)
+    hw_directory = Path('/var/lib/spx-boot-diagnostics/boots') / boot / 'hw-validation'
+    try:
+        hw_status = json.loads((hw_directory / 'runner.json').read_text())['status']
+    except (OSError, ValueError, KeyError, TypeError):
+        hw_status = 'missing or invalid runner record'
     for label, args in [('kernel.log', ['journalctl', '-b', '-k', '--no-pager', '-o', 'short-monotonic']), ('journal.log', ['journalctl', '-b', '--no-pager', '-o', 'short-monotonic'])]:
         with (out / label).open('wb') as stream:
             subprocess.run(args, stdout=stream, stderr=subprocess.STDOUT, check=True, timeout=30)
     # This record precedes shutdown; only the next boot can establish recovery.
-    (out / 'return.json').write_text(json.dumps(dict(utc=datetime.now(timezone.utc).isoformat(), boot_id=boot, release=os.uname().release, uptime=Path('/proc/uptime').read_text().strip(), phase='reboot-request', shutdown_completion_verified=False, audio_stop_complete=audio_stop['complete'], audio_stop_result=str(out / 'audio-stop.json'), known_good_payloads_intact=True, persistent_default=default, next_entry_empty=True), indent=2) + '\n')
+    (out / 'return.json').write_text(json.dumps(dict(utc=datetime.now(timezone.utc).isoformat(), boot_id=boot, release=os.uname().release, uptime=Path('/proc/uptime').read_text().strip(), phase='reboot-request', shutdown_completion_verified=False, audio_stop_complete=audio_stop['complete'], audio_stop_result=str(out / 'audio-stop.json'), hw_validation_status=hw_status, hw_validation_runner=str(hw_directory / 'runner.json'), hw_validation_report=str(hw_directory / 'report.json'), hw_validation_note='Bounded recovery continues even if validation is incomplete; inspect this boot\'s runner and report before the next experiment.', known_good_payloads_intact=True, persistent_default=default, next_entry_empty=True), indent=2) + '\n')
     assert Path('/proc/sys/kernel/random/boot_id').read_text().strip() == boot
     env = dict((line.split('=', 1) for line in subprocess.check_output(['grub-editenv', '/boot/grub/grubenv', 'list'], text=True).splitlines()))
     assert env['saved_entry'] == default and (not env.get('next_entry'))

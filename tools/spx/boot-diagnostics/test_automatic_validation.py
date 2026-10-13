@@ -68,7 +68,7 @@ class AutomaticBootTests(unittest.TestCase):
         def completed(args, **kwargs):
             if '--checklist' in args:
                 self.assertEqual(args, [str(self.binary), '--checklist', '--output', str(self.out / 'report'),
-                                        '--repo', str(self.repo)])
+                                        '--repo', str(self.repo), '--require-current-boot'])
                 return subprocess.CompletedProcess(args, 0)
             self.assertIn('--checklist-path', args)
             self.assertNotIn('--capture', args)
@@ -162,6 +162,33 @@ class AutomaticBootTests(unittest.TestCase):
             self.assertEqual(self.run_hook(denied), 1)
             self.assertEqual(self.status()['status'], expected)
 
+    def test_verify_requires_saved_current_boot_evidence_without_live_checks(self):
+        def forbidden(*args, **kwargs):
+            self.fail('missing report must not execute anything')
+        self.assertEqual(hook.verify(self.base, self.binary, self.repo, 'fixture-boot', forbidden), 1)
+        self.out.mkdir(parents=True)
+        (self.out / 'report.json').write_text('{"fixture": true}')
+        def reject(args, **kwargs):
+            self.assertIn('--require-current-boot', args)
+            self.assertIn('--from-report', args)
+            self.assertNotIn('--capture', args)
+            self.assertNotIn('--output', args)
+            return subprocess.CompletedProcess(args, 2)
+        self.assertEqual(hook.verify(self.base, self.binary, self.repo, 'fixture-boot', reject), 1)
+
+    def test_missing_validation_prevents_boot_and_promotion_side_effects(self):
+        trial_spec = importlib.util.spec_from_file_location('trial_validation_gate', HERE.parent / 'trial.py')
+        trial = importlib.util.module_from_spec(trial_spec)
+        trial_spec.loader.exec_module(trial)
+        with patch.object(trial, 'require_source_boot'), \
+                patch.object(trial.os, 'geteuid', return_value=0), \
+                patch.object(trial, 'require_automatic_validation', side_effect=RuntimeError('missing boot report')), \
+                patch.object(trial, 'recovery') as recovery:
+            for action in (trial.boot, trial.promote):
+                with self.assertRaisesRegex(RuntimeError, 'missing boot report'):
+                    action(None)
+            recovery.assert_not_called()
+
     def test_staging_installs_one_unit_without_commands(self):
         module = self.repo / 'tools/spx/hw-validation/go.mod'
         module.parent.mkdir(parents=True)
@@ -183,6 +210,8 @@ class AutomaticBootTests(unittest.TestCase):
         self.assertEqual(unit['Service']['Restart'], 'no')
         self.assertEqual(unit['Service']['RestartForceExitStatus'], '75')
         self.assertEqual(unit['Service']['RestartSec'], '60')
+        self.assertEqual(unit['Service']['RuntimeMaxSec'], '10min')
+        self.assertEqual(unit['Service']['TimeoutStopSec'], '20s')
         self.assertNotIn('ConditionKernelCommandLine', unit['Unit'])
         self.assertEqual(unit['Unit']['Wants'], 'network-online.target')
         self.assertIn('network-online.target', unit['Unit']['After'])

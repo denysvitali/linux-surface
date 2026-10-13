@@ -26,16 +26,28 @@ func automaticInterfacesChecks() []AutoCheck {
 		{ID: "usb.controllers", Title: "USB controller root hubs and advertised speeds", Area: "USB", Kind: "inventory", Boxes: []string{"U01"}, Run: interfacesUSBControllers},
 		{ID: "usb.attached", Title: "Attached USB device negotiated speeds", Area: "USB", Kind: "inventory", Boxes: []string{"U01", "U04"}, Run: interfacesUSBAttached},
 		{ID: "usb.transfer", Title: "Checksum-verified disposable USB storage transfer", Area: "USB", Kind: "functional", Boxes: []string{"U01"}, Run: func(c *AutoContext) AutoResult {
-			return interfacesResult("usb.transfer", "blocked", "No explicit mounted USB storage fixture was supplied; automatic disposable checksum engine is not connected to a verified USB-backed directory. Ordinary root-storage I/O or device/speed enumeration cannot prove USB data transfer; no block device opened")
+			return interfacesResult("usb.transfer", "blocked", "USB-backed disposable transfer probe is not implemented: needs an explicit mounted fixture and verified USB block-device ancestry before bounded checksum I/O. Ordinary root-storage I/O or speed enumeration cannot prove USB transfer; no block device opened or file written")
 		}},
 		{ID: "usb.roles", Title: "Read-only Type-C attachment and role metadata", Area: "USB-C", Kind: "inventory", Boxes: []string{"U02"}, Run: interfacesUSBRoles},
 		{ID: "usb.pd", Title: "Reported USB-C power-delivery metadata", Area: "USB-C", Kind: "inventory", Boxes: []string{"U02", "P01"}, Run: interfacesUSBPD},
+		{ID: "usb.typec-routing", Title: "Data delivery over an attributable Type-C route", Area: "USB-C", Kind: "functional", Boxes: []string{"U02"}, Run: func(c *AutoContext) AutoResult {
+			return interfacesResult("usb.typec-routing", "blocked", "Full firmware Type-C/PD and lane-routing support remains unresolved; functional route/transfer probe and already-attached attributable fixture are unavailable. Port-zero HPD metadata does not prove data delivery; no role, cable, PHY or display changes attempted")
+		}},
 		{ID: "dock.paths", Title: "Dock and Surface Connect attached path attribution", Area: "Dock and Surface Connect", Kind: "inventory", Boxes: []string{"U04"}, Run: interfacesDockPaths},
+		{ID: "dock.concurrent", Title: "Attributable dock concurrent data and display operation", Area: "Dock and Surface Connect", Kind: "functional", Boxes: []string{"U04"}, Run: func(c *AutoContext) AutoResult {
+			return interfacesResult("dock.concurrent", "blocked", "Concurrent dock probe is not implemented; needs an already-attached identifiable dock, supported connector topology, safe data fixture and active external scanout. Generic USB/display counts are inventory; no attachment, playback or charging actions attempted")
+		}},
 		{ID: "input.startup", Title: "IPTSD service and virtual-device startup health", Area: "Input", Kind: "inventory", Boxes: []string{"I01"}, Run: interfacesInputStartup},
 		{ID: "input.accessory", Title: "Pen and keyboard accessory battery metadata", Area: "Input", Kind: "inventory", Boxes: []string{"I07"}, Run: interfacesInputAccessory},
 		{ID: "sensors.channels", Title: "Light and motion channel capabilities", Area: "Sensors", Kind: "inventory", Boxes: []string{"S01", "S02"}, Run: interfacesSensorChannels},
 		{ID: "sensors.backend", Title: "SDSP sensor backend and startup services", Area: "Sensors", Kind: "inventory", Boxes: []string{"S02", "B07"}, Run: interfacesSensorBackend},
 		{ID: "sensors.desktop", Title: "Already-running SensorProxy cached properties", Area: "Sensors", Kind: "inventory", Boxes: []string{"S01", "S02"}, Run: interfacesSensorDesktop},
+		{ID: "sensors.light-lux", Title: "Calibrated ambient-light report delivery", Area: "Sensors", Kind: "functional", Boxes: []string{"S01"}, Run: func(c *AutoContext) AutoResult {
+			return interfacesResult("sensors.light-lux", "blocked", "No verified TCS3430 lux conversion or desktop ambient-light source is implemented; raw XYZ/IR reads do not establish calibrated light delivery. No stimulus or brightness change requested")
+		}},
+		{ID: "sensors.desktop-delivery", Title: "Fresh desktop motion and compass delivery", Area: "Sensors", Kind: "functional", Boxes: []string{"S02"}, Run: func(c *AutoContext) AutoResult {
+			return interfacesResult("sensors.desktop-delivery", "blocked", "Fresh desktop delivery probe is not implemented and desktop compass support remains missing; cached SensorProxy properties and native SSC samples cover different paths. No service Claim, start, reset or physical orientation action attempted")
+		}},
 	}
 	for _, feature := range []struct{ id, title, box string }{
 		{"touch", "Touchscreen direct multi-touch capabilities", "I02"},
@@ -829,7 +841,7 @@ func interfacesSensorRead(c *AutoContext, group string) AutoResult {
 		for _, path := range channels {
 			text, err := interfacesBoundedSensorRead(c, path)
 			if err != nil {
-				return interfacesResult(id, "blocked", "Allowlisted sensor channel read unavailable (backend or permission); no stream enabled")
+				return interfacesSensorReadProblem(id, text, err)
 			}
 			value, err := strconv.ParseFloat(strings.TrimSpace(text), 64)
 			if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || math.Abs(value) > 1e12 {
@@ -845,4 +857,18 @@ func interfacesSensorRead(c *AutoContext, group string) AutoResult {
 		return interfacesResult(id, "blocked", "No permitted "+group+" sample path: safe raw reads are restricted to known TCS3430 light channels; SDSP motion needs a supported fresh service-delivery sample, not arbitrary IIO or PMIC ADC substitutes; cached properties are not delivery")
 	}
 	return interfacesResult(id, "pass", fmt.Sprintf("One-shot finite %s-channel reads=%d, zero-valued=%d; raw values discarded; zero is not a light/stimulus failure; no scale/lux, physical axes, calibration, rotation, proximity or lifecycle claim", group, count, zero))
+}
+
+func interfacesSensorReadProblem(id, output string, err error) AutoResult {
+	text := strings.ToLower(output + " " + err.Error())
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) || errors.Is(err, exec.ErrNotFound) ||
+		strings.Contains(text, "no such file") || strings.Contains(text, "permission denied") || strings.Contains(text, "not permitted") || strings.Contains(text, "fixture root") {
+		return interfacesResult(id, "blocked", "Allowlisted light read lacks tool, channel or permission; no stream enabled")
+	}
+	for _, signature := range []string{"input/output error", "timed out", "deadline exceeded", "exit status 124", "command limit"} {
+		if strings.Contains(text, signature) {
+			return interfacesResult(id, "fail", "Exposed allowlisted light channel reported I/O failure or timed out; no raw values/logs retained")
+		}
+	}
+	return interfacesResult(id, "error", "Allowlisted light-channel runner failed unexpectedly; no raw values/logs retained")
 }

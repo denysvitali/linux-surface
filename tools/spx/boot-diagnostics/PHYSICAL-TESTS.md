@@ -1,9 +1,12 @@
 # Surface Pro X hands-on checks
 
-Run these after the agent identifies the current mainline boot. Report each
-item as **works**, **fails** (what happened), or **not available**. No camera,
-microphone or speaker test is included. Keep a phone or another chat device
-available during a network or sleep check.
+These are voluntary historical acceptance checks, performed only when the
+human requests them. They never gate porting or `AUTO-HW-CHECKLIST.md`.
+Record the current boot and kernel with observations. Current restrictions in
+`AGENTS.md` take precedence: battery/charger-unplug tests remain deferred, and
+sleep, playback or capture require their applicable authorization. Dated
+batches below are historical proposals, not outstanding requests. No camera,
+microphone or speaker test is included in this document.
 
 1. **Keyboard/touchpad:** type `Surface Pro X 123`, use Shift and Backspace,
    move the pointer, click, right-click and scroll with two fingers. Detach

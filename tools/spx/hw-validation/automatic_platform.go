@@ -365,7 +365,11 @@ func platformRemoteproc(c *AutoContext) AutoResult {
 		name, e1 := c.Read(p + "/name")
 		state, e2 := c.Read(p + "/state")
 		if e1 != nil || e2 != nil {
-			return platformBlocked(id, "Remote processor name/state metadata is not readable")
+			parts = append(parts, "remote processor name/state metadata unreadable")
+			if status != "fail" {
+				status = "blocked"
+			}
+			continue
 		}
 		if state == "crashed" {
 			status = "fail"
@@ -381,7 +385,11 @@ func platformFirmwareServices(c *AutoContext) AutoResult {
 	for _, unit := range []string{"pd-mapper.service", "rmtfs.service", "tqftpserv.service"} {
 		text, err := c.Command("systemctl", "show", unit, "--property=LoadState,ActiveState,SubState,UnitFileState", "--no-pager")
 		if err != nil {
-			return platformBlocked(id, "systemctl status query unavailable for "+unit+" (tool/service access required)")
+			parts = append(parts, "systemctl status query unavailable for "+unit+" (tool/service access required)")
+			if status != "fail" {
+				status = "blocked"
+			}
+			continue
 		}
 		props := map[string]string{}
 		for _, line := range strings.Split(text, "\n") {
@@ -496,7 +504,7 @@ func platformTPMCapability(c *AutoContext) AutoResult {
 		return platformBlocked(id, "Read-only tpm2_getcap unavailable: tool, device permission or TPM transport required")
 	}
 	if !regexp.MustCompile(`(?m)^TPM2_PT_FAMILY_INDICATOR:[ \t]*\r?\n[ \t]+raw:[ \t]+0x322[eE]3000[ \t]*\r?$`).MatchString(text) {
-		return platformResult(id, "fail", "Read-only TPM capability response did not identify TPM2 family; no keys changed")
+		return platformResult(id, "error", "Read-only TPM capability output did not match the expected TPM2 response format; no hardware malfunction inferred or keys changed")
 	}
 	return platformResult(id, "pass", "TPM2 GetCapability returned fixed properties with family 2.0; no keys, PCRs or firmware settings changed")
 }
@@ -532,24 +540,34 @@ func platformThermal(c *AutoContext) AutoResult {
 	var parts []string
 	trips := 0
 	status := "observed"
+	unavailable := func(detail string) {
+		parts = append(parts, detail)
+		if status != "fail" {
+			status = "blocked"
+		}
+	}
 	for _, p := range zones {
 		name, e1 := c.Read(p + "/type")
 		temp, e2 := platformInt(c, p+"/temp")
 		if e1 != nil || e2 != nil {
-			return platformBlocked(id, "Thermal type/temperature metadata is not accessible")
+			unavailable("thermal type/temperature metadata unavailable")
+			continue
 		}
 		points, err := c.Glob(p + "/trip_point_*_type")
 		if err != nil {
-			return platformBlocked(id, "Thermal trip metadata is not readable")
+			unavailable("thermal trip metadata unreadable")
+			continue
 		}
 		for _, point := range points {
 			kind, err := c.Read(point)
 			if err != nil {
-				return platformBlocked(id, "Thermal trip type is not readable")
+				unavailable("thermal trip type unreadable")
+				continue
 			}
 			threshold, err := platformInt(c, strings.TrimSuffix(point, "_type")+"_temp")
 			if err != nil {
-				return platformBlocked(id, "Thermal trip temperature is not readable")
+				unavailable("thermal trip temperature unreadable")
+				continue
 			}
 			trips++
 			if kind == "critical" && temp >= threshold {
@@ -560,13 +578,14 @@ func platformThermal(c *AutoContext) AutoResult {
 	}
 	cooling, err := c.Glob("/sys/class/thermal/cooling_device*")
 	if err != nil {
-		return platformBlocked(id, "Cooling-device metadata directory is not readable")
+		unavailable("cooling-device metadata directory unreadable")
 	}
 	for _, p := range cooling {
 		current, e1 := platformInt(c, p+"/cur_state")
 		maximum, e2 := platformInt(c, p+"/max_state")
 		if e1 != nil || e2 != nil {
-			return platformBlocked(id, "Cooling state metadata is not readable")
+			unavailable("cooling state metadata unreadable")
+			continue
 		}
 		if current < 0 || current > maximum {
 			status = "fail"

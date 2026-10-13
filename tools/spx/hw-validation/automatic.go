@@ -39,10 +39,11 @@ type AutoOptions struct {
 }
 
 type AutoContext struct {
-	Fixture    bool
-	Root, Repo string
-	Options    AutoOptions
-	Run        func(...string) (string, error)
+	Fixture     bool
+	Root, Repo  string
+	Options     AutoOptions
+	Run         func(...string) (string, error)
+	mediaDecode *autoMediaDecodeRun
 }
 
 func (c *AutoContext) path(path string) (string, error) {
@@ -562,6 +563,19 @@ func automaticRegenerate(saved AutoReport, checks []AutoCheck, path string) (Aut
 	return report, nil
 }
 
+func automaticRequireCurrentBoot(report AutoReport, c *AutoContext) error {
+	meta := report.Meta
+	boot, bootErr := c.Read("/proc/sys/kernel/random/boot_id")
+	kernel, kernelErr := c.Read("/proc/sys/kernel/osrelease")
+	if bootErr != nil || kernelErr != nil || boot == "" || kernel == "" ||
+		meta.Fixture || meta.Mode != "run" || len(report.Errors) != 0 ||
+		meta.BootID != boot || meta.BootIDAfter != boot ||
+		meta.Kernel != kernel || meta.KernelAfter != kernel {
+		return errors.New("complete non-fixture validation for the current boot/kernel is required; inspect this boot's runner status and rerun the canonical suite")
+	}
+	return nil
+}
+
 func automaticMarkdown(report AutoReport, checklistOnly bool) string {
 	var b strings.Builder
 	title := "Automatic hardware report"
@@ -712,6 +726,7 @@ func automaticMain(args []string) (err error) {
 	list := flags.Bool("list", false, "list catalog only; no commands, locks or hardware reads")
 	listJSON := flags.Bool("list-json", false, "print catalog metadata as JSON; no tests or hardware reads")
 	fromReport := flags.String("from-report", "", "saved JSON report for checklist generation only")
+	requireCurrent := flags.Bool("require-current-boot", false, "require a saved live report matching current boot/kernel before checklist generation")
 	generate := flags.Bool("checklist", false, "generate checklist only; no tests, locks or hardware reads")
 	checklistPath := flags.String("checklist-path", "", "active checklist path (default <repo>/AUTO-HW-CHECKLIST.md)")
 	capture := flags.Bool("capture", false, "allow minimal bounded camera/microphone capture; samples discarded")
@@ -726,6 +741,9 @@ func automaticMain(args []string) (err error) {
 	}
 	if flags.NArg() != 0 {
 		return errors.New("unexpected positional arguments")
+	}
+	if *requireCurrent && ((!*generate && *fromReport == "") || (*fromReport == "" && *output == "") || *list || *listJSON || *root != "") {
+		return errors.New("--require-current-boot requires saved-report generation without --root or --list")
 	}
 	checks, err := automaticCatalog()
 	if err != nil {
@@ -765,6 +783,11 @@ func automaticMain(args []string) (err error) {
 			var saved AutoReport
 			if err = json.Unmarshal(data, &saved); err != nil {
 				return err
+			}
+			if *requireCurrent {
+				if err = automaticRequireCurrentBoot(saved, &AutoContext{Root: "/"}); err != nil {
+					return err
+				}
 			}
 			report, err = automaticRegenerate(saved, checks, jsonPath)
 			if err != nil {

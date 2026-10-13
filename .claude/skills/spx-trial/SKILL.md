@@ -19,6 +19,15 @@ independent changes with separate functional checks.
    have executed.
 4. Ensure the persistent automatic hardware-validation boot hook and canonical
    runner are installed. It applies to baseline, trial and recovery boots.
+   Rebuild/reinstall the binary after validator changes. Before choosing another
+   trial or promoting a candidate, verify the current boot's complete report:
+
+       sudo python3 -B tools/spx/boot-diagnostics/automatic-validation.py verify
+
+   `trial.py boot` and `promote` enforce this check. A report with hardware
+   failures still permits a corrective trial; missing/fixture/older-boot or
+   incomplete evidence must be resolved first. Recovery return records the
+   report and runner paths/status without waiting indefinitely for validation.
 
 ## Run
 

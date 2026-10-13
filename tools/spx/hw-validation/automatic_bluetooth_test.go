@@ -152,7 +152,7 @@ func TestBluetoothDiscoveryCompletionWithoutReportsDoesNotClaimReception(t *test
 			bluetoothFixtureQuery(before), bluetoothFixtureScan(output, nil), bluetoothFixtureQuery(before),
 		})
 		result := automaticBluetoothDiscovery(context)
-		if result.Status != "pass" || !strings.Contains(result.Detail, "radio reception is unproven") {
+		if result.Status != "blocked" || !strings.Contains(result.Detail, "radio reception is unproven") {
 			t.Fatalf("completed discovery is not evidence of radio reception, got %#v", result)
 		}
 		bluetoothFixturePrivacy(t, result)

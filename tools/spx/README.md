@@ -194,31 +194,21 @@ re-subscription. If none arrives, the new subscriber's local connected state
 remains unset until a connected event, so its physical-disconnect fallback
 remains untested. Do not repeat a negative result on further unchanged boots.
 
-The generic `spx-trial-check@` timer starts bounded functional checks at 50s:
+The legacy `spx-trial-check@` timer starts partial diagnostic checks at 50s:
 RFCOMM socket and UHID open, controller state, a 25 MB IPv4 transfer over
 `wlan0`, and battery/thermal/remoteproc/sensor readouts. It takes the device
 lock and records `functional.json` incrementally. These are partial checks;
 pairing, physical input, charging transitions and resume still need their
 own functional tests. No sound or camera/microphone capture runs.
+Its `functional.json` is historical trial evidence, not another automatic
+catalog. The canonical validator alone generates automatic checklist results.
 
-Motion sensors use SLPI/SDSP, with firmware `qcslpi8180.mbn` and SSC400 over
-GLINK/QRTR. CJ starts this firmware but libssc waits for a missing registry.
-Enable `CONFIG_QCOM_FASTRPC=m` from `functional.config` for the SensorsPD
-reverse tunnel. The current SDSP DT session uses physical DMA (SID0); this
-remains a trial until attach and live samples succeed.
-
-The retained Surface sensor package supplies the JSON configuration and six
-socinfo files. They are staged as `sensors/config/`, `sensors/registry/` and
-`socinfo/` under `/var/tmp/spx-sensors-config`. Upstream
-[hexagonrpcd](https://github.com/linux-msm/hexagonrpc) is built at
-`/var/tmp/spx-hexagonrpc/build/hexagonrpcd/hexagonrpcd`. On the running trial,
-attach with `-s -d sdsp -f /dev/fastrpc-sdsp-secure -R /var/tmp/spx-sensors-config`
-under an outer90s timeout. Confirm the actual device name first. While it runs,
-use outer15s timeouts for `ssccli --debug --sensor accelerometer --timeout 5`
-and `ssccli --debug --sensor gyroscope --timeout 5`. Save daemon/file requests,
-client output and kernel faults, then stop the daemon. QMI connectivity alone
-does not establish motion support; require sample values and separate physical
-axes/rotation/resume coverage.
+Automatic motion validation uses `sensors.motion-read` against the existing
+SLPI/SDSP SensorsPD provider. Do not start, stop or reset the provider from the
+validator. Missing service/device/library prerequisites remain blocked.
+Fresh finite samples prove delivery; calibration, physical axes and rotation
+acceptance remain separate voluntary checks. See [sensors/README.md](sensors/README.md)
+for installed startup and retained-session restrictions.
 
 For a module change, commit it, build the driver against this fixed output,
 then reload it on the running mainline kernel. For example, with the changed
@@ -252,7 +242,8 @@ suspend/resume with Wi-Fi active. Profile registration alone closes no box.
 Install only the changed module and run depmod before reloading. Preserve the
 active network and test state. Never unload MSM display modules. Reboot for
 DTB, initramfs or built-in changes; ordinary driver tests should reuse the
-running kernel. Venus remains parked.
+running kernel. Bounded decoder-only Venus validation is authorized; the
+fault-producing encoder remains parked.
 
 After collecting a result, retire its boot directory, old module tree and
 enabled timer instance, keeping the current candidate and known-good. Keep
@@ -295,9 +286,9 @@ finished; do not repeat them on the failed retained session.
 
 The experimental `--wsa-teardown-reset` option pairs digital reset at PA
 teardown with cold initialization and supply restoration in native stereo
-mode. It requires the updated WSA module. Use the existing `reopen` action
-to measure this hypothesis; WQ's legacy write-only configuration was rejected
-before any playback or microphone capture. This is not a verified fix.
+mode. This is a historical unverified experiment, not a queued reopen run.
+WQ's legacy write-only configuration was rejected before any playback or
+microphone capture. Current audio-testing restrictions apply.
 
 After the user requests that specific listening run, use the existing trial
 tool on the running candidate (substitute its attempt ID):
@@ -317,7 +308,9 @@ gain does not establish that startup will be quiet. Read `audio/listen-result.js
 and obtain the person's listening result before deciding on another run.
 
 The user's October 4 instruction authorizes an automated speaker/microphone
-feedback loop and bounded retries without a human listening response. Use:
+feedback loop without a human listening response. Since October 8 it is scoped
+only to verifying the playback reopen correction; it does not authorize routine
+acoustic regression or unrelated sound/capture. For that authorized correction:
 
 ```
 sudo python3 -B tools/spx/trial.py audio ATTEMPT --audio-action feedback \
@@ -428,7 +421,8 @@ bus or enable speakers. Read `audio/recover-result.json`. A module reload alone
 does not clear retained FIFO state. Initialization now requires actual codec
 `HW_INIT` completion; SoundWire attachment by itself is insufficient.
 
-For P02 on an already checked mainline attempt, run
+Historical deferred helper: do not run while battery/load tests remain deferred.
+The earlier P02 workflow on an already checked mainline attempt used
 `sudo python3 -B tools/spx/trial.py power-measure ATTEMPT`.
 This consumes an exclusive `power-measure/result.json` with boot identity,
 30-second idle/load/recovery samples every two seconds, last-half median watts,

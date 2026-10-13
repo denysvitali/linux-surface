@@ -99,6 +99,42 @@ func TestAutomaticMediaDecodeUsesExplicitHardwareAndDiscard(t *testing.T) {
 	}
 }
 
+func TestAutomaticMediaCodecRequirementsShareOnlyMatchingEvidence(t *testing.T) {
+	commands := 0
+	c := autoMediaTestContext(t, map[string]string{
+		"/fixtures/real.mp4":                  "fixture placeholder",
+		"/sys/class/video4linux/video32/name": "qcom-venus-decoder",
+	}, func(args ...string) (string, error) {
+		commands++
+		if args[0] == "ffprobe" {
+			return `{"streams":[{"codec_name":"h264","width":1920,"height":1080}]}`, nil
+		}
+		if strings.Contains(strings.Join(args, " "), "-decoders") {
+			return " V..... h264_v4l2m2m wrapper (codec h264)\n", nil
+		}
+		return autoMediaTestDecodeLog, nil
+	})
+	c.Options.Media = "/fixtures/real.mp4"
+	checked := 0
+	for _, check := range automaticMediaChecks() {
+		if check.Kind != "functional" || !strings.HasPrefix(check.ID, "media.decode.") {
+			continue
+		}
+		checked++
+		result := automaticResult(check, c)
+		want := "blocked"
+		if check.ID == "media.decode.h264" {
+			want = "pass"
+		}
+		if result.Status != want {
+			t.Fatalf("another codec inherited the fixture result: %+v", result)
+		}
+	}
+	if checked != 5 || commands != 3 {
+		t.Fatalf("codec coverage=%d commands=%d; need five requirements and one decode attempt", checked, commands)
+	}
+}
+
 func TestAutomaticMediaDecodeBlockedPrerequisites(t *testing.T) {
 	c := autoMediaTestContext(t, nil, func(args ...string) (string, error) { t.Fatalf("unexpected command %q", args); return "", nil })
 	if result := autoMediaDecode(c); result.Status != "blocked" {
@@ -324,7 +360,7 @@ func TestAutomaticMediaCameraInventoryNotCapture(t *testing.T) {
 func TestAutomaticMediaCatalogNeverAttemptsEncoder(t *testing.T) {
 	c := autoMediaTestContext(t, nil, func(args ...string) (string, error) { t.Fatalf("parked encoder command %q", args); return "", nil })
 	checks := automaticMediaChecks()
-	if len(checks) != 8 {
+	if len(checks) != 12 {
 		t.Fatalf("catalog rows=%d", len(checks))
 	}
 	for _, check := range checks {

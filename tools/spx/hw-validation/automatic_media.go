@@ -23,15 +23,31 @@ const autoMediaPrivateCam = "/var/tmp/spx-libcamera-0.7.2/build/src/apps/cam/cam
 const autoMediaDecodeFrameLimit = 30
 const autoMediaDecodeSeconds = 2
 
+type autoMediaDecodeRun struct {
+	codec  string
+	result AutoResult
+}
+
 func automaticMediaChecks() []AutoCheck {
 	checks := []AutoCheck{
 		{ID: "media.decode.formats", Title: "Exposed Venus decoder formats", Area: "Video", Kind: "inventory", Boxes: []string{"D03"}, Run: autoMediaDecodeFormats},
-		{ID: "media.decode.fixture", Title: "Hardware decode of supplied real media", Area: "Video", Kind: "functional", Boxes: []string{"D03"}, Run: autoMediaDecode},
 		{ID: "media.encode", Title: "Hardware encoder workload", Area: "Video", Kind: "functional", Boxes: []string{"D03"}, Run: func(c *AutoContext) AutoResult {
 			return AutoResult{Status: "blocked", Detail: "Encoder trials parked: known CVP fault/reset/hang and unresolved protected-buffer/recovery contract; no encoder open, autoload or workload attempted"}
 		}},
 		{ID: "camera.graph", Title: "CAMSS media graph integration", Area: "Cameras", Kind: "inventory", Boxes: []string{"C01", "C02", "C03", "C04", "C05"}, Run: autoMediaCameraGraph},
 		{ID: "camera.libcamera", Title: "Libcamera fitted-sensor metadata", Area: "Cameras", Kind: "inventory", Boxes: []string{"C01", "C02", "C03", "C04", "C05"}, Run: autoMediaCameraMetadata},
+	}
+	for _, codec := range []struct{ name, title string }{
+		{"h264", "H.264"}, {"hevc", "HEVC"}, {"mpeg2video", "MPEG-2"}, {"vp8", "VP8"}, {"vp9", "VP9"},
+	} {
+		codec := codec
+		checks = append(checks, AutoCheck{ID: "media.decode." + codec.name, Title: codec.title + " hardware decode of supplied real media", Area: "Video", Kind: "functional", Boxes: []string{"D03"}, Run: func(c *AutoContext) AutoResult {
+			result := autoMediaDecode(c)
+			if actual := c.mediaDecode.codec; actual != "" && actual != codec.name {
+				return AutoResult{Status: "blocked", Detail: "Supplied fixture codec=" + actual + "; a verified " + codec.title + " fixture and supported hardware decoder are required. Another codec's result cannot establish this workload; no extra decode attempted"}
+			}
+			return result
+		}})
 	}
 	for _, sensor := range autoMediaSensors {
 		role, box := sensor.role, sensor.box
@@ -89,6 +105,16 @@ func autoMediaDecodeFormats(c *AutoContext) AutoResult {
 }
 
 func autoMediaDecode(c *AutoContext) AutoResult {
+	// Per-codec requirements share one attempt: don't replay a successful fixture
+	// or mistake that codec's evidence for any other advertised decoder format.
+	if c.mediaDecode == nil {
+		c.mediaDecode = &autoMediaDecodeRun{}
+		c.mediaDecode.result = autoMediaDecodeFixture(c, &c.mediaDecode.codec)
+	}
+	return c.mediaDecode.result
+}
+
+func autoMediaDecodeFixture(c *AutoContext, codec *string) AutoResult {
 	if c.Options.Media == "" {
 		return AutoResult{Status: "blocked", Detail: "Supply --media=/path/to/real-video fixture; needs exposed Venus decoder, ffprobe and FFmpeg V4L2 decoder; no synthetic or software-decode substitute"}
 	}
@@ -130,6 +156,7 @@ func autoMediaDecode(c *AutoContext) AutoResult {
 		return AutoResult{Status: "blocked", Detail: "ffprobe did not identify one valid video stream in the supplied real fixture"}
 	}
 	stream := probe.Streams[0]
+	*codec = stream.Codec
 	output, err = c.Command("ffmpeg", "-hide_banner", "-decoders")
 	if err != nil {
 		return autoMediaCommandProblem("FFmpeg decoder inventory", output, err)

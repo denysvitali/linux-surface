@@ -17,6 +17,10 @@ Read `AGENTS.md`, `TODO.md`, `AUTO-HW-CHECKLIST.md` and the newest
    `/var/lib/spx-boot-diagnostics/boots/<boot-id>/hw-validation/`. If missing or
    incomplete, run the canonical suite before choosing another experiment.
    It must run after baseline, trial and recovery boots, not only trial boots.
+   Use `sudo systemctl restart spx-hw-validation.service` after repairing a
+   prerequisite, then `automatic-validation.py verify` as documented in the
+   canonical README. The installed binary must be rebuilt/reinstalled after
+   validator/catalog changes.
 3. Use the generated automatic failures and `TODO.md` to work the current
    defect in depth (`spx-blocker`). Keep missing driver/DT/userspace support,
    tools/fixtures and known unsafe paths distinct. Do not silently drop a feature.

@@ -14,7 +14,7 @@ const bluetoothScanSeconds = "5"
 func automaticBluetoothChecks() []AutoCheck {
 	return []AutoCheck{
 		{ID: "bluetooth.inventory", Title: "Bluetooth paired, connected and service capability counts", Area: "Bluetooth", Kind: "inventory", Boxes: []string{"N02", "A04"}, Run: automaticBluetoothInventory},
-		{ID: "bluetooth.discovery", Title: "Bounded Bluetooth discovery starts and releases its own session", Area: "Bluetooth", Kind: "functional", Boxes: []string{"N02"}, Run: automaticBluetoothDiscovery},
+		{ID: "bluetooth.discovery", Title: "Bounded Bluetooth discovery with fresh peer reception", Area: "Bluetooth", Kind: "functional", Boxes: []string{"N02"}, Run: automaticBluetoothDiscovery},
 	}
 }
 
@@ -262,7 +262,7 @@ func automaticBluetoothDiscovery(c *AutoContext) AutoResult {
 	}
 	detail := fmt.Sprintf("Bounded 5-second discovery started; owned scanner exited and discovery is inactive; fresh reports=%d from peers=%d; prior connections retained; no power, pairing or disconnect changes", reports, peers)
 	if peers == 0 {
-		detail += "; no fresh peer report received, so radio reception is unproven"
+		return bluetoothResult(id, "blocked", detail+"; no fresh peer report received, so radio reception is unproven; an already advertising peer is required, no pairing or physical action requested")
 	}
 	return bluetoothResult(id, "pass", detail)
 }

@@ -13,6 +13,25 @@ import (
 	"testing"
 )
 
+func TestExposedSensorFailuresAreNotMissingPrerequisites(t *testing.T) {
+	for _, test := range []struct {
+		output string
+		err    error
+		status string
+	}{
+		{"private channel: Input/output error", errors.New("exit status 1"), "fail"},
+		{"", errors.New("exit status 124"), "fail"},
+		{"private channel: Permission denied", os.ErrPermission, "blocked"},
+		{"", os.ErrNotExist, "blocked"},
+		{"PRIVATE_UNEXPECTED_OUTPUT", errors.New("unexpected runner fault"), "error"},
+	} {
+		result := interfacesSensorReadProblem("sensors.light-read", test.output, test.err)
+		if result.Status != test.status || strings.Contains(result.Detail, "private") || strings.Contains(result.Detail, "PRIVATE") {
+			t.Fatalf("light failure mislabeled or raw output retained: %+v", result)
+		}
+	}
+}
+
 func interfacesFixture(t *testing.T, files map[string]string) *AutoContext {
 	t.Helper()
 	root := t.TempDir()

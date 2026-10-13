@@ -63,9 +63,10 @@ not an instruction to stop live SensorsPD or SLPI. Coordinated same-boot
 activation requires exclusive device ownership, confirmed absence of an old
 attachment and the established backend prerequisites; do not automatically
 restart either service. Expected functional check: provider reaches READY once,
-the initial host remains retained, and the desktop exposes motion/compass to an
-ordinary seated client without recovery or new DSP faults. Physical axes and
-calibration still need the user.
+the initial host remains retained, and the desktop exposes its implemented
+motion interface without recovery or new DSP faults. Desktop compass and
+ambient-light integration remain missing support. Physical axes and calibration
+are voluntary human checks, outside the automatic queue.
 
 TCS3430 exposes X/Y/Z/IR channels, not a verified lux conversion. Existing
 BW evidence had all-zero channels and no physical light stimulus. This change

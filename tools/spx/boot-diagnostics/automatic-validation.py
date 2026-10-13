@@ -109,7 +109,7 @@ def run_once(base, runner, repo, boot_id, kernel, execute=subprocess.run, media=
     # no checks and does not acquire the device lock a second time.
     try:
         generated = execute([str(runner), '--checklist', '--output', str(out / 'report'),
-                             '--repo', str(repo)], stdout=subprocess.DEVNULL,
+                             '--repo', str(repo), '--require-current-boot'], stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL, check=False)
     except OSError as exc:
         runner_status(out, boot_id, kernel, 'failed',
@@ -134,6 +134,21 @@ def run_once(base, runner, repo, boot_id, kernel, execute=subprocess.run, media=
     runner_status(out, boot_id, kernel, 'succeeded',
                   'Safe automatic checks completed and active checklist updated. Read check results for pass/fail/blocked status.', 0)
     return 0
+
+
+def verify(base, runner, repo, boot_id, execute=subprocess.run):
+    """Require complete current-catalog/current-boot evidence, without rerunning tests."""
+    out = base / 'boots' / boot_id / 'hw-validation'
+    report = out / 'report.json'
+    if not repo or not repo.is_dir() or not runner.is_file() or not report.is_file():
+        print(f'Current-boot automatic validation is unavailable: {out}. '
+              'Inspect runner.json, resolve its prerequisite and run the canonical suite '
+              'before selecting another experiment.', file=sys.stderr, flush=True)
+        return 1
+    result = execute([str(runner), '--from-report', str(report), '--repo', str(repo),
+                      '--require-current-boot', '--checklist-path', str(out / 'checklist.md')],
+                     check=False)
+    return 0 if result.returncode == 0 else 1
 
 
 def finalize(base, boot_id, kernel, service_result):
@@ -219,6 +234,10 @@ def main(argv=None):
     run.add_argument('--config', type=Path, default=CONFIG)
     run.add_argument('--base', type=Path, default=BASE)
     run.add_argument('--runner', type=Path, default=PRIVATE / 'spx-hw-validation')
+    check = sub.add_parser('verify', help='require this boot\'s complete canonical report; no tests run')
+    check.add_argument('--config', type=Path, default=CONFIG)
+    check.add_argument('--base', type=Path, default=BASE)
+    check.add_argument('--runner', type=Path, default=PRIVATE / 'spx-hw-validation')
     final = sub.add_parser('finalize', help='record an interrupted or crashed wrapper without rerunning checks')
     final.add_argument('--base', type=Path, default=BASE)
     args = parser.parse_args(argv)
@@ -250,6 +269,8 @@ def main(argv=None):
     except (OSError, ValueError, KeyError, TypeError):
         repo = None
     try:
+        if args.action == 'verify':
+            return verify(args.base, args.runner, repo, boot_id)
         return run_once(args.base, args.runner, repo, boot_id, kernel,
                         media=media, storage_dir=storage_dir, user=user)
     except OSError as exc:

@@ -1,21 +1,22 @@
-# Required recovery before further SPX hardware boot tests
+# SPX recovery limits and historical procedures
 
 ## User authorization update — 2026-09-22
 
-The user requested repeated reboot/verify iterations and explicitly accepted
-the possibility of manual power cycling: "Yes. Proceed. Don't ask." This lifts
-the mandatory recovery gate for the current SPX port work, as recorded in
-`AGENTS.md` and the attempt's `authorization.json`. Keep `spx-known-good` as
-the persistent default and preserve all evidence. No new hardware reset
-mechanism has been validated; the history and technical limits below remain
-applicable. This authorization is not evidence of pre-kernel protection.
+Current authorization and boot policy are in `AGENTS.md`. Keep verified 7.x
+`spx-mainline` as persistent default, with 6.18 `spx-known-good` for manual
+recovery. Trials use one-shot selection and automatic return. Every baseline,
+trial and recovery boot requires its own hardware-validation report.
+EFI-handoff recovery remains unvalidated: a hang can require a manual power
+cycle. The recovery gate and procedures below are historical evidence, not
+current prerequisites. Authorization does not establish pre-kernel protection.
 
 ## Historical gate and evidence
 
-Experimental reboots are blocked until recovery covers EFI stub execution,
+The historical gate blocked experimental reboots until recovery covered EFI stub execution,
 ExitBootServices, early kernel initialization and userspace without requiring a
 manual restart. Build success and isolated successful boots do not meet this
-requirement. There is deliberately no command-line bypass in preflight.py.
+requirement. `preflight.py` retains this historical recovery requirement; use
+the current `trial.py` workflow and authorization rules for port trials.
 
 ## Established facts
 

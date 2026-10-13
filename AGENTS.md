@@ -36,6 +36,11 @@ driver is not a working feature.
    interpreting a trial or choosing the next experiment. If validation could
    not start, record why and rerun when the prerequisite is available. Do not
    silently skip a boot or use a previous boot's report as its result.
+   Before another trial or promotion, run
+   `sudo python3 -B tools/spx/boot-diagnostics/automatic-validation.py verify`.
+   This checks current boot/kernel identity and complete current-catalog results;
+   hardware failures remain evidence for a corrective trial. Rebuild and
+   reinstall the canonical binary whenever validator code or catalog changes.
 3. **Test all safely automatic hardware.** Include real Wi-Fi and Bluetooth
    scans, display/GL/Vulkan, hardware video decode and encode applicability,
    audio, cameras, cellular/GNSS, USB/Type-C, input driver health, sensors,
@@ -44,6 +49,9 @@ driver is not a working feature.
    Where enumeration is all that is implemented, label it inventory and keep
    the functional requirement open. Hardware acceleration must reject software
    fallback. Supported formats and encode are separate from one H264 pass.
+   Missing validator workloads must be explicit blocked requirements, separate
+   from missing kernel/DT/userspace support, tools, fixtures and safety limits.
+   Inventory does not replace an unimplemented functional requirement.
 4. **Record honest results.** Reports contain boot ID, kernel release, time,
    check ID, precise tested scope, result and reason/evidence. Only a successful
    functional check is ticked. Inventory is `observed`; unmet prerequisites or
@@ -55,7 +63,8 @@ driver is not a working feature.
    listening, visual judgement, charger unplugging or physical wake is a
    requirement in the automatic checklist. Do not ask for those during porting
    or substitute synthetic physical events. Keep voluntary physical checks in
-   `../validation` and `PHYSICAL-TESTS.md`; a human runs them when they want.
+   `../validation` and
+   `tools/spx/boot-diagnostics/PHYSICAL-TESTS.md`; a human runs them when they want.
 6. **Safety still applies.** Scans and small disposable-file checks may run
    automatically. Do not disconnect the live network, toggle radios, change
    firewall policy, modeset/unbind MSM, load parked accelerators, run the
@@ -119,7 +128,8 @@ reboot. It may spawn agents for bounded work (`spx-port`).
 - The device and the build directory are exclusive. Take the lock first:
   `tools/spx/spx-lock acquire device|build <owner>`; release it afterwards;
   check with `tools/spx/spx-lock status`. A reboot clears the locks.
-- Only the coordinator builds, integrates, ticks boxes and reboots.
+- Only the coordinator builds, integrates, regenerates the automatic checklist,
+  evaluates historical acceptance and reboots.
 - No review agents: none that review manifests, re-hash artifacts or verify
   another agent's bookkeeping.
 
@@ -133,7 +143,7 @@ reboot. It may spawn agents for bounded work (`spx-port`).
   allowed for automated audio testing. Announce capture, keep minimum PA gain
   and bounded levels and durations, and park the amplifiers on completion or
   failure. Since 2026-10-08 this is for verifying a fix to the playback reopen
-  defect only (rule 4). It does not authorize unrelated sound or camera capture.
+  defect only. It does not authorize unrelated sound or camera capture.
 - **Night (2026-10-05).** Keep test signals at the quiet digital peak
   (1433/32768 or lower) and minimum PA gain. No louder peak-4000 run at night.
 - **Battery tests are deferred** at the user's request (2026-10-05). Do not ask
@@ -146,14 +156,10 @@ reboot. It may spawn agents for bounded work (`spx-port`).
 retain the baseline, one-shot trial and recovery rules below. This does not
 restart the parked, fault-producing encoder experiments.
 
-**2026-10-12 user stop:** Do not reboot this device anymore. This overrides
-the older standing reboot authorization below. Venus/Chromium work is offline
-only after repeated hangs/resets; no live browser or module trials without
-new explicit user authorization. User later authorized one decoder-only
-Venus/Chromium retry on 2026-10-12 after being warned it may hang/reset.
-This does not authorize any reboot command or encoder test. The user then
-requested continuing work to fix the remaining playback defect; bounded
-Venus decoder/browser validation is allowed, with no reboot commands or encoder.
+**Authorization history:** The 2026-10-12 reboot prohibition was superseded
+on 2026-10-13. Bounded decoder-only Venus/browser validation remains authorized.
+The fault-producing encoder stays parked; reboot authorization does not lift
+audio/DSP, display, capture or battery restrictions.
 
 **Baseline policy (user requested 2026-10-09):** the verified 7.x candidate
 is the persistent `spx-mainline` baseline. Keep 6.18 (`spx-known-good`) as a

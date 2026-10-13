@@ -229,3 +229,23 @@ func TestAutomaticAudioFeederReadinessNotPlayback(t *testing.T) {
 		}
 	}
 }
+
+func TestAutomaticAudioFailedServicesAreFailures(t *testing.T) {
+	c := autoAudioContext(t)
+	c.Run = func(args ...string) (string, error) {
+		if args[0] != "systemctl" || !strings.Contains(strings.Join(args, " "), " show ") {
+			t.Fatalf("failed audio services must only be queried: %v", args)
+		}
+		// A failed unit must remain a failure even when other prerequisites are missing.
+		if strings.Contains(strings.Join(args, " "), "pipewire-pulse.service") {
+			return "LoadState=not-found\nActiveState=inactive\n", nil
+		}
+		return "LoadState=loaded\nActiveState=failed\nPRIVATE_FAILURE", nil
+	}
+	for _, check := range []func(*AutoContext) AutoResult{autoAudioServices, autoAudioFeeder} {
+		result := check(c)
+		if result.Status != "fail" || strings.Contains(result.Detail, "PRIVATE") {
+			t.Fatalf("known service failure mislabeled or private output retained: %+v", result)
+		}
+	}
+}

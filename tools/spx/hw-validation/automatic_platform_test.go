@@ -244,7 +244,7 @@ func TestPlatformTPMCapability(t *testing.T) {
 		text   string
 		err    error
 		status string
-	}{{"TPM2_PT_FAMILY_INDICATOR:\n raw: 0x322E3000", nil, "pass"}, {"", errors.New("missing tool"), "blocked"}, {"TPM_RC_FAILURE", errors.New("TPM failure"), "fail"}, {"unrecognized response", nil, "fail"}} {
+	}{{"TPM2_PT_FAMILY_INDICATOR:\n raw: 0x322E3000", nil, "pass"}, {"", errors.New("missing tool"), "blocked"}, {"TPM_RC_FAILURE", errors.New("TPM failure"), "fail"}, {"unrecognized response", nil, "error"}} {
 		c.Run = func(args ...string) (string, error) {
 			if len(args) != 3 || args[0] != "tpm2_getcap" || args[1] != "--tcti=device:/dev/tpmrm0" || args[2] != "properties-fixed" {
 				t.Fatal(args)
@@ -255,6 +255,34 @@ func TestPlatformTPMCapability(t *testing.T) {
 		if result.Status != tc.status {
 			t.Fatal(result)
 		}
+	}
+}
+
+func TestPlatformProvenFaultsSurviveUnavailableMetadata(t *testing.T) {
+	c := platformFixture(t, map[string]string{
+		"/sys/class/remoteproc/remoteproc0/name":             "adsp",
+		"/sys/class/remoteproc/remoteproc0/state":            "crashed",
+		"/sys/class/remoteproc/remoteproc1/name":             "unreadable-state",
+		"/sys/class/thermal/thermal_zone0/type":              "cpu",
+		"/sys/class/thermal/thermal_zone0/temp":              "110000",
+		"/sys/class/thermal/thermal_zone0/trip_point_0_type": "critical",
+		"/sys/class/thermal/thermal_zone0/trip_point_0_temp": "110000",
+		"/sys/class/thermal/thermal_zone1/type":              "unreadable-temp",
+	})
+	if result := platformRemoteproc(c); result.Status != "fail" || !strings.Contains(result.Detail, "crashed") || !strings.Contains(result.Detail, "unreadable") {
+		t.Fatalf("firmware crash hidden by incomplete metadata: %+v", result)
+	}
+	if result := platformThermal(c); result.Status != "fail" || !strings.Contains(result.Detail, "critical-temperature") || !strings.Contains(result.Detail, "unavailable") {
+		t.Fatalf("critical thermal fault hidden by incomplete metadata: %+v", result)
+	}
+	c.Run = func(args ...string) (string, error) {
+		if args[2] == "pd-mapper.service" {
+			return "LoadState=loaded\nActiveState=failed\nSubState=failed\nUnitFileState=enabled", nil
+		}
+		return "", errors.New("query unavailable")
+	}
+	if result := platformFirmwareServices(c); result.Status != "fail" || !strings.Contains(result.Detail, "failed") || !strings.Contains(result.Detail, "unavailable") {
+		t.Fatalf("service failure hidden by inaccessible next service: %+v", result)
 	}
 }
 func TestPlatformThermalFaultEvidence(t *testing.T) {

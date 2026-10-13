@@ -194,15 +194,21 @@ func autoAudioService(c *AutoContext, user bool, unit string) (string, bool) {
 
 func autoAudioServices(c *AutoContext) AutoResult {
 	parts, available := []string{}, true
+	failed := false
 	for _, unit := range []string{"pipewire.service", "pipewire-pulse.service", "wireplumber.service"} {
 		state, ok := autoAudioService(c, true, unit)
 		parts = append(parts, unit+"="+state)
 		available = available && ok
+		failed = failed || state == "failed"
 	}
 	status := "observed"
 	if !available {
 		status = "blocked"
 		parts = append(parts, "active desktop services, systemctl and access to the selected desktop session bus required; no service started or restarted")
+	}
+	if failed {
+		status = "fail"
+		parts = append(parts, "systemd reports a failed desktop audio service; no start or restart attempted")
 	}
 	return autoAudioResult("audio.services", status, strings.Join(parts, "; "))
 }
@@ -307,6 +313,9 @@ func autoAudioGraph(c *AutoContext) AutoResult {
 func autoAudioFeeder(c *AutoContext) AutoResult {
 	const id = "audio.feeder"
 	service, active := autoAudioService(c, false, "spx-desktop-playback.service")
+	if service == "failed" {
+		return autoAudioResult(id, "fail", "Systemd reports the native desktop feeder failed; playback readiness is lost. No PCM, amplifier, start or restart attempted.")
+	}
 	if !active {
 		return autoAudioResult(id, "blocked", "Native desktop feeder="+service+"; installed/running feeder service and system service-query access required. No start or restart attempted.")
 	}

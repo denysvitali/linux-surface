@@ -31,6 +31,7 @@ Keep report basenames distinct when keeping multiple runs.
 | `--list` | Print catalog IDs, areas, kinds and titles. No tests, commands, locks or hardware reads. |
 | `--list-json` | Print current catalog metadata as JSON, with validator implementation meaning. |
 | `--from-report JSON` | Generate checklist from saved report and matching current catalog, preserving date and boot. Catalog changes require a new run. |
+| `--require-current-boot` | With saved-report generation, require complete live evidence for the current boot/kernel before and after checks. Read-only boot identity reads; no checks or locks. |
 | `--checklist` | Generate checklist only. No tests, commands, locks or hardware reads. Without `--output`, every row is marked not run. |
 | `--checklist-path PATH` | Override `<repo>/AUTO-HW-CHECKLIST.md`. |
 | `--root PATH` | Fixture filesystem root; disables all external commands and live locking, even for `--root /`. |
@@ -70,6 +71,9 @@ The installer writes `/etc/spx/hw-validation.json` with `repo`, `user`,
 The binary and wrapper live in `/usr/local/lib/spx-boot-diagnostics/`.
 `spx-hw-validation.service` is enabled for future boots; installation does not
 start tests, reboot, change boot selections, or modify recovery timers.
+After any validator code/catalog change, rebuild and install the binary with
+`--binary` again. Trial setup preserves the installed binary; it does not
+compile a new catalog from changed source.
 
 Each boot writes private evidence under
 `/var/lib/spx-boot-diagnostics/boots/<boot-id>/hw-validation/`: `report.json`,
@@ -80,6 +84,31 @@ configuration, tool, fixture, permission or desktop session is reported
 explicitly; the wrapper does not install tools or repair services. Read private
 reports with the required privilege; progress may read their generated public
 checklist summary without duplicating outcomes.
+
+The service has a ten-minute runtime ceiling. An interrupted or timed-out run
+records failed runner status through its finalizer; a retained report does not
+become that failed invocation's result. After repairing a prerequisite, rerun
+and inspect this boot's evidence:
+
+```sh
+sudo systemctl restart spx-hw-validation.service
+sudo python3 -B tools/spx/boot-diagnostics/automatic-validation.py verify
+tools/spx/progress -v
+```
+
+Verification rejects missing, fixture, older-boot, inconsistent-identity and
+incomplete/current-catalog-mismatched reports. It accepts recorded hardware
+failures so a corrective trial remains possible. `trial.py boot` and `promote`
+require this verification before changing boot selection. Bounded trial return
+records the validation paths/status and continues recovery if it is incomplete.
+
+Decoder requirements are separate for H.264, HEVC, MPEG-2, VP8 and VP9. The
+single supplied `--media` fixture is probed/decoded once; only its matching
+codec can pass, while every other codec retains a blocked requirement.
+Bluetooth discovery needs fresh peer reports as well as safe session cleanup;
+an empty scan remains blocked for reception, without requesting a human action.
+Static Vulkan compares all 4,096 public-fixture pixels; it still does not close
+the separate unresolved scrolling/partial-damage requirement.
 
 Boot checks keep capture disabled and do not play sound. Cameras therefore
 remain blocked without explicit capture authorization. Native microphone
