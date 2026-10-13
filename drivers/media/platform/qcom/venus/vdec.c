@@ -1302,8 +1302,6 @@ static void vdec_stop_streaming(struct vb2_queue *q)
 
 	venus_helper_buffers_done(inst, q->type, VB2_BUF_STATE_ERROR);
 
-	inst->session_error = 0;
-
 	if (ret)
 		goto unlock;
 
@@ -1327,21 +1325,29 @@ static void vdec_session_release(struct venus_inst *inst)
 	inst->codec_state = VENUS_DEC_STATE_DEINIT;
 
 	ret = hfi_session_stop(inst);
-	abort = (ret && ret != -EINVAL) ? 1 : 0;
+	abort |= (ret && ret != -EINVAL) ? 1 : 0;
 	ret = hfi_session_unload_res(inst);
-	abort = (ret && ret != -EINVAL) ? 1 : 0;
+	abort |= (ret && ret != -EINVAL) ? 1 : 0;
 	ret = venus_helper_unregister_bufs(inst);
-	abort = (ret && ret != -EINVAL) ? 1 : 0;
+	abort |= (ret && ret != -EINVAL) ? 1 : 0;
 	ret = venus_helper_intbufs_free(inst);
-	abort = (ret && ret != -EINVAL) ? 1 : 0;
+	abort |= (ret && ret != -EINVAL) ? 1 : 0;
 	ret = hfi_session_deinit(inst);
-	abort = (ret && ret != -EINVAL) ? 1 : 0;
+	abort |= (ret && ret != -EINVAL) ? 1 : 0;
 
 	if (inst->session_error || test_bit(0, &core->sys_error))
 		abort = 1;
 
-	if (abort)
-		hfi_session_abort(inst);
+	/* A successful SESSION_END already destroyed the firmware session. */
+	if (abort && inst->state != INST_UNINIT) {
+		ret = hfi_session_abort(inst);
+		if (ret)
+			dev_err_ratelimited(core->dev_dec,
+					    "dec: session abort failed: %d\n", ret);
+	}
+
+	/* The failed session is gone; a later one on this handle starts clean. */
+	WRITE_ONCE(inst->session_error, false);
 
 	venus_helper_free_dpb_bufs(inst);
 	venus_pm_load_scale(inst);
@@ -1478,6 +1484,13 @@ static void vdec_buf_done(struct venus_inst *inst, unsigned int buf_type,
 		vb->timestamp = 0;
 	}
 
+	if (type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE &&
+	    state == VB2_BUF_STATE_ERROR)
+		dev_dbg(inst->core->dev_dec,
+			"dec: capture error: input %p4cc tag %u bytesused %u hfi_flags %#x flags %#x timestamp_us %llu state %u error %#x\n",
+			&inst->fmt_out->pixfmt, tag, bytesused, hfi_flags,
+			vbuf->flags, timestamp_us, state, inst->error);
+
 	v4l2_m2m_buf_done(vbuf, state);
 }
 
@@ -1589,9 +1602,9 @@ static void vdec_event_notify(struct venus_inst *inst, u32 event,
 
 	switch (event) {
 	case EVT_SESSION_ERROR:
-		inst->session_error = true;
+		WRITE_ONCE(inst->session_error, true);
 		venus_helper_vb2_queue_error(inst);
-		dev_err(dev, "dec: event session error %x\n", inst->error);
+		dev_err_ratelimited(dev, "dec: event session error %x\n", inst->error);
 		break;
 	case EVT_SYS_EVENT_CHANGE:
 		switch (data->event_type) {

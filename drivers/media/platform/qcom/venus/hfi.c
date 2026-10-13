@@ -553,6 +553,10 @@ int hfi_session_process_buf(struct venus_inst *inst, struct hfi_frame_data *fd)
 {
 	const struct hfi_ops *ops = inst->core->ops;
 
+	if (inst->session_type == VIDC_SESSION_TYPE_DEC &&
+	    READ_ONCE(inst->session_error))
+		return -EIO;
+
 	if (test_bit(0, &inst->core->sys_error))
 		return -EIO;
 

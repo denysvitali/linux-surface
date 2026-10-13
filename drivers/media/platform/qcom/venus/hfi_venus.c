@@ -1183,7 +1183,7 @@ static void venus_flush_debug_queue(struct venus_hfi_device *hdev)
 		if (pkt->hdr.pkt_type != HFI_MSG_SYS_COV) {
 			struct hfi_msg_sys_debug_pkt *pkt = packet;
 
-			dev_dbg(dev, VDBGFW "%s", pkt->msg_data);
+			dev_dbg_ratelimited(dev, VDBGFW "%s", pkt->msg_data);
 		}
 	}
 }

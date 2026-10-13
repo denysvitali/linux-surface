@@ -7,6 +7,7 @@
 #include <linux/list.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/of.h>
 #include <linux/slab.h>
 #include <linux/kernel.h>
 #include <media/videobuf2-dma-contig.h>
@@ -63,6 +64,11 @@ bool venus_helper_check_codec(struct venus_inst *inst, u32 v4l2_pixfmt)
 		codec = HFI_VIDEO_CODEC_MPEG1;
 		break;
 	case V4L2_PIX_FMT_MPEG2:
+		/* Iris1 VIDEO.IR.1.2 rejects the decoder's split OPB layout. */
+		if (session_type == VIDC_SESSION_TYPE_DEC &&
+		    of_device_is_compatible(core->dev->of_node,
+					"qcom,sc8180x-venus"))
+			return false;
 		codec = HFI_VIDEO_CODEC_MPEG2;
 		break;
 	case V4L2_PIX_FMT_MPEG4:

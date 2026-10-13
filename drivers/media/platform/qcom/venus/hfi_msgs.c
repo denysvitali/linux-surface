@@ -208,7 +208,7 @@ event_session_error(struct venus_core *core, struct venus_inst *inst,
 {
 	struct device *dev = core->dev;
 
-	dev_dbg(dev, VDBGH "session error: event id:%x, session id:%x\n",
+	dev_dbg_ratelimited(dev, VDBGH "session error: event id:%x, session id:%x\n",
 		pkt->event_data1, pkt->shdr.session_id);
 
 	if (!inst)
@@ -218,12 +218,18 @@ event_session_error(struct venus_core *core, struct venus_inst *inst,
 	/* non fatal session errors */
 	case HFI_ERR_SESSION_INVALID_SCALE_FACTOR:
 	case HFI_ERR_SESSION_UNSUPPORT_BUFFERTYPE:
-	case HFI_ERR_SESSION_UNSUPPORTED_SETTING:
 	case HFI_ERR_SESSION_UPSCALE_NOT_SUPPORTED:
 		inst->error = HFI_ERR_NONE;
 		break;
+	case HFI_ERR_SESSION_UNSUPPORTED_SETTING:
+		/* A rejected decoder configuration cannot make forward progress. */
+		if (inst->session_type != VIDC_SESSION_TYPE_DEC) {
+			inst->error = HFI_ERR_NONE;
+			break;
+		}
+		fallthrough;
 	default:
-		dev_err(dev, "session error: event id:%x (%x), session id:%x\n",
+		dev_err_ratelimited(dev, "session error: event id:%x (%x), session id:%x\n",
 			pkt->event_data1, pkt->event_data2,
 			pkt->shdr.session_id);
 
@@ -856,7 +862,7 @@ u32 hfi_process_msg_packet(struct venus_core *core, struct hfi_pkt_hdr *hdr)
 		struct hfi_msg_event_notify_pkt *pkt = (void *)hdr;
 
 		if (hdr->size >= sizeof(*pkt) && venus_hfi_session_diag(core)) {
-			dev_info(dev, "session diag event type=%#x sid=%#x size=%u event=%#x data1=%#x data2=%#x\n",
+			dev_info_ratelimited(dev, "session diag event type=%#x sid=%#x size=%u event=%#x data1=%#x data2=%#x\n",
 				 hdr->pkt_type, pkt->shdr.session_id, hdr->size,
 				 pkt->event_id, pkt->event_data1, pkt->event_data2);
 		}
@@ -875,7 +881,7 @@ u32 hfi_process_msg_packet(struct venus_core *core, struct hfi_pkt_hdr *hdr)
 		inst = to_instance(core, pkt->shdr.session_id);
 
 		if (!inst)
-			dev_warn(dev, "no valid instance(pkt session_id:%x, pkt:%x)\n",
+			dev_warn_ratelimited(dev, "no valid instance(pkt session_id:%x, pkt:%x)\n",
 				 pkt->shdr.session_id,
 				 handler ? handler->pkt : 0);
 
