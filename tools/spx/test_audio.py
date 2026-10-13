@@ -1157,6 +1157,9 @@ class DesktopMicrophoneTests(unittest.TestCase):
             self.assertEqual(result['error_type'], 'AttributeError')
             self.assertTrue(result['desktop']['clients'][0]['passed'])
             self.assertIn('unexpected cleanup failure', result['error'])
+            self.assertEqual(result['error_origin'][-1]['function'], 'fail')
+            self.assertEqual(result['error_origin'][-1]['file'], Path(__file__).name)
+            self.assertGreater(result['error_origin'][-1]['line'], 0)
 
     def test_default_client_route_rejects_another_source(self):
         graph = Mock()

@@ -43,6 +43,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import traceback
 import time
 import wave
 
@@ -3184,7 +3185,7 @@ def initialize(args, report, *, live_resume=None):
         for graph in desktop_holder:
             try:
                 monitor = getattr(graph, 'monitor', None)
-                if monitor:
+                if isinstance(monitor, DesktopMonitor):
                     monitor.stop.set()
             except Exception as error:
                 cleanup_errors.append('stop monitor: ' + type(error).__name__ + ': ' + str(error))
@@ -3381,6 +3382,11 @@ def main():
     except Exception as error:
         report['error'] = str(error)
         report['error_type'] = type(error).__name__
+        report['error_origin'] = [dict(file=Path(frame.filename).name,
+                                      function=frame.name, line=frame.lineno)
+                                  for frame in traceback.extract_tb(error.__traceback__)]
+        if isinstance(error, OSError):
+            report['error_errno'] = error.errno
         result = 1
     if args.microphone_array and not report['success'] and 'microphone_array' in report:
         report['microphone_array']['milestone_passed'] = False

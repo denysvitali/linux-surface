@@ -22,9 +22,20 @@ are voluntary when a human wants them; do not prompt or wait for them.
   See `RESULT-20261013-sensor-startup.md`; canonical motion row passes89/69/29
   finite samples and whole-catalog result11/40,36inventory,44blocked,1fail,0error.
   The sensor backend failure is resolved; full physical acceptance not claimed.
-- Next remaining recorded failure: native desktop speaker feeder and inactive
-  desktop audio. Diagnose its logs without restarting playback or amplifiers;
-  preserve parked DSP mappings and scoped sound permissions.
+- Current remaining failure: native desktop speaker feeder stopped after12h19m
+  with primaryEIO; final feeder counters show31 underruns. Cleanup also assumed
+  every monitor has a threaded `.stop` event, but DirectMonitor has none.
+  H-monitor-cleanup: signal only threaded DesktopMonitor before amp parking;
+  native DirectMonitor process is closed by existing graph cleanup afterward.
+  Source dispatch fixed; changed-path fixture tests pass. Full audio suite has
+  one timing-sensitive underrun assertion failing twice (118/119); no settings
+  or oracle relaxed. Separate primaryEIO remains.
+  Its strongest source match is periodic SoundWire `state()` bridge/canary read,
+  not proved ALSA underrun. Persist traceback basename/function/line+errno on
+  the next failure; do not mask/retry health reads or change buffers/watchdogs.
+  No sound/amp restart or parked-DSP mutation in this round. Next primary test
+  requires a separately authorized playback run or a normal boot, with the
+  installed diagnostic; stop rather than repeat unrelated successful tests.
 - Missing support, missing tools/fixtures and known unsafe paths stay separate
   blocked results, never passes or omitted rows. Wi-Fi/BT scans and one H264
   decode fixture do not establish all networking/codec/lifecycle support.
