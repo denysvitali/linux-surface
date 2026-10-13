@@ -47,7 +47,7 @@ def report_stamp(path):
         return None
 
 
-def run_once(base, runner, repo, boot_id, kernel, execute=subprocess.run, media=None, storage_dir=None, user=None):
+def run_once(base, runner, repo, boot_id, kernel, execute=subprocess.run, media=None, storage_dir=None, user=None, media_dir=None):
     """The Go runner owns the device lock; exit 75 schedules a deferred retry."""
     out = base / 'boots' / boot_id / 'hw-validation'
     out.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -70,6 +70,9 @@ def run_once(base, runner, repo, boot_id, kernel, execute=subprocess.run, media=
                    '--checklist-path', str(out / 'checklist.md')]
         if media is not None:
             command += ['--media', str(media)]
+        fixture_dir = media_dir if media_dir is not None else base / 'fixtures/media'
+        if media_dir is not None or fixture_dir.is_dir():
+            command += ['--media-dir', str(fixture_dir)]
         command += ['--storage-dir', str(storage_dir or base)]
         if user:
             command += ['--user', user]
@@ -172,7 +175,7 @@ def replace_asset(source, target, mode):
     temporary.replace(target)
 
 
-def install(repo, binary=None, root=Path('/'), control=subprocess.run, media=None, storage_dir=None, user=None):
+def install(repo, binary=None, root=Path('/'), control=subprocess.run, media=None, storage_dir=None, user=None, media_dir=None):
     """Stage prebuilt userspace only. Enable for later boots; never start tests."""
     repo = repo.resolve()
     if not (repo / 'tools/spx/hw-validation/go.mod').is_file():
@@ -193,10 +196,11 @@ def install(repo, binary=None, root=Path('/'), control=subprocess.run, media=Non
     try:
         retained = json.loads(config.read_text())
         retained_media = retained.get('media')
+        retained_media_dir = retained.get('media_dir')
         retained_storage = retained.get('storage_dir')
         retained_user = retained.get('user')
     except (OSError, ValueError, AttributeError):
-        retained_media, retained_storage, retained_user = None, None, None
+        retained_media, retained_storage, retained_user, retained_media_dir = None, None, None, None
     settings['storage_dir'] = str(storage_dir) if storage_dir else retained_storage or str(BASE)
     if user or retained_user:
         settings['user'] = user or retained_user
@@ -204,6 +208,10 @@ def install(repo, binary=None, root=Path('/'), control=subprocess.run, media=Non
         settings['media'] = str(media.resolve())
     elif retained_media:
         settings['media'] = retained_media
+    if media_dir is not None:
+        settings['media_dir'] = str(media_dir.resolve())
+    elif retained_media_dir:
+        settings['media_dir'] = retained_media_dir
     atomic_text(config, json.dumps(settings, indent=2) + '\n')
     if root == Path('/'):
         control(['systemctl', 'daemon-reload'], check=True)
@@ -227,6 +235,7 @@ def main(argv=None):
     stage.add_argument('--repo', type=Path, required=True)
     stage.add_argument('--binary', type=Path)
     stage.add_argument('--media', type=Path, help='explicit verified decoder fixture, never captured media')
+    stage.add_argument('--media-dir', type=Path, help='directory of verified per-codec decoder fixtures')
     stage.add_argument('--storage-dir', type=Path, help='bounded disposable I/O directory; default persistent diagnostic directory')
     stage.add_argument('--user', help='explicit user account for user-session checks; root probes remain root')
     stage.add_argument('--root', type=Path, default=Path('/'), help='fixture/staging root; no systemctl when not /')
@@ -244,7 +253,7 @@ def main(argv=None):
     if args.action == 'install':
         if args.root == Path('/') and os.geteuid() != 0:
             parser.error('installation needs root')
-        install(args.repo, args.binary, args.root, media=args.media, storage_dir=args.storage_dir, user=args.user)
+        install(args.repo, args.binary, args.root, media=args.media, storage_dir=args.storage_dir, user=args.user, media_dir=args.media_dir)
         return 0
     boot_id = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
     kernel = Path('/proc/sys/kernel/osrelease').read_text().strip()
@@ -256,12 +265,14 @@ def main(argv=None):
                   f'(OS error {exc.errno}).', file=sys.stderr, flush=True)
             return 1
         return 0
-    media, storage_dir, user = None, args.base, None
+    media, storage_dir, user, media_dir = None, args.base, None, None
     try:
         settings = json.loads(args.config.read_text())
         repo = Path(settings['repo'])
         if settings.get('media'):
             media = Path(settings['media'])
+        if settings.get('media_dir'):
+            media_dir = Path(settings['media_dir'])
         if settings.get('storage_dir'):
             storage_dir = Path(settings['storage_dir'])
         if settings.get('user'):
@@ -272,7 +283,7 @@ def main(argv=None):
         if args.action == 'verify':
             return verify(args.base, args.runner, repo, boot_id)
         return run_once(args.base, args.runner, repo, boot_id, kernel,
-                        media=media, storage_dir=storage_dir, user=user)
+                        media=media, storage_dir=storage_dir, user=user, media_dir=media_dir)
     except OSError as exc:
         # A report-directory permission/storage failure is still explicit in the journal.
         print(f'Automatic validator: failed to write boot {boot_id} status '

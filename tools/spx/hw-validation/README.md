@@ -36,7 +36,10 @@ Keep report basenames distinct when keeping multiple runs.
 | `--checklist-path PATH` | Override `<repo>/AUTO-HW-CHECKLIST.md`. |
 | `--root PATH` | Fixture filesystem root; disables all external commands and live locking, even for `--root /`. |
 | `--capture` | Allow minimal bounded camera/microphone capture. An announcement is printed; data is discarded. Does not authorize speaker playback. |
-| `--media PATH` | Existing media fixture for bounded decoder-only checks. No encoder trials. |
+| `--media PATH` | Existing media fixture for bounded decoder-only checks; takes precedence over directory fixtures of the same codec. No encoder trials. |
+| `--media-dir PATH` | Absolute directory of verified public video fixtures; regular files are probed in lexical order, without recursion. |
+| `--dns-name NAME` | Deliberate public DNS fixture hostname; default `example.com`. System resolver lookup has a three-second total deadline. |
+| `--no-dns-lookup` | Disable external DNS lookup; its functional row stays blocked. |
 | `--storage-dir PATH` | Directory for bounded disposable-file storage checks; never raw-device writes. |
 
 Regenerate exactly the saved boot's checklist, preserving its date:
@@ -67,7 +70,7 @@ probes. Windowless GTK rendering imports only `WAYLAND_DISPLAY`, `DISPLAY`,
 and `XAUTHORITY` from that existing user manager via read-only `show-environment`;
 no display socket is guessed and no other environment values are retained.
 The installer writes `/etc/spx/hw-validation.json` with `repo`, `user`,
-`media`, and `storage_dir`, preserving previously selected optional values.
+`media`, `media_dir`, and `storage_dir`, preserving previously selected optional values.
 The binary and wrapper live in `/usr/local/lib/spx-boot-diagnostics/`.
 `spx-hw-validation.service` is enabled for future boots; installation does not
 start tests, reboot, change boot selections, or modify recovery timers.
@@ -103,8 +106,24 @@ require this verification before changing boot selection. Bounded trial return
 records the validation paths/status and continues recovery if it is incomplete.
 
 Decoder requirements are separate for H.264, HEVC, MPEG-2, VP8 and VP9. The
-single supplied `--media` fixture is probed/decoded once; only its matching
-codec can pass, while every other codec retains a blocked requirement.
+supplied `--media` fixture and regular files in `--media-dir` are probed with
+ffprobe. The first valid fixture attributed to each codec is selected (explicit
+`--media` first, then directory entries in lexical order). Duplicate fixtures
+never trigger retries, including after a failure. Each codec gets at most one
+explicit FFmpeg V4L2 mem2mem decode, capped at 30 frames / 2 seconds of media;
+software fallback cannot pass. Missing fixtures/tools/decoder nodes stay blocked;
+hardware rejection or decode errors fail. Existing encoder exposure blocks decoding.
+The boot installer accepts `--media-dir` and preserves it in configuration;
+without an explicit directory, the hook uses
+`/var/lib/spx-boot-diagnostics/fixtures/media` if present (under `--base` when
+overridden). The existing single `--media` configuration remains supported.
+
+DNS lookup requires a configured resolver and a usable IPv4 or IPv6 default
+route. The system resolver queries the chosen absolute hostname (no search-domain
+expansion); any A/AAAA answer passes, while failure/NXDOMAIN/timeout with these
+prerequisites fails. Reports retain the fixture name and family counts, never
+resolved addresses or raw errors. Disabled lookups, missing prerequisites and
+fixture-root runs stay blocked.
 Bluetooth discovery needs fresh peer reports as well as safe session cleanup;
 an empty scan remains blocked for reception, without requesting a human action.
 Static Vulkan compares all 4,096 public-fixture pixels; it still does not close

@@ -32,10 +32,13 @@ type AutoResult struct {
 }
 
 type AutoOptions struct {
-	Capture    bool
-	Media      string
-	StorageDir string
-	User       string
+	Capture     bool
+	Media       string
+	MediaDir    string
+	DNSName     string
+	NoDNSLookup bool
+	StorageDir  string
+	User        string
 }
 
 type AutoContext struct {
@@ -43,7 +46,8 @@ type AutoContext struct {
 	Root, Repo  string
 	Options     AutoOptions
 	Run         func(...string) (string, error)
-	mediaDecode *autoMediaDecodeRun
+	mediaDecode map[string]AutoResult
+	LookupIP    func(context.Context, string, string) ([]net.IP, error)
 }
 
 func (c *AutoContext) path(path string) (string, error) {
@@ -731,6 +735,9 @@ func automaticMain(args []string) (err error) {
 	checklistPath := flags.String("checklist-path", "", "active checklist path (default <repo>/AUTO-HW-CHECKLIST.md)")
 	capture := flags.Bool("capture", false, "allow minimal bounded camera/microphone capture; samples discarded")
 	media := flags.String("media", "", "existing media fixture for bounded decoder-only checks")
+	mediaDir := flags.String("media-dir", "", "directory of per-codec local decoder fixtures")
+	dnsName := flags.String("dns-name", "example.com", "public DNS lookup fixture name")
+	noDNSLookup := flags.Bool("no-dns-lookup", false, "disable public DNS lookups")
 	storageDir := flags.String("storage-dir", "", "directory for disposable bounded storage checks")
 	desktopUser := flags.String("user", "", "existing desktop session user for selected user-session commands")
 	if err := flags.Parse(args); err != nil {
@@ -803,7 +810,7 @@ func automaticMain(args []string) (err error) {
 		fmt.Printf("checklist: %s\n", path)
 		return nil
 	}
-	c := &AutoContext{Root: "/", Repo: absRepo, Options: AutoOptions{Capture: *capture, Media: *media, StorageDir: *storageDir, User: *desktopUser}, Run: automaticCommand}
+	c := &AutoContext{Root: "/", Repo: absRepo, Options: AutoOptions{Capture: *capture, Media: *media, MediaDir: *mediaDir, DNSName: *dnsName, NoDNSLookup: *noDNSLookup, StorageDir: *storageDir, User: *desktopUser}, Run: automaticCommand}
 	fixture := *root != ""
 	if fixture {
 		c.Root, err = filepath.Abs(*root)

@@ -104,6 +104,30 @@ class AutomaticBootTests(unittest.TestCase):
                              'fixture-kernel', completed, media=media)
         self.assertEqual(code, 0)
 
+    def test_media_directory_default_and_override(self):
+        default = self.base / 'fixtures/media'
+        for selected, create_default, expected in (
+                (None, False, None), (None, True, default),
+                (self.root / 'explicit-media', True, self.root / 'explicit-media')):
+            with self.subTest(selected=selected, create_default=create_default):
+                if create_default:
+                    default.mkdir(parents=True, exist_ok=True)
+                def completed(args, **kwargs):
+                    if '--checklist' in args:
+                        return subprocess.CompletedProcess(args, 0)
+                    if expected is None:
+                        self.assertNotIn('--media-dir', args)
+                    else:
+                        self.assertEqual(args[args.index('--media-dir') + 1], str(expected))
+                    self.assertEqual(args[args.index('--media') + 1], '/fixture.h264')
+                    self.assertNotIn('--capture', args)
+                    (self.out / 'report.json').write_text('{"results": []}')
+                    (self.out / 'report.md').write_text('# Fixture check results')
+                    return subprocess.CompletedProcess(args, 0)
+                self.assertEqual(hook.run_once(
+                    self.base, self.binary, self.repo, 'fixture-boot', 'fixture-kernel',
+                    completed, media=Path('/fixture.h264'), media_dir=selected), 0)
+
     def test_explicit_user_forwarded_without_demoting_root_probes(self):
         def completed(args, **kwargs):
             if '--checklist' in args:
@@ -197,7 +221,7 @@ class AutomaticBootTests(unittest.TestCase):
         def forbidden(*args, **kwargs):
             self.fail('staging root must not invoke systemctl or functional commands')
         media = self.root / 'verified-fixture.h264'
-        hook.install(self.repo, self.binary, root, forbidden, media=media, user="fixtureuser")
+        hook.install(self.repo, self.binary, root, forbidden, media=media, user="fixtureuser", media_dir=self.root / "media-dir")
         private = root / 'usr/local/lib/spx-boot-diagnostics'
         self.assertEqual((private / 'spx-hw-validation').read_text(), self.binary.read_text())
         self.assertEqual((private / 'spx-hw-validation').stat().st_mode & 0o777, 0o755)
@@ -219,6 +243,7 @@ class AutomaticBootTests(unittest.TestCase):
         self.assertTrue((private / 'spx-hw-validation').is_file())
         config = json.loads((root / 'etc/spx/hw-validation.json').read_text())
         self.assertEqual(config['media'], str(media))
+        self.assertEqual(config['media_dir'], str(self.root / 'media-dir'))
         self.assertEqual(config['storage_dir'], '/var/lib/spx-boot-diagnostics')
         self.assertEqual(config['user'], 'fixtureuser')
 

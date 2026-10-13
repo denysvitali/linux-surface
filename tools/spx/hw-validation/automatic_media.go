@@ -23,11 +23,6 @@ const autoMediaPrivateCam = "/var/tmp/spx-libcamera-0.7.2/build/src/apps/cam/cam
 const autoMediaDecodeFrameLimit = 30
 const autoMediaDecodeSeconds = 2
 
-type autoMediaDecodeRun struct {
-	codec  string
-	result AutoResult
-}
-
 func automaticMediaChecks() []AutoCheck {
 	checks := []AutoCheck{
 		{ID: "media.decode.formats", Title: "Exposed Venus decoder formats", Area: "Video", Kind: "inventory", Boxes: []string{"D03"}, Run: autoMediaDecodeFormats},
@@ -42,11 +37,12 @@ func automaticMediaChecks() []AutoCheck {
 	} {
 		codec := codec
 		checks = append(checks, AutoCheck{ID: "media.decode." + codec.name, Title: codec.title + " hardware decode of supplied real media", Area: "Video", Kind: "functional", Boxes: []string{"D03"}, Run: func(c *AutoContext) AutoResult {
-			result := autoMediaDecode(c)
-			if actual := c.mediaDecode.codec; actual != "" && actual != codec.name {
-				return AutoResult{Status: "blocked", Detail: "Supplied fixture codec=" + actual + "; a verified " + codec.title + " fixture and supported hardware decoder are required. Another codec's result cannot establish this workload; no extra decode attempted"}
+			if codec.name == "mpeg2video" {
+				// Boot 45bccac9: firmware rejects the split output mode and loops on
+				// session errors past close; only a reboot restores the power domain.
+				return AutoResult{Status: "blocked", Detail: "Known unsafe: MPEG-2 decode makes Iris1 firmware reject OPB mode and storm session errors after close, leaving vcodec0_gdsc stuck off until reboot; needs the Venus MPEG-2 output-mode and error-containment fix. No decode attempted"}
 			}
-			return result
+			return autoMediaDecode(c, codec.name)
 		}})
 	}
 	for _, sensor := range autoMediaSensors {
@@ -104,28 +100,62 @@ func autoMediaDecodeFormats(c *AutoContext) AutoResult {
 	return AutoResult{Status: "observed", Detail: fmt.Sprintf("%d exposed Venus decoder node(s); advertised compressed-input formats: %s; enumeration does not prove any codec workload; encoder is parked", len(nodes), strings.Join(names, ", "))}
 }
 
-func autoMediaDecode(c *AutoContext) AutoResult {
-	// Per-codec requirements share one attempt: don't replay a successful fixture
-	// or mistake that codec's evidence for any other advertised decoder format.
+// Select the explicit fixture first, then directory entries in lexical order.
+// Probe each regular file once and cache at most one decode result per codec.
+func autoMediaDecode(c *AutoContext, codec string) AutoResult {
 	if c.mediaDecode == nil {
-		c.mediaDecode = &autoMediaDecodeRun{}
-		c.mediaDecode.result = autoMediaDecodeFixture(c, &c.mediaDecode.codec)
+		c.mediaDecode = make(map[string]AutoResult)
+		autoMediaDecodeFixtures(c)
 	}
-	return c.mediaDecode.result
+	if result, ok := c.mediaDecode[codec]; ok {
+		return result
+	}
+	return AutoResult{Status: "blocked", Detail: "No usable " + codec + " fixture identified; supply --media or --media-dir with a verified local regular-file video. " + c.mediaDecode[""].Detail}
 }
 
-func autoMediaDecodeFixture(c *AutoContext, codec *string) AutoResult {
-	if c.Options.Media == "" {
-		return AutoResult{Status: "blocked", Detail: "Supply --media=/path/to/real-video fixture; needs exposed Venus decoder, ffprobe and FFmpeg V4L2 decoder; no synthetic or software-decode substitute"}
+func autoMediaDecodeFixtures(c *AutoContext) {
+	paths := []string{}
+	if c.Options.Media != "" {
+		paths = append(paths, c.Options.Media)
 	}
-	if !filepath.IsAbs(c.Options.Media) {
-		return AutoResult{Status: "blocked", Detail: "--media must name an absolute local regular-file real-video fixture, not a URL or pipe"}
+	if c.Options.MediaDir != "" {
+		dir, err := c.path(c.Options.MediaDir)
+		if err != nil || !filepath.IsAbs(c.Options.MediaDir) || c.withinRoot(dir) != nil {
+			c.mediaDecode[""] = AutoResult{Detail: "Fixture directory must be an accessible absolute local directory within the root."}
+		} else if entries, err := os.ReadDir(dir); err != nil {
+			c.mediaDecode[""] = AutoResult{Detail: "Fixture directory is unavailable."}
+		} else {
+			for _, entry := range entries {
+				if entry.Type().IsRegular() {
+					paths = append(paths, filepath.Join(c.Options.MediaDir, entry.Name()))
+				}
+			}
+		}
 	}
-	root := c.Root
-	if root == "" {
-		root = "/"
+	seen := map[string]bool{}
+	for _, path := range paths {
+		if seen[path] {
+			continue
+		}
+		seen[path] = true
+		codec := ""
+		result := autoMediaDecodeFixture(c, path, &codec)
+		if codec == "" {
+			c.mediaDecode[""] = result
+		} else if _, exists := c.mediaDecode[codec]; !exists {
+			c.mediaDecode[codec] = result
+		}
 	}
-	fixture := filepath.Join(root, strings.TrimPrefix(filepath.Clean(c.Options.Media), "/"))
+}
+
+func autoMediaDecodeFixture(c *AutoContext, path string, codec *string) AutoResult {
+	if !filepath.IsAbs(path) {
+		return AutoResult{Status: "blocked", Detail: "Media fixture must name an absolute local regular file, not a URL or pipe"}
+	}
+	fixture, err := c.path(path)
+	if err != nil || c.withinRoot(fixture) != nil {
+		return AutoResult{Status: "blocked", Detail: "Media fixture is inaccessible or outside the fixture root"}
+	}
 	info, err := os.Stat(fixture)
 	if err != nil || !info.Mode().IsRegular() {
 		return AutoResult{Status: "blocked", Detail: "Supplied real-video fixture is not an accessible regular file"}
@@ -141,7 +171,7 @@ func autoMediaDecodeFixture(c *AutoContext, codec *string) AutoResult {
 	if encoderErr != nil || moduleErr != nil || len(encoders) != 0 || len(loadedEncoder) != 0 {
 		return AutoResult{Status: "blocked", Detail: "Cannot safely scan V4L2 devices while encoder is exposed/loaded or its state is unreadable; parked encoder must remain unexposed, no module policy changes attempted"}
 	}
-	output, err := c.Command("ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height", "-of", "json", "-i", c.Options.Media)
+	output, err := c.Command("ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height", "-of", "json", "-i", path)
 	if err != nil {
 		return autoMediaCommandProblem("Real-video fixture probe", output, err)
 	}
@@ -157,6 +187,15 @@ func autoMediaDecodeFixture(c *AutoContext, codec *string) AutoResult {
 	}
 	stream := probe.Streams[0]
 	*codec = stream.Codec
+	switch stream.Codec {
+	case "h264", "hevc", "mpeg2video", "vp8", "vp9":
+	default:
+		*codec = ""
+		return AutoResult{Status: "blocked", Detail: "Supplied fixture codec is outside the supported decode catalog"}
+	}
+	if previous, exists := c.mediaDecode[stream.Codec]; exists {
+		return previous
+	}
 	output, err = c.Command("ffmpeg", "-hide_banner", "-decoders")
 	if err != nil {
 		return autoMediaCommandProblem("FFmpeg decoder inventory", output, err)
@@ -165,10 +204,14 @@ func autoMediaDecodeFixture(c *AutoContext, codec *string) AutoResult {
 	if decoder == "" {
 		return AutoResult{Status: "blocked", Detail: "Installed FFmpeg has no explicit V4L2 mem2mem decoder for the supplied fixture codec; no software fallback attempted"}
 	}
-	output, err = c.Command("ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "verbose", "-nostats", "-xerror", "-c:v", decoder, "-i", c.Options.Media,
+	output, err = c.Command("ffmpeg", "-hide_banner", "-nostdin", "-loglevel", "verbose", "-nostats", "-xerror", "-c:v", decoder, "-i", path,
 		"-map", "0:v:0", "-an", "-sn", "-dn", "-t", strconv.Itoa(autoMediaDecodeSeconds), "-frames:v", strconv.Itoa(autoMediaDecodeFrameLimit), "-fps_mode", "passthrough", "-progress", "pipe:1", "-f", "null", "-")
 	if err != nil {
-		return autoMediaCommandProblem("Explicit hardware fixture decode", output, err)
+		result := autoMediaCommandProblem("Explicit hardware fixture decode", output, err)
+		if result.Status == "error" || strings.Contains(strings.ToLower(output), "could not find a valid device") || strings.Contains(strings.ToLower(output), "invalid data found when processing input") {
+			return AutoResult{Status: "fail", Detail: "Explicit hardware fixture decode failed or hardware rejected the codec; no software fallback attempted"}
+		}
+		return result
 	}
 	return autoMediaDecodeEvidence(output, decoder, nodes, stream.Width, stream.Height)
 }

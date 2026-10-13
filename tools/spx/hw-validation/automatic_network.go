@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -18,9 +19,7 @@ func automaticNetworkChecks() []AutoCheck {
 		{ID: "net.wifi.scan", Title: "Bounded Wi-Fi scan completes", Area: "Network", Kind: "functional", Boxes: []string{"N01"}, Run: automaticNetworkScan},
 		{ID: "net.ip.families", Title: "Wi-Fi address and default-route families", Area: "Network", Kind: "inventory", Boxes: []string{"N01"}, Run: automaticNetworkIP},
 		{ID: "net.dns.config", Title: "Configured DNS resolver families", Area: "Network", Kind: "inventory", Boxes: []string{"N01"}, Run: automaticNetworkDNS},
-		{ID: "net.dns.lookup", Title: "Bounded DNS lookup of a deliberate public fixture", Area: "Network", Kind: "functional", Boxes: []string{"N01"}, Run: func(c *AutoContext) AutoResult {
-			return automaticNetworkResult("net.dns.lookup", "blocked", "Public DNS fixture/lookup probe is not implemented or configurable yet; resolver settings do not prove working DNS. No lookup attempted")
-		}},
+		{ID: "net.dns.lookup", Title: "Bounded DNS lookup of a deliberate public fixture", Area: "Network", Kind: "functional", Boxes: []string{"N01"}, Run: automaticNetworkDNSLookup},
 		{ID: "net.wifi.gateway4", Title: "Local IPv4 gateway replies over Wi-Fi", Area: "Network", Kind: "functional", Boxes: []string{"N01"}, Run: func(c *AutoContext) AutoResult { return automaticNetworkGateway(c, 4) }},
 		{ID: "net.wifi.gateway6", Title: "Local IPv6 gateway replies over Wi-Fi", Area: "Network", Kind: "functional", Boxes: []string{"N01"}, Run: func(c *AutoContext) AutoResult { return automaticNetworkGateway(c, 6) }},
 	}
@@ -492,7 +491,93 @@ func automaticNetworkDNS(c *AutoContext) AutoResult {
 	if ipv4+ipv6 == 0 {
 		return automaticNetworkResult(id, "blocked", "no nameserver is configured in resolv.conf; NSS or per-link resolver support is not established")
 	}
-	return automaticNetworkResult(id, "observed", fmt.Sprintf("configured resolver entries: IPv4=%d, IPv6=%d, loopback stubs=%d; working DNS is untested without an approved lookup fixture; no external query was sent", ipv4, ipv6, stub))
+	return automaticNetworkResult(id, "observed", fmt.Sprintf("configured resolver entries: IPv4=%d, IPv6=%d, loopback stubs=%d; configuration inventory only; see net.dns.lookup for functional evidence; this inventory sends no query", ipv4, ipv6, stub))
+}
+
+// Read both kernel route tables without invoking a potentially slow command.
+func automaticNetworkDefaultRoute(c *AutoContext) bool {
+	v4, _ := c.Read("/proc/net/route")
+	for _, line := range strings.Split(v4, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 8 || f[1] != "00000000" || f[7] != "00000000" {
+			continue
+		}
+		flags, err := strconv.ParseUint(f[3], 16, 32)
+		if err == nil && flags&1 != 0 && flags&0x200 == 0 {
+			return true
+		}
+	}
+	v6, _ := c.Read("/proc/net/ipv6_route")
+	for _, line := range strings.Split(v6, "\n") {
+		f := strings.Fields(line)
+		if len(f) != 10 || f[0] != strings.Repeat("0", 32) || f[1] != "00" {
+			continue
+		}
+		flags, err := strconv.ParseUint(f[8], 16, 32)
+		if err == nil && flags&1 != 0 && flags&0x200 == 0 {
+			return true
+		}
+	}
+	return false
+}
+
+var automaticNetworkDNSLabel = regexp.MustCompile(`^[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?$`)
+
+func automaticNetworkDNSLookup(c *AutoContext) AutoResult {
+	const id = "net.dns.lookup"
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	name := c.Options.DNSName
+	if name == "" {
+		name = "example.com"
+	}
+	// Require a hostname, never an IP literal, URL, or single-label search name.
+	valid := len(name) <= 253 && strings.Contains(strings.TrimSuffix(name, "."), ".") && net.ParseIP(strings.TrimSuffix(name, ".")) == nil
+	for _, label := range strings.Split(strings.TrimSuffix(name, "."), ".") {
+		if len(label) == 0 || len(label) > 63 || !automaticNetworkDNSLabel.MatchString(label) {
+			valid = false
+		}
+	}
+	if !valid {
+		return automaticNetworkResult(id, "blocked", "DNS fixture must be a public multi-label hostname")
+	}
+	detail := "DNS fixture=" + name + "; "
+	if c.Options.NoDNSLookup {
+		return automaticNetworkResult(id, "blocked", detail+"lookups disabled by --no-dns-lookup")
+	}
+	if c.Fixture || (c.LookupIP == nil && c.Root != "" && filepath.Clean(c.Root) != "/") {
+		return automaticNetworkResult(id, "blocked", detail+"external lookups disabled for fixture-root runs")
+	}
+	if config := automaticNetworkDNS(c); config.Status != "observed" {
+		return automaticNetworkResult(id, "blocked", detail+"no usable resolver configured; "+config.Detail)
+	}
+	if !automaticNetworkDefaultRoute(c) {
+		return automaticNetworkResult(id, "blocked", detail+"no usable default route exposed; no lookup attempted")
+	}
+	lookup := c.LookupIP
+	if lookup == nil {
+		lookup = net.DefaultResolver.LookupIP
+	}
+	// A trailing dot prevents private search domains from changing the fixture.
+	addresses, err := lookup(ctx, "ip", strings.TrimSuffix(name, ".")+".")
+	v4, v6 := 0, 0
+	for _, ip := range addresses {
+		if ip.To4() != nil {
+			v4++
+		} else if ip.To16() != nil {
+			v6++
+		}
+	}
+	if v4+v6 > 0 {
+		return automaticNetworkResult(id, "pass", detail+fmt.Sprintf("system resolver answers: A=%d AAAA=%d; total deadline 3s; no network state changed", v4, v6))
+	}
+	reason := "no A or AAAA answers"
+	if ctx.Err() != nil {
+		reason = "lookup timed out"
+	} else if err != nil {
+		reason = "system resolver lookup failed (including NXDOMAIN or timeout)"
+	}
+	return automaticNetworkResult(id, "fail", detail+reason+" with resolver configured and default route present; addresses and raw errors omitted")
 }
 
 var automaticNetworkPingCounts = regexp.MustCompile(`([0-9]+) packets transmitted,\s*([0-9]+)(?: packets)? received`)

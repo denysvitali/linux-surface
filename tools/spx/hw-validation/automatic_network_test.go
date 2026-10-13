@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func automaticNetworkFixture(t *testing.T) *AutoContext {
@@ -321,6 +324,97 @@ func TestAutomaticNetworkArrayCounts(t *testing.T) {
 		count, err := automaticNetworkCount(tc.output, tc.signature)
 		if (err == nil) != tc.valid || count != tc.count {
 			t.Fatalf("array count %q => %d %v", tc.output, count, err)
+		}
+	}
+}
+
+func TestAutomaticNetworkDNSLookup(t *testing.T) {
+	for _, tc := range []struct {
+		name, status string
+		ips          []net.IP
+		err          error
+	}{
+		{"IPv4", "pass", []net.IP{net.ParseIP("192.0.2.1")}, nil},
+		{"IPv6", "pass", []net.IP{net.ParseIP("2001:db8::1")}, nil},
+		{"dual", "pass", []net.IP{net.ParseIP("192.0.2.1"), net.ParseIP("2001:db8::1")}, nil},
+		{"empty", "fail", nil, nil},
+		{"NXDOMAIN", "fail", nil, &net.DNSError{IsNotFound: true, Name: "private.example"}},
+		{"timeout", "fail", nil, context.DeadlineExceeded},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := automaticNetworkFixture(t)
+			if err := os.MkdirAll(filepath.Join(c.Root, "proc/net"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(c.Root, "proc/net/route"), []byte("wlan0 00000000 010200C0 0003 0 0 100 00000000\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			c.Options.DNSName = "example.org"
+			calls := 0
+			c.LookupIP = func(ctx context.Context, network, name string) ([]net.IP, error) {
+				calls++
+				deadline, ok := ctx.Deadline()
+				if !ok || time.Until(deadline) > 3*time.Second || time.Until(deadline) <= 0 || network != "ip" || name != "example.org." {
+					t.Fatal("missing bounded public fixture lookup")
+				}
+				return tc.ips, tc.err
+			}
+			r := automaticNetworkDNSLookup(c)
+			if r.Status != tc.status || calls != 1 || !strings.Contains(r.Detail, "example.org") {
+				t.Fatal(r)
+			}
+			for _, private := range []string{"192.0.2.1", "2001:db8::1", "private.example"} {
+				if strings.Contains(r.Detail, private) {
+					t.Fatal(r)
+				}
+			}
+			if tc.name == "dual" && !strings.Contains(r.Detail, "A=1 AAAA=1") {
+				t.Fatal(r)
+			}
+		})
+	}
+}
+
+func TestAutomaticNetworkDNSBlockedWithoutLookup(t *testing.T) {
+	for _, mode := range []string{"disabled", "fixture", "root", "no route", "no resolver", "invalid name"} {
+		t.Run(mode, func(t *testing.T) {
+			c := automaticNetworkFixture(t)
+			c.LookupIP = func(context.Context, string, string) ([]net.IP, error) { t.Fatal("unexpected lookup"); return nil, nil }
+			switch mode {
+			case "disabled":
+				c.Options.NoDNSLookup = true
+			case "fixture":
+				c.Fixture = true
+				c.Root = "/"
+			case "root":
+				c.LookupIP = nil
+			case "no resolver":
+				if err := os.WriteFile(filepath.Join(c.Root, "etc/resolv.conf"), nil, 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "invalid name":
+				c.Options.DNSName = "192.0.2.1"
+			}
+			if r := automaticNetworkDNSLookup(c); r.Status != "blocked" {
+				t.Fatal(r)
+			}
+		})
+	}
+}
+
+func TestAutomaticNetworkIPv6DefaultRoute(t *testing.T) {
+	c := automaticNetworkFixture(t)
+	if err := os.MkdirAll(filepath.Join(c.Root, "proc/net"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(c.Root, "proc/net/ipv6_route")
+	for _, flags := range []string{"00000001", "00200200", "00000000"} {
+		row := strings.Repeat("0", 32) + " 00 " + strings.Repeat("0", 32) + " 00 " + strings.Repeat("0", 32) + " 00000064 00000000 00000000 " + flags + " wlan0\n"
+		if err := os.WriteFile(path, []byte(row), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if automaticNetworkDefaultRoute(c) != (flags == "00000001") {
+			t.Fatalf("flags %s", flags)
 		}
 	}
 }

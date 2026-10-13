@@ -81,7 +81,7 @@ func TestAutomaticMediaDecodeUsesExplicitHardwareAndDiscard(t *testing.T) {
 		return "", nil
 	})
 	c.Options.Media = "/fixtures/real.mp4"
-	result := autoMediaDecode(c)
+	result := autoMediaDecode(c, "h264")
 	if result.Status != "pass" {
 		t.Fatalf("decode: %+v", result)
 	}
@@ -137,15 +137,15 @@ func TestAutomaticMediaCodecRequirementsShareOnlyMatchingEvidence(t *testing.T) 
 
 func TestAutomaticMediaDecodeBlockedPrerequisites(t *testing.T) {
 	c := autoMediaTestContext(t, nil, func(args ...string) (string, error) { t.Fatalf("unexpected command %q", args); return "", nil })
-	if result := autoMediaDecode(c); result.Status != "blocked" {
+	if result := autoMediaDecode(c, "h264"); result.Status != "blocked" {
 		t.Fatal(result)
 	}
 	c.Options.Media = "https://private.invalid/clip.mp4"
-	if result := autoMediaDecode(c); result.Status != "blocked" {
+	if result := autoMediaDecode(c, "h264"); result.Status != "blocked" {
 		t.Fatal(result)
 	}
 	c.Options.Media = "/fixtures/missing.mp4"
-	if result := autoMediaDecode(c); result.Status != "blocked" {
+	if result := autoMediaDecode(c, "h264"); result.Status != "blocked" {
 		t.Fatal(result)
 	}
 	c = autoMediaTestContext(t, map[string]string{
@@ -156,7 +156,7 @@ func TestAutomaticMediaDecodeBlockedPrerequisites(t *testing.T) {
 		return "", nil
 	})
 	c.Options.Media = "/fixtures/real.mp4"
-	if result := autoMediaDecode(c); result.Status != "blocked" || !strings.Contains(result.Detail, "encoder") {
+	if result := autoMediaDecode(c, "h264"); result.Status != "blocked" || !strings.Contains(result.Detail, "encoder") {
 		t.Fatal(result)
 	}
 	c = autoMediaTestContext(t, map[string]string{
@@ -167,7 +167,7 @@ func TestAutomaticMediaDecodeBlockedPrerequisites(t *testing.T) {
 		return "", nil
 	})
 	c.Options.Media = "/fixtures/real.mp4"
-	if result := autoMediaDecode(c); result.Status != "blocked" {
+	if result := autoMediaDecode(c, "h264"); result.Status != "blocked" {
 		t.Fatal(result)
 	}
 }
@@ -373,4 +373,160 @@ func TestAutomaticMediaCatalogNeverAttemptsEncoder(t *testing.T) {
 			t.Fatal(check)
 		}
 	}
+}
+
+func TestAutomaticMediaDirectoryDecodesEachCodecOnce(t *testing.T) {
+	files := map[string]string{"/sys/class/video4linux/video32/name": "qcom-venus-decoder"}
+	codecs := []string{"h264", "hevc", "mpeg2video", "vp8", "vp9"}
+	for _, codec := range codecs {
+		files["/fixtures/"+codec] = "fake media"
+	}
+	files["/fixtures/duplicate"] = "fake h264"
+	attempts, probes := map[string]int{}, map[string]int{}
+	c := autoMediaTestContext(t, files, func(args ...string) (string, error) {
+		if args[0] == "ffprobe" {
+			path := args[len(args)-1]
+			probes[path]++
+			codec := filepath.Base(path)
+			if codec == "duplicate" {
+				codec = "h264"
+			}
+			return fmt.Sprintf(`{"streams":[{"codec_name":%q,"width":1920,"height":1080}]}`, codec), nil
+		}
+		if strings.Join(args, " ") == "ffmpeg -hide_banner -decoders" {
+			return " V..... h264_v4l2m2m\n V..... hevc_v4l2m2m\n V..... mpeg2_v4l2m2m wrapper (codec mpeg2video)\n V..... vp8_v4l2m2m\n V..... vp9_v4l2m2m\n", nil
+		}
+		joined := strings.Join(args, " ")
+		for _, required := range []string{"-t 2", "-frames:v 30", "-xerror", "-f null -", "-an -sn -dn"} {
+			if !strings.Contains(joined, required) {
+				t.Fatalf("unbounded command: %s", joined)
+			}
+		}
+		for i, arg := range args {
+			if arg == "-c:v" {
+				decoder := args[i+1]
+				attempts[decoder]++
+				return strings.ReplaceAll(autoMediaTestDecodeLog, "h264_v4l2m2m", decoder), nil
+			}
+		}
+		t.Fatalf("unexpected command %q", args)
+		return "", nil
+	})
+	c.Options.Media = "/fixtures/h264"
+	c.Options.MediaDir = "/fixtures"
+	for repeat := 0; repeat < 2; repeat++ {
+		for _, codec := range codecs {
+			if r := autoMediaDecode(c, codec); r.Status != "pass" {
+				t.Fatalf("%s: %+v", codec, r)
+			}
+		}
+	}
+	if len(attempts) != 5 || len(probes) != 6 {
+		t.Fatalf("attempts=%v probes=%v", attempts, probes)
+	}
+	for _, counts := range []map[string]int{attempts, probes} {
+		for key, count := range counts {
+			if count != 1 {
+				t.Fatalf("repeated %s: %d", key, count)
+			}
+		}
+	}
+}
+
+func TestAutomaticMediaDirectoryFailures(t *testing.T) {
+	for _, tc := range []struct{ name, output, status string }{
+		{"rejected", "Could not find a valid device", "fail"},
+		{"unknown failure", "decoder failed", "fail"},
+		{"timeout", "deadline exceeded", "fail"},
+		{"missing tool", "executable file not found", "blocked"},
+		{"permission", "permission denied", "blocked"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			attempts := 0
+			c := autoMediaTestContext(t, map[string]string{
+				"/sys/class/video4linux/video32/name": "qcom-venus-decoder",
+				"/fixtures/a":                         "fake media", "/fixtures/b": "duplicate codec",
+			}, func(args ...string) (string, error) {
+				if args[0] == "ffprobe" {
+					return `{"streams":[{"codec_name":"vp9","width":1920,"height":1080}]}`, nil
+				}
+				if args[len(args)-1] == "-decoders" {
+					return " V..... vp9_v4l2m2m\n", nil
+				}
+				attempts++
+				return tc.output, errors.New("exit status 1")
+			})
+			c.Options.MediaDir = "/fixtures"
+			if r := autoMediaDecode(c, "vp9"); r.Status != tc.status || attempts != 1 {
+				t.Fatalf("result=%+v attempts=%d", r, attempts)
+			}
+			if r := autoMediaDecode(c, "hevc"); r.Status != "blocked" || !strings.Contains(r.Detail, "hevc fixture") {
+				t.Fatal(r)
+			}
+		})
+	}
+}
+
+func TestAutomaticMediaDirectoryPrerequisites(t *testing.T) {
+	for _, mode := range []string{"missing directory", "relative directory", "empty directory", "bad probe", "missing ffprobe", "missing decoder", "unsupported codec", "escaping symlink"} {
+		t.Run(mode, func(t *testing.T) {
+			files := map[string]string{"/sys/class/video4linux/video32/name": "qcom-venus-decoder"}
+			if mode != "missing directory" && mode != "relative directory" && mode != "empty directory" {
+				files["/fixtures/video"] = "fake media"
+			}
+			c := autoMediaTestContext(t, files, func(args ...string) (string, error) {
+				if args[0] == "ffprobe" {
+					switch mode {
+					case "missing ffprobe":
+						return "", errors.New("executable file not found")
+					case "bad probe":
+						return "not JSON", nil
+					case "unsupported codec":
+						return `{"streams":[{"codec_name":"av1","width":10,"height":10}]}`, nil
+					case "missing decoder":
+						return `{"streams":[{"codec_name":"hevc","width":10,"height":10}]}`, nil
+					}
+				}
+				if mode == "missing decoder" && args[len(args)-1] == "-decoders" {
+					return " V..... hevc software decoder\n", nil
+				}
+				t.Fatalf("unexpected command %q", args)
+				return "", nil
+			})
+			c.Options.MediaDir = "/fixtures"
+			switch mode {
+			case "relative directory":
+				c.Options.MediaDir = "fixtures"
+			case "empty directory":
+				if err := os.MkdirAll(filepath.Join(c.Root, "fixtures"), 0700); err != nil {
+					t.Fatal(err)
+				}
+			case "escaping symlink":
+				if err := os.Symlink(t.TempDir(), filepath.Join(c.Root, "escape")); err != nil {
+					t.Fatal(err)
+				}
+				c.Options.MediaDir = "/escape"
+			}
+			if r := autoMediaDecode(c, "hevc"); r.Status != "blocked" {
+				t.Fatal(r)
+			}
+		})
+	}
+}
+
+func TestAutomaticMediaMPEG2StaysBlockedWithFixture(t *testing.T) {
+	c := autoMediaTestContext(t, map[string]string{"/fixtures/mpeg2video": "fake media"}, func(args ...string) (string, error) {
+		t.Fatalf("unexpected command %q", args)
+		return "", nil
+	})
+	c.Options.MediaDir = "/fixtures"
+	for _, check := range automaticMediaChecks() {
+		if check.ID == "media.decode.mpeg2video" {
+			if r := check.Run(c); r.Status != "blocked" || !strings.Contains(r.Detail, "Known unsafe") {
+				t.Fatalf("%+v", r)
+			}
+			return
+		}
+	}
+	t.Fatal("missing MPEG-2 row")
 }
