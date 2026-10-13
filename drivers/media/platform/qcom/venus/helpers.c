@@ -5,6 +5,7 @@
  */
 #include <linux/idr.h>
 #include <linux/list.h>
+#include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/slab.h>
 #include <linux/kernel.h>
@@ -27,6 +28,12 @@ enum dpb_buf_owner {
 	DRIVER,
 	FIRMWARE,
 };
+
+/* Iris1 firmware requires CODECCONFIG for standalone H264 headers. */
+static bool spx_h264_codec_config = true;
+module_param(spx_h264_codec_config, bool, 0644);
+MODULE_PARM_DESC(spx_h264_codec_config,
+		"Mark standalone Iris1 H264 headers as codec configuration");
 
 struct intbuf {
 	struct list_head list;
@@ -513,6 +520,43 @@ void venus_helper_get_ts_metadata(struct venus_inst *inst, u64 timestamp_us,
 }
 EXPORT_SYMBOL_GPL(venus_helper_get_ts_metadata);
 
+static bool h264_config_only(struct vb2_buffer *vb)
+{
+	const u8 *data;
+	size_t len = vb2_get_plane_payload(vb, 0);
+	size_t offset = vb->planes[0].data_offset;
+	size_t i;
+	bool found = false;
+
+	/* Chromium uses MMAP; do not map imported or protected buffers here. */
+	if (vb->memory != VB2_MEMORY_MMAP || len > vb2_plane_size(vb, 0) ||
+	    offset >= len)
+		return false;
+
+	data = vb2_plane_vaddr(vb, 0);
+	if (!data)
+		return false;
+	data += offset;
+	len -= offset;
+
+	/* Annex B escapes start-code patterns inside NAL payloads. */
+	for (i = 0; i + 3 < len; i++) {
+		unsigned int type;
+
+		if (data[i] || data[i + 1] || data[i + 2] != 1)
+			continue;
+		type = data[i + 3] & 0x1f;
+		/* SEI, SPS, PPS, AUD, filler and SPS extension produce no picture. */
+		if (type != 6 && type != 7 && type != 8 && type != 9 &&
+		    type != 12 && type != 13)
+			return false;
+		found = true;
+		i += 3;
+	}
+
+	return found;
+}
+
 static int
 session_process_buf(struct venus_inst *inst, struct vb2_v4l2_buffer *vbuf)
 {
@@ -537,7 +581,16 @@ session_process_buf(struct venus_inst *inst, struct vb2_v4l2_buffer *vbuf)
 		if (vbuf->flags & V4L2_BUF_FLAG_LAST || !fdata.filled_len)
 			fdata.flags |= HFI_BUFFERFLAG_EOS;
 
-		if (inst->session_type == VIDC_SESSION_TYPE_DEC)
+		if (spx_h264_codec_config && IS_IRIS1(inst->core) &&
+		    inst->session_type == VIDC_SESSION_TYPE_DEC &&
+		    inst->hfi_codec == HFI_VIDEO_CODEC_H264 &&
+		    !(fdata.flags & HFI_BUFFERFLAG_EOS) &&
+		    h264_config_only(vb))
+			fdata.flags |= HFI_BUFFERFLAG_CODECCONFIG;
+
+		/* Configuration input returns without a corresponding picture. */
+		if (inst->session_type == VIDC_SESSION_TYPE_DEC &&
+		    !(fdata.flags & HFI_BUFFERFLAG_CODECCONFIG))
 			put_ts_metadata(inst, vbuf);
 
 		venus_pm_load_scale(inst);

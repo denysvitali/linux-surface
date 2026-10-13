@@ -1,4 +1,21 @@
-# Chromium H.264 access-unit reassembly candidate (WIP)
+# Chromium hardware decoding on Venus
+
+2026-10-13: installed Chromium152 now decodes H2641080p with a Venus-side
+correction, without rebuilding Chromium. Native SQ2 firmware requires
+CODECCONFIG for header-only SPS/PPS/SEI/AUD/filler/SPS-extension input;
+it rejects that flag with slices.
+The driver recognizes those standalone buffers and keeps whole pictures
+unflagged. The identical split fixture returns60 frames; installed Chromium
+counts3600 frames over120 seconds (33 dropped) and reopens successfully.
+An AUD-containing split fixture also returns60 frames after the correction,
+versus zero before it. Normal driver defaults, installed modules and the
+persistent Chromium decoder gate are verified. The encoder remains blocked;
+D03 remains open for full codec coverage. See
+`tools/spx/boot-diagnostics/RESULT-20261013-chromium-venus-fixed.md`.
+The next ordinary Chromium launch reads `~/.config/chromium-flags.conf` with
+`--enable-features=AcceleratedVideoDecoder`; existing browser processes must
+exit before relaunching to pick up the flag.
+The browser patches below are retained as a stopped, unvalidated fallback.
 
 Applies to Chromium152.0.7977.64, revision
 506c834ecceaa943c5f41e6cfe7f68acb5c45346.
@@ -8,7 +25,8 @@ contract expects one access unit per OUTPUT buffer. Chromium's current
 reassembler emits standalone SPS/PPS/SEI buffers. This candidate retains
 those prefixes with the next picture and preserves picture lookahead.
 
-The patch remains uncompiled and unvalidated in Chromium. A 2026-10-13
+The patched decoder/test objects compile, but parser execution and a linked
+patched browser remain unvalidated. A 2026-10-13
 hardware comparison using v4l2-ctl and identical H.264 bytes produced 60
 decoded frames with whole access units, zero with split SPS/PPS/SEI buffers,
 then 60 again with whole units. The split case reproduced the late
@@ -22,15 +40,15 @@ slice/no-NAL handling to fail; that stricter behavior needs review in the
 Chromium build environment. No firmware flags or hardware constants changed.
 
 Build using the Arch Linux ARM Chromium152 package recipe with native V4L2,
-applying this patch after source preparation. A private native build is now
-running in `/var/tmp/spx-chromium-build`: exact152 source/recipe, signed native
-clang23/GN/Rust/Node tools, `use_thin_lto=false`, `symbol_level=0`, four jobs
-(increased from two after observing 11 GiB available memory).
+applying this patch after source preparation. The private native fallback
+build is stopped in `/var/tmp/spx-chromium-build`: exact152 source/recipe,
+signed native clang23/GN/Rust/Node tools, `use_thin_lto=false`, `symbol_level=0`.
+Its last build used six jobs; incremental outputs are retained.
 Obsolete clean worktree cleanup made local storage available; output/link
 resource needs remain unmeasured. Build log:
 `/var/tmp/spx-chromium-build-20261013.log`. Do not install this candidate or
 claim playback works until compilation, parser tests and real hardware browser
-playback/reopen succeed. Installed Chromium and persistent flags are unchanged.
+playback/reopen succeed. The fallback has not been installed.
 
 Retained source/report: /var/tmp/spx-chromium-au-fixed-20261012.{cc,md}.
 Current result: tools/spx/boot-diagnostics/RESULT-20261012-chromium-venus-events.md.
@@ -42,8 +60,8 @@ Apply `0002-h264-reassembler-regression-tests-WIP.patch` after `0001`.
 It exposes the existing reassembler declaration in a header and adds eight
 GoogleTests using actual H264Parser/DecoderBuffer and software-generated
 multi-slice fixtures. It does not change decoder behavior. Tests assume
-whole-NAL input chunks, matching the existing contract. Native compilation
-and execution are pending:
+whole-NAL input chunks, matching the existing contract. Decoder and parser-test
+objects compiled; test execution and the full browser link are pending:
 
 ```
 ninja -j2 -C out/Release media_unittests
@@ -56,7 +74,7 @@ The lite archive's missing test-font bundle was fetched from the exact `DEPS`
 object and verified. When resuming/regenerating the system-toolchain build,
 keep `CC=clang CXX=clang++ AR=ar NM=nm RUSTC_BOOTSTRAP=1` exported: unbundle
 GN reads those environment variables. An invocation without them failed before
-test compilation; the corrected native build is now running.
+test compilation; the corrected native build is stopped.
 
 ## Reproducible Arch Linux ARM package (WIP)
 
