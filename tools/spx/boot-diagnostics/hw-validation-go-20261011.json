@@ -1,0 +1,822 @@
+{
+  "meta": {
+    "kernel": "7.3.0-rc2-spx-mainline-20261004bg+",
+    "boot_id": "298cf388-134f-4db3-a218-413f5af213d3",
+    "date": "2026-10-11T21:19:31+02:00",
+    "repo": "/home/dvitali/Documents/git/linux-surface-next",
+    "checklist": "/home/dvitali/Documents/git/linux-surface-next/PORT-CHECKLIST.md"
+  },
+  "closed": 3,
+  "total": 47,
+  "boxes": [
+    {
+      "id": "B01",
+      "closed": false,
+      "acceptance": "Repeatable startup/shutdown. At least five cold boots and ten warm reboots on the final candidate, on battery and external power, with clean boot, power-off/restart and no manual repair, unexplained reset or regression.",
+      "probes": []
+    },
+    {
+      "id": "B02",
+      "closed": true,
+      "acceptance": "Storage integrity. Verify read/write/fsync and checksum readback using disposable files; sustained I/O and post-resume I/O show no NVMe, IOMMU, encryption or filesystem errors. Never use destructive raw-device tests.",
+      "probes": [
+        "storage.nvme"
+      ]
+    },
+    {
+      "id": "B03",
+      "closed": true,
+      "acceptance": "CPU and memory operation. All expected cores/memory available; bounded concurrent CPU/memory load, frequency transitions and idle recovery work without faults, hangs or unexplained throttling.",
+      "probes": [
+        "cpu.cores",
+        "cpu.freq",
+        "mem.total"
+      ]
+    },
+    {
+      "id": "B04",
+      "closed": false,
+      "acceptance": "Firmware services. ADSP/CDSP/modem and their required services remain stable during combined use and resume. Review the diagnostic QRTR rollback and pinned/debug paths; document or remove remaining workarounds.",
+      "probes": [
+        "fw.remoteproc",
+        "fw.services",
+        "diag.cmdline"
+      ]
+    },
+    {
+      "id": "B05",
+      "closed": false,
+      "acceptance": "RTC/time. Verify clock retention across power-off and timekeeping across suspend without relying on network time to conceal a broken RTC.",
+      "probes": [
+        "rtc.names"
+      ]
+    },
+    {
+      "id": "B06",
+      "closed": false,
+      "acceptance": "Security hardware/firmware inventory. Establish the actual TPM/ firmware security interfaces and Secure Boot support available on this unit; validate applicable functions with a documented boot/signing path. Lack of a Linux node is not proof that the hardware is absent.",
+      "probes": [
+        "tpm.present",
+        "tpm.secureboot"
+      ]
+    },
+    {
+      "id": "B07",
+      "closed": false,
+      "acceptance": "Additional accelerators. Inventory fitted DSP/NPU/other compute capabilities and available interfaces; validate a real supported workload or document the specific missing support. A thermal-zone name is not a working NPU.",
+      "probes": [
+        "accel.cdsp",
+        "kernel.config"
+      ]
+    },
+    {
+      "id": "D01",
+      "closed": false,
+      "acceptance": "Internal panel. Native resolution/refresh, correct image and orientation, no flicker/corruption; visually verify brightness over its usable range, blank/unblank and display return after idle/suspend.",
+      "probes": [
+        "disp.drm",
+        "disp.backlight"
+      ]
+    },
+    {
+      "id": "D02",
+      "closed": true,
+      "acceptance": "GPU acceleration. Confirm hardware rendering in desktop and real 3D workloads; at least30minutes of rendering/compositing plus idle transitions, without GPU resets, hangs, faults or silent software fallback. Record APIs tested.",
+      "probes": [
+        "disp.drm",
+        "gpu.devfreq"
+      ]
+    },
+    {
+      "id": "D03",
+      "closed": false,
+      "acceptance": "Video acceleration. Inventory the device's supported encode/decode blocks and formats; exercise supported hardware paths with real media, checking output, acceleration and sustained playback. Software playback is not HW decode.",
+      "probes": [
+        "video.names",
+        "video.decoder",
+        "video.encoder",
+        "kernel.config"
+      ]
+    },
+    {
+      "id": "I01",
+      "closed": false,
+      "acceptance": "Reliable touch startup. Eliminate unexplained startup timeouts and invalid headers, or explicitly resolve their cause and acceptable recovery; repeat B01 with no missing touch or manual restarts.",
+      "probes": [
+        "in.names"
+      ]
+    },
+    {
+      "id": "I02",
+      "closed": false,
+      "acceptance": "Touchscreen. Real taps, drags, edge coverage and multi-touch gestures produce correct desktop actions, without stuck/missing contacts; repeat after display blanking and suspend. Do not mistake synthetic events for physical input.",
+      "probes": [
+        "in.names"
+      ]
+    },
+    {
+      "id": "I03",
+      "closed": false,
+      "acceptance": "Pen. Verify position, pressure, tilt where supported, hover, buttons/eraser and palm rejection with the actual compatible pen, including post-resume behavior. Map advertised capabilities to those actually fitted.",
+      "probes": [
+        "in.names"
+      ]
+    },
+    {
+      "id": "I04",
+      "closed": false,
+      "acceptance": "Keyboard. Typing, modifiers, Fn/media keys, indicators and backlight where fitted; detach/reattach and resume recover without stuck keys.",
+      "probes": [
+        "in.names",
+        "led.names"
+      ]
+    },
+    {
+      "id": "I05",
+      "closed": false,
+      "acceptance": "Touchpad. Pointer, click, scrolling, multi-finger gestures and palm rejection work across detach/reattach and resume.",
+      "probes": [
+        "in.names"
+      ]
+    },
+    {
+      "id": "I06",
+      "closed": false,
+      "acceptance": "Buttons and posture switches. Power/volume buttons, cover/lid/tablet state and appropriate desktop policy respond to real changes without duplicate events or lost wakeups. Establish which switches actually exist.",
+      "probes": [
+        "in.names"
+      ]
+    },
+    {
+      "id": "I07",
+      "closed": false,
+      "acceptance": "Pen accessory features. If this keyboard/pen supports charging, accessory battery reporting or wireless buttons, verify those with the accessory; otherwise record the identified accessory model and applicability.",
+      "probes": [
+        "in.names"
+      ]
+    },
+    {
+      "id": "A01",
+      "closed": false,
+      "acceptance": "Both physical speakers. Correct independent left/right acoustic output, channel mapping, balance, useful volume range and mute; no static, clipping, excessive pops or persistent bus errors. Use bounded appropriate signals and measured/listened output, respecting recorded sound preferences.",
+      "probes": [
+        "aud.card",
+        "aud.amps",
+        "aud.feeder"
+      ]
+    },
+    {
+      "id": "A02",
+      "closed": false,
+      "acceptance": "Internal microphones. Real known stimulus/voice recorded on each fitted microphone, correct routing/channel assignment and usable gain/noise; repeated capture/open/close without leaks or hangs. Noise-floor samples alone do not establish full microphone quality. Do not retain incidental private audio.",
+      "probes": [
+        "aud.card"
+      ]
+    },
+    {
+      "id": "A03",
+      "closed": false,
+      "acceptance": "Audio lifecycle/userspace. Normal PipeWire/ALSA/UCM playback and capture, simultaneous use, volume/mute controls and repeated open/close work after reboot/resume without manual mixer setup or ad-hoc repair. Resolve or explicitly validate the parked-session workaround and its resource lifetime.",
+      "probes": [
+        "aud.card",
+        "aud.amps",
+        "aud.desktop",
+        "aud.feeder"
+      ]
+    },
+    {
+      "id": "A04",
+      "closed": false,
+      "acceptance": "External audio. Test applicable USB-C audio/dock and Bluetooth output/input devices, routing, hotplug and reconnect. The logical codec \"Headset Jack\" node does not establish a physical analog jack on this device.",
+      "probes": [
+        "aud.card",
+        "aud.desktop",
+        "net.bt",
+        "usb.devices"
+      ]
+    },
+    {
+      "id": "N01",
+      "closed": false,
+      "acceptance": "Wi-Fi. Association/authentication on available supported bands, DNS and IPv4/IPv6 connectivity, sustained bidirectional transfer and reconnect after signal loss, radio toggle and suspend. Resolve overlapping supplicant ownership; verify relevant networking configuration, including the recorded IPv6 netfilter gap, without changing firewall policy merely to get a pass.",
+      "probes": [
+        "net.interfaces"
+      ]
+    },
+    {
+      "id": "N02",
+      "closed": false,
+      "acceptance": "Bluetooth. Real pairing, reconnect and peripheral use (HID and audio as available), radio toggle and resume; Wi-Fi coexistence under load. Preserve the active remote connection while planning radio tests.",
+      "probes": [
+        "net.bt"
+      ]
+    },
+    {
+      "id": "N03",
+      "closed": false,
+      "acceptance": "Cellular control/data. Stable modem startup and discovery, correct SIM/eSIM applicability, network registration and actual bidirectional data with service; disconnect/reconnect, radio control and resume. Resolve mode and IPA/RMNET/WWAN integration before declaring connectivity. An unavailable SIM or subscription remains a test dependency, not a pass or a driver-failure verdict.",
+      "probes": [
+        "net.interfaces",
+        "net.wwan",
+        "kernel.config"
+      ]
+    },
+    {
+      "id": "N04",
+      "closed": false,
+      "acceptance": "GNSS/location. Establish fitted capability and its modem/interface path; if applicable obtain a real fix with plausible time/location and reacquire. A missing `/sys/class/gnss` entry does not alone decide support.",
+      "probes": [
+        "net.gnss"
+      ]
+    },
+    {
+      "id": "U01",
+      "closed": false,
+      "acceptance": "USB data on each physical port. Test both USB-C ports and plug orientations with actual USB2/USB3 devices, checksum-verified transfers and repeated hotplug/resume; verify negotiated speeds and no controller/IOMMU faults.",
+      "probes": [
+        "usb.devices"
+      ]
+    },
+    {
+      "id": "U02",
+      "closed": false,
+      "acceptance": "USB-C roles and power delivery. Correct orientation/role detection, charger negotiation and attach/detach on applicable ports with known adapters; no brownouts or stuck roles. Controller enumeration is insufficient.",
+      "probes": [
+        "usb.typec",
+        "usb.roles"
+      ]
+    },
+    {
+      "id": "U03",
+      "closed": false,
+      "acceptance": "External DisplayPort. Actual monitor output through each supported port/dock path, intended mode, hotplug, extend/mirror and suspend recovery. Resolve Type-C/alt-mode/HPD integration. Never live-unbind/rebind MSM components.",
+      "probes": [
+        "disp.drm",
+        "usb.typec",
+        "kernel.config"
+      ]
+    },
+    {
+      "id": "U04",
+      "closed": false,
+      "acceptance": "Dock and Surface Connect. Inventory actual Surface Connect/dock capabilities; validate supported charging, USB, Ethernet, display and audio concurrently with the relevant accessories. Identify USB vs Thunderbolt mode correctly; a dock's product name does not prove Thunderbolt support.",
+      "probes": [
+        "net.interfaces",
+        "usb.devices"
+      ]
+    },
+    {
+      "id": "C01",
+      "closed": false,
+      "acceptance": "Proper camera integration. Resolve real regulator ownership/power sequencing and resource/binding issues; build and validate the actual enabled candidate. Do not deploy placeholder supplies or guessed RPMh rail votes.",
+      "probes": [
+        "video.names",
+        "camera.subdevices",
+        "media.nodes",
+        "kernel.config"
+      ]
+    },
+    {
+      "id": "C02",
+      "closed": false,
+      "acceptance": "Front camera. Capture real scenes with correct colors/orientation, exposure and usable frame rate/resolution; repeated stream start/stop and resume.",
+      "probes": [
+        "video.names",
+        "camera.subdevices",
+        "media.nodes"
+      ]
+    },
+    {
+      "id": "C03",
+      "closed": false,
+      "acceptance": "Rear camera. Real frames, supported focus/exposure and resolutions, correct orientation/colors; repeated stream start/stop and resume.",
+      "probes": [
+        "video.names",
+        "camera.subdevices",
+        "media.nodes"
+      ]
+    },
+    {
+      "id": "C04",
+      "closed": false,
+      "acceptance": "IR camera. Real IR frames and any fitted illumination/safety/control path, repeated use and resume. Keep camera operation separate from any optional face-authentication integration; a raw frame is not biometric validation.",
+      "probes": [
+        "video.names",
+        "camera.subdevices",
+        "media.nodes"
+      ]
+    },
+    {
+      "id": "C05",
+      "closed": false,
+      "acceptance": "Normal camera applications. Processed streams in normal userspace, camera selection, concurrent-use/resource behavior and privacy/activity controls where fitted. Validate actual scene output, not only sensor test patterns.",
+      "probes": [
+        "video.names",
+        "camera.subdevices",
+        "media.nodes",
+        "led.names"
+      ]
+    },
+    {
+      "id": "S01",
+      "closed": false,
+      "acceptance": "Light/proximity. Correct the confirmed TCS3430 ALS binding and verify readings under cover/uncover stimulus and intended desktop brightness behavior. TCS3430 has XYZ/IR light channels, not APDS proximity; do not treat the former driver's proximity zero as evidence of a fitted proximity sensor.",
+      "probes": [
+        "sens.iio",
+        "sens.als",
+        "sens.desktop"
+      ]
+    },
+    {
+      "id": "S02",
+      "closed": false,
+      "acceptance": "Motion/orientation. Inventory actual accelerometer/gyro/magnetometer or sensor-hub interfaces; validate axes, orientation changes and auto-rotation, including resume. PMIC ADCs are not evidence of motion-sensor support.",
+      "probes": [
+        "sens.iio",
+        "sens.desktop"
+      ]
+    },
+    {
+      "id": "P01",
+      "closed": false,
+      "acceptance": "Battery and charging. Plausible voltage/current/capacity/status, observed discharge and charging, AC transitions, charge limits where supported and low-battery behavior. Test applicable USB-C and Surface Connect chargers; distinguish policy/threshold behavior from a driver fault.",
+      "probes": []
+    },
+    {
+      "id": "P02",
+      "closed": false,
+      "acceptance": "Idle/runtime power. Measure idle and active consumption, CPU/GPU frequency scaling, runtime-PM behavior and battery endurance against a recorded reference under comparable conditions. Remove/justify diagnostic power pins, clock overrides and performance-governor defaults before daily-use acceptance.",
+      "probes": [
+        "cpu.freq",
+        "gpu.devfreq",
+        "pwr.idle",
+        "diag.cmdline"
+      ]
+    },
+    {
+      "id": "P03",
+      "closed": false,
+      "acceptance": "Suspend/resume and wake. At least ten controlled s2idle cycles, including a30-minute sleep on battery, with measured drain and intended wake sources. Display, input, network, audio, cameras and attached devices recover; no kernel hang/reset or repeated manual intervention.",
+      "probes": [
+        "pwr.states",
+        "pwr.sleep_units"
+      ]
+    },
+    {
+      "id": "P04",
+      "closed": false,
+      "acceptance": "Hibernate applicability. Establish whether the intended platform/ storage/security setup supports hibernation; if supported, verify image restore and the same functional regression checks. An exposed `disk` state is not proof.",
+      "probes": [
+        "pwr.states",
+        "pwr.sleep_units"
+      ]
+    },
+    {
+      "id": "P05",
+      "closed": false,
+      "acceptance": "Thermal management. Sensor plausibility, CPU/GPU cooling response and sustained combined workloads without overheating, hangs or firmware faults. Do not disable thermal protections or assume this device has a fan.",
+      "probes": []
+    },
+    {
+      "id": "R01",
+      "closed": false,
+      "acceptance": "Useful persistent diagnostics. Diagnose missing ramoops data and retain identity-bound late shutdown/early failure evidence. Keep software callback completion distinct from physical power-off.",
+      "probes": [
+        "diag.pstore",
+        "diag.taint"
+      ]
+    },
+    {
+      "id": "R02",
+      "closed": false,
+      "acceptance": "Recovery characterization. Validate the actual reset/recovery coverage, including the EFI handoff, or explicitly document its remaining limits. Existing reboot authorization permits experiments while this is open; it is not evidence that a watchdog or userspace fallback covers early hangs.",
+      "probes": [
+        "diag.watchdog"
+      ]
+    },
+    {
+      "id": "F01",
+      "closed": false,
+      "acceptance": "Complete inventory. Reconcile fitted model/accessories against firmware/DT and device evidence; assign every remaining hardware capability to an ID, including any optional feature listed above. No silent omissions.",
+      "probes": [
+        "plat.model"
+      ]
+    },
+    {
+      "id": "F02",
+      "closed": false,
+      "acceptance": "One final candidate. Build/install a reproducible kernel, config, DTB, modules, firmware and required userspace stack; all applicable feature tests pass on that same configuration without live repair or diagnostic-only force paths. Record upstream vs local patches and remaining workarounds.",
+      "probes": [
+        "diag.taint",
+        "diag.cmdline",
+        "kernel.config"
+      ]
+    },
+    {
+      "id": "F03",
+      "closed": false,
+      "acceptance": "Combined regression. At least24hours of mixed realistic operation, battery/AC transitions and idle, plus B01/P03 cycles. Audit journal/error counters, peripheral reconnect, audio/camera coexistence and storage integrity. These finite tests give evidence, not a guarantee against every future failure.",
+      "probes": []
+    },
+    {
+      "id": "F04",
+      "closed": false,
+      "acceptance": "Completion review. Every applicable open box resolved with evidence, every non-applicable item justified, all known issues explicitly reconciled, and user-visible physical tests recorded. Do not declare \"all hardware works\" while substantive tests are blocked, untested or failing.",
+      "probes": []
+    }
+  ],
+  "probes": [
+    {
+      "id": "plat.model",
+      "boxes": [
+        "F01"
+      ],
+      "state": "observed",
+      "detail": "/sys/firmware/devicetree/base/model=Microsoft Surface Pro X (SQ2)"
+    },
+    {
+      "id": "cpu.cores",
+      "boxes": [
+        "B03"
+      ],
+      "state": "observed",
+      "detail": "/sys/devices/system/cpu/online=0-7; /sys/devices/system/cpu/present=0-7"
+    },
+    {
+      "id": "cpu.freq",
+      "boxes": [
+        "B03",
+        "P02"
+      ],
+      "state": "observed",
+      "detail": "/sys/devices/system/cpu/cpufreq/policy0; policy0/scaling_governor=schedutil; policy0/scaling_min_freq=300000; policy0/scaling_max_freq=1766400; policy0/cpuinfo_max_freq=1766400; /sys/devices/system/cpu/cpufreq/policy4; policy4/scaling_governor=schedutil; policy4/scaling_min_freq=825600; policy4/scaling_max_freq=3148800; policy4/cpuinfo_max_freq=3148800"
+    },
+    {
+      "id": "mem.total",
+      "boxes": [
+        "B03"
+      ],
+      "state": "observed",
+      "detail": "MemTotal:       15742256 kB"
+    },
+    {
+      "id": "storage.nvme",
+      "boxes": [
+        "B02"
+      ],
+      "state": "observed",
+      "detail": "/sys/class/nvme/nvme0; nvme0/model=HFM256GDGTNG-87A0A"
+    },
+    {
+      "id": "fw.remoteproc",
+      "boxes": [
+        "B04"
+      ],
+      "state": "observed",
+      "detail": "/sys/class/remoteproc/remoteproc0; remoteproc0/name=modem; remoteproc0/state=running; /sys/class/remoteproc/remoteproc1; remoteproc1/name=cdsp; remoteproc1/state=running; /sys/class/remoteproc/remoteproc2; remoteproc2/name=adsp; remoteproc2/state=running; /sys/class/remoteproc/remoteproc3; remoteproc3/name=slpi; remoteproc3/state=running"
+    },
+    {
+      "id": "fw.services",
+      "boxes": [
+        "B04"
+      ],
+      "state": "observed",
+      "detail": "pd-mapper.service: LoadState=loaded\nActiveState=active\nSubState=running\nUnitFileState=enabled; rmtfs.service: LoadState=loaded\nActiveState=active\nSubState=running\nUnitFileState=enabled; tqftpserv.service: LoadState=loaded\nActiveState=active\nSubState=running\nUnitFileState=enabled"
+    },
+    {
+      "id": "rtc.names",
+      "boxes": [
+        "B05"
+      ],
+      "state": "observed",
+      "detail": "/sys/class/rtc/rtc0; rtc0/name=surface_rtc 01:01:01:00:00; /sys/class/rtc/rtc1; rtc1/name=rtc-pm8xxx c440000.spmi:pmic@0:rtc@6000"
+    },
+    {
+      "id": "tpm.present",
+      "boxes": [
+        "B06"
+      ],
+      "state": "observed",
+      "detail": "/sys/class/tpm/tpm0; tpm0/tpm_version_major=2"
+    },
+    {
+      "id": "tpm.secureboot",
+      "boxes": [
+        "B06"
+      ],
+      "state": "observed",
+      "detail": "/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c"
+    },
+    {
+      "id": "accel.cdsp",
+      "boxes": [
+        "B07"
+      ],
+      "state": "unknown",
+      "detail": "No matching exposed interface; this does not establish hardware absence"
+    },
+    {
+      "id": "disp.drm",
+      "boxes": [
+        "D01",
+        "D02",
+        "U03"
+      ],
+      "state": "observed",
+      "detail": "/sys/class/drm/card1-DP-1; card1-DP-1/status=connected; card1-DP-1/enabled=disabled; card1-DP-1/modes=3440x1440\n2560x1440\n2560x1080\n2560x1080\n2560x1080\n1920x1080\n1920x1080\n1920x1080\n1920x1080\n1680x1050\n1600x900\n1280x1024\n1280x1024\n1440x900\n1280x800\n1152x864\n1280x720\n1280x720\n1280x720\n1280x720\n1024x768\n1024x768\n1024x768\n832x624\n800x600\n800x600\n800x600\n800x600\n720x576\n720x480\n720x480\n640x480\n640x480\n640x480\n640x480\n640x480\n720x400; /sys/class/drm/card1-Writeback-1; card1-Writeback-1/status=unknown; card1-Writeback-1/enabled=disabled; card1-Writeback-1/modes=; /sys/class/drm/card1-eDP-1; card1-eDP-1/status=connected; card1-eDP-1/enabled=disabled; card1-eDP-1/modes=2880x1920"
+    },
+    {
+      "id": "disp.backlight",
+      "boxes": [
+        "D01"
+      ],
+      "state": "observed",
+      "detail": "/sys/class/backlight/backlight; backlight/brightness=1256; backlight/max_brightness=4095"
+    },
+    {
+      "id": "gpu.devfreq",
+      "boxes": [
+        "D02",
+        "P02"
+      ],
+      "state": "observed",
+      "detail": "/sys/class/devfreq/2c00000.gpu; 2c00000.gpu/governor=userspace"
+    },
+    {
+      "id": "video.names",
+      "boxes": [
+        "D03",
+        "C01",
+        "C02",
+        "C03",
+        "C04",
+        "C05"
+      ],
+      "state": "observed",
+      "detail": "/sys/class/video4linux/video0; video0/name=msm_vfe0_video0; /sys/class/video4linux/video1; video1/name=msm_vfe0_video1; /sys/class/video4linux/video10; video10/name=msm_vfe2_video2; /sys/class/video4linux/video11; video11/name=msm_vfe2_video3; /sys/class/video4linux/video12; video12/name=msm_vfe3_video0; /sys/class/video4linux/video13; video13/name=msm_vfe3_video1; /sys/class/video4linux/video14; video14/name=msm_vfe3_video2; /sys/class/video4linux/video15; video15/name=msm_vfe3_video3; /sys/class/video4linux/video16; video16/name=msm_vfe4_video0; /sys/class/video4linux/video17; video17/name=msm_vfe4_video1; /sys/class/video4linux/video18; video18/name=msm_vfe4_video2; /sys/class/video4linux/video19; video19/name=msm_vfe4_video3; /sys/class/video4linux/video2; video2/name=msm_vfe0_video2; /sys/class/video4linux/video20; video20/name=msm_vfe5_video0; /sys/class/video4linux/video21; video21/name=msm_vfe5_video1; /sys/class/video4linux/video22; video22/name=msm_vfe5_video2; /sys/class/video4linux/video23; video23/name=msm_vfe5_video3; /sys/class/video4linux/video24; video24/name=msm_vfe6_video0; /sys/class/video4linux/video25; video25/name=msm_vfe6_video1; /sys/class/video4linux/video26; video26/name=msm_vfe6_video2; /sys/class/video4linux/video27; video27/name=msm_vfe6_video3; /sys/class/video4linux/video28; video28/name=msm_vfe7_video0; /sys/class/video4linux/video29; video29/name=msm_vfe7_video1; /sys/class/video4linux/video3; video3/name=msm_vfe0_video3; /sys/class/video4linux/video30; video30/name=msm_vfe7_video2; /sys/class/video4linux/video31; video31/name=msm_vfe7_video3; /sys/class/video4linux/video4; video4/name=msm_vfe1_video0; /sys/class/video4linux/video5; video5/name=msm_vfe1_video1; /sys/class/video4linux/video6; video6/name=msm_vfe1_video2; /sys/class/video4linux/video7; video7/name=msm_vfe1_video3; /sys/class/video4linux/video8; video8/name=msm_vfe2_video0; /sys/class/video4linux/video9; video9/name=msm_vfe2_video1"
+    },
+    {
+      "id": "camera.subdevices",
+      "boxes": [
+        "C01",
+        "C02",
+        "C03",
+        "C04",
+        "C05"
+      ],
+      "state": "observed",
+      "detail": "/sys/class/video4linux/v4l-subdev0; v4l-subdev0/name=msm_csiphy0; /sys/class/video4linux/v4l-subdev1; v4l-subdev1/name=msm_csiphy1; /sys/class/video4linux/v4l-subdev10; v4l-subdev10/name=msm_csid6; /sys/class/video4linux/v4l-subdev11; v4l-subdev11/name=msm_csid7; /sys/class/video4linux/v4l-subdev12; v4l-subdev12/name=msm_vfe0_rdi0; /sys/class/video4linux/v4l-subdev13; v4l-subdev13/name=msm_vfe0_rdi1; /sys/class/video4linux/v4l-subdev14; v4l-subdev14/name=msm_vfe0_rdi2; /sys/class/video4linux/v4l-subdev15; v4l-subdev15/name=msm_vfe0_pix; /sys/class/video4linux/v4l-subdev16; v4l-subdev16/name=msm_vfe1_rdi0; /sys/class/video4linux/v4l-subdev17; v4l-subdev17/name=msm_vfe1_rdi1; /sys/class/video4linux/v4l-subdev18; v4l-subdev18/name=msm_vfe1_rdi2; /sys/class/video4linux/v4l-subdev19; v4l-subdev19/name=msm_vfe1_pix; /sys/class/video4linux/v4l-subdev2; v4l-subdev2/name=msm_csiphy2; /sys/class/video4linux/v4l-subdev20; v4l-subdev20/name=msm_vfe2_rdi0; /sys/class/video4linux/v4l-subdev21; v4l-subdev21/name=msm_vfe2_rdi1; /sys/class/video4linux/v4l-subdev22; v4l-subdev22/name=msm_vfe2_rdi2; /sys/class/video4linux/v4l-subdev23; v4l-subdev23/name=msm_vfe2_pix; /sys/class/video4linux/v4l-subdev24; v4l-subdev24/name=msm_vfe3_rdi0; /sys/class/video4linux/v4l-subdev25; v4l-subdev25/name=msm_vfe3_rdi1; /sys/class/video4linux/v4l-subdev26; v4l-subdev26/name=msm_vfe3_rdi2; /sys/class/video4linux/v4l-subdev27; v4l-subdev27/name=msm_vfe3_pix; /sys/class/video4linux/v4l-subdev28; v4l-subdev28/name=msm_vfe4_rdi0; /sys/class/video4linux/v4l-subdev29; v4l-subdev29/name=msm_vfe4_rdi1; /sys/class/video4linux/v4l-subdev3; v4l-subdev3/name=msm_csiphy3; /sys/class/video4linux/v4l-subdev30; v4l-subdev30/name=msm_vfe4_rdi2; /sys/class/video4linux/v4l-subdev31; v4l-subdev31/name=msm_vfe4_rdi3; /sys/class/video4linux/v4l-subdev32; v4l-subdev32/name=msm_vfe5_rdi0; /sys/class/video4linux/v4l-subdev33; v4l-subdev33/name=msm_vfe5_rdi1; /sys/class/video4linux/v4l-subdev34; v4l-subdev34/name=msm_vfe5_rdi2; /sys/class/video4linux/v4l-subdev35; v4l-subdev35/name=msm_vfe5_rdi3; /sys/class/video4linux/v4l-subdev36; v4l-subdev36/name=msm_vfe6_rdi0; /sys/class/video4linux/v4l-subdev37; v4l-subdev37/name=msm_vfe6_rdi1; /sys/class/video4linux/v4l-subdev38; v4l-subdev38/name=msm_vfe6_rdi2; /sys/class/video4linux/v4l-subdev39; v4l-subdev39/name=msm_vfe6_rdi3; /sys/class/video4linux/v4l-subdev4; v4l-subdev4/name=msm_csid0; /sys/class/video4linux/v4l-subdev40; v4l-subdev40/name=msm_vfe7_rdi0; /sys/class/video4linux/v4l-subdev41; v4l-subdev41/name=msm_vfe7_rdi1; /sys/class/video4linux/v4l-subdev42; v4l-subdev42/name=msm_vfe7_rdi2; /sys/class/video4linux/v4l-subdev43; v4l-subdev43/name=msm_vfe7_rdi3; /sys/class/video4linux/v4l-subdev44; v4l-subdev44/name=ov7251 4-0060; /sys/class/video4linux/v4l-subdev45; v4l-subdev45/name=ov13858 4-0010; /sys/class/video4linux/v4l-subdev5; v4l-subdev5/name=msm_csid1; /sys/class/video4linux/v4l-subdev6; v4l-subdev6/name=msm_csid2; /sys/class/video4linux/v4l-subdev7; v4l-subdev7/name=msm_csid3; /sys/class/video4linux/v4l-subdev8; v4l-subdev8/name=msm_csid4; /sys/class/video4linux/v4l-subdev9; v4l-subdev9/name=msm_csid5"
+    },
+    {
+      "id": "media.nodes",
+      "boxes": [
+        "C01",
+        "C02",
+        "C03",
+        "C04",
+        "C05"
+      ],
+      "state": "observed",
+      "detail": "/dev/media0"
+    },
+    {
+      "id": "in.names",
+      "boxes": [
+        "I01",
+        "I02",
+        "I03",
+        "I04",
+        "I05",
+        "I06",
+        "I07"
+      ],
+      "state": "observed",
+      "detail": "Volume Buttons; Microsoft Surface 045E:09AE Keyboard; Microsoft Surface 045E:09B0 Keyboard; Microsoft Surface 045E:09B0; Microsoft Surface 045E:09B0; Microsoft Surface 045E:09AF Mouse; Microsoft Surface 045E:09AF Touchpad; Microsoft Surface 045E:09AF UNKNOWN; Microsoft Surface 045E:09AF UNKNOWN; Microsoft Surface KIP Tablet Mode Switch; pm8941_pwrkey; spi 045E:0C21; spi 045E:0C21; spi 045E:0C21; spi 045E:0C21; spi 045E:0C21 Stylus; spi 045E:0C21; spi 045E:0C21; spi 045E:0C21; Surface Pro X Headset Jack; IPTSD Virtual Touchscreen 045E:0C21; IPTSD Virtual Stylus 045E:0C21; Logitech USB Receiver; Logitech USB Receiver Mouse; Logitech USB Receiver Consumer Control; Logitech USB Receiver System Control; Logitech USB Receiver; Logitech USB Receiver"
+    },
+    {
+      "id": "led.names",
+      "boxes": [
+        "I04",
+        "C05"
+      ],
+      "state": "observed",
+      "detail": "/sys/class/leds/input1::capslock; /sys/class/leds/input1::numlock; /sys/class/leds/input1::scrolllock; /sys/class/leds/input26::capslock; /sys/class/leds/input26::compose; /sys/class/leds/input26::kana; /sys/class/leds/input26::numlock; /sys/class/leds/input26::scrolllock; /sys/class/leds/spx:front:privacy; /sys/class/leds/spx:rear:privacy"
+    },
+    {
+      "id": "aud.card",
+      "boxes": [
+        "A01",
+        "A02",
+        "A03",
+        "A04"
+      ],
+      "state": "observed",
+      "detail": "/proc/asound/cards=0 [X              ]: sdm845 - Surface Pro X\n                      MicrosoftCorporation-SurfaceProX-124I00045T000M0400000B10\n 1 [USB            ]: USB-Audio - ThinkPad Thunderbolt 4 Dock USB\n                      Lenovo ThinkPad Thunderbolt 4 Dock USB at usb-xhci-hcd.2.auto-1.4.4.4, full spe; /proc/asound/pcm=00-00: MultiMedia1 (*) :  : playback 1 : capture 1\n00-01: MultiMedia2 (*) :  : playback 1 : capture 1\n00-02: MultiMedia3 (*) :  : playback 1 : capture 1\n01-00: USB Audio : USB Audio : playback 1 : capture 1"
+    },
+    {
+      "id": "aud.amps",
+      "boxes": [
+        "A01",
+        "A03"
+      ],
+      "state": "observed",
+      "detail": "/sys/bus/soundwire/devices/sdw-master-0-0; /sys/bus/soundwire/devices/sdw:0:0:0217:2110:00:3; /sys/bus/soundwire/devices/sdw:0:0:0217:2110:00:4"
+    },
+    {
+      "id": "aud.desktop",
+      "boxes": [
+        "A03",
+        "A04"
+      ],
+      "state": "observed",
+      "detail": "pipewire.service: LoadState=loaded\nActiveState=active\nSubState=running\nUnitFileState=enabled; wireplumber.service: LoadState=loaded\nActiveState=active\nSubState=running\nUnitFileState=enabled"
+    },
+    {
+      "id": "aud.feeder",
+      "boxes": [
+        "A01",
+        "A03"
+      ],
+      "state": "observed",
+      "detail": "spx-desktop-playback.service: LoadState=loaded\nActiveState=active\nSubState=running\nUnitFileState=enabled"
+    },
+    {
+      "id": "net.interfaces",
+      "boxes": [
+        "N01",
+        "N03",
+        "U04"
+      ],
+      "state": "observed",
+      "detail": "/sys/class/net/enu1u4u4u3; enu1u4u4u3/operstate=down; /sys/class/net/lo; lo/operstate=unknown; /sys/class/net/tailscale0; tailscale0/operstate=unknown; /sys/class/net/wlan0; wlan0/operstate=up"
+    },
+    {
+      "id": "net.bt",
+      "boxes": [
+        "N02",
+        "A04"
+      ],
+      "state": "observed",
+      "detail": "/sys/class/bluetooth/hci0"
+    },
+    {
+      "id": "net.wwan",
+      "boxes": [
+        "N03"
+      ],
+      "state": "unknown",
+      "detail": "No matching exposed interface; this does not establish hardware absence; open /sys/class/wwan: no such file or directory"
+    },
+    {
+      "id": "net.gnss",
+      "boxes": [
+        "N04"
+      ],
+      "state": "unknown",
+      "detail": "No matching exposed interface; this does not establish hardware absence; open /sys/class/gnss: no such file or directory"
+    },
+    {
+      "id": "usb.devices",
+      "boxes": [
+        "U01",
+        "U04",
+        "A04"
+      ],
+      "state": "observed",
+      "detail": "/sys/bus/usb/devices/3-1; 3-1/speed=480; /sys/bus/usb/devices/3-1.1; 3-1.1/speed=12; /sys/bus/usb/devices/3-1.2; 3-1.2/speed=12; /sys/bus/usb/devices/3-1.4; 3-1.4/speed=480; /sys/bus/usb/devices/3-1.4.4; 3-1.4.4/speed=480; /sys/bus/usb/devices/3-1.4.4.1; 3-1.4.4.1/speed=12; /sys/bus/usb/devices/3-1.4.4.4; 3-1.4.4.4/speed=12; /sys/bus/usb/devices/4-1; 4-1/speed=10000; /sys/bus/usb/devices/4-1.4; 4-1.4/speed=10000; /sys/bus/usb/devices/4-1.4.4; 4-1.4.4/speed=10000; /sys/bus/usb/devices/4-1.4.4.3; 4-1.4.4.3/speed=5000; /sys/bus/usb/devices/usb1; usb1/speed=480; /sys/bus/usb/devices/usb2; usb2/speed=10000; /sys/bus/usb/devices/usb3; usb3/speed=480; /sys/bus/usb/devices/usb4; usb4/speed=10000; /sys/bus/usb/devices/usb5; usb5/speed=480; /sys/bus/usb/devices/usb6; usb6/speed=10000"
+    },
+    {
+      "id": "usb.typec",
+      "boxes": [
+        "U02",
+        "U03"
+      ],
+      "state": "unknown",
+      "detail": "No matching exposed interface; this does not establish hardware absence"
+    },
+    {
+      "id": "usb.roles",
+      "boxes": [
+        "U02"
+      ],
+      "state": "unknown",
+      "detail": "No matching exposed interface; this does not establish hardware absence"
+    },
+    {
+      "id": "sens.iio",
+      "boxes": [
+        "S01",
+        "S02"
+      ],
+      "state": "observed",
+      "detail": "iio:device0 name=tcs3430; iio:device0 channel filenames=in_intensity_hardwaregain,in_intensity_hardwaregain_available,in_intensity_integration_time,in_intensity_integration_time_available,in_intensity_ir_raw,in_intensity_x_raw,in_intensity_y_raw,in_intensity_z_raw; iio:device1 name=c440000.spmi:pmic@0:adc@3100; iio:device1 channel filenames=in_temp_die_temp_input,in_temp_die_temp_label,in_temp_xo_therm_input,in_temp_xo_therm_label,in_voltage_ref_gnd_input,in_voltage_ref_gnd_label,in_voltage_vcoin_input,in_voltage_vcoin_label,in_voltage_vph_pwr_input,in_voltage_vph_pwr_label,in_voltage_vref_1p25_input,in_voltage_vref_1p25_label; iio:device2 name=c440000.spmi:pmic@4:adc@3100; iio:device2 channel filenames=in_temp_die_temp_input,in_temp_die_temp_label,in_voltage_ref_gnd_input,in_voltage_ref_gnd_label,in_voltage_vref_1p25_input,in_voltage_vref_1p25_label; iio:device3 name=c440000.spmi:pmic@8:adc@3100; iio:device3 channel filenames=in_temp_die_temp_input,in_temp_die_temp_label,in_voltage_ref_gnd_input,in_voltage_ref_gnd_label,in_voltage_vref_1p25_input,in_voltage_vref_1p25_label"
+    },
+    {
+      "id": "sens.als",
+      "boxes": [
+        "S01"
+      ],
+      "state": "observed",
+      "detail": "/sys/bus/iio/devices/iio:device0=tcs3430"
+    },
+    {
+      "id": "video.decoder",
+      "boxes": [
+        "D03"
+      ],
+      "state": "unknown",
+      "detail": "No matching exposed interface; this does not establish hardware absence"
+    },
+    {
+      "id": "video.encoder",
+      "boxes": [
+        "D03"
+      ],
+      "state": "unknown",
+      "detail": "No matching exposed interface; this does not establish hardware absence"
+    },
+    {
+      "id": "sens.desktop",
+      "boxes": [
+        "S01",
+        "S02"
+      ],
+      "state": "needs investigation",
+      "detail": "iio-sensor-proxy.service: LoadState=loaded\nActiveState=inactive\nSubState=dead\nUnitFileState=static"
+    },
+    {
+      "id": "pwr.states",
+      "boxes": [
+        "P03",
+        "P04"
+      ],
+      "state": "observed",
+      "detail": "/sys/power/state=freeze mem disk; /sys/power/mem_sleep=[s2idle]; /sys/power/disk=[shutdown] reboot suspend test_resume"
+    },
+    {
+      "id": "pwr.sleep_units",
+      "boxes": [
+        "P03",
+        "P04"
+      ],
+      "state": "needs investigation",
+      "detail": "sleep.target: LoadState=masked\nActiveState=inactive\nSubState=dead\nUnitFileState=masked; suspend.target: LoadState=masked\nActiveState=inactive\nSubState=dead\nUnitFileState=masked; hibernate.target: LoadState=masked\nActiveState=inactive\nSubState=dead\nUnitFileState=masked; hybrid-sleep.target: LoadState=masked\nActiveState=inactive\nSubState=dead\nUnitFileState=masked; suspend-then-hibernate.target: LoadState=masked\nActiveState=inactive\nSubState=dead\nUnitFileState=masked"
+    },
+    {
+      "id": "pwr.idle",
+      "boxes": [
+        "P02"
+      ],
+      "state": "observed",
+      "detail": "/sys/devices/system/cpu/cpu0/cpuidle/state0; state0/name=WFI; state0/disable=0; /sys/devices/system/cpu/cpu0/cpuidle/state1; state1/name=cpu-sleep-0-0; state1/disable=0"
+    },
+    {
+      "id": "diag.pstore",
+      "boxes": [
+        "R01"
+      ],
+      "state": "unknown",
+      "detail": "No matching exposed interface; this does not establish hardware absence; open /sys/fs/pstore: permission denied"
+    },
+    {
+      "id": "diag.watchdog",
+      "boxes": [
+        "R02"
+      ],
+      "state": "unknown",
+      "detail": "/sys/class/watchdog/watchdog0; /sys/class/watchdog/watchdog0/identity: open /sys/class/watchdog/watchdog0/identity: no such file or directory"
+    },
+    {
+      "id": "diag.taint",
+      "boxes": [
+        "R01",
+        "F02"
+      ],
+      "state": "observed",
+      "detail": "/proc/sys/kernel/tainted=4096"
+    },
+    {
+      "id": "diag.cmdline",
+      "boxes": [
+        "B04",
+        "P02",
+        "F02"
+      ],
+      "state": "observed",
+      "detail": "BOOT_IMAGE=/spx-mainline/vmlinuz; rd.luks.name=[identifier omitted]; root=[identifier omitted]; rw; rootwait; clk_ignore_unused; efi=novamap; earlycon=efifb; drm.edid_firmware=eDP-1:edid/lgd_lp129wt112684.bin; ramoops.mem_address=0x9a480000; ramoops.mem_size=0x100000; ramoops.record_size=0x40000; ramoops.console_size=0x20000; ramoops.pmsg_size=0; ramoops.ftrace_size=0; printk.always_kmsg_dump=1; spx_boot=mainline-functional; spx_attempt=20261010a; spx_baseline=20261010a; panic=20; oops=panic; slim_qcom_ngd_ctrl.spx_probe_stage=8; slim_qcom_ngd_ctrl.spx_pin_after_qmi=1; spi_hid.startup_diag=1; slim_qcom_ngd_ctrl.spx_stage5_step=0; slim_qcom_ngd_ctrl.spx_stage8_step=2; slim_qcom_ngd_ctrl.spx_pio_mode=1; slim_qcom_ngd_ctrl.spx_pio_cap_retries=0; slim_qcom_ngd_ctrl.spx_allow_full=1; soundwire_qcom.spx_enum_diag=1; soundwire_qcom.spx_cmd_diag=1; ramoops.dyndbg=+p; i2c_qcom_cci.dyndbg=+p; venus_core.dyndbg=+p; of_reserved_mem.dyndbg=+p; spx_audio=parked; wcd934x.spx_wsa_en_pin=-1; wcd934x.spx_wsa_gpio_mask=0x1e; wcd934x.spx_wsa_gpio_dir=0x1e; wcd934x.spx_wsa_gpio_val=0x18; soundwire_qcom.spx_force_attach=0; snd_soc_wsa881x.spx_enumerated_mode=1; snd_soc_wsa881x.spx_write_only=0; snd_soc_wcd934x.spx_persist_stream=1; q6asm_dai.spx_force_timer_pacing=0; snd_soc_wcd934x.spx_skip_speaker_reset=1; surface_aggregator_usbc.phy_orientation=1"
+    },
+    {
+      "id": "kernel.config",
+      "boxes": [
+        "N03",
+        "B07",
+        "U03",
+        "D03",
+        "C01",
+        "F02"
+      ],
+      "state": "needs investigation",
+      "detail": "CONFIG_QCOM_IPA=not set; CONFIG_WWAN=not set; CONFIG_QCOM_FASTRPC=m; CONFIG_TYPEC_DP_ALTMODE=not set; CONFIG_SURFACE_AGGREGATOR_USBC=m; CONFIG_VIDEO_QCOM_VENUS=m; CONFIG_VIDEO_QCOM_CAMSS=m; Disabled config is evidence of missing kernel support, not hardware absence; y/m does not verify operation"
+    }
+  ]
+}

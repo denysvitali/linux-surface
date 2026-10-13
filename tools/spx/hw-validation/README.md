@@ -70,7 +70,12 @@ probes. Windowless GTK rendering imports only `WAYLAND_DISPLAY`, `DISPLAY`,
 and `XAUTHORITY` from that existing user manager via read-only `show-environment`;
 no display socket is guessed and no other environment values are retained.
 The installer writes `/etc/spx/hw-validation.json` with `repo`, `user`,
-`media`, `media_dir`, and `storage_dir`, preserving previously selected optional values.
+`media`, `media_dir`, `storage_dir`, and `network_wait_seconds`, preserving
+previously selected optional values. `network_wait_seconds` defaults to 90,
+can be set to 0 to disable the wait, and is clamped to 0..300 seconds. On each
+`run`, the wrapper polls `/proc/net/route` and `/proc/net/ipv6_route` about once
+per second before starting the validator; it does not change network state.
+The bounded wait is outside the Go suite's device-lock interval.
 The binary and wrapper live in `/usr/local/lib/spx-boot-diagnostics/`.
 `spx-hw-validation.service` is enabled for future boots; installation does not
 start tests, reboot, change boot selections, or modify recovery timers.
@@ -80,7 +85,9 @@ compile a new catalog from changed source.
 
 Each boot writes private evidence under
 `/var/lib/spx-boot-diagnostics/boots/<boot-id>/hw-validation/`: `report.json`,
-`report.md`, `checklist.md`, and `runner.json`/`runner.md`. Successful report
+`report.md`, `checklist.md`, and `runner.json`/`runner.md`. The runner status
+records the actual wait duration and whether a default route existed when the
+suite started, including when the wait expires without a route. Successful report
 generation updates the repository's active checklist without rerunning checks.
 A busy device lock defers this same boot for 60 seconds. A missing executable,
 configuration, tool, fixture, permission or desktop session is reported
@@ -88,7 +95,8 @@ explicitly; the wrapper does not install tools or repair services. Read private
 reports with the required privilege; progress may read their generated public
 checklist summary without duplicating outcomes.
 
-The service has a ten-minute runtime ceiling. An interrupted or timed-out run
+The service has a fifteen-minute runtime ceiling to include the maximum
+five-minute network wait and the existing validator budget. An interrupted or timed-out run
 records failed runner status through its finalizer; a retained report does not
 become that failed invocation's result. After repairing a prerequisite, rerun
 and inspect this boot's evidence:

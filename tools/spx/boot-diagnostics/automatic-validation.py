@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import time
 
 HERE = Path(__file__).resolve().parent
 PRIVATE = Path('/usr/local/lib/spx-boot-diagnostics')
@@ -16,6 +17,8 @@ CONFIG = Path('/etc/spx/hw-validation.json')
 BASE = Path('/var/lib/spx-boot-diagnostics')
 UNIT = 'spx-hw-validation.service'
 DEFERRED = 75
+DEFAULT_NETWORK_WAIT_SECONDS = 90
+MAX_NETWORK_WAIT_SECONDS = 300
 
 
 def atomic_text(path, text, mode=0o600):
@@ -25,15 +28,22 @@ def atomic_text(path, text, mode=0o600):
     temporary.replace(path)
 
 
-def runner_status(out, boot_id, kernel, status, detail, exit_code=None):
+def runner_status(out, boot_id, kernel, status, detail, exit_code=None,
+                  network_wait_seconds=None, network_default_route=None):
     record = dict(boot_id=boot_id, kernel=kernel,
                   utc=datetime.now(timezone.utc).isoformat(), status=status,
                   detail=detail, exit_code=exit_code)
+    if network_wait_seconds is not None:
+        record['network_wait_seconds'] = network_wait_seconds
+        record['network_default_route_at_suite_start'] = network_default_route
     atomic_text(out / 'runner.json', json.dumps(record, indent=2) + '\n')
     atomic_text(out / 'runner.md',
                 '# Per-boot automatic validation runner\n\n'
                 f'Boot: `{boot_id}`; kernel: `{kernel}`.\n\n'
                 f'Runner status: **{status}**. {detail}\n\n'
+                + (f'Network readiness wait: {network_wait_seconds:.3f}s; default route at suite start: '
+                   f'{"present" if network_default_route else "absent"}.\n\n'
+                   if network_wait_seconds is not None else '') +
                 'Check results, when available: `report.json` and `report.md`.\n'
                 'This runner status is not hardware acceptance.\n')
     print(f'Automatic validator: {status}; {detail}; {out}', flush=True)
@@ -47,7 +57,59 @@ def report_stamp(path):
         return None
 
 
-def run_once(base, runner, repo, boot_id, kernel, execute=subprocess.run, media=None, storage_dir=None, user=None, media_dir=None):
+def parse_default_route(ipv4_text, ipv6_text):
+    """Match automaticNetworkDefaultRoute in the Go validator."""
+    for line in ipv4_text.splitlines():
+        fields = line.split()
+        if len(fields) < 8 or fields[1] != '00000000' or fields[7] != '00000000':
+            continue
+        try:
+            flags = int(fields[3], 16)
+        except ValueError:
+            continue
+        if flags & 1 and not flags & 0x200:
+            return True
+    for line in ipv6_text.splitlines():
+        fields = line.split()
+        if (len(fields) != 10 or fields[0] != '0' * 32 or fields[1] != '00'):
+            continue
+        try:
+            flags = int(fields[8], 16)
+        except ValueError:
+            continue
+        if flags & 1 and not flags & 0x200:
+            return True
+    return False
+
+
+def network_default_route(route_reader=Path.read_text):
+    def read(path):
+        try:
+            return route_reader(Path(path))
+        except (OSError, ValueError):
+            return ''
+    return parse_default_route(read('/proc/net/route'), read('/proc/net/ipv6_route'))
+
+
+def wait_for_network(seconds=DEFAULT_NETWORK_WAIT_SECONDS, clock=time.monotonic,
+                     sleep=time.sleep, route_reader=Path.read_text):
+    try:
+        seconds = int(seconds)
+    except (TypeError, ValueError, OverflowError):
+        seconds = DEFAULT_NETWORK_WAIT_SECONDS
+    seconds = max(0, min(MAX_NETWORK_WAIT_SECONDS, seconds))
+    started = clock()
+    deadline = started + seconds
+    ready = network_default_route(route_reader)
+    while not ready and seconds and clock() < deadline:
+        sleep(min(1.0, max(0.0, deadline - clock())))
+        ready = network_default_route(route_reader)
+    return max(0.0, clock() - started), ready
+
+
+def run_once(base, runner, repo, boot_id, kernel, execute=subprocess.run, media=None, storage_dir=None, user=None, media_dir=None,
+             network_wait_seconds=DEFAULT_NETWORK_WAIT_SECONDS, clock=time.monotonic,
+             sleep=time.sleep, route_reader=Path.read_text):
     """The Go runner owns the device lock; exit 75 schedules a deferred retry."""
     out = base / 'boots' / boot_id / 'hw-validation'
     out.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -64,7 +126,11 @@ def run_once(base, runner, repo, boot_id, kernel, execute=subprocess.run, media=
     if not repo or not repo.is_dir():
         runner_status(out, boot_id, kernel, 'blocked', 'Validator repository configuration is missing or unavailable.')
         return 1
-    runner_status(out, boot_id, kernel, 'running', 'Safe automatic checks started; capture is disabled.')
+    waited, route_ready = wait_for_network(network_wait_seconds, clock, sleep, route_reader)
+    print(f'Automatic validator network readiness: waited {waited:.3f}s; '
+          f'default route at suite start: {"present" if route_ready else "absent"}.', flush=True)
+    status_args = dict(network_wait_seconds=waited, network_default_route=route_ready)
+    runner_status(out, boot_id, kernel, 'running', 'Safe automatic checks started; capture is disabled.', **status_args)
     try:
         command = [str(runner), '--repo', str(repo), '--output', str(out / 'report'),
                    '--checklist-path', str(out / 'checklist.md')]
@@ -79,23 +145,23 @@ def run_once(base, runner, repo, boot_id, kernel, execute=subprocess.run, media=
         completed = execute(command, stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL, check=False)
     except PermissionError:
-        runner_status(out, boot_id, kernel, 'blocked', 'Permission denied when executing the canonical validator.')
+        runner_status(out, boot_id, kernel, 'blocked', 'Permission denied when executing the canonical validator.', **status_args)
         return 1
     except FileNotFoundError:
-        runner_status(out, boot_id, kernel, 'missing', 'Canonical validator could not be executed (binary or loader missing).')
+        runner_status(out, boot_id, kernel, 'missing', 'Canonical validator could not be executed (binary or loader missing).', **status_args)
         return 1
     except OSError as exc:
         runner_status(out, boot_id, kernel, 'failed',
-                      f'Canonical validator could not start (OS error {exc.errno}).')
+                      f'Canonical validator could not start (OS error {exc.errno}).', **status_args)
         return 1
     if completed.returncode == DEFERRED:
         runner_status(out, boot_id, kernel, 'deferred',
-                      'Device lock is busy; systemd will retry this same boot in 60 seconds.', DEFERRED)
+                      'Device lock is busy; systemd will retry this same boot in 60 seconds.', DEFERRED, **status_args)
         return DEFERRED
     if completed.returncode not in (0, 1):
         runner_status(out, boot_id, kernel, 'failed',
                       f'Canonical validator exited with status {completed.returncode}; inspect any retained check report.',
-                      completed.returncode)
+                      completed.returncode, **status_args)
         return 1
     try:
         if any(report_stamp(path) in (None, stamp) for path, stamp in zip(reports, before)):
@@ -106,7 +172,7 @@ def run_once(base, runner, repo, boot_id, kernel, execute=subprocess.run, media=
     except (OSError, ValueError):
         runner_status(out, boot_id, kernel, 'failed',
                       'Canonical validator did not produce fresh valid JSON/Markdown reports; retained reports are not this run.',
-                      completed.returncode)
+                      completed.returncode, **status_args)
         return 1
     # Generation validates the saved report against the current catalog; it runs
     # no checks and does not acquire the device lock a second time.
@@ -117,12 +183,12 @@ def run_once(base, runner, repo, boot_id, kernel, execute=subprocess.run, media=
     except OSError as exc:
         runner_status(out, boot_id, kernel, 'failed',
                       f'Check reports saved, but active repository checklist update could not start (OS error {exc.errno}).',
-                      completed.returncode)
+                      completed.returncode, **status_args)
         return 1
     if generated.returncode != 0:
         runner_status(out, boot_id, kernel, 'failed',
                       f'Check reports saved, but active repository checklist update failed with status {generated.returncode}.',
-                      completed.returncode)
+                      completed.returncode, **status_args)
         return 1
     if completed.returncode == 1:
         detail = 'Automatic checks completed with failed/error outcomes; inspect check reports. Active checklist updated.'
@@ -132,10 +198,10 @@ def run_once(base, runner, repo, boot_id, kernel, execute=subprocess.run, media=
             detail = f'Automatic checks completed with {failed} failed and {errors} error outcomes. Active checklist updated.'
         except (ValueError, KeyError, TypeError):
             pass
-        runner_status(out, boot_id, kernel, 'failed', detail, completed.returncode)
+        runner_status(out, boot_id, kernel, 'failed', detail, completed.returncode, **status_args)
         return 1
     runner_status(out, boot_id, kernel, 'succeeded',
-                  'Safe automatic checks completed and active checklist updated. Read check results for pass/fail/blocked status.', 0)
+                  'Safe automatic checks completed and active checklist updated. Read check results for pass/fail/blocked status.', 0, **status_args)
     return 0
 
 
@@ -199,9 +265,14 @@ def install(repo, binary=None, root=Path('/'), control=subprocess.run, media=Non
         retained_media_dir = retained.get('media_dir')
         retained_storage = retained.get('storage_dir')
         retained_user = retained.get('user')
+        retained_network_wait = retained.get('network_wait_seconds', DEFAULT_NETWORK_WAIT_SECONDS)
     except (OSError, ValueError, AttributeError):
         retained_media, retained_storage, retained_user, retained_media_dir = None, None, None, None
+        retained_network_wait = DEFAULT_NETWORK_WAIT_SECONDS
     settings['storage_dir'] = str(storage_dir) if storage_dir else retained_storage or str(BASE)
+    settings['network_wait_seconds'] = max(0, min(MAX_NETWORK_WAIT_SECONDS,
+        int(retained_network_wait) if str(retained_network_wait).lstrip('-').isdigit()
+        else DEFAULT_NETWORK_WAIT_SECONDS))
     if user or retained_user:
         settings['user'] = user or retained_user
     if media is not None:
@@ -266,6 +337,7 @@ def main(argv=None):
             return 1
         return 0
     media, storage_dir, user, media_dir = None, args.base, None, None
+    network_wait_seconds = DEFAULT_NETWORK_WAIT_SECONDS
     try:
         settings = json.loads(args.config.read_text())
         repo = Path(settings['repo'])
@@ -277,13 +349,15 @@ def main(argv=None):
             storage_dir = Path(settings['storage_dir'])
         if settings.get('user'):
             user = settings['user']
+        network_wait_seconds = settings.get('network_wait_seconds', DEFAULT_NETWORK_WAIT_SECONDS)
     except (OSError, ValueError, KeyError, TypeError):
         repo = None
     try:
         if args.action == 'verify':
             return verify(args.base, args.runner, repo, boot_id)
         return run_once(args.base, args.runner, repo, boot_id, kernel,
-                        media=media, storage_dir=storage_dir, user=user, media_dir=media_dir)
+                        media=media, storage_dir=storage_dir, user=user, media_dir=media_dir,
+                        network_wait_seconds=network_wait_seconds)
     except OSError as exc:
         # A report-directory permission/storage failure is still explicit in the journal.
         print(f'Automatic validator: failed to write boot {boot_id} status '

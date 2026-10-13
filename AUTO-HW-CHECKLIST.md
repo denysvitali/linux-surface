@@ -1,13 +1,13 @@
 # Automatic hardware checklist
 
-Date: 2026-10-14T00:33:12+02:00
+Date: 2026-10-14T00:41:54+02:00
 Boot: `95e14bba-f6b5-4400-8091-b43fe585069f`
 Kernel: `7.3.0-rc2-spx-mainline-20261004bg+`
 Mode: run; fixture: false
 
 Report JSON: [JSON](/var/lib/spx-boot-diagnostics/boots/95e14bba-f6b5-4400-8091-b43fe585069f/hw-validation/report.json)
 
-Functional checks passed: **15 of 48**. Inventory observations: 41 of 52. Blocked: 44. Failed: 0. Errors: 0.
+Functional checks passed: **18 of 48**. Inventory observations: 41 of 52. Blocked: 41. Failed: 0. Errors: 0.
 
 Implemented checks are validator coverage, not proof that hardware drivers are implemented. Only a functional pass from this boot completes a check. Inventory is never a functional pass.
 
@@ -16,8 +16,8 @@ All catalog rows remain visible, including unsupported or blocked checks. This a
 ## Platform
 
 - **cpu.cores — CPU online/present inventory** (inventory; observed): online=8; present=8; enumeration only; no CPU load or frequency-transition test
-- **cpu.memory — Memory capacity inventory** (inventory; observed): total=15373 MiB; available=13870 MiB; no memory load test
-- **cpu.cpufreq — CPU frequency policy inventory** (inventory; observed): policy0 driver=qcom-cpufreq-hw governor=schedutil min/current/max=300000/1113600/1766400 kHz; policy4 driver=qcom-cpufreq-hw governor=schedutil min/current/max=825600/3148800/3148800 kHz; no transitions or idle recovery exercised
+- **cpu.memory — Memory capacity inventory** (inventory; observed): total=15373 MiB; available=13764 MiB; no memory load test
+- **cpu.cpufreq — CPU frequency policy inventory** (inventory; observed): policy0 driver=qcom-cpufreq-hw governor=schedutil min/current/max=300000/1113600/1766400 kHz; policy4 driver=qcom-cpufreq-hw governor=schedutil min/current/max=825600/1651200/3148800 kHz; no transitions or idle recovery exercised
 - [x] **cpu.workload — AC-only bounded CPU/memory consistency** (functional; pass): External power online; 8 concurrent workers, 1 MiB private buffer each, 512 total consistency rounds; &lt;=64 rounds/worker and one-second work deadline; no affinity/clock changes; not frequency, thermal, sustained or all-core placement validation
 - [ ] **cpu.frequency-transitions — Loaded frequency transitions and idle recovery** (functional; blocked): Frequency-transition/idle-recovery workload is deferred; policy metadata alone cannot validate transitions
 - [x] **rtc.read-time — RTC accessible time agrees with system clock** (functional; pass): Surface rtc0 time read; wall-clock difference=1 s (limit 5 s); 1 other RTC(s) not compared; no power-off/suspend retention or independence from network time established
@@ -44,7 +44,7 @@ All catalog rows remain visible, including unsupported or blocked checks. This a
 
 ## Thermal
 
-- **thermal.metadata — Thermal temperatures, trips and cooling states (no load)** (inventory; observed): aoss0-thermal=39100 mC, cpu0-thermal=39900 mC, cpu7-top-thermal=40700 mC, cpu4-bottom-thermal=40700 mC, cpu5-bottom-thermal=41500 mC, cpu6-bottom-thermal=42200 mC, cpu7-bottom-thermal=40700 mC, gpu-top-thermal=38400 mC, aoss1-thermal=39300 mC, wlan-thermal=39000 mC, video-thermal=39300 mC, mem-thermal=39700 mC, cpu1-thermal=40300 mC, q6-hvx-thermal=39000 mC, camera-thermal=39000 mC, compute-thermal=39300 mC, mdm-dsp-thermal=39000 mC, npu-thermal=38200 mC, pmc8180a-thermal=37327 mC, pmc8180c-thermal=38528 mC, pmc8180e-thermal=37522 mC, cpu2-thermal=39100 mC, cpu3-thermal=40700 mC, cluster0-thermal=39900 mC, cluster1-thermal=41800 mC, cpu4-top-thermal=40700 mC, cpu5-top-thermal=40700 mC, cpu6-top-thermal=42200 mC; 38 trip(s), 4 cooling device(s); instantaneous metadata only; no load or policy changes; thermal names do not establish compute capability
+- **thermal.metadata — Thermal temperatures, trips and cooling states (no load)** (inventory; observed): aoss0-thermal=36400 mC, cpu0-thermal=38000 mC, cpu7-top-thermal=37600 mC, cpu4-bottom-thermal=38000 mC, cpu5-bottom-thermal=37600 mC, cpu6-bottom-thermal=38700 mC, cpu7-bottom-thermal=38000 mC, gpu-top-thermal=35600 mC, aoss1-thermal=37000 mC, wlan-thermal=36600 mC, video-thermal=37400 mC, mem-thermal=37000 mC, cpu1-thermal=38000 mC, q6-hvx-thermal=37400 mC, camera-thermal=36600 mC, compute-thermal=37000 mC, mdm-dsp-thermal=37000 mC, npu-thermal=36300 mC, pmc8180a-thermal=36549 mC, pmc8180c-thermal=37133 mC, pmc8180e-thermal=35868 mC, cpu2-thermal=37200 mC, cpu3-thermal=38000 mC, cluster0-thermal=37200 mC, cluster1-thermal=38400 mC, cpu4-top-thermal=37600 mC, cpu5-top-thermal=37600 mC, cpu6-top-thermal=38400 mC; 38 trip(s), 4 cooling device(s); instantaneous metadata only; no load or policy changes; thermal names do not establish compute capability
 - [ ] **thermal.response — Automatic thermal response under load** (functional; blocked): Thermal-response workload is parked; this suite does not heat the device or change thermal policy
 
 ## Power
@@ -65,19 +65,19 @@ All catalog rows remain visible, including unsupported or blocked checks. This a
 
 ## Network
 
-- **net.wifi.interfaces — Wi-Fi interfaces and current carrier** (inventory; observed): wireless interfaces=1; up=0; carrier=0; unreadable state=0; enumeration is not working data
-- **net.wifi.link — Current Wi-Fi association evidence** (inventory; observed): primary wireless interface is not associated; no connection was attempted
-- [ ] **net.wifi.scan — Bounded Wi-Fi scan completes** (functional; blocked): NetworkManager accepted rescan but no finished scan was observed within 8s; cached AP entries are not a pass
-- **net.ip.families — Wi-Fi address and default-route families** (inventory; observed): primary Wi-Fi addresses: IPv4 global=0, IPv6 global=0, IPv6 link-local=0, tentative/DAD-failed=0; default routes: IPv4=0, IPv6=0; configured families are not working WAN data
+- **net.wifi.interfaces — Wi-Fi interfaces and current carrier** (inventory; observed): wireless interfaces=1; up=1; carrier=1; unreadable state=0; enumeration is not working data
+- **net.wifi.link — Current Wi-Fi association evidence** (inventory; observed): primary wireless interface associated; association alone does not verify DNS or data
+- [x] **net.wifi.scan — Bounded Wi-Fi scan completes** (functional; pass): NetworkManager completed a scan (LastScan advanced); available AP entries=1; current connection was not changed
+- **net.ip.families — Wi-Fi address and default-route families** (inventory; observed): primary Wi-Fi addresses: IPv4 global=1, IPv6 global=0, IPv6 link-local=1, tentative/DAD-failed=0; default routes: IPv4=1, IPv6=0; configured families are not working WAN data
 - **net.dns.config — Configured DNS resolver families** (inventory; observed): configured resolver entries: IPv4=1, IPv6=0, loopback stubs=1; configuration inventory only; see net.dns.lookup for functional evidence; this inventory sends no query
-- [ ] **net.dns.lookup — Bounded DNS lookup of a deliberate public fixture** (functional; blocked): DNS fixture=example.com; no usable default route exposed; no lookup attempted
-- [ ] **net.wifi.gateway4 — Local IPv4 gateway replies over Wi-Fi** (functional; blocked): no configured private/link-local IPv4 gateway fixture; no external destination was contacted
+- [x] **net.dns.lookup — Bounded DNS lookup of a deliberate public fixture** (functional; pass): DNS fixture=example.com; system resolver answers: A=2 AAAA=2; total deadline 3s; no network state changed
+- [x] **net.wifi.gateway4 — Local IPv4 gateway replies over Wi-Fi** (functional; pass): local IPv4 gateway echo replies=3/3 over primary Wi-Fi; 8-byte payloads; not WAN, DNS or sustained transfer acceptance
 - [ ] **net.wifi.gateway6 — Local IPv6 gateway replies over Wi-Fi** (functional; blocked): no configured private/link-local IPv6 gateway fixture; no external destination was contacted
 
 ## Bluetooth
 
 - **bluetooth.inventory — Bluetooth paired, connected and service capability counts** (inventory; observed): adapters=1; powered=1; discovering=0; cached peers=1; paired=1; connected=0; cached HID-capable=1; cached audio-capable=0; cached service metadata only; pairing, reconnect and peripheral use are not tested
-- [x] **bluetooth.discovery — Bounded Bluetooth discovery with fresh peer reception** (functional; pass): Bounded 5-second discovery started; owned scanner exited and discovery is inactive; fresh reports=15 from peers=15; prior connections retained; no power, pairing or disconnect changes
+- [x] **bluetooth.discovery — Bounded Bluetooth discovery with fresh peer reception** (functional; pass): Bounded 5-second discovery started; owned scanner exited and discovery is inactive; fresh reports=16 from peers=16; prior connections retained; no power, pairing or disconnect changes
 
 ## Graphics
 
@@ -105,7 +105,7 @@ All catalog rows remain visible, including unsupported or blocked checks. This a
 
 ## Cameras
 
-- **camera.graph — CAMSS media graph integration** (inventory; observed): CAMSS graphs=1, enabled links=70, fitted sensor entities=front,rear,ir; enumeration is not regulator ownership, frame delivery or full graph acceptance
+- **camera.graph — CAMSS media graph integration** (inventory; observed): CAMSS graphs=1, enabled links=74, fitted sensor entities=front,rear,ir; enumeration is not regulator ownership, frame delivery or full graph acceptance
 - **camera.libcamera — Libcamera fitted-sensor metadata** (inventory; observed): verified private libcamera/CPU ISP (not distro integration); front model=ov5693 pixel_array=2592x1944 location=0 rotation=180 controls=3; rear model=ov13858 pixel_array=4224x3136 location=1 rotation=180 controls=3; ir model=ov7251 pixel_array=648x488 rotation=0 controls=3; metadata enumeration only, no capture or normal-app integration claim
 - [ ] **camera.front.frames — Front processed frame delivery** (functional; blocked): front camera capture requires explicit --capture opt-in; three processed frames would be discarded in memory, no IR emitter or retained images
 - [ ] **camera.rear.frames — Rear processed frame delivery** (functional; blocked): rear camera capture requires explicit --capture opt-in; three processed frames would be discarded in memory, no IR emitter or retained images
@@ -171,4 +171,4 @@ All catalog rows remain visible, including unsupported or blocked checks. This a
 - [ ] **sensors.light-lux — Calibrated ambient-light report delivery** (functional; blocked): No verified TCS3430 lux conversion or desktop ambient-light source is implemented; raw XYZ/IR reads do not establish calibrated light delivery. No stimulus or brightness change requested
 - [ ] **sensors.desktop-delivery — Fresh desktop motion and compass delivery** (functional; blocked): Fresh desktop accelerometer delivery workload unavailable: busctl/gdbus cannot ClaimAccelerometer, monitor PropertiesChanged and ReleaseAccelerometer on one persistent D-Bus connection; no Go D-Bus client is vendored and new dependencies are excluded. Compass delivery separately blocked: desktop compass support/fresh delivery remains unverified. No service activation, claim or physical stimulus attempted. A stationary device may legitimately emit no AccelerometerOrientation change in 5 s; without a fresh raw-reading path, no stimulus; fresh delivery cannot be distinguished from a stationary device (blocked, not fail). Cached SensorProxy properties and native SSC samples are not fresh desktop delivery
 - [x] **sensors.light-read — One-shot light-channel numeric read** (functional; pass): One-shot finite light-channel reads=4, zero-valued=4; raw values discarded; zero is not a light/stimulus failure; no scale/lux, physical axes, calibration, rotation, proximity or lifecycle claim
-- [x] **sensors.motion-read — Bounded SSC accelerometer/gyro/magnetometer delivery** (functional; pass): Fresh finite XYZ rows: accelerometer=79, gyroscope=69, magnetometer=29; each CLI exit0 with enable/disable ACKs, requested stream=3s, outer TERM=12s/KILL-after=2s; same already-running provider; raw samples/logs discarded; no physical axes, mounting, calibration, rotation or resume claim
+- [x] **sensors.motion-read — Bounded SSC accelerometer/gyro/magnetometer delivery** (functional; pass): Fresh finite XYZ rows: accelerometer=90, gyroscope=70, magnetometer=29; each CLI exit0 with enable/disable ACKs, requested stream=3s, outer TERM=12s/KILL-after=2s; same already-running provider; raw samples/logs discarded; no physical axes, mounting, calibration, rotation or resume claim

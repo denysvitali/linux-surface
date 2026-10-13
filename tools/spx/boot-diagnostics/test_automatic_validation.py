@@ -44,6 +44,66 @@ class AutomaticBootTests(unittest.TestCase):
         self.assertIn(data['status'], (self.out / 'runner.md').read_text())
         return data
 
+    @staticmethod
+    def route_reader_for(values):
+        reads = iter(values)
+        def reader(path):
+            value = next(reads, None)
+            return value or ''
+        return reader
+
+    def test_network_wait_ready_immediately(self):
+        now = [0.0]
+        elapsed, ready = hook.wait_for_network(90, lambda: now[0],
+            lambda delay: self.fail('ready route must not sleep'),
+            self.route_reader_for(['Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT\nwlan0 00000000 0100000A 0001 0 0 100 00000000 0 0 0', '']))
+        self.assertTrue(ready)
+        self.assertEqual(elapsed, 0)
+
+    def test_network_wait_becomes_ready_after_polls(self):
+        now = [0.0]
+        def sleep(delay):
+            now[0] += delay
+        route = 'wlan0 00000000 0100000A 0001 0 0 100 00000000 0 0 0'
+        elapsed, ready = hook.wait_for_network(90, lambda: now[0], sleep,
+            self.route_reader_for(['', '', '', '', route, '']))
+        self.assertTrue(ready)
+        self.assertEqual(elapsed, 2)
+
+    def test_network_wait_disabled_still_records_current_readiness(self):
+        now = [4.0]
+        elapsed, ready = hook.wait_for_network(0, lambda: now[0],
+            lambda delay: self.fail('disabled wait must not sleep'),
+            self.route_reader_for(['', '']))
+        self.assertFalse(ready)
+        self.assertEqual(elapsed, 0)
+
+    def test_malformed_route_files_are_unready(self):
+        elapsed, ready = hook.wait_for_network(0, lambda: 1.0, lambda _: None,
+            self.route_reader_for(['bad route\nwlan0 00000000 0 nope 0 0 1 00000000', 'too few fields']))
+        self.assertFalse(ready)
+        self.assertEqual(elapsed, 0)
+
+    def test_network_wait_deadline_runs_validator_and_is_recorded(self):
+        now = [0.0]
+        def sleep(delay):
+            now[0] += delay
+        def execute(args, **kwargs):
+            if '--checklist' in args:
+                return subprocess.CompletedProcess(args, 0)
+            self.assertEqual(now[0], 2)
+            (self.out / 'report.json').write_text('{"results": []}')
+            (self.out / 'report.md').write_text('# Fixture report')
+            return subprocess.CompletedProcess(args, 0)
+        code = hook.run_once(self.base, self.binary, self.repo, 'fixture-boot',
+            'fixture-kernel', execute, network_wait_seconds=2, clock=lambda: now[0],
+            sleep=sleep, route_reader=self.route_reader_for(['', '', '', '', '', '']))
+        self.assertEqual(code, 0)
+        status = self.status()
+        self.assertEqual(status['network_wait_seconds'], 2)
+        self.assertFalse(status['network_default_route_at_suite_start'])
+        self.assertIn('wait: 2.000s', (self.out / 'runner.md').read_text())
+
     def test_missing_and_permission_are_explicit(self):
         self.assertEqual(self.run_hook(runner=self.root / 'missing'), 1)
         self.assertEqual(self.status()['status'], 'missing')
@@ -234,7 +294,7 @@ class AutomaticBootTests(unittest.TestCase):
         self.assertEqual(unit['Service']['Restart'], 'no')
         self.assertEqual(unit['Service']['RestartForceExitStatus'], '75')
         self.assertEqual(unit['Service']['RestartSec'], '60')
-        self.assertEqual(unit['Service']['RuntimeMaxSec'], '10min')
+        self.assertEqual(unit['Service']['RuntimeMaxSec'], '15min')
         self.assertEqual(unit['Service']['TimeoutStopSec'], '20s')
         self.assertNotIn('ConditionKernelCommandLine', unit['Unit'])
         self.assertEqual(unit['Unit']['Wants'], 'network-online.target')
@@ -242,6 +302,7 @@ class AutomaticBootTests(unittest.TestCase):
         hook.install(self.repo, None, root, forbidden)
         self.assertTrue((private / 'spx-hw-validation').is_file())
         config = json.loads((root / 'etc/spx/hw-validation.json').read_text())
+        self.assertEqual(config['network_wait_seconds'], 90)
         self.assertEqual(config['media'], str(media))
         self.assertEqual(config['media_dir'], str(self.root / 'media-dir'))
         self.assertEqual(config['storage_dir'], '/var/lib/spx-boot-diagnostics')

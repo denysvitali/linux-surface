@@ -20,7 +20,13 @@ window returns real scenes with both flips. The user confirms orientation
 is now correct, but reported green tint in the earlier dark preview.
 Corrected-gain lit capture produced 120 processed 1280x960 frames at about
 29 fps; white/coloured reference objects were not visible. Preview:
-`/tmp/spx-front-20261010/lit.png`. Colour confirmation remains pending.
+`/tmp/spx-front-20261010/lit.png`. User confirmed this wall was white. A subsequent 120-frame phone-pattern
+capture ran about 29 fps but overexposed the screen. Lower phone brightness
+returned a visible colour wheel and coloured patches in `phone-dim.png`
+(120 frames; final interval 19 fps). User confirms a green tint against the supplied Dreamstime chart. CPU
+comparison streamed 120 frames (~57 fps), but the scene moved and cannot
+isolate the converter. Both use uncalibrated whole-scene AWB; sensor CCM
+is absent. Next: stationary CPU/GPU comparison before changing tuning.
 
 Final driver streamed processed and raw frames, reopened with CCI runtime
 power set to auto, and streamed full 2592x1944 after normal module reload.
