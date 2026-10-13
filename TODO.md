@@ -2,6 +2,21 @@
 
 ## Current request: automatic hardware coverage (2026-10-13)
 
+**Resolved 2026-10-13: Venus decoder codecs.** H264/HEVC/VP8/VP9 decode
+120/120 bit-exact with strict error checking on boot 6e361af1 (commits
+88f65136695f, 492a7b1dfc63); MPEG-2 is hidden because Iris1 rejects its output
+layout and storms (never decode it until a single-output layout is sourced).
+See `RESULT-20261013-venus-codecs.md`. No automatic failure remains on this
+boot (18/48, 43 blocked). The speaker-feeder EIO has not recurred on this
+boot; its origin logging is installed and waits for the next failure.
+Next candidates, each blocked on the stated prerequisite:
+Parked with briefs in /var/tmp/spx-codex/: IPA (no sourced IPA version/tables),
+Type-C class ports (no firmware initial-state query; ADSP has no PMIC_RTR
+channel), ALS lux (no calibration), front camera persistence (needs a DTB
+trial; trial.py boot currently refuses because of older uncommitted prune
+edits in trial.py/collect.sh/initrd-log.sh/initcpio-install).
+
+
 Use `tools/spx/hw-validation` after every baseline, trial and recovery boot.
 Generate `AUTO-HW-CHECKLIST.md` from its catalog and that boot's JSON report;
 check the recorded result before choosing another experiment. It is the active
@@ -58,8 +73,168 @@ there to human-blocked acceptance or a frozen 47-box queue do not apply to the
 new automatic checklist. Do not tick historical boxes from inventory.
 
 
+2026-10-13 user instructions: continue compiling/testing in place where
+possible; reboot is allowed again. Human checks are deferred until the end:
+do not ask for them during porting. Their acceptance boxes remain open.
+
+## Current requested work: Chromium Venus decode (2026-10-12)
+
+**Working H264 hardware decode (2026-10-13):** unchanged installed ArchARM
+Chromium152 plays H2641080p through Venus after a kernel-only correction.
+Native Iris1 firmware requires CODECCONFIG for standalone header input;
+Venus now recognizes SEI/SPS/PPS/AUD/filler/SPS-extension, keeps picture input
+unflagged, and skips header-only picture timestamp entries. Matching installed
+core+decoder load with normal defaults. The persistent launcher flag is
+`--enable-features=AcceleratedVideoDecoder`; a browser must exit fully before
+relaunching to read it. Encoder remains absent/blocked.
+
+1. D03 remains open: requested browser playback and reopen work, including
+   3600 frames over120s (33 dropped), and a fresh browser decoding the complete
+   30s AUD-containing clip (900 frames, three dropped). Full format/path
+   inventory, other codecs and the parked encoder fault remain outside this
+   evidence. Human observations stay deferred until the end.
+2. H-header flags confirmed: split H264 input changes from zero to60 frames;
+   adding AUD reproduced zero frames/input timeout until its native metadata
+   handler was included, then the same split fixture returned60 frames without
+   timeout. Browser hardware path, installed modules/defaults, clean close and
+   reopen verified. No remaining hypothesis for this H264 browser failure.
+
+See `tools/spx/boot-diagnostics/RESULT-20261013-chromium-venus-fixed.md` for
+boot/release, firmware contract, results and installed state. No reboot or
+Chromium rebuild was needed. The browser AU patch/build is a stopped,
+unvalidated fallback in `/var/tmp/spx-chromium-build`; retain incremental
+outputs and do not resume it for this corrected H264 path. The signed
+`llvm22-libs` dependency restores installed Mesa after the build-toolchain
+change. Test browser/server stopped; build/device locks released.
+
 Boxes closed: 3 of 47 (B02, B03, D02). Run `tools/spx/progress` for the
 current number. The order below is set by the user; agents do not reorder it.
+
+## Current blocker: Vulkan GPU corruption (user requested 2026-10-12)
+
+User requests full GPU support with parallel agents. D02 remains closed for
+its recorded GL/GLES evidence; this does not establish Vulkan support.
+GTK Vulkan showed strips/broken glyphs; OpenGL workaround remains installed.
+No Vulkan cause proved, no new kernel/driver feature claimed.
+1. Same public widgets offscreen Vulkan matchesGL visually at1x/2x; no strips.
+   Visible Wayland Vulkan fixture selectedA680(scale2), user observation pending.
+   Exact upstreamMesa#15349(SPX/a680GTK) reports TU_DEBUG=sysmem avoids corruption,
+   unaligned_store worsens. Test same scrolling/damage workload baseline vs
+   per-process sysmem; this is a discriminator/workaround, not full support.
+   Forcedunaligned same2x static output also byte-identical. Human session now
+   reproduces scrolling corruption: screenshot shows repeated colored strips
+   below rows15/16 on baselineVulkan. User confirms samefixtureTU_DEBUG=sysmem
+   clear after scroll/resize. HardwareVulkan retained; GMEM avoidance is verified
+   workaround, not rootfix/fullsupport. BoundedCPU-side GMEMselection/store
+   diagnostic committed2f296f119a36; privateMesa26.2.1 Turnip build passed.
+   Per-process devenvICD ready, no install. LiveGPUtest awaits exclusive device
+   handoff from concurrent user-requested Chromium/Venus recovery session.
+   NativePython selection needed venvPATH as well as Mesonnativefile; no distro
+   driver install. Need actual failing area/format/store witness before patch.
+   Research complete; no justified kernel/Turnip patch. Device lock released.
+   Source report /var/tmp/spx-vulkan-turnip-research-20261012.md.
+2. Check installed Turnip FD680 support and known upstream rendering defects;
+   require matching workload/source evidence before any patch or package change.
+3. Check MSM/FD680 firmware, cache/synchronization and fault evidence against
+   working6.18; no MSM reload/unbind or unsupported GPU numeric changes.
+Coordinator owns builds/device; bounded offline workers only. Preserve working
+OpenGL default until a Vulkan correction is verified. No sound/capture/reboot.
+
+## Hardware inventory (2026-10-11, user requested Go tool)
+
+User2026-10-11 now requests parallel implementation of inventory gaps,
+prefer no reboot. Bounded workers: Type-C lane-mode plumbing, cellular/CDSP
+contract-dependent support, desktop sensor integration. Venus candidate reload reached startup but ended with __flush_work warning
+and NULL dereference in v4l_id on boot2530c4ce. No further reloads: ELF analysis proves installed dec/enc and candidate core
+have incompatible venus_inst offsets; mixed autoload predicts recorded faults,
+but loaded provenance is unproven. Any future trial must prevent old-child
+autoload and install/load a coherent verified three-module set before exposure.
+See RESULT-20261012-venus-abi.md. Do not add NULL/work guards to hide ABI errors. Type-C candidate now scopes QMP guards and preserves HPD-low/disconnect
+before routing changes. It passes apply checks and both candidate objects compile against canonical
+work-build; no final module links or live deployment. Binding description now
+uses firmware ownership only; dt-schema/DTB checks and binding acceptance
+remain pending. Isolated DTB compiles with tree warnings; dt-schema tools
+are unavailable. See RESULT-20261012-typec-compile.md. Git connectivity was
+recovered with15 empty objects quarantined; originals and lost-commit patch
+preserved. See RESULT-20261012-typec-scoped.md.
+No reboot, MSM reload, sleep unmasking or speculative CDSP activation.
+Physical tests remain pending; not replaced by inventory.
+
+2026-10-12 autonomous continuation (user declined physical session): bounded
+parallel workers resume scoped Type-C implementation, Venus next experiment,
+and authoritative cellular/CDSP contracts. No physical acceptance substitute.
+D03 coherent trial on b9c406c9: matching three-module rebuild with scoped
+child-autoload barrier starts, no prior host ABI fault. Installed secure fields
+were zero; candidate has existing vendor values. One H.264 decode fails
+REQBUFS -110 (zero frames); all candidates cleanly removed and policy restored.
+Diagnostic3fd103055904 localizes timeout to SESSION_INIT0x10007 SID0:
+CMD33/33 consumed, MSG637/643 has six unread words, cached IRQ0x4.
+Next hypothesis: Iris1 serialized native-parser completion polling delivers
+queued response within existing deadline; no resend/SID change. Porter WIP.
+See RESULT-20261012-venus-timeout.md. Correction: unload returned0 but later
+journal shows OF refcount error at genpd_release_dev; not a clean kernel unload.
+Polling candidate451c34 built, insertion interrupted by reset; no decode result.
+Post-reset source/Git recovered: polling WIP d2485a0c6984; OF ownership
+fix50af624d3d50 replaces consuming parent lookup with child-scoped lookup.
+Git connectivity passes and cleaned coherent Venus stack builds successfully.
+One matched-stack trial on6c15131e validates teardown without OF refcount
+errors; session polling gets past init, but firmware asserts dxva_venus.c:1004
+and input-buffer-requirement query times out. Zero frames; no host reset.
+All candidates removed/policy restored. Next offline protocol comparison with
+working6.18; no unchanged retry.
+1. Compared6.18: frame-size SET/bufreq GET words match except session token;
+   v4 firmware query fallback unchanged.6.18 has no validated SC8180X resource,
+   so no known-working Venus decode reference. No basis for version/query change.
+2. Capture actual init/set/get words, init-done SID/error and event data before
+   recovery. SET is async; current log cannot attribute assertion to GET.
+   Tracefac728e7b561 proves INIT_DONE SID0 error0 then SET11001 frame96x96
+   and GET211009/property202001 immediately followed by SYS_ERROR/SFR1004.
+   Firmware1004 is unsupported-command dispatch; vendor decode111001 uses DXVA
+   codec state, unlike generic Linux211xxx. Disassembly links SYS_INIT arch
+   directly to that dispatch; no opcode/host-size rewrite needed.
+   Root cause proven: hfi_video_arch2 selects DXVA; b7076dde3766 removes
+   override to established nativeOX1. Hardware H264 decode now succeeds;
+   all120 frame hashes exactly match software, reopen+teardown clean.
+   See RESULT-20261012-venus-native-hfi.md. D03 still needs supported-format/
+   encode inventory and sustained real-media playback before closure.
+   High-profile/B-frame120 hashes pass too. H264 encode triggers NOC CVP fault;
+   Previous recovery worker blocked PAS metadata CMA/LRU drain allocation,
+   holding core mutex; recovery reboot now confirmed on e61d4de7, unchanged7.x.
+   Protected encoder PERSIST requirement is a vendor-backed lead, not proven
+   SQ2 fault cause; no ready protected allocator/context contract in current tree.
+   Recovery workqueue/core-lock cycle not supported: LRU drain has no Venus
+   dependency and sleeping events worker yields its pool. Earlier recoveries
+   succeeded; persistent PIO timer sleep also stuck after CVP fault suggests
+   broader wakeup disturbance. CPU/queued-drain/timer state was not captured.
+   Fault-producing trial deferred until recovery risk/capture is resolved.
+   See /var/tmp/spx-venus-recovery-wait-20261012.md; no recovery patch justified.
+   Hypothesis: encoder PERSIST/first-buffer layout explains CVP fault;
+   bounded allocation/layout diagnostic dcb395476b20 integrated and canonical
+   matched Venus module build passes. User requested live run20:27:42 on
+   e61d4de7; device rebooted to6272005e. Encoder output0bytes, live log empty,
+   journal ends at launch, no buffer/final fault evidence. No address inference.
+   Stop further fault-producing encode; recovery/capture remains unresolved.
+   See RESULT-20261012-venus-encoder-diagnostic-reset.md.
+   Prior overlapping sustained test stopped/no pass. New user-requested decoder-
+   only trial on6272005e passes120 exact high-profile hashes and120s1080p@30
+   hardware decode-to-null, zero decode errors; unload clean, boot unchanged.
+   User-requested unpaced same120s1080p segment:15.653s,230fps/7.67x,
+   zero errors; clean unload. See RESULT-20261012-venus-throughput.md.
+   No encoder loaded/retry, installed stack unchanged. Other codecs/encode/full
+   D03 acceptance remain open. See RESULT-20261012-venus-decode-sustained.md.
+Reset attribution remains unknown. See RESULT-20261012-venus-reset.md.
+Type-C WIP7b42b0190473 integrated; final objects compile, no deployment.
+See RESULT-20261012-autonomous.md. No new numeric hardware constants.
+Standalone validator: `tools/spx/hw-validation/`, Markdown/JSON output only;
+never edits acceptance. Live run:43 probes,31 observed/9 unknown/3 warnings;
+`RESULT-20261011-go-validation.md` and `hw-validation-go-20261011.md`. See `tools/spx/boot-diagnostics/KERNEL-GAPS-20261011.md`
+for kernel/DT versus userspace/fixture findings. Live config from
+`/proc/config.gz` confirms IPA/WWAN off; current source lacks SC8180X IPA
+resources/data and full two-port Type-C/PD integration. CDSP intentionally
+parked/disabled. TCS3430 is present; sensor services are inactive, not proof
+of a missing ALS driver. This boot298cf388 has front DT disabled despite
+prior live-overlay capture on another boot. Existing Venus session-ID WIP
+needs clean-boot validation. No blocker reorder or kernel deployment.
 
 ## Latest fix: baseline bootloop / external display (B01, U03)
 
@@ -82,9 +257,10 @@ Ordinary boots and trial returns use 7.x. Promoted boots have no automatic
 return or functional workload. Do not demote the default to 6.18 without
 user instruction. The patched MSM module is installed for future initramfs builds.
 
-## 1. Human session (pending, about 20 minutes)
+## 1. Human session (deferred until the end, about 20 minutes)
 
-Ask the user for this first. Steps are in
+Do not prompt during porting (user requested 2026-10-13). Steps for the final
+session are in
 [PHYSICAL-TESTS.md](tools/spx/boot-diagnostics/PHYSICAL-TESTS.md), one action
 each. It decides, or partly decides: I02, I03, I04, I05, I06, D01, U01, N02,
 S01, S02, P03. Battery steps are left out (deferred by the user).
@@ -216,6 +392,93 @@ baseline's automatic trial return is disabled.
 No card/Q6-stack unload or AFE STOP: retained mappings outlive PCM opens and
 AFE STOP has frozen the platform. Keep the existing reopen test.
 
+## Missing desktop speakers (A03, diagnosed 2026-10-09)
+
+- **2026-10-11 handoff (A01/A03, WIP):** boot `298cf388` now uses the
+  native feeder on MultiMedia2 with 480-frame (10 ms) periods and 8 periods;
+  reported ring fill25–40 ms is not acoustic latency. Saved PA step6 is
+  +9 dB. Distortion and perceived delay still need the user's listening check;
+  do not increase gain or repeat successful audio tests. Runtime device2
+  override does not survive reboot; installed device1 feeder startup is
+  unverified. No reboot just to extend this result. Shutdown still logs
+  `Desktop graph cleanup failed`, although the prior trial parked amps.
+  See `RESULT-20261011-speaker-latency.md` and commit `d6e5f85d563c`.
+  Next: user judges delay/loudness. Only if still delayed, consider240-frame
+  periods on a fresh mapping, then the DSP low-latency mode.
+
+- **Persistent speakers installed (2026-10-10, user request):** native
+  `spx-desktop-playback.service` enabled for promoted baseline boots only.
+  `/etc/spx/speaker-gain-step` saves2 (+3 dB); start at +1.5 dB and apply the
+  saved gain on the same stream after5 seconds. Preserve user slider/mute.
+  Installed code is independent of this checkout. Current clear PCM19468
+  retained; next normal boot must verify automatic startup. See
+  RESULT-20261010-speaker-persistence.md. No extra successful sound tests.
+
+- **H-gain-vs-restart, same-stream +3 dB clear:** user confirms "Now it's
+  perfect" after changing +1.5 -> +3 dB without restarting PCM19468 or its
+  trigger/PipeWire graph. Earlier restart/session confounds the apparent
+  +1.5 dB ceiling; exact glitch mechanism remains unproven. Leave +3 dB.
+  Root-only runtime `pa-gain-step` accepts0/1/2 with serialized health checks.
+  See RESULT-20261010-speaker-glitch.md. No further successful audio tests.
+
+- **H-amplifier-gain (A01, user authorized 2026-10-10):** full digital
+  scale still sounds below expected loudness. Try one equal +1.5 dB PA step
+  using native mixer controls after initialization on silence. Keep boost,
+  protection and compander settings unchanged; require exact gain readback.
+  User confirms +1.5 dB clear with no audible distortion and requests +3 dB
+  on both speakers. Step2 applied: both mixers read2, PCM13643 running;
+  user reports a bilateral playback-like glitch at +3 dB. Restored +1.5 dB;
+  whether the symptom follows gain remains unknown. DSP1615/1615 completions,
+  no logged underrun; digital peak9652. Do not label this a confirmed gain
+  distortion limit. No tones or microphone capture.
+  See RESULT-20261010-speaker-gain.md.
+
+- **H-night-cap, confirmed (A01, 2026-10-10):** GNOME is
+  at 100%, but play-desktop scales samples to 1433/32768. Raise ordinary
+  playback's ceiling to the supported 12000/32768 (+18.46 dB), preserve PA
+  gain 0 and low-latency queues. Applied and user confirms "That is louder."
+  User subsequently requested another increase and independent volume control:
+  ordinary playback now defaults to unity/peak32768 (+8.73 dB over12000).
+  GNOME slider and volume keys control the full digital range; subsequent
+  user-requested PA +1.5 dB is recorded above.
+  Serve/acoustic modes retain their12000 ceiling and1433 default.
+  Factory maximum remains unestablished. See RESULT-20261010-speaker-volume.md.
+  No automatic tone or microphone capture.
+
+**Open problem, recorded at user request 2026-10-10 (A03):** desktop speaker
+latency is perceptible and unacceptable. User observed approximately 500 ms
+or more; after reducing userspace buffering, 150 ms remains queued in ALSA.
+That queue measurement is not an end-to-end latency measurement, and the user
+has not confirmed the improvement. Desired behavior: no perceptible delay.
+Resume with smaller DSP periods/buffers on a fresh mapping, preserving the
+verified stereo/reopen fix. No further experiment requested in this update.
+The low maximum volume is also outstanding for A01; the user now explicitly
+requests higher loudness. The H-night-cap change above supersedes the previous
+night cap for ordinary application playback, not automated test signals.
+
+- **H-missing-native-feeder, confirmed 2026-10-10:** `play-desktop`
+  reuses WX native initialization and forwards the public sink without capture.
+  User hears both speakers. Runtime `spx-desktop-playback` is active on boot
+  `c8158f7d`; startup persistence installed, next-boot verification pending. Unity gain active,
+  PA +3 dB now active and user-confirmed clear after same-stream change.
+- **H-excess-buffering, partly confirmed:** user reports >=500 ms delay.
+  Reduced ordinary pipes to 4096 bytes and monitor queue to 20 ms; restarted
+  on the same mapped PCM geometry. ALSA backlog now samples at 150 ms and
+  feeder pipe empty; perceived improvement unconfirmed. Smaller DSP periods
+  need a fresh mapping; parked playback retains old offsets/count. Do not
+  alter geometry on this live session or interrupt the current DP trial.
+  See `RESULT-20261010-desktop-speakers.md`. No more acoustic test variations.
+
+- **H-desktop-inhibited, confirmed:** current mainline boot `c7ebfe0d`
+  retains `spx_audio=parked`; user service/socket trial drop-ins prevent
+  PipeWire, pipewire-pulse and WirePlumber from starting. ALSA detects the
+  Surface card. This explains the absent desktop outputs despite WX's
+  speaker fix. Desktop services now start on the promoted baseline and GNOME
+  connects; Surface Pro X Speakers is the default output at 5%. The existing
+  virtual sink was initially unconnected; the native feeder above now provides
+  playback. Legacy bridges remain inhibited; microphones were not captured.
+  See `RESULT-20261009-speaker-ui.md`.
+
 ## GNOME after the speaker trial (D01, restored 2026-10-09)
 
 - **H-console-target, confirmed:** WX explicitly selected
@@ -228,6 +491,13 @@ AFE STOP has frozen the platform. Keep the existing reopen test.
   No reboot, display-module reload, sound or capture was needed. No further
   desktop checks are needed for this restoration; full D01 remains open.
 
+## Graphics lag (active by user request 2026-10-09; D01/D02)
+
+1. **H-rendering/load:** determine whether the live desktop uses software
+   rendering, a constrained GPU/CPU clock, or excessive compositor/app load.
+   Read renderer, DRM client counters, clock policy and display mode; expect
+   a software renderer or measurable resource/frame bottleneck if confirmed.
+
 ## GTK window corruption (D01/D02, workaround confirmed 2026-10-09)
 
 1. **Confirmed: H-renderer (FH, boot `1dd03623`).** The corrupted Text
@@ -239,11 +509,85 @@ AFE STOP has frozen the platform. Keep the existing reopen test.
    See `RESULT-20261009-graphics.md`; full D01 acceptance remains open.
 
 Graphics stopping point: the reported window corruption is resolved through
-OpenGL. Continue the pending human session; no additional successful OpenGL
+OpenGL. Human checks are deferred until the end; no additional successful OpenGL
 checks or kernel trial are needed. Vulkan investigation needs a specific
 request for that path.
 
-## 2. Camera first frame (parked for user-requested graphics fix; C01, then C02–C05)
+## 2. Cameras: front OV5693 first (active by user request 2026-10-09; C02, then other cameras)
+
+2026-10-11 fresh user-requested check: rear now resolves a real room scene
+at about30fps; yesterday's dark/flat result is superseded for this view.
+Front/IR also return120 fresh frames each, but current views are dim/noisy.
+No tuning/code change. Images: `~/Documents/tmp/CAMERA_IMAGES_20261011/`;
+see `RESULT-20261011-camera-check.md`. Calibration remains deferred.
+
+2026-10-10 user deferred calibration and authorized images from rear/IR next.
+All three return image data on c8158f7d; viewed front/IR resolve the scene,
+rear is dark/near-flat and does not establish a usable rear scene. Private
+OV7251 helper now maps code16 to1x;120 IR frames at30fps show scene edges,
+metadata6x matches native gain96. No IR emitter activation. Images and logs:
+`~/Documents/tmp/CAMERA_IMAGES_20261010/`; result `RESULT-20261010-camera-images.md`.
+Calibration remains deferred; C02/C03/C04 remain open.
+
+2026-10-10: front streams real scenes without reboot on boot `c8158f7d`.
+C02 stays open: user confirms orientation; lit colour/exposure and resume
+still need physical observation. See `RESULT-20261010-camera-status.md`.
+
+- **H-front-binned-window (confirmed):** vendor native readout window and
+  offsets restore real 1296x972 scenes with both flips. Extending crop ends
+  alone produced grey frames; analogue registers alone still stalled.
+- **H-front-startup (partial):** ordered AVDD/DOVDD/DVDD, clock then reset
+  now streams and reopens with CCI auto-suspend. Forcing CCI on alone was
+  insufficient. Cold-start and system-resume reliability remain unverified.
+  Resume preflight on c8158f7d: loaded audio has read-only
+  `slim_qcom_ngd_ctrl.spx_s2idle_retain=N`. Existing normal-sleep helper
+  requires powered retention; bypassing it invokes the unsafe force-runtime
+  suspend path. Requires a prepared trial boot with retention enabled, not
+  an unguarded suspend of this baseline. Camera's no-autonomous-reboot limit
+  remains in effect; no sleep or boot was attempted.
+- **H-front-colour (physical check pending):** CPU/GPU share the tint;
+  primary RAW supports BGGR. Neutral ratios vary spatially. Daylight vendor
+  CCM now runs through the private native ISP; preview at
+  /tmp/spx-front-20261010/vendor-daylight.png needs user assessment. Spatial
+  shading requires a suitable neutral illumination/reference, not fixed WB.
+- **H-front-reference-spectrum (confirmed):** Night Light2700K alters the
+  target. With the desktop unlocked/on and idle inhibited, temporarily
+  disabling it changes estimated CCT3176 ->5059K and R/B gains1.148/2.676
+  ->1.822/1.653. Restored afterward. Earlier screen-off noise is inconclusive.
+- **H-front-per-unit-shading (inconclusive):** powered front EEPROM reads
+  supply valid17x13 per-channel calibration. Vendor normal * golden / EEPROM
+  correction on saved grey RAW reduces G/B spread8.214% ->6.515% but worsens
+  G/R6.018% ->6.532%; viewed residual tint remains. Oblique monitor confounds
+  the result; need diffuse neutral reference before live integration.
+  See RESULT-20261010-front-lens-shading.md.
+- **H-front-missing-CCM (partial):** vendor conversion establishes RGB order;
+  all three front IPE profiles share the4600..10000K matrix. An explicit
+  daylight tuning option completes240 frames around29fps; chart saturation
+  improves visually. Gain2 ->3 confounds brightness comparison. General
+  AEC/lux/CCT mapping remains unvalidated; no default tuning change.
+  See RESULT-20261010-front-colour.md.
+- **H-front-exposure-compensation (confirmed):** off-centre screen/dark
+  surround washes out highlights under whole-scene AE. Private libcamera
+  patch0003 exposes standard ExposureValue, preserving EV0. Same scene at
+  -2 EV: gain20 ->5, near-clipping56.8% ->0%; chart details return. New
+  session defaults to EV0. Default metering and full colour remain open.
+  See RESULT-20261010-front-exposure.md and /tmp/spx-front-20261010/ev-minus2.png.
+- Native sensor module installed; front graph enabled by live overlay.
+  Source DT updated, persistent boot DTB and distro libcamera unchanged.
+
+- Earlier front-only capture restriction superseded by the user's2026-10-10
+  request for images from the other cameras. Test sensors sequentially.
+  Leave the working speaker route untouched.
+- No autonomous reboot. Prefer evidence-backed live measurements and module
+  changes; request a camera-only physical image check once front frames exist.
+- **Blocked before research (2026-10-09):** both read-only research agents
+  failed before any file/tool access with API 401 (`fledge-alpha-free` is
+  unsupported), including a retry with an explicit model. The live-state
+  agent was canceled rather than repeating the same failure. Isolated agent
+  worktrees also failed to populate; the root filesystem has about 467 MB
+  free. No new camera hypothesis was tested, no capture/module change/boot
+  occurred. Resume this front-only investigation when subagents can run;
+  do not infer a hardware cause from these infrastructure failures.
 
 - Known: the rear sensor identifies. Receiver SID and mask are resolved.
 - Missing: resolved ownership of the `vdda-phy` and `vdda-pll` supplies,
@@ -411,9 +755,83 @@ waits for physical image validation.
 
 ## Parked (not finished; needs a new idea or the user's decision)
 
+### D03 reopened by user, 2026-10-10: browser video acceleration
+
+- Secure VA setup and startup polling now register codec nodes, but actual
+  H.264 decoding faults during session creation. Venus is unloaded after a
+  stuck power-domain recovery. Browser integration follows working decode.
+- **H-UC backing (refuted as sufficient, 2026-10-10):** BF observed a declared 3 MiB firmware-visible
+  region larger than its queue allocation, with the SFR outside that region.
+  The existing `spx_uc_shared_alloc` option backs the complete region and puts
+  SFR inside it. BG explicitly left this off. Test this one change through a
+  Venus-only module reload with bounded startup diagnostics, expecting core
+  readiness and decoder/encoder registration if this is sufficient. First
+  obtain the device lock. Privileged inspection now locates the installed
+  `venus-core.ko` with matching vermagic; shared-UC and diagnostics are both
+  off, and no module holders exist. User then authorized parallel Venus-only
+  testing. Reload with this option confirmed SFR inside the backed region,
+  but startup still timed out with status zero; no codec nodes. Original
+  parameters restored, no reboot. Do not repeat this allocation trial.
+  See RESULT-20261010-video-codec.md. Browser integration follows real decode.
+- **H-firmware-version (refuted as sufficient):** installed VIDEO.IR.1.2 build 00042 differs
+  from archived 2020 build 00040 and 2022 build 00061. Both archived images
+  have a previously verified five-MiB load span, but no recorded live startup
+  result. Temporarily select 00061, then 00040 if needed, through firmware
+  lookup and a Venus-only reload; preserve installed bytes and other driver
+  settings. Expected discriminator: core readiness or a changed secure/startup
+  error. Both archived versions authenticated but still timed out with status
+  zero at 01:22:10/01:22:21 on boot c8158f7d. Lookup, installed firmware and
+  default module restored. No reboot; do not repeat these firmware swaps.
+- **H-video-VA-setup (startup readiness confirmed):** SC8180X omits the
+  four resource values enabling `qcom_scm_mem_protect_video_var`. Original
+  SQ2 miniport constructs this same secure call (0x02000c08), with arguments
+  0/0x25800000/0x01000000/0x24800000 from its Venus510 table. Added those
+  resource fields and bounded return logging. Compile only Venus and reload
+  it with installed firmware/default allocation; expect range-call success
+  and core readiness if this omission caused startup failure. User authorized
+  proceeding; secure call returned zero and firmware reached 0x40000001.
+  SYS_INIT still needed host queue polling.
+  See RESULT-20261010-video-memory.md.
+- **H-DSP-interrupt-mask (refuted):** after VA setup, firmware consumes all
+  18 command words and writes a successful SYS_INIT reply (0x20001/error0),
+  but Linux leaves all 637 response words unread. One CPU interrupt drains
+  an initially empty queue; Iris1 DSP bit1 remains masked in 0x1e2. Unmask
+  that already-supported DSP source and expect response consumption/codec
+  registration. Bounded timeout diagnostics distinguish this from packet
+  parser rejection. User explicitly authorized proceeding despite build lock.
+  Mask 0x1e0 still leaves the same responses unread; reverted this change.
+- **H-wrapper-ack (refuted):** only the first CPU interrupt arrives, before
+  responses. Iris1 omits the legacy wrapper interrupt-clear write based on a
+  vendor chip branch whose live selection was never proven. Add the normal
+  pre-Iris2 wrapper acknowledgement after the existing source clear; expect
+  subsequent response interrupts and SYS_INIT completion. No IRQ remapping.
+  Additional acknowledgement leaves the same timeout/queues; reverted.
+- **H-firmware-power-collapse (refuted):** Linux enables firmware-controlled
+  power collapse before awaiting SYS_INIT; the SC8180X power path is new.
+  Request this property off for Iris1 only, expecting responses to interrupt
+  the host if premature power collapse was suppressing notification.
+  Disabling this property leaves the same timeout; reverted.
+- **H-startup-poll (startup confirmed, decode fails):** vendor VedHfiSysInit explicitly reads the
+  response queue at RVA0x356138 in a bounded loop. Linux instead waits for
+  an interrupt. For Iris1 startup only, drain through the native parser with
+  IRQ handling serialized and retain the existing one-second deadline.
+  SYS_INIT completed and video32/video33 registered at 01:35:15. First
+  H.264 decode produced zero frames and a firmware ARM access fault; unloaded
+  Venus to stop failed recovery. See RESULT-20261010-video-memory.md.
+
+- **H-session-ID (built; needs recovered device):** SQ2 firmware treats SYS_SESSION_INIT's ID as
+  a table index, whereas native packets use a pointer hash. Assign Iris1
+  sessions unique IDs below MAX_SESSIONS under the existing core lock and
+  use the same IDs for commands/reply lookup. Expect session creation without
+  the observed ARM access fault; then retry bounded H.264 decoding. Candidate
+  core/decoder/encoder compiled. Reload at 01:42:11 could not reach firmware:
+  vcodec0_gdsc stuck off after the preceding crash. All Venus modules unloaded.
+  Next test needs a clean boot coordinated with the active camera session;
+  no persistent modules replaced.
+
 | Item | Why |
 |---|---|
-| D03 video decode | Venus core start times out, 8 boots |
+| D03 video decode | Startup repaired; session-ID candidate needs clean boot after codec power domain stuck off |
 | B07 accelerators (CDSP) | 3 boots without a usable result |
 | P05 automatic thermal response | Load never reaches the trip points |
 | N03, N04 cellular and GNSS | Modem needs real provisioning; no SIM service |
