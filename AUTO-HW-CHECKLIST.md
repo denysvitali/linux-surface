@@ -1,13 +1,13 @@
 # Automatic hardware checklist
 
-Date: 2026-10-13T20:29:29+02:00
-Boot: `45bccac9-a010-48fd-a15c-48e915e78d57`
+Date: 2026-10-13T21:52:34+02:00
+Boot: `6e361af1-caec-4e8b-873b-dfd1d2021329`
 Kernel: `7.3.0-rc2-spx-mainline-20261004bg+`
 Mode: run; fixture: false
 
-Report JSON: [JSON](/var/lib/spx-boot-diagnostics/boots/45bccac9-a010-48fd-a15c-48e915e78d57/hw-validation/report.json)
+Report JSON: [JSON](/var/lib/spx-boot-diagnostics/boots/6e361af1-caec-4e8b-873b-dfd1d2021329/hw-validation/report.json)
 
-Functional checks passed: **11 of 48**. Inventory observations: 37 of 52. Blocked: 51. Failed: 1. Errors: 0.
+Functional checks passed: **18 of 48**. Inventory observations: 39 of 52. Blocked: 43. Failed: 0. Errors: 0.
 
 Implemented checks are validator coverage, not proof that hardware drivers are implemented. Only a functional pass from this boot completes a check. Inventory is never a functional pass.
 
@@ -16,15 +16,15 @@ All catalog rows remain visible, including unsupported or blocked checks. This a
 ## Platform
 
 - **cpu.cores — CPU online/present inventory** (inventory; observed): online=8; present=8; enumeration only; no CPU load or frequency-transition test
-- **cpu.memory — Memory capacity inventory** (inventory; observed): total=15373 MiB; available=13321 MiB; no memory load test
-- **cpu.cpufreq — CPU frequency policy inventory** (inventory; observed): policy0 driver=qcom-cpufreq-hw governor=schedutil min/current/max=300000/1478400/1766400 kHz; policy4 driver=qcom-cpufreq-hw governor=schedutil min/current/max=825600/2361600/3148800 kHz; no transitions or idle recovery exercised
+- **cpu.memory — Memory capacity inventory** (inventory; observed): total=15373 MiB; available=13701 MiB; no memory load test
+- **cpu.cpufreq — CPU frequency policy inventory** (inventory; observed): policy0 driver=qcom-cpufreq-hw governor=schedutil min/current/max=300000/1363200/1766400 kHz; policy4 driver=qcom-cpufreq-hw governor=schedutil min/current/max=825600/1881600/3148800 kHz; no transitions or idle recovery exercised
 - [x] **cpu.workload — AC-only bounded CPU/memory consistency** (functional; pass): External power online; 8 concurrent workers, 1 MiB private buffer each, 512 total consistency rounds; &lt;=64 rounds/worker and one-second work deadline; no affinity/clock changes; not frequency, thermal, sustained or all-core placement validation
 - [ ] **cpu.frequency-transitions — Loaded frequency transitions and idle recovery** (functional; blocked): Frequency-transition/idle-recovery workload is deferred; policy metadata alone cannot validate transitions
 - [x] **rtc.read-time — RTC accessible time agrees with system clock** (functional; pass): Surface rtc0 time read; wall-clock difference=0 s (limit 5 s); 1 other RTC(s) not compared; no power-off/suspend retention or independence from network time established
 
 ## Storage
 
-- **storage.nvme — NVMe controller inventory** (inventory; observed): nvme0 model=HFM256GDGTNG-87A; controller enumeration only
+- **storage.nvme — NVMe controller inventory** (inventory; observed): nvme0 model=HFM256GDGTNG-87A0A; controller enumeration only
 - [x] **storage.fsync-checksum — Disposable filesystem write/fsync/checksum (4 MiB)** (functional; pass): 4 MiB disposable file written, fsynced, reopened and SHA-256 matched; file removed; filesystem type=0xef53; filesystem test only; not sustained/post-resume or raw NVMe validation
 
 ## Firmware
@@ -38,13 +38,13 @@ All catalog rows remain visible, including unsupported or blocked checks. This a
 ## Security
 
 - **security.tpm — TPM interface inventory** (inventory; observed): tpm0 version=2; metadata only; no keys changed
-- [ ] **security.tpm-capability — Read-only TPM2 fixed-capability response** (functional; blocked): Read-only tpm2_getcap unavailable: tool, device permission or TPM transport required
+- [x] **security.tpm-capability — Read-only TPM2 fixed-capability response** (functional; pass): TPM2 GetCapability returned fixed properties with family 2.0; no keys, PCRs or firmware settings changed
 - [ ] **security.tpm-signing — TPM signing workflow** (functional; blocked): No authorized signing fixture supplied; this boot suite makes no TPM key creation, provisioning or key changes
 - **security.secureboot — EFI Secure Boot state inventory** (inventory; observed): EFI SecureBoot=disabled; state only, not verification of a trusted boot/signing path; no firmware settings changed
 
 ## Thermal
 
-- **thermal.metadata — Thermal temperatures, trips and cooling states (no load)** (inventory; observed): aoss0-thermal=37200 mC, cpu0-thermal=38000 mC, cpu7-top-thermal=39500 mC, cpu4-bottom-thermal=38700 mC, cpu5-bottom-thermal=38700 mC, cpu6-bottom-thermal=38700 mC, cpu7-bottom-thermal=39500 mC, gpu-top-thermal=36000 mC, aoss1-thermal=37800 mC, wlan-thermal=37000 mC, video-thermal=37400 mC, mem-thermal=37400 mC, cpu1-thermal=38400 mC, q6-hvx-thermal=37000 mC, camera-thermal=37000 mC, compute-thermal=37400 mC, mdm-dsp-thermal=37000 mC, npu-thermal=36300 mC, pmc8180a-thermal=36289 mC, pmc8180c-thermal=37100 mC, pmc8180e-thermal=36062 mC, cpu2-thermal=37600 mC, cpu3-thermal=38400 mC, cluster0-thermal=37600 mC, cluster1-thermal=39500 mC, cpu4-top-thermal=39500 mC, cpu5-top-thermal=39100 mC, cpu6-top-thermal=39900 mC; 38 trip(s), 4 cooling device(s); instantaneous metadata only; no load or policy changes; thermal names do not establish compute capability
+- **thermal.metadata — Thermal temperatures, trips and cooling states (no load)** (inventory; observed): aoss0-thermal=36400 mC, cpu0-thermal=37200 mC, cpu7-top-thermal=38000 mC, cpu4-bottom-thermal=37600 mC, cpu5-bottom-thermal=37200 mC, cpu6-bottom-thermal=37600 mC, cpu7-bottom-thermal=37600 mC, gpu-top-thermal=35600 mC, aoss1-thermal=37000 mC, wlan-thermal=36300 mC, video-thermal=37000 mC, mem-thermal=37000 mC, cpu1-thermal=37600 mC, q6-hvx-thermal=36600 mC, camera-thermal=36600 mC, compute-thermal=37000 mC, mdm-dsp-thermal=36600 mC, npu-thermal=35900 mC, pmc8180a-thermal=36516 mC, pmc8180c-thermal=37100 mC, pmc8180e-thermal=35705 mC, cpu2-thermal=37200 mC, cpu3-thermal=38000 mC, cluster0-thermal=36800 mC, cluster1-thermal=38700 mC, cpu4-top-thermal=37200 mC, cpu5-top-thermal=37600 mC, cpu6-top-thermal=37600 mC; 38 trip(s), 4 cooling device(s); instantaneous metadata only; no load or policy changes; thermal names do not establish compute capability
 - [ ] **thermal.response — Automatic thermal response under load** (functional; blocked): Thermal-response workload is parked; this suite does not heat the device or change thermal policy
 
 ## Power
@@ -59,8 +59,8 @@ All catalog rows remain visible, including unsupported or blocked checks. This a
 - **diag.watchdog — Watchdog interface inventory (no device open)** (inventory; blocked): Watchdog identity metadata is not readable; no watchdog device opened
 - [ ] **diag.watchdog-recovery — Watchdog reset/recovery** (functional; blocked): No reset/recovery fixture or authorization in this boot suite; watchdog devices are never opened or armed
 - **diag.boot — Boot identity and retained fault-record inventory** (inventory; observed): Current boot identity available; kernel=7.3.0-rc2-spx-mainline-20261004bg+; 0 retained pstore record(s); prior-boot records are not a current-boot fault verdict; no startup/shutdown repeatability test
-- [ ] **diag.kernel-faults — Current boot warning-priority kernel fault scan** (functional; fail): Recognized current-boot warning-priority fault evidence: kernel warning=2; private log lines omitted
-- **diag.taint — Kernel taint inventory** (inventory; observed): kernel taint bitmask=4608 (0x1200); taint is context, not a functional pass/fault verdict
+- [x] **diag.kernel-faults — Current boot warning-priority kernel fault scan** (functional; pass): Accessible current-boot warning-priority kernel journal scanned; no recognized BUG/oops/panic, warning, storage, IOMMU, firmware, critical thermal or lockup signatures; lower-priority messages not scanned; not a load/lifecycle test
+- **diag.taint — Kernel taint inventory** (inventory; observed): kernel taint bitmask=4096 (0x1000); taint is context, not a functional pass/fault verdict
 - [x] **diag.failed-units — Current systemd failed-unit scan** (functional; pass): 0 failed system unit(s), excluding 0 prior validator unit(s); private unit names/logs omitted; not user-service or repeat-startup validation
 
 ## Network
@@ -77,31 +77,31 @@ All catalog rows remain visible, including unsupported or blocked checks. This a
 ## Bluetooth
 
 - **bluetooth.inventory — Bluetooth paired, connected and service capability counts** (inventory; observed): adapters=1; powered=1; discovering=0; cached peers=1; paired=1; connected=0; cached HID-capable=1; cached audio-capable=0; cached service metadata only; pairing, reconnect and peripheral use are not tested
-- [x] **bluetooth.discovery — Bounded Bluetooth discovery with fresh peer reception** (functional; pass): Bounded 5-second discovery started; owned scanner exited and discovery is inactive; fresh reports=19 from peers=18; prior connections retained; no power, pairing or disconnect changes
+- [x] **bluetooth.discovery — Bounded Bluetooth discovery with fresh peer reception** (functional; pass): Bounded 5-second discovery started; owned scanner exited and discovery is inactive; fresh reports=18 from peers=16; prior connections retained; no power, pairing or disconnect changes
 
 ## Graphics
 
-- **graphics.display.internal — Internal connector modes and preferred timing** (inventory; observed): card1-eDP-1 connected, disabled, modes=2880x1920, EDID preferred=2880x1920@60.00Hz; advertised timing only, not active scanout, image quality, hotplug or resume
+- **graphics.display.internal — Internal connector modes and preferred timing** (inventory; observed): card1-eDP-1 connected, enabled, modes=2880x1920, EDID preferred=2880x1920@60.00Hz; advertised timing only, not active scanout, image quality, hotplug or resume
 - **graphics.display.external — Connected external display modes and preferred timing** (inventory; blocked): No connected external display fixture exposed (2 connectors, 2 disconnected/unknown); this does not establish hardware absence
-- [ ] **graphics.display.internal.scanout — Current internal native scanout and advancing vblank** (functional; blocked): Connected internal display is not currently enabled; no power/mode changes requested
+- [x] **graphics.display.internal.scanout — Current internal native scanout and advancing vblank** (functional; pass): eDP-1 current=2880x1920@60Hz, active framebuffer, vblank advanced 1; current scanout only, not image quality, hotplug, blank/unblank or resume
 - [ ] **graphics.display.external.scanout — Current external scanout and advancing vblank** (functional; blocked): No connected external display fixture currently exposed; no hotplug/power/mode action requested
 - **graphics.backlight — Backlight metadata without changing brightness** (inventory; observed): backlight type=raw requested=1256 actual=1256 maximum=4095; no writes or brightness-range/visual claim
 - **graphics.egl — Surfaceless EGL hardware GL/GLES contexts** (inventory; observed): Surfaceless EGL exposes Adreno 680 contexts: OpenGL core profile, OpenGL compatibility profile; context creation is not draw/readback or desktop acceleration evidence
-- **graphics.vulkan.devices — Vulkan hardware device and API inventory** (inventory; blocked): Vulkan device inventory requires an installed tool/fixture
-- [ ] **graphics.gl.render — Offscreen GL expected-image smoke** (functional; blocked): OpenGL offscreen expected-image test requires an installed tool/fixture
-- [ ] **graphics.gles.render — Offscreen GLES expected-image smoke** (functional; blocked): OpenGL ES offscreen expected-image test requires an installed tool/fixture
+- **graphics.vulkan.devices — Vulkan hardware device and API inventory** (inventory; observed): Adreno 680 Vulkan hardware devices=1, software devices=0, API=1.3.354; enumeration does not establish renderer selection or fix recorded GMEM scrolling corruption
+- [ ] **graphics.gl.render — Offscreen GL expected-image smoke** (functional; blocked): OpenGL: installed glmark2 has no GBM offscreen flavour; DRM flavour is excluded because it requests a modeset; no DRM or Wayland fallback attempted
+- [ ] **graphics.gles.render — Offscreen GLES expected-image smoke** (functional; blocked): OpenGL ES: installed glmark2 has no GBM offscreen flavour; DRM flavour is excluded because it requests a modeset; no DRM or Wayland fallback attempted
 - [x] **graphics.vulkan.render — Windowless Vulkan static render and pixel readback** (functional; pass): Adreno 680 Vulkan rendered a public 64x64 color fixture windowlessly and matched all 4096 pixels; output discarded. Static path only: recorded GMEM scrolling/partial-damage corruption remains unresolved
 - [ ] **graphics.vulkan.dynamic-damage — Vulkan scrolling and partial-damage corruption regression** (functional; blocked): Recorded Vulkan GMEM scrolling corruption is unresolved; TU_DEBUG=sysmem is a workaround, not a fix. No safe windowless reproducer for that workload is available; a static render does not cover it
 
 ## Video
 
-- **media.decode.formats — Exposed Venus decoder formats** (inventory; blocked): No exposed qcom-venus-decoder node; running Venus decoder support/permissions are needed (hardware absence is not established)
+- **media.decode.formats — Exposed Venus decoder formats** (inventory; observed): 1 exposed Venus decoder node(s); advertised compressed-input formats: H264, HEVC, VP80, VP90; enumeration does not prove any codec workload; encoder is parked
 - [ ] **media.encode — Hardware encoder workload** (functional; blocked): Encoder trials parked: known CVP fault/reset/hang and unresolved protected-buffer/recovery contract; no encoder open, autoload or workload attempted
-- [ ] **media.decode.h264 — H.264 hardware decode of supplied real media** (functional; blocked): No usable h264 fixture identified; supply --media or --media-dir with a verified local regular-file video. Real fixture supplied, but no exposed qcom-venus-decoder node; install/enable coherent running decoder support separately; no modules loaded by this test
-- [ ] **media.decode.hevc — HEVC hardware decode of supplied real media** (functional; blocked): No usable hevc fixture identified; supply --media or --media-dir with a verified local regular-file video. Real fixture supplied, but no exposed qcom-venus-decoder node; install/enable coherent running decoder support separately; no modules loaded by this test
+- [x] **media.decode.h264 — H.264 hardware decode of supplied real media** (functional; pass): Supplied 1920x1080 fixture: h264_v4l2m2m on Venus; decoded=32 output=30, zero decode errors, complete progress; capped at 2s/30 frames, output discarded. Only this fixture codec/path tested; not encoder, all formats, pixels or sustained playback
+- [x] **media.decode.hevc — HEVC hardware decode of supplied real media** (functional; pass): Supplied 1920x1080 fixture: hevc_v4l2m2m on Venus; decoded=32 output=30, zero decode errors, complete progress; capped at 2s/30 frames, output discarded. Only this fixture codec/path tested; not encoder, all formats, pixels or sustained playback
 - [ ] **media.decode.mpeg2video — MPEG-2 hardware decode of supplied real media** (functional; blocked): Known unsafe: MPEG-2 decode makes Iris1 firmware reject OPB mode and storm session errors after close, leaving vcodec0_gdsc stuck off until reboot; needs the Venus MPEG-2 output-mode and error-containment fix. No decode attempted
-- [ ] **media.decode.vp8 — VP8 hardware decode of supplied real media** (functional; blocked): No usable vp8 fixture identified; supply --media or --media-dir with a verified local regular-file video. Real fixture supplied, but no exposed qcom-venus-decoder node; install/enable coherent running decoder support separately; no modules loaded by this test
-- [ ] **media.decode.vp9 — VP9 hardware decode of supplied real media** (functional; blocked): No usable vp9 fixture identified; supply --media or --media-dir with a verified local regular-file video. Real fixture supplied, but no exposed qcom-venus-decoder node; install/enable coherent running decoder support separately; no modules loaded by this test
+- [x] **media.decode.vp8 — VP8 hardware decode of supplied real media** (functional; pass): Supplied 1920x1080 fixture: vp8_v4l2m2m on Venus; decoded=32 output=30, zero decode errors, complete progress; capped at 2s/30 frames, output discarded. Only this fixture codec/path tested; not encoder, all formats, pixels or sustained playback
+- [x] **media.decode.vp9 — VP9 hardware decode of supplied real media** (functional; pass): Supplied 1920x1080 fixture: vp9_v4l2m2m on Venus; decoded=32 output=30, zero decode errors, complete progress; capped at 2s/30 frames, output discarded. Only this fixture codec/path tested; not encoder, all formats, pixels or sustained playback
 
 ## Cameras
 
@@ -169,6 +169,6 @@ All catalog rows remain visible, including unsupported or blocked checks. This a
 - **sensors.backend — SDSP sensor backend and startup services** (inventory; observed): SDSP FastRPC endpoints=1, CDSP endpoints=0; sensor provider=active, proxy=active; running DT disables CDSP FastRPC: compute transport intentionally parked, not missing silicon and not the SDSP sensor path; endpoint/service metadata only, not sensor delivery or CDSP workload
 - **sensors.desktop — Already-running SensorProxy cached properties** (inventory; observed): Already-running SensorProxy advertised capability groups=1, finite cached numeric properties=0; read-only, no Claim/stream/start; cached values may be stale, not fresh delivery, axes/calibration or brightness response
 - [ ] **sensors.light-lux — Calibrated ambient-light report delivery** (functional; blocked): No verified TCS3430 lux conversion or desktop ambient-light source is implemented; raw XYZ/IR reads do not establish calibrated light delivery. No stimulus or brightness change requested
-- [ ] **sensors.desktop-delivery — Fresh desktop motion and compass delivery** (functional; blocked): Fresh desktop delivery probe is not implemented and desktop compass support remains missing; cached SensorProxy properties and native SSC samples cover different paths. No service Claim, start, reset or physical orientation action attempted
+- [ ] **sensors.desktop-delivery — Fresh desktop motion and compass delivery** (functional; blocked): Fresh desktop accelerometer delivery workload unavailable: busctl/gdbus cannot ClaimAccelerometer, monitor PropertiesChanged and ReleaseAccelerometer on one persistent D-Bus connection; no Go D-Bus client is vendored and new dependencies are excluded. Compass delivery separately blocked: desktop compass support/fresh delivery remains unverified. No service activation, claim or physical stimulus attempted. A stationary device may legitimately emit no AccelerometerOrientation change in 5 s; without a fresh raw-reading path, no stimulus; fresh delivery cannot be distinguished from a stationary device (blocked, not fail). Cached SensorProxy properties and native SSC samples are not fresh desktop delivery
 - [x] **sensors.light-read — One-shot light-channel numeric read** (functional; pass): One-shot finite light-channel reads=4, zero-valued=4; raw values discarded; zero is not a light/stimulus failure; no scale/lux, physical axes, calibration, rotation, proximity or lifecycle claim
-- [x] **sensors.motion-read — Bounded SSC accelerometer/gyro/magnetometer delivery** (functional; pass): Fresh finite XYZ rows: accelerometer=70, gyroscope=69, magnetometer=29; each CLI exit0 with enable/disable ACKs, requested stream=3s, outer TERM=12s/KILL-after=2s; same already-running provider; raw samples/logs discarded; no physical axes, mounting, calibration, rotation or resume claim
+- [x] **sensors.motion-read — Bounded SSC accelerometer/gyro/magnetometer delivery** (functional; pass): Fresh finite XYZ rows: accelerometer=71, gyroscope=69, magnetometer=29; each CLI exit0 with enable/disable ACKs, requested stream=3s, outer TERM=12s/KILL-after=2s; same already-running provider; raw samples/logs discarded; no physical axes, mounting, calibration, rotation or resume claim
