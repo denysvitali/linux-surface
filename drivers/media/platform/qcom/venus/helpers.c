@@ -603,8 +603,11 @@ session_process_buf(struct venus_inst *inst, struct vb2_v4l2_buffer *vbuf)
 	} else if (type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
 		if (inst->session_type == VIDC_SESSION_TYPE_ENC)
 			fdata.buffer_type = HFI_BUFFER_OUTPUT;
-		else
+		else {
+			/* A QBUF/restart also consumes a pending DROP_FRAME return. */
+			WRITE_ONCE(buf->requeue, false);
 			fdata.buffer_type = inst->opb_buftype;
+		}
 		fdata.filled_len = 0;
 		fdata.offset = 0;
 	}
@@ -1435,6 +1438,28 @@ static void delayed_process_buf_func(struct work_struct *work)
 	inst = container_of(work, struct venus_inst, delayed_process_work);
 
 	mutex_lock(&inst->lock);
+
+	/* Discarded OPB returns remain active and on the m2m ready queue. */
+	list_for_each_entry(buf, &inst->registeredbufs, reg_list) {
+		if (!smp_load_acquire(&buf->requeue))
+			continue;
+		WRITE_ONCE(buf->requeue, false);
+
+		/* STREAMOFF may already have returned this buffer. */
+		if (buf->vb.vb2_buf.state != VB2_BUF_STATE_ACTIVE)
+			continue;
+		if (READ_ONCE(inst->stopping) || inst->drain_active ||
+		    inst->next_buf_last || READ_ONCE(inst->session_error) ||
+		    test_bit(0, &inst->core->sys_error) ||
+		    (READ_ONCE(buf->flags) & HFI_BUFFERFLAG_READONLY) ||
+		    !(inst->streamon_out && inst->streamon_cap) ||
+		    inst->codec_state != VENUS_DEC_STATE_DECODING)
+			continue;
+
+		ret = session_process_buf(inst, &buf->vb);
+		if (ret)
+			return_buf_error(inst, &buf->vb);
+	}
 
 	if (!(inst->streamon_out & inst->streamon_cap))
 		goto unlock;

@@ -346,6 +346,7 @@ struct venus_buffer {
 	struct list_head reg_list;
 	u32 flags;
 	struct list_head ref_list;
+	bool requeue;
 };
 
 struct clock_data {
@@ -457,6 +458,7 @@ enum venus_inst_modes {
  * @pic_struct:		bitstream progressive vs interlaced
  * @next_buf_last: a flag to mark next queued capture buffer as last
  * @drain_active:	Drain sequence is in progress
+ * @stopping:		Decoder stream teardown is in progress
  * @flags:	bitmask flags describing current instance mode
  * @dpb_ids:	DPB buffer ID's
  */
@@ -529,6 +531,7 @@ struct venus_inst {
 	unsigned int pic_struct;
 	bool next_buf_last;
 	bool drain_active;
+	bool stopping;
 	enum venus_inst_modes flags;
 	struct ida dpb_ids;
 };

@@ -1294,6 +1294,7 @@ static void vdec_stop_streaming(struct vb2_queue *q)
 	vdec_pm_get_put(inst);
 
 	mutex_lock(&inst->lock);
+	WRITE_ONCE(inst->stopping, true);
 
 	if (q->type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE)
 		ret = vdec_stop_capture(inst);
@@ -1311,6 +1312,7 @@ static void vdec_stop_streaming(struct vb2_queue *q)
 		inst->streamon_cap = 0;
 
 unlock:
+	WRITE_ONCE(inst->stopping, false);
 	mutex_unlock(&inst->lock);
 }
 
@@ -1446,6 +1448,42 @@ static void vdec_buf_done(struct venus_inst *inst, unsigned int buf_type,
 	vbuf->flags = flags;
 	vbuf->field = V4L2_FIELD_NONE;
 	vb = &vbuf->vb2_buf;
+
+	if (type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE &&
+	    buf_type == inst->opb_buftype &&
+	    (hfi_flags & HFI_BUFFERFLAG_DROP_FRAME) &&
+	    !(hfi_flags & (HFI_BUFFERFLAG_DATACORRUPT | HFI_BUFFERFLAG_EOS |
+			   HFI_BUFFERFLAG_EOSEQ | HFI_BUFFERFLAG_READONLY)) &&
+	    !(flags & (V4L2_BUF_FLAG_LAST | V4L2_BUF_FLAG_ERROR)) &&
+	    !READ_ONCE(inst->error) && !READ_ONCE(inst->session_error) &&
+	    !test_bit(0, &inst->core->sys_error) &&
+	    READ_ONCE(inst->codec_state) == VENUS_DEC_STATE_DECODING &&
+	    READ_ONCE(inst->streamon_out) && READ_ONCE(inst->streamon_cap) &&
+	    !READ_ONCE(inst->stopping) && !READ_ONCE(inst->drain_active) &&
+	    !READ_ONCE(inst->next_buf_last) &&
+	    vb->state == VB2_BUF_STATE_ACTIVE &&
+	    !(READ_ONCE(to_venus_buffer(vbuf)->flags) & HFI_BUFFERFLAG_READONLY)) {
+		struct venus_buffer *buf = to_venus_buffer(vbuf);
+
+		/*
+		 * Firmware discarded this OPB, even if it reports a payload.
+		 * Recycle before consuming the displayed frame's timestamp
+		 * metadata or assigning a capture sequence number.
+		 * The callback must not wait for inst->lock: STREAMOFF holds
+		 * it while waiting for flush replies on this same IRQ thread.
+		 */
+		dev_dbg(inst->core->dev_dec,
+			"dec: recycle DROP_FRAME: input %p4cc tag %u bytesused %u hfi_flags %#x flags %#x timestamp_us %llu\n",
+			&inst->fmt_out->pixfmt, tag, bytesused, hfi_flags,
+			flags, timestamp_us);
+		vb2_set_plane_payload(vb, 0, 0);
+		vb->planes[0].data_offset = 0;
+		vb->timestamp = 0;
+		v4l2_m2m_buf_queue(inst->m2m_ctx, vbuf);
+		smp_store_release(&buf->requeue, true);
+		schedule_work(&inst->delayed_process_work);
+		return;
+	}
 
 	if (type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
 		vb2_set_plane_payload(vb, 0, bytesused);
@@ -1784,6 +1822,8 @@ static int vdec_close(struct file *file)
 	struct venus_inst *inst = to_inst(file);
 
 	vdec_pm_get(inst);
+	WRITE_ONCE(inst->stopping, true);
+	synchronize_irq(inst->core->irq);
 	cancel_work_sync(&inst->delayed_process_work);
 	venus_close_common(inst, file);
 	ida_destroy(&inst->dpb_ids);
