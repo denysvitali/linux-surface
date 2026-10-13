@@ -12,6 +12,7 @@
 #include <linux/interrupt.h>
 #include <linux/ktime.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
@@ -116,6 +117,7 @@ struct cci_master {
 	struct completion irq_complete;
 	struct cci *cci;
 	bool xfer_in_flight;
+	bool timeout_recovered;
 	atomic64_t xfer_start;
 	atomic64_t last_xfer_end;
 };
@@ -134,6 +136,7 @@ struct cci {
 	const struct cci_data *data;
 	struct clk_bulk_data *clocks;
 	int nclocks;
+	struct mutex lock;
 	struct cci_master master[NUM_MASTERS];
 	atomic64_t last_init_reset;
 	atomic64_t last_reset_request;
@@ -471,7 +474,7 @@ static int cci_run_queue(struct cci *cci, u8 master, u8 queue)
 	if (!wait_for_completion_timeout(&cci->master[master].irq_complete,
 					 CCI_TIMEOUT)) {
 		cci_log_timeout(cci, master, queue);
-		cci_reset(cci);
+		cci->master[master].timeout_recovered = !cci_reset(cci);
 		return -ETIMEDOUT;
 	}
 
@@ -590,12 +593,19 @@ static int cci_xfer(struct i2c_adapter *adap, struct i2c_msg msgs[], int num)
 {
 	struct cci_master *cci_master = i2c_get_adapdata(adap);
 	struct cci *cci = cci_master->cci;
+	bool retried = false;
+	u8 retry_queue = QUEUE_0;
 	int i, ret;
 
 	ret = pm_runtime_get_sync(cci->dev);
 	if (ret < 0)
 		goto err;
 
+	/* Timeout recovery resets both masters, including their queued commands. */
+	mutex_lock(&cci->lock);
+
+retry:
+	cci_master->timeout_recovered = false;
 	atomic64_set(&cci_master->xfer_start, ktime_to_ns(ktime_get()));
 	WRITE_ONCE(cci_master->xfer_in_flight, true);
 	for (i = 0; i < num; i++) {
@@ -612,11 +622,36 @@ static int cci_xfer(struct i2c_adapter *adap, struct i2c_msg msgs[], int num)
 			break;
 	}
 
+	if (!retried && ret == -ETIMEDOUT && cci_master->timeout_recovered) {
+		/*
+		 * Replay the whole list once after successful controller recovery,
+		 * as adapter retries do. A write that reached the slave before the
+		 * timeout (or an earlier message) will be replayed too; recovery
+		 * cannot undo slave-side effects. Keep this local so recovery,
+		 * replay and the PM reference stay under the controller lock.
+		 */
+		retry_queue = msgs[i].flags & I2C_M_RD ? QUEUE_1 : QUEUE_0;
+		retried = true;
+		goto retry;
+	}
+
+	if (retried) {
+		if (ret < 0)
+			dev_warn_ratelimited(cci->dev,
+				"SPX cci-retry: master=%u queue=%u result=%d\n",
+				cci_master->master, retry_queue, ret);
+		else
+			dev_warn_ratelimited(cci->dev,
+				"SPX cci-retry: master=%u queue=%u result=ok\n",
+				cci_master->master, retry_queue);
+	}
+
 	if (!ret)
 		ret = num;
 
 	atomic64_set(&cci_master->last_xfer_end, ktime_to_ns(ktime_get()));
 	WRITE_ONCE(cci_master->xfer_in_flight, false);
+	mutex_unlock(&cci->lock);
 err:
 	pm_runtime_put_autosuspend(cci->dev);
 
@@ -683,6 +718,7 @@ static int cci_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	cci->dev = dev;
+	mutex_init(&cci->lock);
 	atomic64_set(&cci->last_init_reset, 0);
 	atomic64_set(&cci->last_reset_request, 0);
 	atomic64_set(&cci->last_reset_ack, 0);
@@ -816,7 +852,9 @@ static void cci_remove(struct platform_device *pdev)
 		if (cci->master[i].cci) {
 			i2c_del_adapter(&cci->master[i].adap);
 			of_node_put(cci->master[i].adap.dev.of_node);
+			mutex_lock(&cci->lock);
 			cci_halt(cci, i);
+			mutex_unlock(&cci->lock);
 		}
 	}
 }
