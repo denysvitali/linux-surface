@@ -1,42 +1,40 @@
 ---
 name: spx-port
-description: Coordinate the Surface Pro X mainline port. Use when the user asks to continue the port, work through the checklist, or run the port with agents. Optional argument - a checklist ID to work on instead of the current blocker.
+description: Coordinate the Surface Pro X mainline port using the generated automatic hardware checklist, per-boot validation and one current defect.
 ---
 
 # SPX port coordinator
 
-You own the checklist, the build directory, the device and every decision.
-Read `AGENTS.md` and `TODO.md` first. The other playbooks are `spx-blocker`,
-`spx-trial`, `spx-human-session` and `spx-status`.
+You own the generated checklist, build directory, device and every reboot.
+Read `AGENTS.md`, `TODO.md`, `AUTO-HW-CHECKLIST.md` and the newest
+`LOCAL-PROGRESS.md` entry first.
 
 ## Loop
 
-1. **Status.** Run `tools/spx/progress`. If it reports the checklist is not
-   frozen, fix that before anything else (move the sub-boxes to the result
-   files or the history file).
-2. **Human session.** User deferred hands-on checks until the end on
-   2026-10-13. Do not ask during porting; retain missing observations in
-   `TODO.md` and leave their boxes open. Follow `spx-human-session` when the
-   user starts the final checks. Do not replace them with automated tests.
-3. **Blocker.** Take the current blocker from `TODO.md`, or the ID the user
-   gave. Follow `spx-blocker`. Do not pick a different feature because it is
-   easier or testable without a person.
-4. **Agents, only if they help the blocker.** One `spx-researcher` for a brief,
-   then one `spx-porter` (with `isolation: "worktree"`) per independent patch.
-   At most four at once. Read each returned diff yourself, cherry-pick it onto
-   `spx/next` and build incrementally under the build lock.
-5. **Test.** Module-only change on a running trial kernel: reload the module.
-   Otherwise one trial boot (`spx-trial`). One `spx-device-tester` at a time.
-6. **Record.** Tick the box only if its full text is met. Otherwise write the
-   one-page result file and the next hypothesis in `TODO.md`.
-7. **Report or stop.** Follow `spx-status`. Stop when `spx-blocker` says to.
+1. Run `tools/spx/progress`. Separate automatic functional passes from inventory,
+   blocked dependencies and historical full acceptance.
+2. Check this boot's hardware-validation JSON/Markdown under
+   `/var/lib/spx-boot-diagnostics/boots/<boot-id>/hw-validation/`. If missing or
+   incomplete, run the canonical suite before choosing another experiment.
+   It must run after baseline, trial and recovery boots, not only trial boots.
+3. Use the generated automatic failures and `TODO.md` to work the current
+   defect in depth (`spx-blocker`). Keep missing driver/DT/userspace support,
+   tools/fixtures and known unsafe paths distinct. Do not silently drop a feature.
+4. Delegate independent bounded work. For this user-requested validation rework,
+   ten agents are allowed; ordinary kernel porting uses at most four offline
+   agents unless the user specifies otherwise. Only you integrate/build/reboot;
+   one device tester holds the device lock. No bookkeeping review agents.
+5. Prefer module changes over reboots. Built-in/DTB/initramfs changes use
+   `tools/spx/trial.py` and `spx-trial`. Do not unload MSM.
+6. After changes, rerun affected functional checks; after every boot run the
+   whole safely automatic catalog. Record blocked unsafe tests instead of
+   attempting them. Generate `AUTO-HW-CHECKLIST.md` from the actual report;
+   never tick it by hand or close historical acceptance from inventory.
+7. Report precisely (`spx-status`) or stop when there is no safe untested
+   hypothesis/prerequisite. Do not invent test variants to create progress.
 
-## Limits
-
-- Only you build, integrate, tick boxes and reboot. Agents never reboot.
-- Reboot rules are in `AGENTS.md`. In Claude Code, also ask the user before
-  each reboot unless they gave the go-ahead in this session.
-- No agents that review manifests, re-hash artifacts or check another agent's
-  bookkeeping.
-- Ask before a test that makes sound or captures camera or microphone data,
-  unless `AGENTS.md` already authorizes that run.
+Manual tests are excluded from this work queue. A human can use `../validation`
+or `spx-human-session` when they want; do not prompt or wait for them. Physical
+behaviour is not established by synthetic input or automatic enumeration.
+Sound, camera/microphone capture, battery tests and parked encoder work retain
+all restrictions in `AGENTS.md`.

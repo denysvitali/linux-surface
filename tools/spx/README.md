@@ -1,9 +1,10 @@
 # Surface Pro X trial tool
 
-## Read-only hardware gap report
+## Automatic hardware validation
 
-The validator is standalone Go, with no Python or sibling runtime dependency.
-Build and test it in its own module:
+`tools/spx/hw-validation` is the canonical suite (Go standard library, no sibling
+runtime dependency). It replaces the duplicate `../hw-validation` automatic
+suite. `../validation` remains only a voluntary physical-test UI.
 
 ```sh
 cd tools/spx/hw-validation
@@ -11,21 +12,34 @@ go test ./...
 go build -o /tmp/spx-hw-validation .
 ```
 
-From the kernel repository root, run:
+From the repository root:
 
 ```sh
+/tmp/spx-hw-validation --repo . --list
 /tmp/spx-hw-validation --repo . --output /tmp/spx-hardware
 ```
 
-Markdown and JSON include current boot/kernel identity, cached interface
-observations, kernel configuration and every remaining requirement from the
-frozen `PORT-CHECKLIST.md`. It never ticks boxes. It takes the shared device
-lock; missing tools and unreadable evidence remain unknown. Suspected gaps
-are leads, not hardware-failure verdicts. No active tests, camera probing,
-capture, raw sensor sampling, EGL contexts, sound, load, sleep, module changes
-or reboots run. The sibling `../validation` app supplies hands-on tests;
-`../hw-validation` informed the probe design but is not required to run.
-Use `TODO.md` for blocker order and current findings.
+The catalog generates `AUTO-HW-CHECKLIST.md`; never edit its rows or tick it by
+hand. Per-boot JSON/Markdown records actual functional passes, inventory
+observations, blocked prerequisites, failures and errors. Enumeration does not
+prove working hardware; hardware acceleration must reject software fallback.
+No manual checks are in this list. Historical full acceptance remains in
+`PORT-CHECKLIST.md`, separately.
+
+Install the persistent boot hook using the commands in
+[hw-validation/README.md](hw-validation/README.md). Baseline, trial and recovery
+boots must each record validation under
+`/var/lib/spx-boot-diagnostics/boots/<boot-id>/hw-validation/` before the next
+experiment. Missing runner/permissions or a busy lock must be recorded and
+resolved, not silently skipped. Normal promoted baseline boots still have no
+trial workloads or automatic return; this safe validation is separate.
+
+Default checks include Wi-Fi/BT scans, disposable-file I/O and safe hardware
+queries. They do not disconnect network clients, change modes/policy/drivers,
+suspend, reboot or run battery/thermal stress tests. Known unsafe encoder and
+parked audio paths stay blocked. Capture requires announced explicit opt-in and
+must discard private data. See the canonical README for media/tool prerequisites
+and exact tested scope; missing fixtures are not passes.
 
 Use `trial.py` for preparation, installation, one-shot boot and bounded return.
 It reuses the completed kernel at

@@ -1,0 +1,160 @@
+# Automatic Surface Pro X hardware checks
+
+This Go 1.22 tool runs bounded automatic checks. It does not parse or edit
+`PORT-CHECKLIST.md`. `AUTO-HW-CHECKLIST.md` is the active automatic completion
+list, generated entirely from the catalog and report outcomes. All checks
+remain visible when blocked or unsupported. There are no manual conditions.
+
+A check being implemented means the validator can attempt it. It does **not**
+mean a driver is implemented or that the fitted hardware works.
+
+## Run
+
+From the repository root:
+
+```sh
+go -C tools/spx/hw-validation run . --repo "$PWD" --output /var/tmp/spx-auto-hw
+```
+
+This writes `/var/tmp/spx-auto-hw.json`, `/var/tmp/spx-auto-hw.md`, and
+`AUTO-HW-CHECKLIST.md`. The existing `--repo PATH --output BASE` invocation
+continues to work. `.json` or `.md` on BASE is optional. Without `--output`,
+reports go to `tools/spx/boot-diagnostics/auto-hw-DATE-BOOT.json` and `.md`.
+A report stores the run date and boot/kernel identity before and after checks.
+Keep report basenames distinct when keeping multiple runs.
+
+| Flag | Meaning |
+| --- | --- |
+| `--repo PATH` | Repository root; default current directory. |
+| `--user USER` | Explicit existing desktop session user for selected session commands. No fixed UID or guessed account. |
+| `--output BASE` | JSON/Markdown report basename. With `--checklist`, source saved JSON. |
+| `--list` | Print catalog IDs, areas, kinds and titles. No tests, commands, locks or hardware reads. |
+| `--list-json` | Print current catalog metadata as JSON, with validator implementation meaning. |
+| `--from-report JSON` | Generate checklist from saved report and matching current catalog, preserving date and boot. Catalog changes require a new run. |
+| `--checklist` | Generate checklist only. No tests, commands, locks or hardware reads. Without `--output`, every row is marked not run. |
+| `--checklist-path PATH` | Override `<repo>/AUTO-HW-CHECKLIST.md`. |
+| `--root PATH` | Fixture filesystem root; disables all external commands and live locking, even for `--root /`. |
+| `--capture` | Allow minimal bounded camera/microphone capture. An announcement is printed; data is discarded. Does not authorize speaker playback. |
+| `--media PATH` | Existing media fixture for bounded decoder-only checks. No encoder trials. |
+| `--storage-dir PATH` | Directory for bounded disposable-file storage checks; never raw-device writes. |
+
+Regenerate exactly the saved boot's checklist, preserving its date:
+
+```sh
+go -C tools/spx/hw-validation run . --repo "$PWD" --checklist --output /var/tmp/spx-auto-hw
+```
+
+`--checklist` alone creates an unrun catalog, not a success report. It will
+replace the active checklist with unchecked rows; use a separate
+`--checklist-path` if the current run should be preserved.
+
+## Automatic checks on every boot
+
+Build the userspace binary, then install the existing boot wrapper and service:
+
+```sh
+go -C tools/spx/hw-validation build -o /var/tmp/spx-hw-validation .
+sudo python3 tools/spx/boot-diagnostics/automatic-validation.py install \
+  --repo "$PWD" --binary /var/tmp/spx-hw-validation --user dvitali \
+  --media /absolute/path/to/verified-public-h264.mp4 \
+  --storage-dir /var/lib/spx-boot-diagnostics
+```
+
+Replace the example media path with the existing verified decoder fixture.
+`--user` selects the actual desktop account; it does not change root hardware
+probes. Windowless GTK rendering imports only `WAYLAND_DISPLAY`, `DISPLAY`,
+and `XAUTHORITY` from that existing user manager via read-only `show-environment`;
+no display socket is guessed and no other environment values are retained.
+The installer writes `/etc/spx/hw-validation.json` with `repo`, `user`,
+`media`, and `storage_dir`, preserving previously selected optional values.
+The binary and wrapper live in `/usr/local/lib/spx-boot-diagnostics/`.
+`spx-hw-validation.service` is enabled for future boots; installation does not
+start tests, reboot, change boot selections, or modify recovery timers.
+
+Each boot writes private evidence under
+`/var/lib/spx-boot-diagnostics/boots/<boot-id>/hw-validation/`: `report.json`,
+`report.md`, `checklist.md`, and `runner.json`/`runner.md`. Successful report
+generation updates the repository's active checklist without rerunning checks.
+A busy device lock defers this same boot for 60 seconds. A missing executable,
+configuration, tool, fixture, permission or desktop session is reported
+explicitly; the wrapper does not install tools or repair services. Read private
+reports with the required privilege; progress may read their generated public
+checklist summary without duplicating outcomes.
+
+Boot checks keep capture disabled and do not play sound. Cameras therefore
+remain blocked without explicit capture authorization. Native microphone
+stimulus, speaker output and parked audio lifecycle checks can remain blocked
+even with `--capture`: that flag does not supply a stimulus, authorize playback,
+or remove the parked DSP restrictions. Encoder trials remain blocked. Missing
+`cam`, `ffmpeg`, `eglinfo`, `vulkaninfo`, GL/GLES render tools, `gtk4-rendernode-tool`,
+`pactl`, or other feature tools are concrete blockers, not hardware absence.
+
+## Outcomes
+
+- `pass`: a functional check completed its stated workload. Only this outcome
+  ticks a generated checkbox.
+- `observed`: interface/service inventory, or observation without functional
+  proof. Inventory rows have no checkbox and never return `pass`.
+- `blocked`: missing kernel/userspace support, permission, tool, service or
+  fixture. The detail states the reason. A missing node does not prove
+  hardware absence.
+- `fail`: a recognized functional malfunction.
+- `error`: validator error or invalid outcome. Inventory cannot return `pass`.
+
+All outcomes are recorded, even if another check fails. Failed/error checks
+cause exit 1 after reports are written. Infrastructure/CLI errors cause exit 2.
+A busy shared device lock causes exit 75, with no checks run. Blocked checks remain
+incomplete but alone do not cause a failed run. Unavailable or changed
+boot/kernel identity is a report error; mixed-boot results are never accepted.
+Functional counts are independent of the historical full acceptance list.
+They must not be reported as 47-box acceptance counts.
+
+Live runs acquire/release `tools/spx/spx-lock` for the device. Each command has
+an in-memory output cap and a process-group timeout: normally 20 seconds, 60 seconds for
+media/graphics tools, 10 seconds for locking. Feature commands also use their
+own shorter workload bounds. No raw command output is saved. Feature results
+must be concise summaries, without MAC/IP/SSID, device serials or private
+capture data; report formatting adds address/identifier redaction as a safety
+net. Commands must not toggle/disconnect radios, modeset or reload MSM,
+read unsafe debugfs/MMIO, suspend, reboot, load modules, test the battery or
+run parked encoders. Sound is not authorized by these flags.
+
+## Fixture contract and tests
+
+`--root PATH` maps logical `/proc`, `/sys`, etc. to PATH. `AutoContext.Read`
+returns trimmed text and replaces NULs with spaces. `ReadBytes` preserves
+binary EFI/EDID data. `Glob` returns logical
+absolute paths suitable for `Read`. Fixture paths and symlinks cannot escape
+the root. Put fixture boot identity in:
+
+```text
+proc/sys/kernel/random/boot_id
+proc/sys/kernel/osrelease
+```
+
+CLI fixtures never execute commands, native CPU/storage workloads, or take the live device lock. Unit tests
+may explicitly inject `AutoContext.Run` with predetermined command responses.
+This is not live hardware evidence. Fixture reports are labeled `fixture: true`.
+Fixture runs without `--checklist-path` write `BASE-CHECKLIST.md` beside the
+report, never the active real checklist. An explicit `--checklist-path` opts
+into writing that selected path.
+
+```sh
+go -C tools/spx/hw-validation test ./...
+```
+
+Markdown includes `Report JSON: [JSON](ABSOLUTE_PATH)` for consumers such as progress.
+`meta.report_json` stores the same pointer; it is not a second outcome store.
+
+JSON contains `meta`, `coverage`, `catalog`, `results`, `counts`, and optional
+report-level `errors`. Each catalog entry includes ID/title/area/kind,
+historical box references, and validator implementation meaning. Outcomes
+match catalog order and IDs. Markdown is derived from these fields, for example:
+
+```markdown
+- [x] **storage.io — Disposable-file integrity** (functional; pass): read/write/fsync checksum matched
+- [ ] **camera.capture — Bounded capture** (functional; blocked): --capture not enabled
+- **network.inventory — Network interfaces** (inventory; observed): wireless interfaces=1
+```
+
+These examples describe semantics, not results on this device.

@@ -1,5 +1,11 @@
 # Surface Pro X mainline port checklist
 
+> Historical full acceptance, including voluntary physical checks. Since the
+> user's 2026-10-13 guidance rework, active automatic implementation and
+> regression results are generated in [AUTO-HW-CHECKLIST.md](AUTO-HW-CHECKLIST.md).
+> These 47 boxes are retained as history, not prerequisites for the automatic
+> checklist. Automatic passes never imply that their physical portions passed.
+
 **Goal: run mainline Linux on this device with every fitted hardware feature
 working.** Acceptance is the 47 boxes below. **Closed: 3 of 47**
 (B02, B03, D02).

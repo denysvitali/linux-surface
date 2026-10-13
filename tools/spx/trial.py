@@ -129,6 +129,7 @@ def promote(args):
         assert sha(source / name) == digest, name
     entry = (OUT / 'entry.cfg').read_text()
     assert entry == Path('/boot/grub/custom.cfg').read_text()
+    ensure_automatic_validation()
     entry = entry.replace('SPX bounded boot diagnostic ' + ATTEMPT,
                           'Surface Pro X mainline ' + RELEASE)
     entry = entry.replace('spx-trial-' + ATTEMPT, 'spx-mainline')
@@ -172,8 +173,8 @@ def promote(args):
     subprocess.run(['systemctl', 'disable', '--now',
                     'spx-trial-return@' + ATTEMPT + '.timer',
                     'spx-trial-check@' + ATTEMPT + '.timer'], check=True)
-    # The checker changes CPU policy and probes devices: it is a trial workload,
-    # not a passive boot logger. Promoted boots use the ordinary journal only.
+    # Stop the legacy trial workload. The persistent automatic validator remains
+    # enabled on baseline, trial and manual recovery boots without return timers.
     recovery()
     os.sync()
     if backup.exists():
@@ -486,6 +487,15 @@ def verify_retained_modules(prepared, modules):
         assert 'spx_boot=known-good' in words
 
 
+def ensure_automatic_validation():
+    """Enable one reusable per-boot runner; never start tests during installation."""
+    installer = HERE / 'boot-diagnostics/automatic-validation.py'
+    if not installer.is_file():
+        installer = HERE / 'automatic-validation.py'
+    subprocess.run(['/usr/bin/python3', '-B', str(installer), 'install',
+                    '--repo', str(REPO)], check=True)
+
+
 def install(args):
     os.umask(63)
     assert os.geteuid() == 0
@@ -512,6 +522,7 @@ def install(args):
         verify_retained_modules(prepared, modules)
     space = os.statvfs('/boot')
     assert space.f_bavail * space.f_frsize > sum((f.stat().st_size for f in payloads.values())) + 1048576
+    ensure_automatic_validation()
     unit_dir = Path('/etc/systemd/system')
     service = '[Unit]\nDescription=Capture mainline functional test and return to known-good\nConditionKernelCommandLine=spx_attempt=%i\nAfter=local-fs.target\nRequiresMountsFor=/var/lib/spx-boot-diagnostics /boot\n\n[Service]\nType=oneshot\nExecStart=/usr/bin/python3 -B /usr/local/lib/spx-boot-diagnostics/trial.py return %i\nTimeoutStartSec=120\n'.format(ATTEMPT=ATTEMPT)
     timer = '[Unit]\nDescription=Bounded mainline functional test return\nConditionKernelCommandLine=spx_attempt=%i\n\n[Timer]\nOnBootSec=900\nAccuracySec=1\nUnit=spx-trial-return@%i.service\n\n[Install]\nWantedBy=timers.target\n'.format(ATTEMPT=ATTEMPT)

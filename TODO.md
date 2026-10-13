@@ -1,5 +1,38 @@
 # SPX port: what to do next
 
+## Current request: automatic hardware coverage (2026-10-13)
+
+Use `tools/spx/hw-validation` after every baseline, trial and recovery boot.
+Generate `AUTO-HW-CHECKLIST.md` from its catalog and that boot's JSON report;
+check the recorded result before choosing another experiment. It is the active
+implementation/regression checklist. `PORT-CHECKLIST.md` below is historical
+full acceptance, not the automatic work queue. Manual tests are excluded and
+are voluntary when a human wants them; do not prompt or wait for them.
+
+- Canonical suite and persistent `spx-hw-validation.service` are installed.
+  Current-boot result: `/var/lib/spx-boot-diagnostics/boots/<boot-id>/hw-validation/`;
+  its catalog/results generate the active checklist. This is validator coverage,
+  not a claim that all fitted drivers/features are implemented.
+- Next port defect: the current boot reports `spx-sensors.service` failed and
+  SensorProxy inactive; light reads work, but the SDSP motion path is not
+  delivered. Diagnose the existing service failure from its logs before changing
+  kernel/DT. Native speaker feeder is also failed and desktop audio inactive;
+  preserve parked mappings and sound permissions, record it as a real gap.
+- Missing support, missing tools/fixtures and known unsafe paths stay separate
+  blocked results, never passes or omitted rows. Wi-Fi/BT scans and one H264
+  decode fixture do not establish all networking/codec/lifecycle support.
+  Keep manual checks outside the active automatic queue.
+- Known limits remain: Vulkan GMEM corruption (sysmem workaround, not root fix),
+  encoder CVP faults/resets (no retry), cellular IPA/WWAN/provisioning gaps,
+  parked audio/DSP lifetime restrictions, camera package/DT integration and
+  unavailable accessories. Battery/load tests stay deferred. Do not claim
+  complete support from successful H264 decode or a service being active.
+
+The feature notes below retain earlier evidence and safety limits. References
+there to human-blocked acceptance or a frozen 47-box queue do not apply to the
+new automatic checklist. Do not tick historical boxes from inventory.
+
+
 Boxes closed: 3 of 47 (B02, B03, D02). Run `tools/spx/progress` for the
 current number. The order below is set by the user; agents do not reorder it.
 

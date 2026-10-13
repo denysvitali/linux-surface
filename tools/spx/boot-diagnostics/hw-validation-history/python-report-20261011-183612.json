@@ -1,0 +1,747 @@
+{
+ "meta": {
+  "date": "2026-10-11T18:36:12+02:00",
+  "kernel": "7.3.0-rc2-spx-mainline-20261004bg+",
+  "boot_id": "c8158f7d-3e2d-40d5-8ac4-e8f8245b932a",
+  "active": true,
+  "camera": false
+ },
+ "summary": {
+  "PASS": 35,
+  "WARN": 14,
+  "FAIL": 13,
+  "MANUAL": 18,
+  "SKIP": 1
+ },
+ "results": [
+  {
+   "id": "plat.model",
+   "area": "Platform",
+   "spec": "SoC/board",
+   "box": "F01",
+   "title": "Device tree identifies Surface Pro X",
+   "status": "PASS",
+   "detail": "Microsoft Surface Pro X (SQ2), kernel 7.3.0-rc2-spx-mainline-20261004bg+"
+  },
+  {
+   "id": "cpu.cores",
+   "area": "Platform",
+   "spec": "Microsoft SQ1/SQ2, 8 cores",
+   "box": "B03",
+   "title": "All 8 CPU cores online",
+   "status": "PASS",
+   "detail": "online=0-7 usable=8"
+  },
+  {
+   "id": "cpu.freq",
+   "area": "Platform",
+   "spec": "Microsoft SQ1/SQ2",
+   "box": "B03",
+   "title": "CPU frequency scaling unrestricted",
+   "status": "PASS",
+   "detail": "policy0 schedutil max 1766400/1766400 kHz; policy4 schedutil max 3148800/3148800 kHz"
+  },
+  {
+   "id": "mem.total",
+   "area": "Platform",
+   "spec": "8 or 16 GB LPDDR4x",
+   "box": "B03",
+   "title": "Full RAM visible",
+   "status": "PASS",
+   "detail": "15.01 GiB"
+  },
+  {
+   "id": "storage.nvme",
+   "area": "Storage",
+   "spec": "128/256/512 GB SSD",
+   "box": "B02",
+   "title": "NVMe SSD present",
+   "status": "PASS",
+   "detail": "nvme0n1 HFM256GDGTNG-87A0A 256 GB"
+  },
+  {
+   "id": "storage.rw",
+   "area": "Storage",
+   "spec": "SSD",
+   "box": "B02",
+   "title": "File write/fsync/readback checksum",
+   "status": "PASS",
+   "detail": "4 MiB sha256 match"
+  },
+  {
+   "id": "storage.space",
+   "area": "Storage",
+   "spec": "SSD",
+   "box": "B02",
+   "title": "Root filesystem has free space",
+   "status": "FAIL",
+   "detail": "76 MiB free on /"
+  },
+  {
+   "id": "fw.remoteproc",
+   "area": "Firmware services",
+   "spec": "ADSP/CDSP/modem/SLPI",
+   "box": "B04",
+   "title": "All four remote processors running",
+   "status": "PASS",
+   "detail": "adsp=running cdsp=running modem=running slpi=running"
+  },
+  {
+   "id": "fw.services",
+   "area": "Firmware services",
+   "spec": "ADSP/CDSP/modem/SLPI",
+   "box": "B04",
+   "title": "Qualcomm userspace helpers active",
+   "status": "PASS",
+   "detail": "pd-mapper=active rmtfs=active tqftpserv=active"
+  },
+  {
+   "id": "rtc.present",
+   "area": "Firmware services",
+   "spec": "RTC",
+   "box": "B05",
+   "title": "RTC present and agrees with system time",
+   "status": "PASS",
+   "detail": "rtc0 (surface_rtc) +0s; rtc1 (rtc-pm8xxx) -1763697408s"
+  },
+  {
+   "id": "rtc.retention",
+   "area": "Firmware services",
+   "spec": "RTC",
+   "box": "B05",
+   "title": "Clock survives power-off without network time",
+   "status": "MANUAL",
+   "detail": "power off, wait, boot offline, compare clock"
+  },
+  {
+   "id": "tpm.present",
+   "area": "Firmware services",
+   "spec": "Firmware TPM",
+   "box": "B06",
+   "title": "TPM 2.0 device with readable PCRs",
+   "status": "PASS",
+   "detail": "TPM 2, PCR0 4841698A6FEE2639"
+  },
+  {
+   "id": "tpm.secureboot",
+   "area": "Firmware services",
+   "spec": "BitLocker/Secure Boot",
+   "box": "B06",
+   "title": "Secure Boot state readable",
+   "status": "PASS",
+   "detail": "SecureBoot=0"
+  },
+  {
+   "id": "accel.cdsp",
+   "area": "Firmware services",
+   "spec": "Hexagon compute DSP / NPU",
+   "box": "B07",
+   "title": "CDSP compute interface (FastRPC) exposed",
+   "status": "FAIL",
+   "detail": "no /dev/fastrpc-cdsp*; present: fastrpc-sdsp-secure; NPU has no Linux driver"
+  },
+  {
+   "id": "disp.panel",
+   "area": "Display, GPU, video",
+   "spec": "13in PixelSense 2880x1920",
+   "box": "D01",
+   "title": "Internal panel connected at native mode",
+   "status": "WARN",
+   "detail": "connected mode=2880x1920 enabled=disabled dpms=Off (panel not scanning out now; lid/cover or display settings)"
+  },
+  {
+   "id": "disp.backlight",
+   "area": "Display, GPU, video",
+   "spec": "Display brightness",
+   "box": "D01",
+   "title": "Backlight control present",
+   "status": "PASS",
+   "detail": "backlight 1256/4095"
+  },
+  {
+   "id": "disp.visual",
+   "area": "Display, GPU, video",
+   "spec": "13in PixelSense 2880x1920",
+   "box": "D01",
+   "title": "Image quality and brightness range by eye",
+   "status": "MANUAL",
+   "detail": "look for flicker/corruption, sweep brightness, blank/unblank, return after suspend"
+  },
+  {
+   "id": "gpu.render",
+   "area": "Display, GPU, video",
+   "spec": "Adreno 685/690",
+   "box": "D02",
+   "title": "Hardware GL renderer (not llvmpipe)",
+   "status": "PASS",
+   "detail": "renderers: FD680, llvmpipe (LLVM 22.1.8, 128 bits)"
+  },
+  {
+   "id": "gpu.devfreq",
+   "area": "Display, GPU, video",
+   "spec": "Adreno 685/690",
+   "box": "P02",
+   "title": "GPU frequency scaling present",
+   "status": "PASS",
+   "detail": "2c00000.gpu userspace, cur 461000000 Hz"
+  },
+  {
+   "id": "video.codec",
+   "area": "Display, GPU, video",
+   "spec": "Hardware video decode/encode",
+   "box": "D03",
+   "title": "Venus decoder/encoder nodes registered",
+   "status": "FAIL",
+   "detail": "no codec video nodes; modules loaded: none"
+  },
+  {
+   "id": "in.touch",
+   "area": "Input",
+   "spec": "10-point multi-touch",
+   "box": "I01,I02",
+   "title": "Touchscreen device and iptsd running",
+   "status": "PASS",
+   "detail": "input=True iptsd=active"
+  },
+  {
+   "id": "in.touch.real",
+   "area": "Input",
+   "spec": "10-point multi-touch",
+   "box": "I02",
+   "title": "Real taps, drags, edges, multi-touch gestures",
+   "status": "MANUAL",
+   "detail": "touch the screen; repeat after blank and suspend"
+  },
+  {
+   "id": "in.pen",
+   "area": "Input",
+   "spec": "Surface Pen (MPP)",
+   "box": "I03",
+   "title": "Stylus input device present",
+   "status": "PASS",
+   "detail": "spi 045E:0C21 Stylus, IPTSD Virtual Stylus 045E:0C21"
+  },
+  {
+   "id": "in.pen.real",
+   "area": "Input",
+   "spec": "Surface Pen (MPP)",
+   "box": "I03",
+   "title": "Pen position, pressure, tilt, hover, buttons, eraser",
+   "status": "MANUAL",
+   "detail": "draw with the pen; check palm rejection and behaviour after resume"
+  },
+  {
+   "id": "in.keyboard",
+   "area": "Input",
+   "spec": "Surface Pro X Keyboard",
+   "box": "I04",
+   "title": "Type Cover keyboard enumerated",
+   "status": "PASS",
+   "detail": "Microsoft Surface 045E:09AE Keyboard, Microsoft Surface 045E:09B0 Keyboard"
+  },
+  {
+   "id": "in.kbd_backlight",
+   "area": "Input",
+   "spec": "Surface Pro X Keyboard",
+   "box": "I04",
+   "title": "Keyboard backlight control",
+   "status": "WARN",
+   "detail": "no kbd_backlight LED class device"
+  },
+  {
+   "id": "in.touchpad",
+   "area": "Input",
+   "spec": "Surface Pro X Keyboard",
+   "box": "I05",
+   "title": "Type Cover touchpad enumerated",
+   "status": "PASS",
+   "detail": "Microsoft Surface 045E:09AF Touchpad"
+  },
+  {
+   "id": "in.cover.real",
+   "area": "Input",
+   "spec": "Surface Pro X Keyboard",
+   "box": "I04,I05",
+   "title": "Typing, Fn/media keys, gestures, detach/reattach",
+   "status": "MANUAL",
+   "detail": "type, use Fn keys and gestures, detach and reattach the cover, repeat after resume"
+  },
+  {
+   "id": "in.buttons",
+   "area": "Input",
+   "spec": "Power and volume buttons",
+   "box": "I06",
+   "title": "Power and volume button devices present",
+   "status": "PASS",
+   "detail": "power=['pm8941_pwrkey'] volume=['Volume Buttons']"
+  },
+  {
+   "id": "in.switches",
+   "area": "Input",
+   "spec": "Cover/tablet posture",
+   "box": "I06",
+   "title": "Tablet-mode and lid switches present",
+   "status": "WARN",
+   "detail": "tablet(Microsoft Surface KIP Tablet Mode Switch); no lid/cover-closed switch"
+  },
+  {
+   "id": "in.buttons.real",
+   "area": "Input",
+   "spec": "Power and volume buttons",
+   "box": "I06",
+   "title": "Buttons and posture respond to real presses",
+   "status": "MANUAL",
+   "detail": "press power/volume, fold the cover back, close the cover"
+  },
+  {
+   "id": "acc.pen",
+   "area": "Input",
+   "spec": "Slim Pen charging in keyboard",
+   "box": "I07",
+   "title": "Pen charging and accessory battery reporting",
+   "status": "MANUAL",
+   "detail": "identify keyboard/pen model; check pen battery reporting and charging cradle"
+  },
+  {
+   "id": "aud.card",
+   "area": "Audio",
+   "spec": "2W stereo speakers, dual mics",
+   "box": "A01,A02",
+   "title": "Internal sound card with playback and capture PCMs",
+   "status": "PASS",
+   "detail": "card 1: 3 playback, 3 capture PCMs"
+  },
+  {
+   "id": "aud.amps",
+   "area": "Audio",
+   "spec": "2W stereo speakers",
+   "box": "A01",
+   "title": "Both WSA881x speaker amplifiers bound",
+   "status": "WARN",
+   "detail": "2 bound, bus status UNATTACHED/UNATTACHED (amps are parked when idle; status is not an acoustic result)"
+  },
+  {
+   "id": "aud.desktop",
+   "area": "Audio",
+   "spec": "2W stereo speakers, dual mics",
+   "box": "A03",
+   "title": "Desktop audio graph has internal sink and source",
+   "status": "FAIL",
+   "detail": "PipeWire not reachable for this user (Could not connect to PipeWire)"
+  },
+  {
+   "id": "aud.feeder",
+   "area": "Audio",
+   "spec": "2W stereo speakers",
+   "box": "A03",
+   "title": "Speaker playback service healthy",
+   "status": "FAIL",
+   "detail": "spx-desktop-playback.service is failed: desktop sound does not reach the speakers"
+  },
+  {
+   "id": "aud.speakers.real",
+   "area": "Audio",
+   "spec": "2W stereo speakers",
+   "box": "A01",
+   "title": "Left/right mapping, balance, volume range, no static",
+   "status": "MANUAL",
+   "detail": "listen to a left/right test at several volumes"
+  },
+  {
+   "id": "aud.mics.real",
+   "area": "Audio",
+   "spec": "Dual far-field Studio Mics",
+   "box": "A02",
+   "title": "Known stimulus recorded on each microphone",
+   "status": "MANUAL",
+   "detail": "record speech on both mics; check routing, gain and noise"
+  },
+  {
+   "id": "aud.external",
+   "area": "Audio",
+   "spec": "USB-C / Bluetooth audio",
+   "box": "A04",
+   "title": "External audio device enumerated",
+   "status": "WARN",
+   "detail": "USB audio card present (0 [USB            ]: USB-Audio - ThinkPad Thunderb); routing/hotplug need a listener"
+  },
+  {
+   "id": "net.wifi",
+   "area": "Connectivity",
+   "spec": "Wi-Fi 5 (802.11ac)",
+   "box": "N01",
+   "title": "Wi-Fi interface up and associated",
+   "status": "PASS",
+   "detail": "ath10k_snoc, 5180.0 MHz, rx 585.1 MBit/s VHT-MCS 6 80MHz short GI VHT-NSS 2"
+  },
+  {
+   "id": "net.wifi.ping",
+   "area": "Connectivity",
+   "spec": "Wi-Fi 5 (802.11ac)",
+   "box": "N01",
+   "title": "Gateway reachable over Wi-Fi",
+   "status": "PASS",
+   "detail": "[address omitted]: 0% loss, avg 1.870 ms"
+  },
+  {
+   "id": "net.bt",
+   "area": "Connectivity",
+   "spec": "Bluetooth 5.0",
+   "box": "N02",
+   "title": "Bluetooth controller present and powered",
+   "status": "PASS",
+   "detail": "[address omitted] powered=True"
+  },
+  {
+   "id": "net.bt.real",
+   "area": "Connectivity",
+   "spec": "Bluetooth 5.0",
+   "box": "N02",
+   "title": "Pair, reconnect and use a real peripheral",
+   "status": "MANUAL",
+   "detail": "pair a HID and an audio device; toggle radio; check after resume"
+  },
+  {
+   "id": "net.wwan",
+   "area": "Connectivity",
+   "spec": "Snapdragon X24 LTE",
+   "box": "N03",
+   "title": "Cellular modem exposed as a WWAN device",
+   "status": "FAIL",
+   "detail": "netdev=none wwan ports=0 ipa module=False ModemManager=inactive"
+  },
+  {
+   "id": "net.sim",
+   "area": "Connectivity",
+   "spec": "nano-SIM + eSIM",
+   "box": "N03",
+   "title": "SIM detected, network registration, data session",
+   "status": "MANUAL",
+   "detail": "needs a SIM with service"
+  },
+  {
+   "id": "net.gnss",
+   "area": "Connectivity",
+   "spec": "Assisted GPS + GLONASS",
+   "box": "N04",
+   "title": "GNSS receiver exposed to Linux",
+   "status": "FAIL",
+   "detail": "no /sys/class/gnss device; modem QMI location service is up (no Linux consumer)"
+  },
+  {
+   "id": "usb.controllers",
+   "area": "USB-C, DisplayPort, Surface Connect",
+   "spec": "2x USB-C",
+   "box": "U01",
+   "title": "USB host controllers for both ports",
+   "status": "PASS",
+   "detail": "3 xHCI controllers (xhci-hcd.1.auto xhci-hcd.2.auto xhci-hcd.3.auto)"
+  },
+  {
+   "id": "usb.superspeed",
+   "area": "USB-C, DisplayPort, Surface Connect",
+   "spec": "2x USB-C (USB 3.x)",
+   "box": "U01",
+   "title": "A SuperSpeed device is linked",
+   "status": "WARN",
+   "detail": "4 SuperSpeed device(s), e.g. 4-1.4.4 USB3.1 Hub@10000; per-port/orientation coverage needs a person"
+  },
+  {
+   "id": "usb.typec",
+   "area": "USB-C, DisplayPort, Surface Connect",
+   "spec": "2x USB-C with PD",
+   "box": "U02",
+   "title": "Type-C ports with role/PD state for both connectors",
+   "status": "FAIL",
+   "detail": "typec ports=0 (expected 2), DT connectors=1, role switches=0"
+  },
+  {
+   "id": "usb.dp",
+   "area": "USB-C, DisplayPort, Surface Connect",
+   "spec": "USB-C DisplayPort alt mode",
+   "box": "U03",
+   "title": "DisplayPort connector for each USB-C port",
+   "status": "WARN",
+   "detail": "DP-1=connected; only one DP connector for two USB-C ports"
+  },
+  {
+   "id": "usb.dp.real",
+   "area": "USB-C, DisplayPort, Surface Connect",
+   "spec": "USB-C DisplayPort alt mode",
+   "box": "U03",
+   "title": "Monitor picture on each port, replug, extend/mirror, resume",
+   "status": "MANUAL",
+   "detail": "plug a monitor into each port and orientation"
+  },
+  {
+   "id": "usb.connect",
+   "area": "USB-C, DisplayPort, Surface Connect",
+   "spec": "Surface Connect port",
+   "box": "U04",
+   "title": "Surface Connect charging and dock (USB, Ethernet, display, audio)",
+   "status": "MANUAL",
+   "detail": "needs a Surface Connect charger and a Surface Dock"
+  },
+  {
+   "id": "cam.camss",
+   "area": "Cameras",
+   "spec": "Camera subsystem",
+   "box": "C01",
+   "title": "CAMSS media device registered",
+   "status": "PASS",
+   "detail": "qcom-camss, 79 entities"
+  },
+  {
+   "id": "cam.front",
+   "area": "Cameras",
+   "spec": "Front 5 MP, 1080p",
+   "box": "C02",
+   "title": "Front sensor (OV5693) probed and linked",
+   "status": "PASS",
+   "detail": "ov5693 5-0036, link enabled"
+  },
+  {
+   "id": "cam.rear",
+   "area": "Cameras",
+   "spec": "Rear 10 MP AF, 1080p/4K",
+   "box": "C03",
+   "title": "Rear sensor (OV13858) probed and linked",
+   "status": "PASS",
+   "detail": "ov13858 4-0010, link enabled"
+  },
+  {
+   "id": "cam.ir",
+   "area": "Cameras",
+   "spec": "Windows Hello IR camera",
+   "box": "C04",
+   "title": "IR sensor (OV7251) probed and linked",
+   "status": "PASS",
+   "detail": "ov7251 4-0060, link enabled"
+  },
+  {
+   "id": "cam.rear_af",
+   "area": "Cameras",
+   "spec": "Rear 10 MP autofocus",
+   "box": "C03",
+   "title": "Rear autofocus lens actuator present",
+   "status": "FAIL",
+   "detail": "no lens/VCM subdevice in the media graph (fixed focus only)"
+  },
+  {
+   "id": "cam.ir_led",
+   "area": "Cameras",
+   "spec": "Windows Hello IR illuminator",
+   "box": "C04",
+   "title": "IR illuminator control present",
+   "status": "FAIL",
+   "detail": "no IR illuminator LED/flash device"
+  },
+  {
+   "id": "cam.privacy_led",
+   "area": "Cameras",
+   "spec": "Camera privacy LEDs",
+   "box": "C05",
+   "title": "Front and rear privacy LEDs exposed",
+   "status": "PASS",
+   "detail": "spx:front:privacy, spx:rear:privacy"
+  },
+  {
+   "id": "cam.apps",
+   "area": "Cameras",
+   "spec": "Cameras in applications",
+   "box": "C05",
+   "title": "libcamera lists all three cameras",
+   "status": "PASS",
+   "detail": "3 cameras: 'ov7251'; Internal back camera; Internal front camera"
+  },
+  {
+   "id": "cam.frames",
+   "area": "Cameras",
+   "spec": "Cameras",
+   "box": "C02,C03,C04",
+   "title": "Each camera delivers frames (discarded)",
+   "status": "SKIP",
+   "detail": "needs --camera (captures frames)"
+  },
+  {
+   "id": "cam.real",
+   "area": "Cameras",
+   "spec": "Cameras",
+   "box": "C02,C03,C04",
+   "title": "Scene, colour, orientation, exposure; start/stop and resume",
+   "status": "MANUAL",
+   "detail": "look at a lit scene from each camera in a normal camera app"
+  },
+  {
+   "id": "sens.als",
+   "area": "Sensors",
+   "spec": "Ambient light sensor",
+   "box": "S01",
+   "title": "Ambient light sensor readable",
+   "status": "PASS",
+   "detail": "tcs3430 intensity_ir=0 intensity_x=1 intensity_y=0 intensity_z=0"
+  },
+  {
+   "id": "sens.als.desktop",
+   "area": "Sensors",
+   "spec": "Ambient light sensor",
+   "box": "S01",
+   "title": "Desktop sensor proxy reports ambient light",
+   "status": "FAIL",
+   "detail": "iio-sensor-proxy not running (inactive)"
+  },
+  {
+   "id": "sens.motion",
+   "area": "Sensors",
+   "spec": "Accelerometer, gyroscope, magnetometer",
+   "box": "S02",
+   "title": "Motion sensors exposed",
+   "status": "FAIL",
+   "detail": "IIO accel=False gyro=False magn=False; sensor proxy accelerometer=n/a; spx-sensors=inactive (sensors sit behind SLPI, opt-in service not running)"
+  },
+  {
+   "id": "sens.real",
+   "area": "Sensors",
+   "spec": "Accelerometer/ALS",
+   "box": "S01,S02",
+   "title": "Auto-rotation and auto-brightness respond to real changes",
+   "status": "MANUAL",
+   "detail": "rotate the tablet; cover and uncover the light sensor"
+  },
+  {
+   "id": "pwr.battery",
+   "area": "Battery, power, thermal",
+   "spec": "Battery 38.2 Wh",
+   "box": "P01",
+   "title": "Battery reports plausible values",
+   "status": "PASS",
+   "detail": "46% 7.64 V, full 30.6/38.2 Wh, 166 cycles, Not charging"
+  },
+  {
+   "id": "pwr.charging",
+   "area": "Battery, power, thermal",
+   "spec": "Charging (USB-C PD / Surface Connect)",
+   "box": "P01",
+   "title": "Charger state consistent with battery state",
+   "status": "WARN",
+   "detail": "AC online=1, battery Not charging at 46% (on external power but not charging)"
+  },
+  {
+   "id": "pwr.battery.real",
+   "area": "Battery, power, thermal",
+   "spec": "Battery 38.2 Wh",
+   "box": "P01,P02",
+   "title": "Discharge, charge transitions, endurance",
+   "status": "MANUAL",
+   "detail": "deferred by the user: unplug/plug tests and battery runtime"
+  },
+  {
+   "id": "pwr.suspend",
+   "area": "Battery, power, thermal",
+   "spec": "Modern standby (s2idle)",
+   "box": "P03",
+   "title": "Suspend available and usable from the desktop",
+   "status": "WARN",
+   "detail": "state=[freeze mem disk] mem_sleep=[s2idle] suspend.target=masked this boot ok=0 fail=0"
+  },
+  {
+   "id": "pwr.suspend.real",
+   "area": "Battery, power, thermal",
+   "spec": "Modern standby (s2idle)",
+   "box": "P03",
+   "title": "Ten s2idle cycles, 30 min battery sleep, wake sources",
+   "status": "MANUAL",
+   "detail": "not run automatically: a suspend that fails to wake needs a manual power cycle"
+  },
+  {
+   "id": "pwr.hibernate",
+   "area": "Battery, power, thermal",
+   "spec": "Hibernate",
+   "box": "P04",
+   "title": "Hibernation prerequisites",
+   "status": "FAIL",
+   "detail": "disk state=True swap=False resume= on cmdline=False"
+  },
+  {
+   "id": "pwr.thermal",
+   "area": "Battery, power, thermal",
+   "spec": "Passive cooling (fanless)",
+   "box": "P05",
+   "title": "Thermal zones plausible, cooling devices bound",
+   "status": "PASS",
+   "detail": "28 zones, 4 cooling devices, 31-33 C"
+  },
+  {
+   "id": "pwr.idle",
+   "area": "Battery, power, thermal",
+   "spec": "Idle power",
+   "box": "P02",
+   "title": "CPU idle states and no diagnostic power overrides",
+   "status": "WARN",
+   "detail": "2 cpuidle states; overrides on cmdline: clk_ignore_unused"
+  },
+  {
+   "id": "diag.pstore",
+   "area": "Diagnostics and health",
+   "spec": "Crash diagnostics",
+   "box": "R01",
+   "title": "ramoops/pstore backend registered",
+   "status": "PASS",
+   "detail": "backend=ramoops mounted=True"
+  },
+  {
+   "id": "diag.watchdog",
+   "area": "Diagnostics and health",
+   "spec": "Watchdog",
+   "box": "R02",
+   "title": "Hardware watchdog device present",
+   "status": "PASS",
+   "detail": "watchdog0 ? timeout=?"
+  },
+  {
+   "id": "diag.kernel_errors",
+   "area": "Diagnostics and health",
+   "spec": "Kernel health",
+   "box": "F03",
+   "title": "Kernel error log for this boot",
+   "status": "WARN",
+   "detail": "119 error-level lines; top: 24x [drm:msm_dp_link_process_request [msm]] *ERROR* DP parse sink count fa | 14x qcom-venus aaN.video-codec: probe with driver qcom-venus failed with e | 7x iNc-qcom-cci acNaN.cci: master N queue N timeout"
+  },
+  {
+   "id": "diag.taint",
+   "area": "Diagnostics and health",
+   "spec": "Kernel health",
+   "box": "F02",
+   "title": "Kernel not tainted",
+   "status": "WARN",
+   "detail": "tainted=4608 (warning, out-of-tree)"
+  },
+  {
+   "id": "diag.units",
+   "area": "Diagnostics and health",
+   "spec": "System health",
+   "box": "F03",
+   "title": "No failed systemd units",
+   "status": "WARN",
+   "detail": "spx-desktop-playback.service, mako.service"
+  },
+  {
+   "id": "diag.cmdline",
+   "area": "Diagnostics and health",
+   "spec": "Final candidate",
+   "box": "F02",
+   "title": "No diagnostic/force parameters on the kernel command line",
+   "status": "WARN",
+   "detail": "30 diagnostic parameters: clk_ignore_unused earlycon spx_boot spx_attempt oops slim_qcom_ngd_ctrl.spx_probe_stage ..."
+  },
+  {
+   "id": "final.repeat",
+   "area": "Diagnostics and health",
+   "spec": "Reliability",
+   "box": "B01,F03",
+   "title": "5 cold boots, 10 warm reboots, 24 h mixed use",
+   "status": "MANUAL",
+   "detail": "repeat-boot and soak runs on the final candidate; never started by this suite"
+  }
+ ]
+}

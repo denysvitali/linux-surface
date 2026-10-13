@@ -29,7 +29,8 @@ Rules:
 - Record the kernel release (`uname -r`) and boot ID
   (`/proc/sys/kernel/random/boot_id`) with the result.
 
-Return: the checklist ID, pass or fail, the command output that shows it, the
-kernel release and boot ID, and whether a person still has to confirm anything
-(for example looking at the screen or listening). Do not tick checklist boxes
-yourself; the coordinator does that.
+Return: the automatic check ID, pass/fail/observed/blocked/error, precise scope
+and privacy-safe evidence, kernel release and boot ID. Do not equate an exposed
+interface with working hardware. Manual observations are separate and never
+block the automatic checklist. The coordinator regenerates that checklist from
+catalog/results; nobody ticks it by hand. Do not tick historical boxes.

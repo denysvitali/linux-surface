@@ -1,73 +1,94 @@
 # Agent rules
 
-## Goal
+## Goal and checklist
 
 Mainline Linux on the Surface Pro X with every fitted hardware feature working.
+The active implementation and regression checklist is
+[`AUTO-HW-CHECKLIST.md`](AUTO-HW-CHECKLIST.md). It is generated from the runnable
+catalog in `tools/spx/hw-validation`; never hand-edit its rows or tick its boxes.
 
 | File | What it is |
 |---|---|
-| `PORT-CHECKLIST.md` | The 47 acceptance boxes. Frozen. |
-| `TODO.md` | What to work on now, what is parked, what needs the user. |
-| `LOCAL-PROGRESS.md` | Short local log, newest trial first. |
-| `tools/spx/boot-diagnostics/RESULT-*.md` | One page per trial. |
-| `.claude/skills/spx-*/SKILL.md` | Playbooks: `spx-port`, `spx-blocker`, `spx-trial`, `spx-human-session`, `spx-status`. Any harness may read and follow them. |
+| `AUTO-HW-CHECKLIST.md` | Automatic checks, their latest boot results and unmet dependencies. Generated. |
+| `PORT-CHECKLIST.md` | Historical 47 full acceptance boxes, including physical checks. Not the automatic work queue. |
+| `TODO.md` | Current defect, next hypothesis, missing support and parked unsafe work. |
+| `LOCAL-PROGRESS.md` | Short local log, newest result first. |
+| `tools/spx/boot-diagnostics/RESULT-*.md` | One page per trial, linking its hardware-validation report. |
+| `tools/spx/hw-validation/README.md` | Canonical validator, catalog, commands and result semantics. |
+| `.claude/skills/spx-*/SKILL.md` | Port, blocker, trial, voluntary human checks and status playbooks. |
 
-Read `TODO.md`, the checklist status table and the newest `LOCAL-PROGRESS.md`
-entry before starting work.
+Read `TODO.md`, `AUTO-HW-CHECKLIST.md` and the newest `LOCAL-PROGRESS.md`
+entry before starting work. Run `tools/spx/progress` for both automatic results
+and the historical full acceptance count. Builds, commits and enumerated nodes
+are not working hardware. A missing tool is not a missing driver; a loaded
+driver is not a working feature.
 
-**Progress is the number of checklist boxes closed** (`tools/spx/progress`
-prints it) and features a person can use. Builds, passing diagnostics, partial
-passes, TODO items, commits, boots and result files are not progress.
+## Automatic validation (user requested 2026-10-13)
 
-Two earlier processes failed and these rules exist because of them. Until
-2026-10-04: 56 boots and no box closed, half the tool calls spent on hashing
-and review. From 2026-10-04 to 10-08: 511 TODO items, 481 commits and about 97
-reboots for one box closed (2 to 3 of 47), because the agent split boxes into
-49 narrower sub-boxes, ticked 47 of those, and spent 204 TODO items on audio
-tests, the one feature it could score without a person.
-
-## Rules
-
-1. **The checklist is frozen.** Do not add, split, rename or re-scope boxes.
-   Only the user does. No lettered sub-boxes.
-2. **A box closes only when its full text is met** on a real boot. Record the
-   boot ID, kernel release and result file. A narrower pass is a line in the
-   result file. If part of a box needs a person, it stays open until the person
-   has done that part. Reopen a box if the feature regresses.
-3. **One blocker at a time, in depth.** Work on the current blocker in
-   `TODO.md` until its box closes or rule 5 applies. Only the user changes the
-   blocker order. Follow `spx-blocker`.
-4. **Do not extend what already passes.** No further tests, harness variants or
-   acceptance criteria for a feature whose remaining gap is a human observation
-   or a parked defect. In particular: no new audio or microphone test
-   variations until the playback reopen defect is fixed.
-5. **Stop when there is nothing real to do.** Stop and report when the current
-   blocker has no untested hypothesis left, or needs a person, a fixture or
-   information that is not available. Stopping with a one-page report is a
-   correct outcome. An open-ended goal such as "continue until all hardware
-   works" does not require inventing work or picking an easier feature.
-6. **Human checks are deferred until the end (user requested 2026-10-13).**
-   Do not ask for a hands-on session during porting. Keep observations needed
-   for typing, touch, pen, buttons, USB and the panel recorded in `TODO.md`;
-   boxes needing those observations remain open. Do not substitute automated
-   stand-ins. Follow `spx-human-session` when the user starts the final checks.
-7. **Reuse known findings.** The 6.18 tree in `../linux-surface-kernel` has
+1. **One automatic source of truth.** Use `tools/spx/hw-validation`. Consolidate
+   earlier automatic suites into it; do not maintain a second catalog, copied
+   checklist or handwritten completion totals. The sibling `../validation`
+   app is only for voluntary human checks. The duplicate `../hw-validation`
+   suite is retired; preserve earlier reports as history, not active evidence.
+2. **Run after every boot.** This includes baseline, trial and recovery boots.
+   The persistent boot hook must record a report under
+   `/var/lib/spx-boot-diagnostics/boots/<boot-id>/hw-validation/`. Check it before
+   interpreting a trial or choosing the next experiment. If validation could
+   not start, record why and rerun when the prerequisite is available. Do not
+   silently skip a boot or use a previous boot's report as its result.
+3. **Test all safely automatic hardware.** Include real Wi-Fi and Bluetooth
+   scans, display/GL/Vulkan, hardware video decode and encode applicability,
+   audio, cameras, cellular/GNSS, USB/Type-C, input driver health, sensors,
+   CPU/memory/storage, firmware, security and power interfaces. A feature with
+   missing support or a fixture remains in the generated catalog as blocked.
+   Where enumeration is all that is implemented, label it inventory and keep
+   the functional requirement open. Hardware acceleration must reject software
+   fallback. Supported formats and encode are separate from one H264 pass.
+4. **Record honest results.** Reports contain boot ID, kernel release, time,
+   check ID, precise tested scope, result and reason/evidence. Only a successful
+   functional check is ticked. Inventory is `observed`; unmet prerequisites or
+   known unsafe paths are `blocked`; proven failures are `fail`; unexpected
+   runner problems are `error`. Never count those as passes. Generate the
+   checklist from the catalog and results, including failed and blocked rows.
+   These results do not close a historical full acceptance box automatically.
+5. **Manual tests are excluded.** No typing, touching, pen drawing, cable swaps,
+   listening, visual judgement, charger unplugging or physical wake is a
+   requirement in the automatic checklist. Do not ask for those during porting
+   or substitute synthetic physical events. Keep voluntary physical checks in
+   `../validation` and `PHYSICAL-TESTS.md`; a human runs them when they want.
+6. **Safety still applies.** Scans and small disposable-file checks may run
+   automatically. Do not disconnect the live network, toggle radios, change
+   firewall policy, modeset/unbind MSM, load parked accelerators, run the
+   fault-producing encoder, suspend/reboot or run battery/endurance tests from
+   the validator. Camera/microphone capture needs an announced explicit opt-in;
+   discard raw private data. This broad validation request does not lift the
+   specific parked encoder, speaker/amplifier or DSP-lifecycle restrictions.
+   Record blocked coverage instead of attempting a known unsafe test.
+7. **Fix one real defect at a time.** Mandatory regression validation is an
+   exception to the old prohibition on rechecking passing features, not a
+   reason to invent new test variants. Use the generated failures and existing
+   findings to identify missing kernel/DT/userspace support. Keep one explicit
+   current defect and one item per testable hypothesis in `TODO.md`; do not
+   create TODOs for collection, staging or bookkeeping. Do not select an easier
+   feature to manufacture progress. Follow `spx-blocker`.
+8. **Reuse known findings.** The 6.18 tree in `../linux-surface-kernel` has
    working audio, camera and display. Port those instead of re-deriving them.
-   The findings index is
-   `~/.claude/projects/-home-dvitali-Documents-git-linux-surface-kernel/memory/MEMORY.md`;
-   read the entries for a feature before working on it.
-8. **Commit as you go.** One commit per feature or fix on `spx/next`, status
-   stated honestly (working, WIP, not working). Never leave kernel changes
-   uncommitted across a boot. Do not make commits that only record bookkeeping.
-9. **Keep overhead small.** A trial boot needs the known-good default, the
-   one-shot selection, the automatic return and the dmesg/journal capture.
-   No manifests, rehash reviews, preparation records or fault-injection suites.
-   A result file is one page: what changed, what was observed, what it means,
-   what is next. Follow `spx-trial`.
-10. **TODO items and reports.** One TODO item per box being worked on and one
-    per hypothesis being tested; none for recording, collecting, staging or
-    returning to known-good. Every report starts with "boxes closed: N of 47"
-    and the IDs closed since the last report. Follow `spx-status`.
+   Read the feature entries in
+   `~/.claude/projects/-home-dvitali-Documents-git-linux-surface-kernel/memory/MEMORY.md`.
+   Record whether a gap is missing support, an observed defect, a dependency or
+   a safety restriction; do not conflate these.
+9. **Commit real changes; keep overhead small.** One commit per feature/fix on
+   `spx/next`, honestly marked working, WIP or not working. Never leave kernel
+   changes uncommitted across a boot. No bookkeeping-only commits, manifests,
+   tree copies or repeated hash reviews. A boot needs the verified default,
+   one-shot selection, automatic return, logs and hardware validation. Follow
+   `spx-trial`; results stay one page and link the detailed generated report.
+10. **Stop honestly.** If no untested, safe hypothesis or available prerequisite
+    remains, report the concrete block and stop. An open-ended goal does not
+    authorize unsafe tests or endless scaffolding. Reports start with
+    `boxes closed: N of 47; newly closed: IDs/none` for the historical count,
+    then automatic functional pass/total and blocked/fail/error coverage. Do
+    not present inventory or test-code coverage as completed hardware support.
 
 ## Build and device
 
@@ -91,8 +112,10 @@ reboot. It may spawn agents for bounded work (`spx-port`).
 - Roles: a researcher (read-only brief on one feature), a porter (patch in its
   own git worktree, commits on `spx/wip/<feature>`), a device tester (one
   functional test on the live hardware). Definitions are in `.claude/agents/`.
-- Research and patch writing may run in parallel, at most four agents, all for
-  the current blocker.
+- Research and patch writing may run in parallel for independent parts of the
+  current work. The user requested ten agents for the validation/guidance
+  rework on 2026-10-13; they do not share device or build access. For ordinary
+  kernel porting use at most four offline agents unless the user says otherwise.
 - The device and the build directory are exclusive. Take the lock first:
   `tools/spx/spx-lock acquire device|build <owner>`; release it afterwards;
   check with `tools/spx/spx-lock status`. A reboot clears the locks.

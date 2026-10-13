@@ -26,5 +26,6 @@ Return at most one page:
 - what works on 6.18 and exactly which commits, files and DT nodes make it work;
 - what differs on `spx/next`;
 - the shortest concrete change list to get the feature working here;
-- the functional test that would prove it, and whether it needs a person;
+- the safe automatic check that would prove it, its prerequisites and current
+  catalog coverage; keep voluntary physical observations separate;
 - open questions, each marked as verified or guessed.
