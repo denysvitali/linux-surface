@@ -16,10 +16,14 @@ at boot 7638f0cb). CCI retries once after its timeout recovery (f2917d87cf2b,
 not yet exercised). Root cause unproven; refuted: probe concurrency, CCI
 re-init order, clock rate/gating, reset overlap, unpowered time, controller
 pinned active. See RESULT-20261014ff.md.
-1. H-retry-recovers: on ordinary boots `dmesg | grep SPX` shows a
-   cci-timeout followed by `cci-retry ... result=ok` and front,rear,ir in
-   camera.graph. If result is an error, the stall is not cleared by reset:
-   record the lines and look at the pad/pull configuration of gpio19/20.
+1. H-retry-recovers: CONFIRMED on boot 95e14bba (stall at boot, retry ok,
+   front+rear+IR registered, 0 fail). Keep watching `dmesg | grep SPX` on
+   ordinary boots; a `result=<error>` would reopen this.
+2. Root cause still open (not blocking): the stall is usually the first
+   master-1 transfer after controller probe. Untested idea: master-1 timing/
+   reset state after cci_probe differs from the state after timeout recovery.
+3. Frames from the front camera at boot remain uncaptured (capture needs an
+   explicit opt-in); colour/exposure tuning is unchanged.
 Next candidates, each blocked on the stated prerequisite:
 Parked with briefs in /var/tmp/spx-codex/: IPA (no sourced IPA version/tables),
 Type-C class ports (no firmware initial-state query; ADSP has no PMIC_RTR

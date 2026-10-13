@@ -1,13 +1,13 @@
 # Automatic hardware checklist
 
-Date: 2026-10-14T00:29:50+02:00
-Boot: `7638f0cb-b02b-4132-a685-fedc378131b8`
+Date: 2026-10-14T00:33:12+02:00
+Boot: `95e14bba-f6b5-4400-8091-b43fe585069f`
 Kernel: `7.3.0-rc2-spx-mainline-20261004bg+`
 Mode: run; fixture: false
 
-Report JSON: [JSON](/var/lib/spx-boot-diagnostics/boots/7638f0cb-b02b-4132-a685-fedc378131b8/hw-validation/report.json)
+Report JSON: [JSON](/var/lib/spx-boot-diagnostics/boots/95e14bba-f6b5-4400-8091-b43fe585069f/hw-validation/report.json)
 
-Functional checks passed: **15 of 48**. Inventory observations: 37 of 52. Blocked: 47. Failed: 1. Errors: 0.
+Functional checks passed: **15 of 48**. Inventory observations: 41 of 52. Blocked: 44. Failed: 0. Errors: 0.
 
 Implemented checks are validator coverage, not proof that hardware drivers are implemented. Only a functional pass from this boot completes a check. Inventory is never a functional pass.
 
@@ -16,11 +16,11 @@ All catalog rows remain visible, including unsupported or blocked checks. This a
 ## Platform
 
 - **cpu.cores — CPU online/present inventory** (inventory; observed): online=8; present=8; enumeration only; no CPU load or frequency-transition test
-- **cpu.memory — Memory capacity inventory** (inventory; observed): total=15373 MiB; available=13591 MiB; no memory load test
-- **cpu.cpufreq — CPU frequency policy inventory** (inventory; observed): policy0 driver=qcom-cpufreq-hw governor=schedutil min/current/max=300000/1113600/1766400 kHz; policy4 driver=qcom-cpufreq-hw governor=schedutil min/current/max=825600/825600/3148800 kHz; no transitions or idle recovery exercised
+- **cpu.memory — Memory capacity inventory** (inventory; observed): total=15373 MiB; available=13870 MiB; no memory load test
+- **cpu.cpufreq — CPU frequency policy inventory** (inventory; observed): policy0 driver=qcom-cpufreq-hw governor=schedutil min/current/max=300000/1113600/1766400 kHz; policy4 driver=qcom-cpufreq-hw governor=schedutil min/current/max=825600/3148800/3148800 kHz; no transitions or idle recovery exercised
 - [x] **cpu.workload — AC-only bounded CPU/memory consistency** (functional; pass): External power online; 8 concurrent workers, 1 MiB private buffer each, 512 total consistency rounds; &lt;=64 rounds/worker and one-second work deadline; no affinity/clock changes; not frequency, thermal, sustained or all-core placement validation
 - [ ] **cpu.frequency-transitions — Loaded frequency transitions and idle recovery** (functional; blocked): Frequency-transition/idle-recovery workload is deferred; policy metadata alone cannot validate transitions
-- [x] **rtc.read-time — RTC accessible time agrees with system clock** (functional; pass): Surface rtc0 time read; wall-clock difference=0 s (limit 5 s); 1 other RTC(s) not compared; no power-off/suspend retention or independence from network time established
+- [x] **rtc.read-time — RTC accessible time agrees with system clock** (functional; pass): Surface rtc0 time read; wall-clock difference=1 s (limit 5 s); 1 other RTC(s) not compared; no power-off/suspend retention or independence from network time established
 
 ## Storage
 
@@ -44,7 +44,7 @@ All catalog rows remain visible, including unsupported or blocked checks. This a
 
 ## Thermal
 
-- **thermal.metadata — Thermal temperatures, trips and cooling states (no load)** (inventory; observed): aoss0-thermal=37600 mC, cpu0-thermal=38000 mC, cpu7-top-thermal=38000 mC, cpu4-bottom-thermal=38000 mC, cpu5-bottom-thermal=38000 mC, cpu6-bottom-thermal=38400 mC, cpu7-bottom-thermal=38400 mC, gpu-top-thermal=36400 mC, aoss1-thermal=37800 mC, wlan-thermal=37000 mC, video-thermal=37400 mC, mem-thermal=37800 mC, cpu1-thermal=38400 mC, q6-hvx-thermal=37000 mC, camera-thermal=37400 mC, compute-thermal=37000 mC, mdm-dsp-thermal=37000 mC, npu-thermal=36300 mC, pmc8180a-thermal=37457 mC, pmc8180c-thermal=37717 mC, pmc8180e-thermal=36225 mC, cpu2-thermal=37200 mC, cpu3-thermal=38400 mC, cluster0-thermal=37200 mC, cluster1-thermal=38700 mC, cpu4-top-thermal=38000 mC, cpu5-top-thermal=37600 mC, cpu6-top-thermal=38400 mC; 38 trip(s), 4 cooling device(s); instantaneous metadata only; no load or policy changes; thermal names do not establish compute capability
+- **thermal.metadata — Thermal temperatures, trips and cooling states (no load)** (inventory; observed): aoss0-thermal=39100 mC, cpu0-thermal=39900 mC, cpu7-top-thermal=40700 mC, cpu4-bottom-thermal=40700 mC, cpu5-bottom-thermal=41500 mC, cpu6-bottom-thermal=42200 mC, cpu7-bottom-thermal=40700 mC, gpu-top-thermal=38400 mC, aoss1-thermal=39300 mC, wlan-thermal=39000 mC, video-thermal=39300 mC, mem-thermal=39700 mC, cpu1-thermal=40300 mC, q6-hvx-thermal=39000 mC, camera-thermal=39000 mC, compute-thermal=39300 mC, mdm-dsp-thermal=39000 mC, npu-thermal=38200 mC, pmc8180a-thermal=37327 mC, pmc8180c-thermal=38528 mC, pmc8180e-thermal=37522 mC, cpu2-thermal=39100 mC, cpu3-thermal=40700 mC, cluster0-thermal=39900 mC, cluster1-thermal=41800 mC, cpu4-top-thermal=40700 mC, cpu5-top-thermal=40700 mC, cpu6-top-thermal=42200 mC; 38 trip(s), 4 cooling device(s); instantaneous metadata only; no load or policy changes; thermal names do not establish compute capability
 - [ ] **thermal.response — Automatic thermal response under load** (functional; blocked): Thermal-response workload is parked; this suite does not heat the device or change thermal policy
 
 ## Power
@@ -61,29 +61,29 @@ All catalog rows remain visible, including unsupported or blocked checks. This a
 - **diag.boot — Boot identity and retained fault-record inventory** (inventory; observed): Current boot identity available; kernel=7.3.0-rc2-spx-mainline-20261004bg+; 0 retained pstore record(s); prior-boot records are not a current-boot fault verdict; no startup/shutdown repeatability test
 - [x] **diag.kernel-faults — Current boot warning-priority kernel fault scan** (functional; pass): Accessible current-boot warning-priority kernel journal scanned; no recognized BUG/oops/panic, warning, storage, IOMMU, firmware, critical thermal or lockup signatures; lower-priority messages not scanned; not a load/lifecycle test
 - **diag.taint — Kernel taint inventory** (inventory; observed): kernel taint bitmask=4096 (0x1000); taint is context, not a functional pass/fault verdict
-- [ ] **diag.failed-units — Current systemd failed-unit scan** (functional; fail): 1 failed system unit(s), excluding 0 prior validator unit(s); private unit names/logs omitted; not user-service or repeat-startup validation
+- [x] **diag.failed-units — Current systemd failed-unit scan** (functional; pass): 0 failed system unit(s), excluding 0 prior validator unit(s); private unit names/logs omitted; not user-service or repeat-startup validation
 
 ## Network
 
-- **net.wifi.interfaces — Wi-Fi interfaces and current carrier** (inventory; observed): wireless interfaces=1; up=1; carrier=1; unreadable state=0; enumeration is not working data
-- **net.wifi.link — Current Wi-Fi association evidence** (inventory; observed): primary wireless interface associated; association alone does not verify DNS or data
-- [x] **net.wifi.scan — Bounded Wi-Fi scan completes** (functional; pass): NetworkManager completed a scan (LastScan advanced); available AP entries=1; current connection was not changed
-- **net.ip.families — Wi-Fi address and default-route families** (inventory; observed): primary Wi-Fi addresses: IPv4 global=1, IPv6 global=0, IPv6 link-local=1, tentative/DAD-failed=0; default routes: IPv4=1, IPv6=0; configured families are not working WAN data
+- **net.wifi.interfaces — Wi-Fi interfaces and current carrier** (inventory; observed): wireless interfaces=1; up=0; carrier=0; unreadable state=0; enumeration is not working data
+- **net.wifi.link — Current Wi-Fi association evidence** (inventory; observed): primary wireless interface is not associated; no connection was attempted
+- [ ] **net.wifi.scan — Bounded Wi-Fi scan completes** (functional; blocked): NetworkManager accepted rescan but no finished scan was observed within 8s; cached AP entries are not a pass
+- **net.ip.families — Wi-Fi address and default-route families** (inventory; observed): primary Wi-Fi addresses: IPv4 global=0, IPv6 global=0, IPv6 link-local=0, tentative/DAD-failed=0; default routes: IPv4=0, IPv6=0; configured families are not working WAN data
 - **net.dns.config — Configured DNS resolver families** (inventory; observed): configured resolver entries: IPv4=1, IPv6=0, loopback stubs=1; configuration inventory only; see net.dns.lookup for functional evidence; this inventory sends no query
-- [x] **net.dns.lookup — Bounded DNS lookup of a deliberate public fixture** (functional; pass): DNS fixture=example.com; system resolver answers: A=2 AAAA=2; total deadline 3s; no network state changed
-- [x] **net.wifi.gateway4 — Local IPv4 gateway replies over Wi-Fi** (functional; pass): local IPv4 gateway echo replies=3/3 over primary Wi-Fi; 8-byte payloads; not WAN, DNS or sustained transfer acceptance
+- [ ] **net.dns.lookup — Bounded DNS lookup of a deliberate public fixture** (functional; blocked): DNS fixture=example.com; no usable default route exposed; no lookup attempted
+- [ ] **net.wifi.gateway4 — Local IPv4 gateway replies over Wi-Fi** (functional; blocked): no configured private/link-local IPv4 gateway fixture; no external destination was contacted
 - [ ] **net.wifi.gateway6 — Local IPv6 gateway replies over Wi-Fi** (functional; blocked): no configured private/link-local IPv6 gateway fixture; no external destination was contacted
 
 ## Bluetooth
 
 - **bluetooth.inventory — Bluetooth paired, connected and service capability counts** (inventory; observed): adapters=1; powered=1; discovering=0; cached peers=1; paired=1; connected=0; cached HID-capable=1; cached audio-capable=0; cached service metadata only; pairing, reconnect and peripheral use are not tested
-- [x] **bluetooth.discovery — Bounded Bluetooth discovery with fresh peer reception** (functional; pass): Bounded 5-second discovery started; owned scanner exited and discovery is inactive; fresh reports=11 from peers=11; prior connections retained; no power, pairing or disconnect changes
+- [x] **bluetooth.discovery — Bounded Bluetooth discovery with fresh peer reception** (functional; pass): Bounded 5-second discovery started; owned scanner exited and discovery is inactive; fresh reports=15 from peers=15; prior connections retained; no power, pairing or disconnect changes
 
 ## Graphics
 
-- **graphics.display.internal — Internal connector modes and preferred timing** (inventory; observed): card1-eDP-1 connected, disabled, modes=2880x1920, EDID preferred=2880x1920@60.00Hz; advertised timing only, not active scanout, image quality, hotplug or resume
+- **graphics.display.internal — Internal connector modes and preferred timing** (inventory; observed): card1-eDP-1 connected, enabled, modes=2880x1920, EDID preferred=2880x1920@60.00Hz; advertised timing only, not active scanout, image quality, hotplug or resume
 - **graphics.display.external — Connected external display modes and preferred timing** (inventory; blocked): No connected external display fixture exposed (2 connectors, 2 disconnected/unknown); this does not establish hardware absence
-- [ ] **graphics.display.internal.scanout — Current internal native scanout and advancing vblank** (functional; blocked): Connected internal display is not currently enabled; no power/mode changes requested
+- [x] **graphics.display.internal.scanout — Current internal native scanout and advancing vblank** (functional; pass): eDP-1 current=2880x1920@60Hz, active framebuffer, vblank advanced 1; current scanout only, not image quality, hotplug, blank/unblank or resume
 - [ ] **graphics.display.external.scanout — Current external scanout and advancing vblank** (functional; blocked): No connected external display fixture currently exposed; no hotplug/power/mode action requested
 - **graphics.backlight — Backlight metadata without changing brightness** (inventory; observed): backlight type=raw requested=1256 actual=1256 maximum=4095; no writes or brightness-range/visual claim
 - **graphics.egl — Surfaceless EGL hardware GL/GLES contexts** (inventory; observed): Surfaceless EGL exposes Adreno 680 contexts: OpenGL core profile, OpenGL compatibility profile; context creation is not draw/readback or desktop acceleration evidence
@@ -115,15 +115,15 @@ All catalog rows remain visible, including unsupported or blocked checks. This a
 
 - **audio.alsa — ALSA cards and PCM interfaces** (inventory; observed): ALSA cards=1, identified SPX cards=1, playback interfaces=3, capture interfaces=3; nodes do not establish acoustic output or microphone quality.
 - **audio.controls — Native audio routing control capabilities** (inventory; observed): Native ALSA controls=1378, stereo PA control names=true, MM2 internal microphone route control names=true; capability only, no values read/written or stream started.
-- **audio.soundwire — SoundWire core enumeration** (inventory; observed): SoundWire core nodes=2, attached=0, unattached=2, other states=0; parked amps may be unattached. Core enumeration is not verified physical output; no bridge/register reads.
-- **audio.services — Desktop audio service availability** (inventory; blocked): pipewire.service=inactive; pipewire-pulse.service=inactive; wireplumber.service=inactive; active desktop services, systemctl and access to the selected desktop session bus required; no service started or restarted
-- **audio.graph — Desktop audio graph and default routing** (inventory; blocked): Cannot query desktop sinks; pactl JSON support, the Pulse-compatible audio service and selected desktop session permission required.
-- **audio.feeder — Native desktop feeder readiness** (inventory; blocked): Native desktop feeder=inactive; installed/running feeder service and system service-query access required. No start or restart attempted.
+- **audio.soundwire — SoundWire core enumeration** (inventory; observed): SoundWire core nodes=2, attached=2, unattached=0, other states=0; parked amps may be unattached. Core enumeration is not verified physical output; no bridge/register reads.
+- **audio.services — Desktop audio service availability** (inventory; observed): pipewire.service=active; pipewire-pulse.service=active; wireplumber.service=active
+- **audio.graph — Desktop audio graph and default routing** (inventory; blocked): Graph outputs=1, sources=1 (monitors=1), SPX speaker nodes=1, SPX microphone nodes=0, USB output/input=0/0, Bluetooth output/input=0/0; default output=SPX, input=not exposed in graph. Read-only API/routing inventory, not signal delivery. Usable endpoint/default-route support is required; no route changed.
+- **audio.feeder — Native desktop feeder readiness** (inventory; observed): Feeder active with current-boot readiness, recorded PA step=6, digital peak limit=32768; retained ASM enabled; full DSP destruction unvalidated. Readiness is not measured sound, latency or stream-lifecycle validation; no gain/PCM/graph changed.
 - [ ] **audio.speakers — Physical speaker output** (functional; blocked): Speaker playback is not authorized for this suite; --capture is not playback permission. No PCM, amplifier power or gain change started.
 - [ ] **audio.acoustic — Speaker acoustic feedback** (functional; blocked): The existing quiet audio.py reopen loop already verified the resolved WX fix. Its authorization is scoped to that fix, not routine acoustic retesting; no tone or microphone recording started.
 - [ ] **audio.microphones — Internal microphone stimulus capture** (functional; blocked): Microphone capture is opt-in (--capture) and disabled. New audio/microphone variations remain parked; no private recording or PCM started.
 - [ ] **audio.lifecycle — Native audio stream lifecycle** (functional; blocked): Parked DSP mappings must be preserved; full UNMAP/AFE STOP and arbitrary teardown remain unsafe/unvalidated. No PCM open/close, graph mutation, service restart or module change performed.
-- [ ] **audio.external — External USB and Bluetooth audio data paths** (functional; blocked): External audio fixtures cannot be identified through the desktop graph; pactl JSON support, audio service and user-session access required.
+- [ ] **audio.external — External USB and Bluetooth audio data paths** (functional; blocked): External USB/Bluetooth graph output/input nodes=0/0; real audio fixtures, a controlled signal/recording path and separate sound authorization required for data-path validation. No playback, capture, radio/route change or hotplug performed.
 
 ## Cellular
 
@@ -166,9 +166,9 @@ All catalog rows remain visible, including unsupported or blocked checks. This a
 ## Sensors
 
 - **sensors.channels — Light and motion channel capabilities** (inventory; observed): Allowlisted light channels=4, motion channels=0, TCS3430 interfaces=1; PMIC ADCs excluded; TCS3430 XYZ/IR is not proximity or a verified lux conversion; SDSP motion may be outside IIO; advertised capability only, not stimulus, axes or calibration
-- **sensors.backend — SDSP sensor backend and startup services** (inventory; blocked): SDSP FastRPC endpoints=1, CDSP endpoints=0; sensor provider=inactive, proxy=inactive; running DT disables CDSP FastRPC: compute transport intentionally parked, not missing silicon and not the SDSP sensor path; SDSP/service startup prerequisites unavailable; no DSP activation, reload or restart
-- **sensors.desktop — Already-running SensorProxy cached properties** (inventory; blocked): SensorProxy is not already active/readable; no D-Bus auto-start or policy bypass
+- **sensors.backend — SDSP sensor backend and startup services** (inventory; observed): SDSP FastRPC endpoints=1, CDSP endpoints=0; sensor provider=active, proxy=active; running DT disables CDSP FastRPC: compute transport intentionally parked, not missing silicon and not the SDSP sensor path; endpoint/service metadata only, not sensor delivery or CDSP workload
+- **sensors.desktop — Already-running SensorProxy cached properties** (inventory; observed): Already-running SensorProxy advertised capability groups=1, finite cached numeric properties=0; read-only, no Claim/stream/start; cached values may be stale, not fresh delivery, axes/calibration or brightness response
 - [ ] **sensors.light-lux — Calibrated ambient-light report delivery** (functional; blocked): No verified TCS3430 lux conversion or desktop ambient-light source is implemented; raw XYZ/IR reads do not establish calibrated light delivery. No stimulus or brightness change requested
 - [ ] **sensors.desktop-delivery — Fresh desktop motion and compass delivery** (functional; blocked): Fresh desktop accelerometer delivery workload unavailable: busctl/gdbus cannot ClaimAccelerometer, monitor PropertiesChanged and ReleaseAccelerometer on one persistent D-Bus connection; no Go D-Bus client is vendored and new dependencies are excluded. Compass delivery separately blocked: desktop compass support/fresh delivery remains unverified. No service activation, claim or physical stimulus attempted. A stationary device may legitimately emit no AccelerometerOrientation change in 5 s; without a fresh raw-reading path, no stimulus; fresh delivery cannot be distinguished from a stationary device (blocked, not fail). Cached SensorProxy properties and native SSC samples are not fresh desktop delivery
 - [x] **sensors.light-read — One-shot light-channel numeric read** (functional; pass): One-shot finite light-channel reads=4, zero-valued=4; raw values discarded; zero is not a light/stimulus failure; no scale/lux, physical axes, calibration, rotation, proximity or lifecycle claim
-- [ ] **sensors.motion-read — Bounded SSC accelerometer/gyro/magnetometer delivery** (functional; blocked): spx-sensors.service is not already loaded/READY/running; no service or DSP started
+- [x] **sensors.motion-read — Bounded SSC accelerometer/gyro/magnetometer delivery** (functional; pass): Fresh finite XYZ rows: accelerometer=79, gyroscope=69, magnetometer=29; each CLI exit0 with enable/disable ACKs, requested stream=3s, outer TERM=12s/KILL-after=2s; same already-running provider; raw samples/logs discarded; no physical axes, mounting, calibration, rotation or resume claim
