@@ -5223,6 +5223,23 @@ static void camss_unregister_entities(struct camss *camss)
 		msm_vfe_unregister_entities(&camss->vfe[i]);
 }
 
+static void camss_subdev_notifier_unbind(struct v4l2_async_notifier *async,
+				       struct v4l2_subdev *subdev,
+				       struct v4l2_async_connection *asd)
+{
+	struct camss *camss = container_of(async, struct camss, notifier);
+	struct camss_async_subdev *csd =
+		container_of(asd, struct camss_async_subdev, asd);
+	struct csiphy_device *csiphy = &camss->csiphy[csd->interface.csiphy_id];
+
+	mutex_lock(&camss->media_dev.graph_mutex);
+	/* Retire the sensor links before clearing the CSIPHY configuration. */
+	__media_entity_remove_links(&subdev->entity);
+	csiphy->cfg.csi2 = NULL;
+	subdev->host_priv = NULL;
+	mutex_unlock(&camss->media_dev.graph_mutex);
+}
+
 static int camss_subdev_notifier_bound(struct v4l2_async_notifier *async,
 				       struct v4l2_subdev *subdev,
 				       struct v4l2_async_connection *asd)
@@ -5232,55 +5249,53 @@ static int camss_subdev_notifier_bound(struct v4l2_async_notifier *async,
 		container_of(asd, struct camss_async_subdev, asd);
 	u8 id = csd->interface.csiphy_id;
 	struct csiphy_device *csiphy = &camss->csiphy[id];
+	struct media_entity *input = &csiphy->subdev.entity;
+	struct media_entity *sensor = &subdev->entity;
+	unsigned int i;
+	int ret;
 
+	for (i = 0; i < sensor->num_pads; i++) {
+		if (sensor->pads[i].flags & MEDIA_PAD_FL_SOURCE)
+			break;
+	}
+	if (i == sensor->num_pads) {
+		dev_err(camss->dev, "No source pad in external entity\n");
+		return -EINVAL;
+	}
+
+	mutex_lock(&camss->media_dev.graph_mutex);
 	csiphy->cfg.csi2 = &csd->interface.csi2;
 	subdev->host_priv = csiphy;
+	ret = media_create_pad_link(sensor, i, input, MSM_CSIPHY_PAD_SINK,
+				    MEDIA_LNK_FL_IMMUTABLE | MEDIA_LNK_FL_ENABLED);
+	if (ret < 0) {
+		csiphy->cfg.csi2 = NULL;
+		subdev->host_priv = NULL;
+	}
+	mutex_unlock(&camss->media_dev.graph_mutex);
+	if (ret < 0) {
+		camss_link_err(camss, sensor->name, input->name, ret);
+		return ret;
+	}
 
-	return 0;
+	/* Publish each bound sensor even while other endpoints are missing. */
+	ret = v4l2_device_register_subdev_nodes(&camss->v4l2_dev);
+	if (ret < 0)
+		camss_subdev_notifier_unbind(async, subdev, asd);
+
+	return ret;
 }
 
 static int camss_subdev_notifier_complete(struct v4l2_async_notifier *async)
 {
 	struct camss *camss = container_of(async, struct camss, notifier);
-	struct v4l2_device *v4l2_dev = &camss->v4l2_dev;
-	struct v4l2_subdev *sd;
-
-	list_for_each_entry(sd, &v4l2_dev->subdevs, list) {
-		struct csiphy_device *csiphy = sd->host_priv;
-		struct media_entity *input, *sensor;
-		unsigned int i;
-		int ret;
-
-		if (!csiphy)
-			continue;
-
-		input = &csiphy->subdev.entity;
-		sensor = &sd->entity;
-
-		for (i = 0; i < sensor->num_pads; i++) {
-			if (sensor->pads[i].flags & MEDIA_PAD_FL_SOURCE)
-				break;
-		}
-		if (i == sensor->num_pads) {
-			dev_err(camss->dev,
-				"No source pad in external entity\n");
-			return -EINVAL;
-		}
-
-		ret = media_create_pad_link(sensor, i, input,
-					    MSM_CSIPHY_PAD_SINK,
-					    MEDIA_LNK_FL_IMMUTABLE | MEDIA_LNK_FL_ENABLED);
-		if (ret < 0) {
-			camss_link_err(camss, sensor->name, input->name, ret);
-			return ret;
-		}
-	}
 
 	return v4l2_device_register_subdev_nodes(&camss->v4l2_dev);
 }
 
 static const struct v4l2_async_notifier_operations camss_subdev_notifier_ops = {
 	.bound = camss_subdev_notifier_bound,
+	.unbind = camss_subdev_notifier_unbind,
 	.complete = camss_subdev_notifier_complete,
 };
 
