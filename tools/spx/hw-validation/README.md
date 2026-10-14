@@ -136,8 +136,34 @@ resolved addresses or raw errors. Disabled lookups, missing prerequisites and
 fixture-root runs stay blocked.
 Bluetooth discovery needs fresh peer reports as well as safe session cleanup;
 an empty scan remains blocked for reception, without requesting a human action.
-Static Vulkan compares all 4,096 public-fixture pixels; it still does not close
-the separate unresolved scrolling/partial-damage requirement.
+Static Vulkan compares all 4,096 public-fixture pixels; it does not cover the
+separate partial-area load/store regression. `graphics.vulkan.dynamic-damage`
+runs the installed windowless CPU-model comparison as the selected `--user`:
+
+```sh
+env TU_DEBUG=gmem [VK_DRIVER_FILES=...] [VK_ICD_FILENAMES=...] \
+  timeout --kill-after=2s 15s /usr/local/lib/spx-turnip/spx-vk-partial-load-store
+```
+
+Bracketed assignments are included only when set by simple KEY=VALUE lines in
+`/etc/environment`; surrounding quotes and comment lines are ignored. The
+report identifies the effective ICD selection (`VK_DRIVER_FILES` takes
+precedence over `VK_ICD_FILENAMES`), or `system default`. The normal user-command
+wrapper supplies runtime/bus variables and uses `runuser` when needed. No
+window or display-session lookup is needed for this windowless test.
+The timeout selector unwraps `env`/`runuser`, so this command uses the existing
+20-second runner ceiling, with an explicit 15-second workload and two-second
+kill grace; no timeout table change is required.
+
+A pass requires exit zero, a `PASS;` line and a hardware Turnip `Device:`
+witness. Software fallback is rejected. Exit 1 or `FAIL;` fails, retaining
+only the first nonzero pixels-differ count, never raw pixels or hashes.
+A missing binary/user, fixture-root run, unsupported exit 77 or missing device
+witness stays blocked. Exit 2, malformed results and abnormal runner exits are
+errors. This checks the specific partial LOAD/STORE GMEM defect, not general
+Vulkan conformance or visual scrolling acceptance. With the patched A680 driver,
+a pass reflects system-memory rendering for affected passes, a workaround
+rather than a root-cause fix. See [Mesa notes](../mesa/README.md).
 
 Boot camera capture defaults to disabled. `install --camera-capture` persists
 `"camera_capture": true` in `/etc/spx/hw-validation.json`; `install --no-camera-capture`

@@ -29,9 +29,7 @@ func automaticGraphicsChecks() []AutoCheck {
 		{ID: "graphics.gl.render", Title: "Offscreen GL expected-image smoke", Area: "Graphics", Kind: "functional", Boxes: []string{"D02"}, Run: func(c *AutoContext) AutoResult { return graphicsGLRender(c, false) }},
 		{ID: "graphics.gles.render", Title: "Offscreen GLES expected-image smoke", Area: "Graphics", Kind: "functional", Boxes: []string{"D02"}, Run: func(c *AutoContext) AutoResult { return graphicsGLRender(c, true) }},
 		{ID: "graphics.vulkan.render", Title: "Windowless Vulkan static render and pixel readback", Area: "Graphics", Kind: "functional", Boxes: []string{"D02"}, Run: graphicsVulkanRender},
-		{ID: "graphics.vulkan.dynamic-damage", Title: "Vulkan scrolling and partial-damage corruption regression", Area: "Graphics", Kind: "functional", Boxes: []string{"D02"}, Run: func(*AutoContext) AutoResult {
-			return graphicsResult("graphics.vulkan.dynamic-damage", "blocked", "Recorded Vulkan GMEM scrolling corruption is unresolved; TU_DEBUG=sysmem is a workaround, not a fix. No safe windowless reproducer for that workload is available; a static render does not cover it")
-		}},
+		{ID: "graphics.vulkan.dynamic-damage", Title: "Vulkan partial-area load/store regression (tile-buffer mode)", Area: "Graphics", Kind: "functional", Boxes: []string{"D02"}, Run: graphicsVulkanDamage},
 	}
 }
 
@@ -594,4 +592,118 @@ func graphicsSelectedVulkan(output string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// Only the system's Vulkan selection is imported, never shell expressions or
+// unrelated desktop settings. Later assignments take precedence.
+func graphicsVulkanEnvironment(text string) []string {
+	values := map[string]string{}
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#") {
+			continue
+		}
+		pair := strings.SplitN(line, "=", 2)
+		if len(pair) != 2 {
+			continue
+		}
+		key := strings.TrimSpace(pair[0])
+		if key != "VK_DRIVER_FILES" && key != "VK_ICD_FILENAMES" {
+			continue
+		}
+		value := strings.TrimSpace(pair[1])
+		if len(value) >= 2 && ((value[0] == '\'' && value[len(value)-1] == '\'') || (value[0] == '"' && value[len(value)-1] == '"')) {
+			value = value[1 : len(value)-1]
+		}
+		values[key] = value
+	}
+	var env []string
+	for _, key := range []string{"VK_DRIVER_FILES", "VK_ICD_FILENAMES"} {
+		if value := values[key]; value != "" {
+			env = append(env, key+"="+value)
+		}
+	}
+	return env
+}
+
+var graphicsDamageDevice = regexp.MustCompile(`(?m)^Device: ([^\r\n]+)`)
+var graphicsDamagePass = regexp.MustCompile(`(?m)^PASS;`)
+var graphicsDamageFail = regexp.MustCompile(`(?m)^FAIL;`)
+var graphicsDamageMismatch = regexp.MustCompile(`(?m)^([0-9]+x[0-9]+ frame=-?[0-9]+: ([0-9]+)/[0-9]+ pixels differ)`)
+
+func graphicsVulkanDamage(c *AutoContext) AutoResult {
+	id := "graphics.vulkan.dynamic-damage"
+	environment, readErr := c.Read("/etc/environment")
+	selection := graphicsVulkanEnvironment(environment)
+	icd := "system default"
+	if len(selection) > 0 {
+		// VK_DRIVER_FILES takes precedence over the legacy VK_ICD_FILENAMES.
+		icd = selection[0]
+	}
+	scope := "Partial load/store in GMEM mode regression; ICD=" + icd + "; not general Vulkan conformance. A pass with the patched driver reflects a system-memory rendering workaround for affected passes, not a root-cause fix. "
+	result := func(status, detail string) AutoResult {
+		return graphicsResult(id, status, scope+detail)
+	}
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		return result("blocked", "System Vulkan driver selection could not be read")
+	}
+	if c.Fixture || (c.Run == nil && c.Root != "" && filepath.Clean(c.Root) != "/") {
+		return result("blocked", "External commands disabled for fixture root")
+	}
+	if c.Options.User == "" && c.Run == nil {
+		return result("blocked", "An existing desktop user must be selected with --user")
+	}
+	// The timeout table unwraps env/runuser, leaving timeout's existing 20s
+	// command ceiling. Bound the workload to 15s with a 2s kill grace.
+	args := append([]string{"env", "TU_DEBUG=gmem"}, selection...)
+	args = append(args, "timeout", "--kill-after=2s", "15s", "/usr/local/lib/spx-turnip/spx-vk-partial-load-store")
+	out, err := c.UserCommand(args...)
+	code := 0
+	if err != nil {
+		code = -1
+		var exit interface{ ExitCode() int }
+		if errors.As(err, &exit) {
+			code = exit.ExitCode()
+		}
+	}
+	if code == 77 {
+		return result("blocked", "Test reports no supported hardware Turnip device (exit 77)")
+	}
+	if code == 2 {
+		return result("error", "Regression test reported an error (exit 2)")
+	}
+	if code == 126 || code == 127 || errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) {
+		return result("blocked", "Installed regression binary or required command is unavailable")
+	}
+	if err != nil && code != 1 {
+		issue := graphicsCommandIssue(id, "Vulkan partial load/store regression", out, err)
+		if issue.Status == "blocked" {
+			return result("blocked", issue.Detail)
+		}
+		return result("error", "Regression command did not complete normally")
+	}
+	device := graphicsDamageDevice.FindStringSubmatch(out)
+	if device == nil {
+		return result("blocked", "Device line missing; hardware Turnip selection not established")
+	}
+	if graphicsSoftware(device[1]) {
+		return result("fail", "Software Vulkan device selected; fallback rejected")
+	}
+	if !strings.Contains(strings.ToLower(device[1]), "turnip") {
+		return result("blocked", "Device line does not identify hardware Turnip")
+	}
+	if code == 1 || graphicsDamageFail.MatchString(out) {
+		detail := "Partial load/store pixel comparison failed"
+		for _, mismatch := range graphicsDamageMismatch.FindAllStringSubmatch(out, -1) {
+			if strings.TrimLeft(mismatch[2], "0") != "" {
+				detail += "; " + mismatch[1]
+				break
+			}
+		}
+		return result("fail", detail)
+	}
+	if err == nil && graphicsDamagePass.MatchString(out) {
+		return result("pass", "Hardware Turnip matched the CPU pixel model for every frame")
+	}
+	return result("error", "Regression output has no parseable PASS/FAIL result")
 }

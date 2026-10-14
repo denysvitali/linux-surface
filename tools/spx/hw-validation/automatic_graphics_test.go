@@ -401,3 +401,89 @@ func TestGraphicsCatalogKeepsKnownDynamicDefectVisible(t *testing.T) {
 	}
 	t.Fatal("dynamic damage regression missing")
 }
+
+type graphicsDamageExit int
+
+func (e graphicsDamageExit) Error() string { return fmt.Sprintf("exit status %d", e) }
+func (e graphicsDamageExit) ExitCode() int { return int(e) }
+
+func TestGraphicsVulkanDamageResults(t *testing.T) {
+	hardware := "Device: Turnip Adreno (TM) 680; driver: turnip Mesa driver (Mesa 26.2.1)\n"
+	for _, tc := range []struct {
+		name, output, status, detail string
+		err                          error
+	}{
+		{"pass", hardware + "PASS; elapsed 1.2 s\n", "pass", "every frame", nil},
+		{"mismatch", hardware + "2880x1920 frame=-1: 0/5529600 pixels differ; FNV64=PRIVATE\n2880x1920 frame=0: 890000/5529600 pixels differ; FNV64=PRIVATE\nraw pixel=PRIVATE\nFAIL; elapsed 1 s\n", "fail", "890000/5529600 pixels differ", graphicsDamageExit(1)},
+		{"fail marker", hardware + "FAIL; elapsed 1 s\n", "fail", "comparison failed", nil},
+		{"missing binary", "", "blocked", "unavailable", exec.ErrNotFound},
+		{"missing through timeout", "timeout: No such file or directory", "blocked", "unavailable", graphicsDamageExit(127)},
+		{"unsupported", "No hardware Turnip device", "blocked", "exit 77", graphicsDamageExit(77)},
+		{"software", "Device: llvmpipe (LLVM 22); driver: lavapipe\nPASS; elapsed 1 s\n", "fail", "fallback rejected", nil},
+		{"software masquerading", "Device: Turnip software\nPASS; elapsed 1 s\n", "fail", "fallback rejected", nil},
+		{"error", hardware, "error", "exit 2", graphicsDamageExit(2)},
+		{"missing device", "PASS; elapsed 1 s\n", "blocked", "Device line missing", nil},
+		{"unparseable", hardware + "PRIVATE", "error", "no parseable", nil},
+		{"runner error", hardware, "error", "did not complete", errors.New("output cap exceeded PRIVATE")},
+		{"timeout", hardware, "error", "did not complete", graphicsDamageExit(124)},
+		{"desktop unavailable", "", "blocked", "desktop session", errors.New("requested desktop user cannot be resolved")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &AutoContext{Root: t.TempDir(), Options: AutoOptions{User: "desktop"}, Run: func(args ...string) (string, error) {
+				want := "env TU_DEBUG=gmem timeout --kill-after=2s 15s /usr/local/lib/spx-turnip/spx-vk-partial-load-store"
+				if strings.Join(args, " ") != want {
+					t.Fatal("unexpected regression command", args)
+				}
+				return tc.output, tc.err
+			}}
+			got := graphicsVulkanDamage(c)
+			if got.Status != tc.status || !strings.Contains(got.Detail, tc.detail) || strings.Contains(got.Detail, "PRIVATE") {
+				t.Fatal(got)
+			}
+			for _, scope := range []string{"ICD=system default", "Partial load/store in GMEM mode", "not general Vulkan conformance", "workaround", "not a root-cause fix"} {
+				if !strings.Contains(got.Detail, scope) {
+					t.Fatal("missing regression scope", got)
+				}
+			}
+		})
+	}
+}
+
+func TestGraphicsVulkanEnvironment(t *testing.T) {
+	for _, tc := range []struct{ text, want string }{
+		{"", ""},
+		{"# VK_DRIVER_FILES=/ignored.json\nGSK_RENDERER=opengl\nnot an assignment", ""},
+		{" VK_DRIVER_FILES = \"/custom/a.json:/custom/b.json\" \nVK_ICD_FILENAMES='/legacy.json'\n", "VK_DRIVER_FILES=/custom/a.json:/custom/b.json VK_ICD_FILENAMES=/legacy.json"},
+		{"VK_ICD_FILENAMES=/legacy.json\n", "VK_ICD_FILENAMES=/legacy.json"},
+		{"VK_DRIVER_FILES=/old.json\nVK_DRIVER_FILES='/new.json'\n", "VK_DRIVER_FILES=/new.json"},
+		{"VK_DRIVER_FILES=/old.json\nVK_DRIVER_FILES=\"\"\n", ""},
+	} {
+		if got := strings.Join(graphicsVulkanEnvironment(tc.text), " "); got != tc.want {
+			t.Fatalf("environment %q: got %q, want %q", tc.text, got, tc.want)
+		}
+	}
+	root := t.TempDir()
+	graphicsFixture(t, root, "/etc/environment", []byte("VK_DRIVER_FILES=\"/patched.json\"\nVK_ICD_FILENAMES='/legacy.json'\nTU_DEBUG=sysmem\n"))
+	c := &AutoContext{Root: root, Options: AutoOptions{User: "desktop"}, Run: func(args ...string) (string, error) {
+		want := "env TU_DEBUG=gmem VK_DRIVER_FILES=/patched.json VK_ICD_FILENAMES=/legacy.json timeout --kill-after=2s 15s /usr/local/lib/spx-turnip/spx-vk-partial-load-store"
+		if strings.Join(args, " ") != want {
+			t.Fatal("system ICD selection not propagated", args)
+		}
+		return "Device: Turnip Adreno (TM) 680; driver: turnip Mesa driver\nPASS; elapsed 1 s\n", nil
+	}}
+	if got := graphicsVulkanDamage(c); got.Status != "pass" || !strings.Contains(got.Detail, "ICD=VK_DRIVER_FILES=/patched.json") {
+		t.Fatal(got)
+	}
+}
+
+func TestGraphicsVulkanDamageBlocksFixtureAndMissingUser(t *testing.T) {
+	for _, c := range []*AutoContext{
+		{Fixture: true, Root: t.TempDir(), Run: func(...string) (string, error) { t.Fatal("fixture executed a command"); return "", nil }},
+		{Root: t.TempDir()},
+		{},
+	} {
+		if got := graphicsVulkanDamage(c); got.Status != "blocked" {
+			t.Fatal(got)
+		}
+	}
+}
