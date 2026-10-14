@@ -2,8 +2,9 @@
 /*
  * AMS TCS3430 CIE XYZ and infrared sensor.
  *
- * Raw optical channels only: illuminance needs optical calibration for the
- * assembled device. CH3 is kept on X, so the multiplexed IR2 is not exposed.
+ * Illuminance requires calibration for the assembled device. The optional
+ * Surface table below belongs to one unit only. CH3 stays on X, so IR2 is
+ * not exposed.
  * Datasheet: https://look.ams-osram.com/m/565e57ee81583733/original/TCS3430-DS000464.pdf
  */
 
@@ -11,11 +12,21 @@
 #include <linux/cleanup.h>
 #include <linux/i2c.h>
 #include <linux/iopoll.h>
+#include <linux/math64.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/pm_runtime.h>
+#include <linux/unaligned.h>
 
 #include <linux/iio/iio.h>
+
+#include "tcs3430-surface.h"
+
+/* Only enable for the unit whose Type_3 supplied tcs3430-surface-calib.h. */
+static bool surface_unit_calibration;
+module_param(surface_unit_calibration, bool, 0444);
+MODULE_PARM_DESC(surface_unit_calibration,
+	"Use this Surface Pro X unit's Type_3 lux calibration (other units need their own)");
 
 #define TCS3430_ENABLE		0x80
 #define TCS3430_ATIME		0x81
@@ -48,6 +59,7 @@ struct tcs3430_data {
 	u8 atime;
 	u8 gain;
 	bool needs_config;
+	u32 saved_proportion[4];
 };
 
 #define TCS3430_CHANNEL(_modifier, _address) { \
@@ -68,6 +80,11 @@ static const struct iio_chan_spec tcs3430_channels[] = {
 	TCS3430_CHANNEL(Y, TCS3430_Y),
 	TCS3430_CHANNEL(Z, TCS3430_Z),
 	TCS3430_CHANNEL(LIGHT_IR, TCS3430_IR1),
+	{
+		.type = IIO_LIGHT,
+		.info_mask_separate = BIT(IIO_CHAN_INFO_PROCESSED),
+		.scan_index = -1,
+	},
 };
 
 static const int tcs3430_gains[] = { 1, 4, 16, 64 };
@@ -145,24 +162,54 @@ static int tcs3430_read_raw(struct iio_dev *indio_dev,
 {
 	struct tcs3430_data *data = iio_priv(indio_dev);
 	struct device *dev = &data->client->dev;
-	int ret;
+	u8 buf[8];
+	u16 raw[4];
+	s64 lux;
+	int ret, selected;
 
-	if (mask == IIO_CHAN_INFO_RAW) {
+	if (mask == IIO_CHAN_INFO_RAW || mask == IIO_CHAN_INFO_PROCESSED) {
+		if (mask == IIO_CHAN_INFO_PROCESSED && !surface_unit_calibration)
+			return -ENODATA;
 		ret = pm_runtime_resume_and_get(dev);
 		if (ret < 0)
 			return ret;
 
 		mutex_lock(&data->lock);
 		ret = data->needs_config ? tcs3430_start(data) : 0;
-		if (!ret)
-			ret = i2c_smbus_read_word_data(data->client, chan->address);
-		if (ret >= 0)
-			*val = ret;
+		if (!ret) {
+			if (mask == IIO_CHAN_INFO_RAW) {
+				ret = i2c_smbus_read_word_data(data->client, chan->address);
+				if (ret >= 0)
+					*val = ret;
+			} else {
+				/* Read Z,Y,IR,X together from the same sensor cycle. */
+				ret = i2c_smbus_read_i2c_block_data(data->client,
+							  TCS3430_Z, sizeof(buf), buf);
+				if (ret >= 0 && ret != sizeof(buf))
+					ret = -EIO;
+				if (ret == sizeof(buf)) {
+					raw[0] = get_unaligned_le16(buf + 6);
+					raw[1] = get_unaligned_le16(buf + 2);
+					raw[2] = get_unaligned_le16(buf);
+					raw[3] = get_unaligned_le16(buf + 4);
+					ret = tcs3430_surface_lux(raw, data->atime,
+						data->gain, data->saved_proportion,
+						&lux, &selected);
+					if (!ret) {
+						*val = lux >> 16;
+						*val2 = ((lux & 0xffff) * 1000000) >> 16;
+					}
+				}
+			}
+		}
 		mutex_unlock(&data->lock);
 
 		pm_runtime_mark_last_busy(dev);
 		pm_runtime_put_autosuspend(dev);
-		return ret < 0 ? ret : IIO_VAL_INT;
+		if (ret < 0)
+			return ret;
+		return mask == IIO_CHAN_INFO_PROCESSED ?
+			IIO_VAL_INT_PLUS_MICRO : IIO_VAL_INT;
 	}
 
 	guard(mutex)(&data->lock);
@@ -273,6 +320,9 @@ static int tcs3430_probe(struct i2c_client *client)
 	if (!i2c_check_functionality(client->adapter,
 				     I2C_FUNC_SMBUS_BYTE_DATA | I2C_FUNC_SMBUS_WORD_DATA))
 		return -EOPNOTSUPP;
+	if (surface_unit_calibration &&
+	    !i2c_check_functionality(client->adapter, I2C_FUNC_SMBUS_READ_I2C_BLOCK))
+		return -EOPNOTSUPP;
 
 	ret = i2c_smbus_read_byte_data(client, TCS3430_ID);
 	if (ret < 0)
@@ -289,6 +339,9 @@ static int tcs3430_probe(struct i2c_client *client)
 	data->atime = 35; /* 100.08 ms */
 	data->gain = 2; /* 16x */
 	data->needs_config = true;
+	data->saved_proportion[0] = 35;
+	data->saved_proportion[1] = 45;
+	data->saved_proportion[2] = 6;
 	mutex_init(&data->lock);
 	i2c_set_clientdata(client, indio_dev);
 	indio_dev->name = "tcs3430";
@@ -296,6 +349,8 @@ static int tcs3430_probe(struct i2c_client *client)
 	indio_dev->modes = INDIO_DIRECT_MODE;
 	indio_dev->channels = tcs3430_channels;
 	indio_dev->num_channels = ARRAY_SIZE(tcs3430_channels);
+	if (!surface_unit_calibration)
+		indio_dev->num_channels--;
 
 	ret = devm_add_action_or_reset(dev, tcs3430_power_down, data);
 	if (ret)
