@@ -33,6 +33,19 @@ patch kept at /var/tmp/spx-codex/venus-mpeg2-primary-final.patch. The 0x1008
 containment held (no storm, no reboot needed).
 **Vulkan GMEM corruption: workaround deployed** (RESULT-20261014-vulkan-gmem.md).
 
+**Authorised tests (user, 2026-10-14: "proceed with whatever you want").**
+Trial 20261014ga = baseline + PMIC RTC + slim s2idle retention + 50 C CPU
+passive trip; queued quiet `reopen` audio test runs before any playback.
+ON RESUME (spx_attempt=20261014ga): wait for the trial checker; then as root
+`trial.py audio 20261014ga --audio-action feedback --microphone-array
+--allow-amp-power --allow-playback --allow-capture`; `trial.py thermal
+20261014ga --thermal-combined`; systemd-run ... `trial.py systemd-suspend
+20261014ga --parked-audio` (see commit 8c993236 message / Codex plan
+/var/tmp/spx-codex/authorised-plan.md); validation run+verify; RESULT page;
+`trial.py return 20261014ga`. Then the watchdog trial (watchdog-reset).
+In-place audio on a boot where the feeder already used the DSP does not
+render (hw_ptr 0); use the fresh trial boot.
+
 Next candidates, each blocked on the stated prerequisite:
 Parked with briefs in /var/tmp/spx-codex/: IPA (no sourced IPA version/tables),
 Type-C class ports (no firmware initial-state query; ADSP has no PMIC_RTR

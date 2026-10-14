@@ -278,8 +278,17 @@ def validate_tone_frequencies(frequencies):
          frequencies[0] != frequencies[1], 'Expected two distinct integer tone frequencies below Nyquist')
 
 
-def tone(channels, seconds=2, amplitude=1433, *, frequencies=(440, 660)):
+def tone_peak():
+    """Test-tone peak: quiet 1433 by default; SPX_TONE_PEAK may raise it to 4000 (daytime only)."""
+    value = int(os.environ.get('SPX_TONE_PEAK', '1433'))
+    need(1433 <= value <= 4000, 'SPX_TONE_PEAK must be 1433..4000')
+    return value
+
+
+def tone(channels, seconds=2, amplitude=None, *, frequencies=(440, 660)):
     """48 kHz S16_LE stereo, caller peak (quiet default1433), 20 ms fades."""
+    if amplitude is None:
+        amplitude = tone_peak()
     validate_tone_frequencies(frequencies)
     need(type(amplitude) is int and 0 <= amplitude <= 32767, 'Tone peak exceeds S16_LE range')
     samples = bytearray()
@@ -2973,7 +2982,7 @@ def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder
         print(f'Listening test: {name}, two seconds', flush=True)
         start = capture.mark() if capture else None
         pcm.play(tone(channels))
-        report['tones'].append({'channels': name, 'seconds': 2, 'peak_limit': 1433})
+        report['tones'].append({'channels': name, 'seconds': 2, 'peak_limit': tone_peak()})
         if capture:
             from acoustic import score_phase
             capture.wait_frames(start + 3 * 48000)

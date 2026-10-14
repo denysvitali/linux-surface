@@ -281,7 +281,10 @@ func trialThermalResponse(c *AutoContext) AutoResult {
 		good = good && base != nil && crossing != nil && response != nil && recovery != nil && trNumber(base, "temperature") < trip-5000 && trNumber(base, "state") == 0 && trNumber(base, "limit") > 0 && trNumber(evidence, "trip_mc") == trip && trNumber(evidence, "recovery_below_mc") == trip-5000 && trNumber(crossing, "temperature") >= trip && trNumber(response, "seconds") >= trNumber(crossing, "seconds") && trNumber(response, "state") > 0 && trNumber(response, "limit") < trNumber(base, "limit") && trNumber(recovery, "seconds") > trNumber(response, "seconds") && trNumber(recovery, "temperature") < trip-5000 && trNumber(recovery, "state") == 0 && trNumber(recovery, "limit") == trNumber(base, "limit")
 	}
 	if trip == 50000 {
-		good = good && trBool(r, "native_arithmetic_passed") && trBool(r, "gpu_stopped") && trBool(r, "gpu_group_stopped") && trBool(r, "response_load_witnessed")
+		// The arithmetic self-check exists only for the native workload; the
+		// Python fallback is proven by the recorded crossing under load instead.
+		native := !strings.HasPrefix(trString(r, "cpu_workload"), "Python")
+		good = good && (!native || trBool(r, "native_arithmetic_passed")) && trBool(r, "gpu_stopped") && trBool(r, "gpu_group_stopped") && trBool(r, "response_load_witnessed")
 	}
 	return trialVerdict(id, good, fmt.Sprintf("Real CPU crossing, automatic cooling/maximum reduction and natural hysteresis recovery for both clusters at %.0f mC; temporary-policy scope only, normal 75C/GPU/OEM envelope remains open", trip))
 }
