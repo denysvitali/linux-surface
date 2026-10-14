@@ -2,6 +2,8 @@
 """Bounded SensorProxy probe; stdout is one controlled JSON object, no raw data."""
 import json
 import os
+import math
+import sys
 import time
 
 NAME = "net.hadess.SensorProxy"
@@ -10,9 +12,17 @@ PROPS = "org.freedesktop.DBus.Properties"
 
 
 def main():
+    compass_mode = sys.argv[1:] == ["--compass"]
+    sensor_path = PATH + "/Compass" if compass_mode else PATH
+    sensor_interface = NAME + ".Compass" if compass_mode else NAME
+    capability_name = "HasCompass" if compass_mode else "HasAccelerometer"
+    value_name = "CompassHeading" if compass_mode else "AccelerometerOrientation"
+    claim_name = "ClaimCompass" if compass_mode else "ClaimAccelerometer"
+    release_name = "ReleaseCompass" if compass_mode else "ReleaseAccelerometer"
     result = dict(status="error", reason="helper_error", has_compass=None,
                   orientation_before=None, orientation_after=None, signal=False,
-                  claimed=False, released=False, window_complete=False)
+                  claimed=False, released=False, window_complete=False,
+                  compass_signal_count=0, compass_min=None, compass_max=None)
     try:
         from gi.repository import Gio, GLib
     except (ImportError, ValueError):
@@ -50,12 +60,21 @@ def main():
         nonlocal observed_defined
         iface, changed, invalidated = parameters.unpack()
         # The subscription precedes the claim; exclude signals seen before it.
-        if cleaning or claim_time is None or iface != NAME or (
+        if cleaning or claim_time is None or iface != sensor_interface or (
                 observation_end is not None and time.monotonic() > observation_end):
+            return
+        if compass_mode:
+            if value_name in changed:
+                value = changed.get(value_name)
+                if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and 0 <= value < 360:
+                    result["signal"] = True
+                    result["compass_signal_count"] += 1
+                    result["compass_min"] = value if result["compass_min"] is None else min(result["compass_min"], value)
+                    result["compass_max"] = value if result["compass_max"] is None else max(result["compass_max"], value)
             return
         if "AccelerometerOrientation" in changed or "AccelerometerTilt" in changed:
             result["signal"] = True
-        value = changed.get("AccelerometerOrientation")
+        value = changed.get(value_name)
         if isinstance(value, str) and defined(value):
             observed_defined = True
             result["orientation_after"] = value
@@ -79,46 +98,73 @@ def main():
                     result["has_compass"] = compass
             except GLib.Error:
                 pass  # Missing compass property must not fail motion.
-            has_accel = (yield prop(PATH, NAME, "HasAccelerometer"))[0]
+            has_accel = (yield prop(sensor_path, sensor_interface, capability_name))[0]
+            if compass_mode and isinstance(has_accel, bool):
+                result["has_compass"] = has_accel
             if has_accel is False:
-                result.update(status="blocked", reason="no_accelerometer")
+                result.update(status="blocked", reason="no_compass" if compass_mode else "no_accelerometer")
                 return
             if has_accel is not True:
                 raise ValueError("Invalid capability type")
-            before = (yield prop(PATH, NAME, "AccelerometerOrientation"))[0]
-            if not isinstance(before, str):
+            before = (yield prop(sensor_path, sensor_interface, value_name))[0]
+            if compass_mode:
+                if isinstance(before, bool) or not isinstance(before, (int, float)):
+                    raise ValueError("Invalid heading type")
+                result["compass_before"] = before
+            elif not isinstance(before, str):
                 raise ValueError("Invalid orientation type")
             result["orientation_before"] = before
             subscription = connection.signal_subscribe(
-                owner, PROPS, "PropertiesChanged", PATH, NAME,
+                owner, PROPS, "PropertiesChanged", sensor_path, sensor_interface,
                 Gio.DBusSignalFlags.NONE, signal, None)
             claim_attempted = True  # Also release after a lost/refused reply.
-            claim_time = time.monotonic()
+            if not compass_mode:
+                claim_time = time.monotonic()
             try:
-                yield call(owner, PATH, NAME, "ClaimAccelerometer", None)
+                yield call(owner, sensor_path, sensor_interface, claim_name, None)
             except GLib.Error as error:
                 # Only a remote refusal is a prerequisite; transport faults are errors.
                 if Gio.DBusError.is_remote_error(error):
-                    result.update(status="blocked", reason="claim_refused")
+                    remote = Gio.DBusError.get_remote_error(error) or ""
+                    result.update(status="blocked", reason="access_denied" if remote.endswith("AccessDenied") else "claim_refused")
                     return
                 raise
+            if compass_mode:
+                claim_time = time.monotonic()
             result["claimed"] = True
             window_end = time.monotonic() + 6.0
             observation_end = window_end
-            after = (yield prop(PATH, NAME, "AccelerometerOrientation"))[0]
-            if not isinstance(after, str):
+            after = (yield prop(sensor_path, sensor_interface, value_name))[0]
+            if compass_mode:
+                if isinstance(after, bool) or not isinstance(after, (int, float)):
+                    raise ValueError("Invalid heading type")
+                result["compass_after"] = after
+            elif not isinstance(after, str):
                 raise ValueError("Invalid orientation type")
             result["orientation_after"] = after
             observed_defined = observed_defined or defined(after)
             if not result["signal"] and not (not defined(before) and observed_defined):
                 yield max(1, int((window_end - time.monotonic()) * 1000) + 1)
-                after = (yield prop(PATH, NAME, "AccelerometerOrientation"))[0]
-                if not isinstance(after, str):
+                after = (yield prop(sensor_path, sensor_interface, value_name))[0]
+                if compass_mode:
+                    if isinstance(after, bool) or not isinstance(after, (int, float)):
+                        raise ValueError("Invalid heading type")
+                    result["compass_after"] = after
+                elif not isinstance(after, str):
                     raise ValueError("Invalid orientation type")
                 result["orientation_after"] = after
                 observed_defined = observed_defined or defined(after)
                 result["window_complete"] = True
-            if result["signal"]:
+            if compass_mode:
+                fresh = result["signal"]
+                unchanged_or_invalid = (not math.isfinite(after) or not math.isfinite(before) or after == before)
+                if fresh:
+                    result.update(status="pass", reason="signal")
+                elif unchanged_or_invalid:
+                    result.update(status="fail", reason="no_heading")
+                else:
+                    result.update(status="error", reason="helper_error")
+            elif result["signal"]:
                 result.update(status="pass", reason="signal")
             elif not defined(before) and observed_defined:
                 result.update(status="pass", reason="transition")
@@ -134,7 +180,7 @@ def main():
             cleaning = True
             if claim_attempted:
                 try:
-                    yield call(owner, PATH, NAME, "ReleaseAccelerometer", None, 1000)
+                    yield call(owner, sensor_path, sensor_interface, release_name, None, 1000)
                     result["released"] = True
                 except Exception:
                     result.update(status="error", reason="release_error")
@@ -196,7 +242,7 @@ def main():
         try:
             connection.call(destination, path, interface, method, params, None,
                             Gio.DBusCallFlags.NO_AUTO_START, timeout,
-                            None if method == "ReleaseAccelerometer" else cancellable,
+                            None if method == release_name else cancellable,
                             replied)
         except Exception as error:
             advance(error=error)
@@ -227,7 +273,10 @@ def main():
     def hard_timeout():
         # Work has already been cancelled and release attempted by 9.5 s.
         result.update(status="error", reason="timeout")
-        print(json.dumps(result), flush=True)
+        for key in ("compass_before", "compass_after", "compass_min", "compass_max"):
+            if isinstance(result.get(key), float) and not math.isfinite(result[key]):
+                result[key] = None
+        print(json.dumps(result, allow_nan=False), flush=True)
         os._exit(0)
 
     GLib.timeout_add(11500, hard_timeout)
@@ -241,7 +290,10 @@ def main():
         loop.run()
     except Exception:
         result.update(status="blocked", reason="bus_unavailable")
-    print(json.dumps(result), flush=True)
+    for key in ("compass_before", "compass_after", "compass_min", "compass_max"):
+        if isinstance(result.get(key), float) and not math.isfinite(result[key]):
+            result[key] = None
+    print(json.dumps(result, allow_nan=False), flush=True)
 
 
 if __name__ == "__main__":

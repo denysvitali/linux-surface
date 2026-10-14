@@ -44,12 +44,51 @@ func TestDesktopMotionAndCompassCatalog(t *testing.T) {
 		if got.ID != check.ID || got.Status != "blocked" {
 			t.Fatal(got)
 		}
-		if check.ID == "sensors.desktop-compass" && !strings.Contains(got.Detail, "restricted to geoclue") {
+		if check.ID == "sensors.desktop-compass" && !strings.Contains(got.Detail, "Fixture root") {
 			t.Fatal(got)
 		}
 	}
 	if len(found) != 2 {
 		t.Fatal(found)
+	}
+}
+
+func TestDesktopCompassHelperOutcomes(t *testing.T) {
+	repo, err := filepath.Abs("../../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name, output, status, detail string
+		err                          error
+	}{
+		{"pass", `{"status":"pass","reason":"signal","has_compass":true,"compass_before":0,"compass_after":77.49,"compass_signal_count":30,"compass_min":77.5,"compass_max":78.1,"signal":true,"claimed":true,"released":true}`, "pass", "headings=30", nil},
+		{"access denied", `{"status":"blocked","reason":"access_denied"}`, "blocked", "access policy (AccessDenied)", nil},
+		{"no compass", `{"status":"blocked","reason":"no_compass","has_compass":false}`, "blocked", "HasCompass false", nil},
+		{"no service", `{"status":"blocked","reason":"no_service"}`, "blocked", "NameHasOwner false", nil},
+		{"no signal", `{"status":"fail","reason":"no_heading","compass_before":77,"compass_after":77,"claimed":true,"released":true,"window_complete":true}`, "fail", "full 6 s window", nil},
+		{"helper error", `{"status":"error","reason":"helper_error"}`, "error", "helper error", nil},
+		{"missing helper", `PRIVATE`, "blocked", "unavailable", os.ErrNotExist},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			c := &AutoContext{Root: "/", Repo: repo}
+			c.Run = func(args ...string) (string, error) {
+				calls++
+				want := []string{"python3", "-B", filepath.Join(repo, "tools/spx/hw-validation/sensorproxy_probe.py"), "--compass"}
+				if strings.Join(args, "\n") != strings.Join(want, "\n") {
+					t.Fatalf("helper invocation: %v", args)
+				}
+				return test.output, test.err
+			}
+			got := interfacesSensorDesktopCompass(c)
+			if calls != 1 || got.ID != "sensors.desktop-compass" || got.Status != test.status || !strings.Contains(got.Detail, test.detail) || strings.Contains(got.Detail, "PRIVATE") {
+				t.Fatalf("%+v calls=%d", got, calls)
+			}
+			if test.status == "pass" && (!strings.Contains(got.Detail, "77.5") || !strings.Contains(got.Detail, "not calibration")) {
+				t.Fatal(got)
+			}
+		})
 	}
 }
 

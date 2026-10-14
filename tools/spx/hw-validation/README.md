@@ -303,16 +303,26 @@ The former combined `sensors.desktop-delivery` row is split into functional
 catalog total by one. A motion pass cannot establish compass delivery. The motion
 detail reports HasCompass (true, false or unreadable) queried on
 `/net/hadess/SensorProxy/Compass`, interface `net.hadess.SensorProxy.Compass`.
-Compass stays blocked: ClaimCompass is normally restricted to geoclue; no policy
-bypass or positioning session is attempted. Cached capabilities are not delivery.
+`sensors.desktop-compass` invokes the same helper with `--compass`, using the
+Compass interface and path. It checks HasCompass, reads CompassHeading before
+the claim, subscribes before ClaimCompass, and records finite in-range headings
+from post-claim PropertiesChanged signals for up to six seconds. ClaimCompass
+AccessDenied is reported as an access-policy block. No service activation or
+policy bypass is attempted. A pass requires at least one fresh signal and a
+released claim; the detail includes the count, rounded heading range and before/
+after values. A no-signal run fails only when the value remained at its initial
+value or was non-finite through the complete window. This proves fresh desktop
+compass delivery only, not calibration, true-north accuracy or tilt compensation.
 
 The helper emits one JSON object on stdout (exit zero for recorded outcomes):
 `status` (pass/blocked/fail/error), `reason` (signal, transition, stationary,
-undefined, no_service, no_accelerometer, claim_refused, unavailable,
-bus_unavailable, helper_error, timeout, release_error or close_error),
-`has_compass` (boolean or null), `orientation_before` and `orientation_after`
-(string or null), `signal`, `claimed`, `released`, and `window_complete`
-(booleans). Orientation strings remain in command memory; the Go report records
+undefined, no_heading, no_service, no_compass, no_accelerometer, access_denied,
+claim_refused, unavailable, bus_unavailable, helper_error, timeout, release_error
+or close_error), `has_compass` (boolean or null), `orientation_before` and
+`orientation_after` (string or null), `signal`, `claimed`, `released`, and
+`window_complete` (booleans). Compass mode additionally reports numeric
+`compass_before`/`compass_after`, `compass_signal_count`, `compass_min` and
+`compass_max`. Orientation strings remain in command memory; the Go report records
 only controlled evidence summaries and compass capability. A pass or hardware
 failure requires acknowledged claim release; incomplete observation is an error,
 never a hardware failure. Raw errors and other command output are discarded.

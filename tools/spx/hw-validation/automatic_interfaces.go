@@ -46,9 +46,7 @@ func automaticInterfacesChecks() []AutoCheck {
 			return interfacesResult("sensors.light-lux", "blocked", "No verified TCS3430 lux conversion or desktop ambient-light source is implemented; raw XYZ/IR reads do not establish calibrated light delivery. No stimulus or brightness change requested")
 		}},
 		{ID: "sensors.desktop-motion", Title: "Fresh desktop accelerometer delivery", Area: "Sensors", Kind: "functional", Boxes: []string{"S02"}, Run: interfacesSensorDesktopDelivery},
-		{ID: "sensors.desktop-compass", Title: "Fresh desktop compass delivery", Area: "Sensors", Kind: "functional", Boxes: []string{"S02"}, Run: func(c *AutoContext) AutoResult {
-			return interfacesResult("sensors.desktop-compass", "blocked", "Compass delivery not exercised: SensorProxy ClaimCompass on /net/hadess/SensorProxy/Compass is normally restricted to geoclue; no policy bypass or positioning session attempted. HasCompass exposure is reported by sensors.desktop-motion; capability is not delivery")
-		}},
+		{ID: "sensors.desktop-compass", Title: "Fresh desktop compass delivery", Area: "Sensors", Kind: "functional", Boxes: []string{"S02"}, Run: interfacesSensorDesktopCompass},
 	}
 	for _, feature := range []struct{ id, title, box string }{
 		{"touch", "Touchscreen direct multi-touch capabilities", "I02"},
@@ -856,6 +854,90 @@ func interfacesSensorDesktopDelivery(c *AutoContext) AutoResult {
 		}
 	}
 	return interfacesResult(id, status, detail+suffix)
+}
+
+func interfacesSensorDesktopCompass(c *AutoContext) AutoResult {
+	const id = "sensors.desktop-compass"
+	if c.Fixture || (c.Root != "" && filepath.Clean(c.Root) != "/") {
+		return interfacesResult(id, "blocked", "Fixture root: SensorProxy helper disabled")
+	}
+	if c.Repo == "" {
+		return interfacesResult(id, "blocked", "Repository helper path unavailable")
+	}
+	helper := filepath.Join(c.Repo, "tools/spx/hw-validation/sensorproxy_probe.py")
+	if info, err := os.Stat(helper); err != nil || !info.Mode().IsRegular() {
+		return interfacesResult(id, "blocked", "SensorProxy repository helper unavailable")
+	}
+	out, err := c.Command("python3", "-B", helper, "--compass")
+	if err != nil {
+		var execErr *exec.Error
+		if errors.As(err, &execErr) || errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) {
+			return interfacesResult(id, "blocked", "Python/helper unavailable or inaccessible")
+		}
+		return interfacesResult(id, "error", "SensorProxy compass helper command failed; raw output discarded")
+	}
+	var probe struct {
+		Status         string   `json:"status"`
+		Reason         string   `json:"reason"`
+		HasCompass     *bool    `json:"has_compass"`
+		Before         *float64 `json:"compass_before"`
+		After          *float64 `json:"compass_after"`
+		Signal         bool     `json:"signal"`
+		SignalCount    int      `json:"compass_signal_count"`
+		Min            *float64 `json:"compass_min"`
+		Max            *float64 `json:"compass_max"`
+		Claimed        bool     `json:"claimed"`
+		Released       bool     `json:"released"`
+		WindowComplete bool     `json:"window_complete"`
+	}
+	if json.Unmarshal([]byte(out), &probe) != nil {
+		return interfacesResult(id, "error", "Invalid SensorProxy compass helper JSON; raw output discarded")
+	}
+	status, detail := "error", "Invalid SensorProxy compass helper outcome; raw output discarded"
+	switch probe.Reason {
+	case "signal":
+		if probe.Status == "pass" && probe.Claimed && probe.Released && probe.Signal && probe.SignalCount > 0 && compassHeading(probe.Min) && compassHeading(probe.Max) && *probe.Min <= *probe.Max {
+			status = "pass"
+			detail = fmt.Sprintf("Fresh desktop compass delivery: PropertiesChanged headings=%d, min/max=%.1f/%.1f degrees; before=%s after=%s; proves fresh desktop compass delivery only, not calibration, true-north accuracy or tilt compensation; claim released", probe.SignalCount, *probe.Min, *probe.Max, compassValue(probe.Before), compassValue(probe.After))
+		}
+	case "no_service", "no_compass", "access_denied", "claim_refused", "unavailable", "bus_unavailable":
+		if probe.Status == "blocked" {
+			status = "blocked"
+			detail = map[string]string{
+				"no_service":      "SensorProxy service not running; NameHasOwner false; no activation",
+				"no_compass":      "SensorProxy HasCompass false",
+				"access_denied":   "SensorProxy ClaimCompass refused by access policy (AccessDenied); release attempted on the same connection",
+				"claim_refused":   "SensorProxy ClaimCompass refused; release attempted on the same connection",
+				"unavailable":     "SensorProxy helper or Python PyGObject (Gio/GLib) unavailable",
+				"bus_unavailable": "System bus connection unavailable; no activation",
+			}[probe.Reason]
+		}
+	case "no_heading":
+		if probe.Status == "fail" && probe.Claimed && probe.Released && probe.WindowComplete && !probe.Signal && (probe.Before == nil || probe.After == nil || !compassFinite(probe.Before) || !compassFinite(probe.After) || *probe.Before == *probe.After) {
+			status = "fail"
+			detail = fmt.Sprintf("Claim accepted, no finite CompassHeading PropertiesChanged and heading stayed at its pre-claim value or non-finite for the full 6 s window; before=%s after=%s; claim released", compassValue(probe.Before), compassValue(probe.After))
+		}
+	case "helper_error", "timeout", "release_error", "close_error":
+		if probe.Status == "error" {
+			detail = "SensorProxy compass helper error (" + probe.Reason + "); fresh delivery not established; raw output discarded"
+		}
+	}
+	return interfacesResult(id, status, detail)
+}
+
+func compassValue(value *float64) string {
+	if !compassFinite(value) {
+		return "non-finite/unavailable"
+	}
+	return fmt.Sprintf("%.1f°", *value)
+}
+
+func compassFinite(value *float64) bool {
+	return value != nil && !math.IsNaN(*value) && !math.IsInf(*value, 0)
+}
+
+func compassHeading(value *float64) bool {
+	return compassFinite(value) && *value >= 0 && *value < 360
 }
 
 func interfacesSensorDesktop(c *AutoContext) AutoResult {
