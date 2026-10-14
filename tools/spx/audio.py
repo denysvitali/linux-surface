@@ -77,15 +77,40 @@ def need(condition, message):
         raise RuntimeError(message)
 
 
+class StereoHealthFailure(RuntimeError):
+    """A read-only health assertion, with a stable class for confirmation."""
+
+    def __init__(self, category, message):
+        super().__init__(message)
+        self.category = category
+
+
+class InvalidAudioSample(StereoHealthFailure):
+    def __init__(self, message, snapshot):
+        super().__init__('invalid-sample', message)
+        self.snapshot = snapshot
+
+
 def state():
     values = dict(line.split('=', 1) for line in read_text(AUDIO_STATE).splitlines())
     parsed = {key: int(value, 0) for key, value in values.items()}
     required = {'COMP_PARAMS', 'SLV_STATUS', 'MCP_STATUS', 'GPIO_DIR', 'GPIO_VAL',
                 'DEV1_ID1', 'DEV1_ID2', 'DEV2_ID1', 'DEV2_ID2', 'FRAME_B0',
                 'FRAME_B1', 'FORCED_ATTACH'}
-    need(required <= parsed.keys(), 'Incomplete driver audio-state interface')
-    need(parsed['COMP_PARAMS'] == 0x016840c6, 'SoundWire bridge canary mismatch')
-    need(parsed['FORCED_ATTACH'] == 0, 'Forced attachment is not native enumeration')
+    if not required <= parsed.keys():
+        raise InvalidAudioSample('Incomplete driver audio-state interface', parsed)
+    if parsed['COMP_PARAMS'] != 0x016840c6:
+        raise InvalidAudioSample('SoundWire bridge canary mismatch', parsed)
+    # The kernel already brackets the paged bridge reads with COMP_PARAMS.
+    # That does not detect every corrupt intermediate read: an attached slave
+    # cannot have an entirely empty/all-ones DEV ID pair. No extra I/O needed.
+    for address in (1, 2):
+        identity = (parsed[f'DEV{address}_ID1'], parsed[f'DEV{address}_ID2'])
+        if ((parsed['SLV_STATUS'] >> (2 * address)) & 3) == 1 and identity in (
+                (0, 0), (0xffffffff, 0xffffffff)):
+            raise InvalidAudioSample(f'Attached address {address} has invalid DEV ID pair', parsed)
+    if parsed['FORCED_ATTACH'] != 0:
+        raise StereoHealthFailure('enumeration-policy', 'Forced attachment is not native enumeration')
     return parsed
 
 
@@ -108,24 +133,28 @@ def devices():
 
 def identity_map(snapshot, slaves, expected):
     """Require physical presence, enumerator IDs and core binding to agree."""
+    def require(condition, message):
+        if not condition:
+            raise StereoHealthFailure('identity', message)
+
     mapping = {}
     for address in (1, 2):
         status = (snapshot['SLV_STATUS'] >> (2 * address)) & 3
         if status == 0:
             continue
-        need(status == 1, f'Address {address} is alert/reserved, not attached')
+        require(status == 1, f'Address {address} is alert/reserved, not attached')
         identity = (snapshot[f'DEV{address}_ID1'], snapshot[f'DEV{address}_ID2'])
-        need(identity in ID_TO_UNIT, f'Unknown physical identity at address {address}')
+        require(identity in ID_TO_UNIT, f'Unknown physical identity at address {address}')
         unit = ID_TO_UNIT[identity]
-        need(unit not in mapping, 'Duplicate physical amplifier identity')
+        require(unit not in mapping, 'Duplicate physical amplifier identity')
         matches = [s for s in slaves if s['unit'] == unit and
                    s['address'] == address and s['status'] == 'Attached' and
                    s['driver'] == 'wsa881x-codec' and s.get('initialized') is True]
-        need(len(matches) == 1, f'Physical unit {unit} lacks matching initialized native codec')
+        require(len(matches) == 1, f'Physical unit {unit} lacks matching initialized native codec')
         mapping[unit] = address
-    need((snapshot['SLV_STATUS'] & ~0x3c) == 0,
-         'Unexpected or unassigned physical device on SoundWire bus')
-    need(set(mapping) == set(expected), f'Expected physical units {expected}, got {mapping}')
+    require((snapshot['SLV_STATUS'] & ~0x3c) == 0,
+            'Unexpected or unassigned physical device on SoundWire bus')
+    require(set(mapping) == set(expected), f'Expected physical units {expected}, got {mapping}')
     return mapping
 
 
@@ -2448,6 +2477,117 @@ def set_desktop_pa_gain(card, step):
                        check=True, timeout=5)
 
 
+class HealthConfirmationTimeout(RuntimeError):
+    """Confirmation exhausted its wall-clock budget; unwind to amp parking."""
+
+
+class PeriodicStereoHealth:
+    """Confirm only read-only periodic samples, never startup or post-write checks.
+
+    Two fresh snapshots, spaced 50 ms apart, add at most 500 ms in userspace
+    before the existing park/PCM/graph cleanup (versus the 5 s check period).
+    Reads do not change gain, power, protection, PCM timing or watchdogs; the
+    independent feeder continues. This bounded observation window is the only
+    added exposure to a real fault. SIGALRM also interrupts slow reads, subject
+    to the same uninterruptible-kernel-I/O limitation as today's single read.
+    Startup, power-up, gain/write checks, PCM/monitor/microphone faults, signals,
+    malformed interfaces/programming errors and confirmation timeout remain
+    immediately fatal. The live PCM/monitor oracles run before each reread.
+    """
+
+    def __init__(self, status, *, confirmations=2):
+        need(type(confirmations) is int and 0 <= confirmations <= 2,
+             'Periodic health confirmation count must be 0..2')
+        self.confirmations = confirmations
+        self.last_journal = None
+        self.stats = status['periodic_health'] = dict(
+            confirmations=confirmations, spacing_seconds=0.05, maximum_extra_seconds=0.5,
+            failed_samples=0, transient_events=0, transient_samples=0,
+            confirmed_events=0, aborted_events=0, failures_by_class={},
+            first_failure=None, last_failure=None, first_transient=None,
+            last_transient=None, last_event=None, journal_suppressed_events=0)
+
+    def check(self, mapping, paths, *, pa_gain_step=0, healthy):
+        def sample():
+            observations = []
+            try:
+                check_stereo(mapping, paths, initialized=True, observations=observations,
+                             pa_gain_step=pa_gain_step)
+                return dict(passed=True, observation=observations), None
+            except (StereoHealthFailure, OSError) as error:
+                if isinstance(error, InterruptedError):
+                    raise
+                category = (error.category if isinstance(error, StereoHealthFailure)
+                            else f'read-oserror-{error.errno}')
+                row = dict(passed=False, category=category, error=str(error),
+                           error_type=type(error).__name__, errno=getattr(error, 'errno', None),
+                           utc=datetime.now(timezone.utc).isoformat(), observation=observations,
+                           origin=[dict(file=Path(frame.filename).name,
+                                        function=frame.name, line=frame.lineno)
+                                   for frame in traceback.extract_tb(error.__traceback__)])
+                self.stats['failed_samples'] += 1
+                counts = self.stats['failures_by_class']
+                counts[category] = counts.get(category, 0) + 1
+                if self.stats['first_failure'] is None:
+                    self.stats['first_failure'] = row
+                self.stats['last_failure'] = row
+                return row, error
+
+        first, primary = sample()
+        if primary is None:
+            return
+        event = dict(samples=[first], outcome='aborted')
+        previous_alarm = None
+        try:
+            # serve_desktop is a main-thread owner and uses no interval timer.
+            # Fail immediately if a future caller already owns this timer.
+            need(signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0),
+                 'Health confirmation requires an unused interval timer')
+
+            def expired(signum, frame):
+                raise HealthConfirmationTimeout('Periodic health confirmation exceeded 500 ms')
+
+            previous_alarm = signal.signal(signal.SIGALRM, expired)
+            signal.setitimer(signal.ITIMER_REAL, 0.5)
+            for _ in range(self.confirmations):
+                time.sleep(0.05)
+                healthy()  # Outside sample(): live-owner failures cannot be retried.
+                row, error = sample()
+                event['samples'].append(row)
+                if error is None or row['category'] != first['category']:
+                    # Different classes cannot confirm one another. Keep every
+                    # failed sample as transient evidence even without a pass.
+                    event['outcome'] = 'transient'
+                    return
+            event['outcome'] = 'confirmed'
+            raise primary
+        except BaseException as error:
+            event['terminal_error'] = dict(type=type(error).__name__, detail=str(error))
+            raise
+        finally:
+            if previous_alarm is not None:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+                signal.signal(signal.SIGALRM, previous_alarm)
+            self.stats['last_event'] = event
+            outcome = event['outcome']
+            self.stats[outcome + '_events'] += 1
+            if outcome == 'transient':
+                self.stats['transient_samples'] += sum(not row['passed'] for row in event['samples'])
+                if self.stats['first_transient'] is None:
+                    self.stats['first_transient'] = event
+                self.stats['last_transient'] = event
+            now = time.monotonic()
+            if outcome != 'transient' or self.last_journal is None or now - self.last_journal >= 30:
+                print('SPX periodic audio health: ' + json.dumps(dict(
+                    event=event, failed_samples=self.stats['failed_samples'],
+                    transient_events=self.stats['transient_events'],
+                    journal_suppressed_events=self.stats['journal_suppressed_events'])),
+                    file=sys.stderr, flush=True)
+                self.last_journal = now
+            else:
+                self.stats['journal_suppressed_events'] += 1
+
+
 def serve_desktop(args, report, pcm, graph, paths, mapping):
     """Ordinary desktop session with optional stock microphone demand/idle."""
     playback_only = report.get('action') == 'play-desktop'
@@ -2508,6 +2648,7 @@ def serve_desktop(args, report, pcm, graph, paths, mapping):
         'note': ('Unity digital gain; desktop slider controls listening level. Factory maximum is uncalibrated.'
                  if args.desktop_peak == 32768 else
                  'Conservative fixed attenuation; useful listening volume is not yet validated.')}
+    health = PeriodicStereoHealth(ready)
     if microphone is not None:
         ready['microphone'] = dict(source=microphone.name, source_index=microphone.source_id,
             module=microphone.module, default_selected=microphone.default_selected,
@@ -2575,7 +2716,22 @@ def serve_desktop(args, report, pcm, graph, paths, mapping):
                         temporary = args.output / f'.serve-ready.{os.getpid()}'
                         temporary.write_text(json.dumps(ready, indent=2) + '\n')
                         temporary.replace(args.output / 'serve-ready.json')
-                check_stereo(mapping, paths, initialized=True, pa_gain_step=pa_gain_step)
+                failures_before = health.stats['failed_samples']
+
+                def playback_healthy():
+                    pcm.healthy()
+                    graph.monitor.healthy()
+
+                try:
+                    health.check(mapping, paths, pa_gain_step=pa_gain_step, healthy=playback_healthy)
+                finally:
+                    if health.stats['failed_samples'] != failures_before:
+                        # Persist even recovered samples and confirmations on
+                        # the fatal path, before the caller tears down the graph.
+                        temporary = args.output / f'.serve-ready.{os.getpid()}'
+                        temporary.write_text(json.dumps(ready, indent=2) + '\n')
+                        temporary.replace(args.output / 'serve-ready.json')
+                        save_run_result(args.output, report)
                 next_hardware_check = now + 5
         pcm.healthy()
         graph.monitor.healthy()
@@ -2608,32 +2764,51 @@ def playback_state(path):
 def check_stereo(mapping, paths, initialized=False, observations=None, *, pa_gain_step=0):
     need(type(pa_gain_step) is int and 0 <= pa_gain_step <= 12,
          'Ordinary amplifier gain step must be 0..12 (1.5 dB each)')
-    snapshot = state()
-    codecs = {unit: playback_state(path) for unit, path in paths.items()}
-    observation = {'master': snapshot, 'codec_shadows': codecs, 'passed': False}
+    observation = {'master': None, 'codec_shadows': {}, 'passed': False}
     if observations is not None:
         observations.append(observation)
-    need(identity_map(snapshot, devices(), {3, 4}) == mapping, 'Amplifier identity changed')
-    need(snapshot['GPIO_VAL'] & 0x1e == 0x1e, 'Amplifier power state changed')
-    need(snapshot['MCP_STATUS'] & 1 == 0 and snapshot['FRAME_B0'] == 7,
-         'Unexpected runtime frame or active bank')
+
+    def read(function, *args):
+        observation['read_stage'] = getattr(function, '__name__', 'snapshot-read')
+        try:
+            return function(*args)
+        except InvalidAudioSample as error:
+            observation['master'] = error.snapshot
+            raise
+
+    def require(condition, message, category):
+        if not condition:
+            raise StereoHealthFailure(category, message)
+
+    snapshot = observation['master'] = read(state)
+    codecs = observation['codec_shadows']
+    for unit, path in paths.items():
+        codecs[unit] = read(playback_state, path)
+    slaves = observation['devices'] = read(devices)
+    current_mapping = identity_map(snapshot, slaves, {3, 4})
+    require(current_mapping == mapping, 'Amplifier identity changed', 'identity')
+    require(snapshot['GPIO_VAL'] & 0x1e == 0x1e, 'Amplifier power state changed', 'power')
+    require(snapshot['MCP_STATUS'] & 1 == 0 and snapshot['FRAME_B0'] == 7,
+            'Unexpected runtime frame or active bank', 'frame-bank')
     for key, expected in (('DP1_B0', 0x01000107), ('DP4_B0', 0x01000607),
                           ('RX7_PATH_CFG0', 0), ('RX8_PATH_CFG0', 0),
                           ('RX7_VOLUME', 0), ('RX8_VOLUME', 0)):
-        need(snapshot[key] == expected, f'{key}={snapshot[key]:#x}, expected {expected:#x}')
+        require(snapshot[key] == expected, f'{key}={snapshot[key]:#x}, expected {expected:#x}', key)
     for unit, codec in codecs.items():
         for key, expected in (('UNIT', unit), ('DEV_NUM', mapping[unit]), ('ATTACHED', 1),
                               ('STREAM_CONFIGURED', 1), ('STREAM_ENABLED', 1),
                               ('DAC_PREPARED', 1), ('DAC_MASTER_PORT', 1 if unit == 3 else 4),
                               ('SHADOW_PA_GAIN', 0xc9 - (pa_gain_step << 4)), ('SHADOW_COMP_ENABLE', 0),
                               ('SHADOW_VISENSE_ENABLE', 0)):
-            need(codec[key] == expected, f'Unit {unit}: {key}={codec[key]}, expected {expected}')
+            require(codec[key] == expected, f'Unit {unit}: {key}={codec[key]}, expected {expected}',
+                    f'codec-{key}')
         if initialized:
-            need(codec['LATE_INIT_RESULT'] == 0 and codec['LATE_INIT_COUNT'] > 0,
-                 f'Unit {unit}: late initialization did not complete')
-            need(codec['SHADOW_PA_ENABLE'] & 0x80, f'Unit {unit}: PA enable absent from shadow')
-            need(codec['SHADOW_OCP'] == 0xb4 and codec['SHADOW_BOOST'] == 0x98,
-                 f'Unit {unit}: unexpected protection/boost shadow')
+            require(codec['LATE_INIT_RESULT'] == 0 and codec['LATE_INIT_COUNT'] > 0,
+                    f'Unit {unit}: late initialization did not complete', 'codec-late-init')
+            require(codec['SHADOW_PA_ENABLE'] & 0x80, f'Unit {unit}: PA enable absent from shadow',
+                    'codec-pa-enable')
+            require(codec['SHADOW_OCP'] == 0xb4 and codec['SHADOW_BOOST'] == 0x98,
+                    f'Unit {unit}: unexpected protection/boost shadow', 'codec-protection')
     observation['passed'] = True
     return observation
 

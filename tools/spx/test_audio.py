@@ -2,6 +2,7 @@
 """Offline checks only: generated samples, PCM pipe writes and permission gates."""
 import importlib.util
 import contextlib
+import errno
 import io
 import fcntl
 import json
@@ -15,7 +16,7 @@ import threading
 import time
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 spec = importlib.util.spec_from_file_location('spx_audio', Path(__file__).with_name('audio.py'))
 audio = importlib.util.module_from_spec(spec)
@@ -2514,7 +2515,7 @@ class OrdinaryDesktopPlaybackTests(unittest.TestCase):
             change.assert_called_once_with('1', 2)
             self.assertEqual(report['serve']['pa_gain_db'], 3)
             self.assertEqual(report['serve']['gain_changes'][0]['pcm_pid'], 42)
-            check.assert_called_with({}, {}, initialized=True, pa_gain_step=2)
+            check.assert_called_with({}, {}, initialized=True, observations=ANY, pa_gain_step=2)
             pcm.close.assert_not_called()
 
     def test_saved_gain_survives_startup_and_applies_on_same_pcm_after_settling(self):
@@ -2573,6 +2574,252 @@ class OrdinaryDesktopPlaybackTests(unittest.TestCase):
                           microphone_capture=capturing)
             with self.assertRaisesRegex(RuntimeError, 'native initialization'):
                 audio.serve_desktop(None, report, None, None, {}, {})
+
+
+class PeriodicStereoHealthTests(unittest.TestCase):
+    """Fresh synthetic sysfs snapshots; no device, PCM or sound access."""
+
+    def setUp(self):
+        self.mapping = {3: 1, 4: 2}
+        self.paths = {unit: Path(f'/stub/unit{unit}') for unit in self.mapping}
+        self.good = dict(COMP_PARAMS=0x016840c6, SLV_STATUS=0x14, MCP_STATUS=0,
+                         GPIO_DIR=0x1e, GPIO_VAL=0x1e, FORCED_ATTACH=0,
+                         DEV1_ID1=0x21170213, DEV1_ID2=0x10,
+                         DEV2_ID1=0x21170214, DEV2_ID2=0x10,
+                         FRAME_B0=7, FRAME_B1=7, DP1_B0=0x01000107,
+                         DP4_B0=0x01000607, RX7_PATH_CFG0=0, RX8_PATH_CFG0=0,
+                         RX7_VOLUME=0, RX8_VOLUME=0)
+        self.slaves = [dict(unit=unit, address=address, status='Attached',
+                            driver='wsa881x-codec', initialized=True)
+                       for unit, address in self.mapping.items()]
+        self.codecs = {unit: dict(UNIT=unit, DEV_NUM=address, ATTACHED=1,
+                         STREAM_CONFIGURED=1, STREAM_ENABLED=1, DAC_PREPARED=1,
+                         DAC_MASTER_PORT=1 if unit == 3 else 4, SHADOW_PA_GAIN=0xc9,
+                         SHADOW_COMP_ENABLE=0, SHADOW_VISENSE_ENABLE=0,
+                         LATE_INIT_RESULT=0, LATE_INIT_COUNT=1, SHADOW_PA_ENABLE=0x80,
+                         SHADOW_OCP=0xb4, SHADOW_BOOST=0x98)
+                       for unit, address in self.mapping.items()}
+        self.bad_identity = dict(self.good, DEV2_ID1=0x36170214)
+
+    @contextlib.contextmanager
+    def snapshots(self, samples):
+        samples = iter(samples)
+        self.reads = 0
+
+        def read(path):
+            if path == audio.AUDIO_STATE:
+                self.reads += 1
+                values = next(samples)
+                if isinstance(values, BaseException):
+                    raise values
+            else:
+                values = next(self.codecs[unit] for unit, base in self.paths.items()
+                              if path == base / 'spx_playback_state')
+            return '\n'.join(f'{key}={value:#x}' for key, value in values.items())
+
+        with patch.object(audio, 'read_text', side_effect=read), \
+                patch.object(audio, 'devices', return_value=self.slaves), \
+                patch.object(audio.time, 'sleep') as sleep, \
+                contextlib.redirect_stderr(io.StringIO()) as journal:
+            yield sleep, journal
+
+    def run_periodic(self):
+        status = {}
+        health = audio.PeriodicStereoHealth(status)
+        health.check(self.mapping, self.paths, healthy=Mock())
+        return status['periodic_health']
+
+    def test_transient_bad_identity_then_good_continues_and_counts_one(self):
+        with self.snapshots([self.bad_identity, self.good]) as (sleep, journal):
+            stats = self.run_periodic()
+        self.assertEqual(self.reads, 2)
+        sleep.assert_called_once_with(0.05)
+        self.assertEqual(stats['transient_events'], 1)
+        self.assertEqual(stats['failed_samples'], 1)
+        self.assertEqual(stats['first_failure'], stats['last_failure'])
+        self.assertEqual(stats['first_failure']['category'], 'identity')
+        self.assertIn('Unknown physical identity at address 2', journal.getvalue())
+        self.assertTrue(stats['last_event']['samples'][-1]['passed'])
+        self.assertEqual(stats['first_failure']['observation'][0]['master']['DEV2_ID1'], 0x36170214)
+
+    def test_persistent_bad_identity_is_fatal_after_two_confirmations(self):
+        status = {}
+        health = audio.PeriodicStereoHealth(status)
+        with self.snapshots([self.bad_identity] * 3) as (sleep, journal):
+            with self.assertRaisesRegex(RuntimeError, 'Unknown physical identity'):
+                health.check(self.mapping, self.paths, healthy=Mock())
+        self.assertEqual(self.reads, 3)
+        self.assertEqual(sleep.call_count, 2)
+        self.assertEqual(health.stats['confirmed_events'], 1)
+        self.assertEqual(health.stats['transient_events'], 0)
+        self.assertEqual(len(health.stats['last_event']['samples']), 3)
+        self.assertIn('confirmed', journal.getvalue())
+
+    def test_eio_once_then_good_keeps_errno_and_origin(self):
+        with self.snapshots([OSError(errno.EIO, 'bridge read failed'), self.good]):
+            stats = self.run_periodic()
+        self.assertEqual(stats['transient_events'], 1)
+        self.assertEqual(stats['failed_samples'], 1)
+        self.assertEqual(stats['first_failure']['errno'], errno.EIO)
+        self.assertIn('state', [frame['function'] for frame in stats['first_failure']['origin']])
+        self.assertIsNone(stats['first_failure']['observation'][0]['master'])
+
+    def test_persistent_eio_is_fatal_and_preserves_oserror(self):
+        health = audio.PeriodicStereoHealth({})
+        with self.snapshots([OSError(errno.EIO, 'bridge read failed') for _ in range(3)]):
+            with self.assertRaises(OSError) as raised:
+                health.check(self.mapping, self.paths, healthy=Mock())
+        self.assertEqual(raised.exception.errno, errno.EIO)
+        self.assertEqual(self.reads, 3)
+        self.assertEqual(health.stats['failures_by_class'], {'read-oserror-5': 3})
+        self.assertEqual(health.stats['confirmed_events'], 1)
+
+    def test_persistent_power_state_change_stays_fatal(self):
+        health = audio.PeriodicStereoHealth({})
+        with self.snapshots([dict(self.good, GPIO_VAL=0x18)] * 3):
+            with self.assertRaisesRegex(RuntimeError, 'Amplifier power state changed'):
+                health.check(self.mapping, self.paths, healthy=Mock())
+        self.assertEqual(self.reads, 3)
+        self.assertEqual(health.stats['failures_by_class'], {'power': 3})
+        self.assertEqual(health.stats['confirmed_events'], 1)
+
+    def test_invalid_canary_or_attached_id_is_not_amplifier_state_change(self):
+        for bad in (dict(self.good, COMP_PARAMS=0x361840c6),
+                    dict(self.good, DEV2_ID1=0, DEV2_ID2=0),
+                    dict(self.good, DEV2_ID1=0xffffffff, DEV2_ID2=0xffffffff)):
+            with self.subTest(bad=bad), self.snapshots([bad, self.good]):
+                stats = self.run_periodic()
+            self.assertEqual(stats['first_failure']['category'], 'invalid-sample')
+            self.assertEqual(stats['first_failure']['observation'][0]['master'], bad)
+            self.assertEqual(stats['transient_events'], 1)
+
+    def test_persistent_invalid_canary_is_fatal(self):
+        health = audio.PeriodicStereoHealth({})
+        with self.snapshots([dict(self.good, COMP_PARAMS=0)] * 3):
+            with self.assertRaisesRegex(audio.InvalidAudioSample, 'canary mismatch'):
+                health.check(self.mapping, self.paths, healthy=Mock())
+        self.assertEqual(health.stats['confirmed_events'], 1)
+        self.assertEqual(health.stats['failures_by_class'], {'invalid-sample': 3})
+
+    def test_different_failures_do_not_confirm_each_other(self):
+        with self.snapshots([self.bad_identity, dict(self.good, GPIO_VAL=0x18)]):
+            stats = self.run_periodic()
+        self.assertEqual(stats['confirmed_events'], 0)
+        self.assertEqual(stats['transient_events'], 1)
+        self.assertEqual(stats['transient_samples'], 2)
+        self.assertEqual(stats['failures_by_class'], {'identity': 1, 'power': 1})
+        self.assertEqual(stats['last_failure']['category'], 'power')
+
+    def test_live_pcm_fault_during_confirmation_is_immediately_fatal(self):
+        health = audio.PeriodicStereoHealth({})
+        with self.snapshots([self.bad_identity]):
+            with self.assertRaisesRegex(RuntimeError, 'PCM died'):
+                health.check(self.mapping, self.paths, healthy=Mock(side_effect=RuntimeError('PCM died')))
+        self.assertEqual(self.reads, 1)
+        self.assertEqual(health.stats['aborted_events'], 1)
+
+    def test_signal_interruption_is_never_retried(self):
+        health = audio.PeriodicStereoHealth({})
+        with self.snapshots([InterruptedError('service stop'), self.good]):
+            with self.assertRaises(InterruptedError):
+                health.check(self.mapping, self.paths, healthy=Mock())
+        self.assertEqual(self.reads, 1)
+        self.assertEqual(health.stats['failed_samples'], 0)
+
+    def test_successful_periodic_check_never_arms_timer_or_sleeps(self):
+        with self.snapshots([self.good]) as (sleep, _), \
+                patch.object(audio.signal, 'setitimer') as timer:
+            stats = self.run_periodic()
+        sleep.assert_not_called()
+        timer.assert_not_called()
+        self.assertEqual(stats['failed_samples'], 0)
+
+    def test_confirmation_timeout_is_immediately_fatal_and_restores_alarm(self):
+        health = audio.PeriodicStereoHealth({})
+        previous = audio.signal.getsignal(audio.signal.SIGALRM)
+
+        def expired(_):
+            # Invoke the installed deadline handler without waiting in real time.
+            audio.signal.getsignal(audio.signal.SIGALRM)(audio.signal.SIGALRM, None)
+
+        with self.snapshots([self.bad_identity]), patch.object(audio.time, 'sleep', side_effect=expired):
+            with self.assertRaises(audio.HealthConfirmationTimeout):
+                health.check(self.mapping, self.paths, healthy=Mock())
+        self.assertEqual(self.reads, 1)
+        self.assertEqual(health.stats['aborted_events'], 1)
+        self.assertEqual(audio.signal.getsignal(audio.signal.SIGALRM), previous)
+        self.assertEqual(audio.signal.getitimer(audio.signal.ITIMER_REAL), (0, 0))
+
+    def test_journal_rate_limit_preserves_every_transient_in_counters(self):
+        health = audio.PeriodicStereoHealth({})
+        with self.snapshots([self.bad_identity, self.good] * 3) as (_, journal), \
+                patch.object(audio.time, 'monotonic', side_effect=[0, 1, 31]):
+            for _ in range(3):
+                health.check(self.mapping, self.paths, healthy=Mock())
+        self.assertEqual(health.stats['transient_events'], 3)
+        self.assertEqual(health.stats['failed_samples'], 3)
+        self.assertEqual(health.stats['journal_suppressed_events'], 1)
+        self.assertEqual(len(journal.getvalue().splitlines()), 2)
+        self.assertIn('"journal_suppressed_events": 1', journal.getvalue())
+
+    def serve(self, samples, *, periodic=True, gain_change=False):
+        report = dict(action='play-desktop', playback_ready=True, microphone_capture=False,
+                      pcm=dict(card='stub-card'), before=dict(boot_id='stub-boot', release='stub-kernel'))
+        pcm, graph = Mock(), Mock()
+        pcm.process.pid, pcm.feed_stats = 42, {}
+        graph.monitor.input_peak, graph.monitor.peak = 0, 0
+        graph.monitor.max_interarrival_seconds = 0
+        with tempfile.TemporaryDirectory() as directory, self.snapshots(samples) as (_, journal):
+            args = SimpleNamespace(output=Path(directory), serve_seconds=0, desktop_peak=1433)
+            with patch.object(audio.signal, 'signal', wraps=audio.signal.signal), \
+                    patch.object(audio.threading, 'Event') as event, \
+                    patch.object(audio, 'set_desktop_pa_gain') as gain:
+                waits = iter([False, True] if periodic else [True])
+
+                def wait(_):
+                    if gain_change:
+                        (args.output / 'pa-gain-step').write_text('1\n')
+                    return next(waits)
+
+                event.return_value.wait.side_effect = wait
+                try:
+                    audio.serve_desktop(args, report, pcm, graph, self.paths, self.mapping)
+                finally:
+                    if periodic and 'serve' in report:
+                        status = json.loads((args.output / 'serve-ready.json').read_text())
+                        result = json.loads((args.output / 'play-desktop-result.json').read_text())
+                        expected = json.loads(json.dumps(report['serve']['periodic_health']))
+                        self.assertEqual(status['periodic_health'], expected)
+                        self.assertEqual(result['serve']['periodic_health'], expected)
+                        if gain_change:
+                            gain.assert_called_once_with('stub-card', 1)
+                            self.assertEqual(expected['failed_samples'], 0)
+        return report, pcm, graph, journal.getvalue()
+
+    def test_serve_continues_and_persists_transient_without_graph_teardown(self):
+        report, pcm, graph, journal = self.serve([self.good, self.bad_identity, self.good])
+        self.assertEqual(report['serve']['periodic_health']['transient_events'], 1)
+        self.assertTrue(report['serve']['stopped'])
+        graph.close.assert_not_called()
+        pcm.close.assert_not_called()
+        self.assertIn('transient', journal)
+
+    def test_serve_fatal_record_contains_confirmation_samples(self):
+        with self.assertRaisesRegex(RuntimeError, 'Unknown physical identity'):
+            self.serve([self.good] + [self.bad_identity] * 3)
+        self.assertEqual(self.reads, 4)
+
+    def test_startup_check_stays_single_shot(self):
+        for bad in (self.bad_identity, OSError(errno.EIO, 'startup read failed')):
+            with self.subTest(bad=bad):
+                with self.assertRaises((RuntimeError, OSError)):
+                    self.serve([bad, self.good], periodic=False)
+                self.assertEqual(self.reads, 1)
+
+    def test_post_gain_write_check_stays_single_shot(self):
+        with self.assertRaisesRegex(RuntimeError, 'Unknown physical identity'):
+            self.serve([self.good, self.bad_identity, self.good], gain_change=True)
+        self.assertEqual(self.reads, 2)  # Startup + strict post-write check only.
 
 
 if __name__ == '__main__':
