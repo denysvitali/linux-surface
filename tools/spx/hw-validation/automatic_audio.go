@@ -17,16 +17,10 @@ func automaticAudioChecks() []AutoCheck {
 		{ID: "audio.services", Title: "Desktop audio service availability", Area: "Audio", Kind: "inventory", Boxes: []string{"A03", "A04"}, Run: autoAudioServices},
 		{ID: "audio.graph", Title: "Desktop audio graph and default routing", Area: "Audio", Kind: "inventory", Boxes: []string{"A01", "A02", "A03", "A04"}, Run: autoAudioGraph},
 		{ID: "audio.feeder", Title: "Native desktop feeder readiness", Area: "Audio", Kind: "inventory", Boxes: []string{"A01", "A03"}, Run: autoAudioFeeder},
-		{ID: "audio.speakers", Title: "Physical speaker output", Area: "Audio", Kind: "functional", Boxes: []string{"A01"}, Run: func(c *AutoContext) AutoResult {
-			return autoAudioResult("audio.speakers", "blocked", "Speaker playback is not authorized for this suite; --capture is not playback permission. No PCM, amplifier power or gain change started.")
-		}},
-		{ID: "audio.acoustic", Title: "Speaker acoustic feedback", Area: "Audio", Kind: "functional", Boxes: []string{"A01", "A02"}, Run: func(c *AutoContext) AutoResult {
-			return autoAudioResult("audio.acoustic", "blocked", "The existing quiet audio.py reopen loop already verified the resolved WX fix. Its authorization is scoped to that fix, not routine acoustic retesting; no tone or microphone recording started.")
-		}},
+		{ID: "audio.speakers", Title: "Physical speaker output", Area: "Audio", Kind: "functional", Boxes: []string{"A01"}, Run: func(c *AutoContext) AutoResult { return trialAudioRow(c, "audio.speakers") }},
+		{ID: "audio.acoustic", Title: "Speaker acoustic feedback", Area: "Audio", Kind: "functional", Boxes: []string{"A01", "A02"}, Run: func(c *AutoContext) AutoResult { return trialAudioRow(c, "audio.acoustic") }},
 		{ID: "audio.microphones", Title: "Internal microphone stimulus capture", Area: "Audio", Kind: "functional", Boxes: []string{"A02"}, Run: autoAudioMicrophones},
-		{ID: "audio.lifecycle", Title: "Native audio stream lifecycle", Area: "Audio", Kind: "functional", Boxes: []string{"A03"}, Run: func(c *AutoContext) AutoResult {
-			return autoAudioResult("audio.lifecycle", "blocked", "Parked DSP mappings must be preserved; full UNMAP/AFE STOP and arbitrary teardown remain unsafe/unvalidated. No PCM open/close, graph mutation, service restart or module change performed.")
-		}},
+		{ID: "audio.lifecycle", Title: "Native audio stream lifecycle", Area: "Audio", Kind: "functional", Boxes: []string{"A03"}, Run: func(c *AutoContext) AutoResult { return trialAudioRow(c, "audio.lifecycle") }},
 		{ID: "audio.external", Title: "External USB and Bluetooth audio data paths", Area: "Audio", Kind: "functional", Boxes: []string{"A04"}, Run: autoAudioExternal},
 	}
 }
@@ -359,10 +353,7 @@ func autoAudioFeeder(c *AutoContext) AutoResult {
 }
 
 func autoAudioMicrophones(c *AutoContext) AutoResult {
-	if !c.Options.CaptureMicrophone {
-		return autoAudioResult("audio.microphones", "blocked", "Microphone capture is opt-in (--capture-microphone) and disabled. New audio/microphone variations remain parked; no private recording or PCM started.")
-	}
-	return autoAudioResult("audio.microphones", "blocked", "Capture opt-in does not override the parked audio-testing scope. A separately authorized known-stimulus run with safe MM2/DMIC routing is required; no microphone samples captured or retained.")
+	return trialAudioRow(c, "audio.microphones")
 }
 
 func autoAudioExternal(c *AutoContext) AutoResult {

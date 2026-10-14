@@ -61,6 +61,62 @@ class AudioCmdlineTests(unittest.TestCase):
                           'snd_soc_wsa881x', 'snd_soc_wcd934x'})
 
 
+class QueuedAudioOrderTests(unittest.TestCase):
+    def test_check_runs_queued_audio_before_other_playback_owners(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            attempt = '20261014order'
+            (output / attempt).mkdir()
+            (output / attempt / 'prepared.json').write_text(json.dumps(dict(preboot_id='old', release='kernel')))
+            original_path = Path
+            def paths(value):
+                if value == '/var/lib/spx-boot-diagnostics/functional': return output
+                if value == '/proc/cmdline':
+                    return SimpleNamespace(read_text=lambda: 'spx_attempt=' + attempt)
+                return original_path(value)
+            events = []
+            with patch.object(trial, 'Path', side_effect=paths), \
+                 patch.object(sys, 'argv', ['trial.py', 'check', attempt]), \
+                 patch.object(trial.subprocess, 'run'), \
+                 patch.object(trial, 'functional_check'), \
+                 patch.object(trial, 'dispatch_tpm_sign'), \
+                 patch.object(trial, 'dispatch_sensors_crash'), \
+                 patch.object(trial, 'dispatch_audio', side_effect=lambda args: events.append('audio')), \
+                 patch.object(trial, 'dispatch_thermal', side_effect=lambda *args: events.append('thermal')), \
+                 patch.object(trial, 'dispatch_live_audio_resume', side_effect=lambda *args: events.append('resume')):
+                trial.main()
+            self.assertEqual(events, ['audio', 'thermal', 'resume'])
+
+
+class AudioHelperInstallTests(unittest.TestCase):
+    def test_all_local_audio_imports_are_installed_together(self):
+        import ast
+        local = set()
+        for name in trial.AUDIO_HELPERS:
+            tree = ast.parse((trial.HERE / name).read_text())
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom) and node.module:
+                    module = node.module.split('.')[0]
+                    if (trial.HERE / (module + '.py')).is_file():
+                        local.add(module + '.py')
+        self.assertTrue(local <= set(trial.AUDIO_HELPERS))
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / 'spx'
+            trial.install_audio_helpers(target)
+            for name in trial.AUDIO_HELPERS:
+                self.assertEqual((target / name).read_bytes(), (trial.HERE / name).read_bytes())
+                self.assertEqual((target / name).stat().st_mode & 0o777, 0o644)
+
+    def test_missing_helper_fails_before_partial_install(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'source'; source.mkdir()
+            (source / 'audio.py').write_text('')
+            target = Path(directory) / 'installed'
+            with patch.object(trial, 'HERE', source), self.assertRaises(AssertionError):
+                trial.install_audio_helpers(target)
+            self.assertFalse(target.exists())
+
+
 class TrialAudioFixture(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()

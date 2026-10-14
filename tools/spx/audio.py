@@ -2985,6 +2985,12 @@ def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder
             report['capture']['phases'].append({'name': phase_name, 'start_frame': start,
                                                'end_frame': end, 'score': result})
             need(result['passed'], f'Acoustic {name} test failed: {result["reason"]}')
+    if args.action == 'reopen':
+        report['pcm']['consumed_status'] = pcm.healthy()
+        initial_ptr = re.search(r'^hw_ptr\s*:\s*(\d+)$', report['pcm']['running_status'], re.M)
+        final_ptr = re.search(r'^hw_ptr\s*:\s*(\d+)$', report['pcm']['consumed_status'], re.M)
+        report['pcm']['dsp_consumed'] = bool(initial_ptr and final_ptr and int(final_ptr[1]) > int(initial_ptr[1]))
+        need(report['pcm']['dsp_consumed'], 'DSP playback hardware pointer did not advance')
     report['after_playback'] = check_stereo(mapping, paths, initialized=True, observations=checks)
     if capture:
         report['acoustic_tones_detected'] = True
@@ -3502,7 +3508,9 @@ def main():
         # explicit night mode for ordinary playback.
         args.desktop_peak = 32768 if args.action == 'play-desktop' else 1433
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
-    report = {'action': args.action, 'utc': stamp, 'playback_ready': False,
+    report = {'action': args.action, 'utc': stamp,
+              'boot_id': read_text('/proc/sys/kernel/random/boot_id'),
+              'release': os.uname().release, 'playback_ready': False,
               'microphone_capture': False, 'success': False, 'parked': False,
               'remaining_prerequisites': list(UNMET)}
     if args.action == 'feedback':

@@ -505,6 +505,19 @@ def require_automatic_validation():
     subprocess.run(['/usr/bin/python3', '-B', str(helper), 'verify'], check=True)
 
 
+AUDIO_HELPERS = ('audio.py', 'acoustic.py', 'desktop_controls.py')
+
+
+def install_audio_helpers(destination):
+    """Fail installation if any local audio import is absent; never omit it."""
+    for name in AUDIO_HELPERS:
+        assert (HERE / name).is_file(), 'missing audio helper: ' + name
+    destination.mkdir(parents=True, exist_ok=True)
+    for name in AUDIO_HELPERS:
+        shutil.copy2(HERE / name, destination / name)
+        (destination / name).chmod(0o644)
+
+
 def install(args):
     os.umask(63)
     assert os.geteuid() == 0
@@ -600,10 +613,10 @@ def install(args):
     if prepared.get('audio_mode') == 'parked':
         from audio import UNITS as audio_units
 
-        shutil.copy2(HERE / 'audio.py', helper.parent / 'audio.py')
-        shutil.copy2(HERE / 'desktop_controls.py', helper.parent / 'desktop_controls.py')
-        if (HERE / 'acoustic.py').exists():
-            shutil.copy2(HERE / 'acoustic.py', helper.parent / 'acoustic.py')
+        install_audio_helpers(helper.parent)
+        # The permanent feeder also imports these modules from /usr/local/lib/spx.
+        if Path('/usr/local/lib/spx/audio.py').is_file():
+            install_audio_helpers(Path('/usr/local/lib/spx'))
         account = pwd.getpwuid(REPO.stat().st_uid)
         for name in audio_units:
             guard = Path(account.pw_dir) / '.config/systemd/user' / (name + '.d/40-mainline-audio-trial.conf')
@@ -2415,9 +2428,275 @@ def cdsp_capabilities(args):
         subprocess.run([lock, 'release', 'device', owner], check=True)
 
 
+# Linux UAPI watchdog ioctls: keep the actual syscall in one replaceable function.
+WDIOC_GETBOOTSTATUS = 0x80045702
+WDIOC_SETOPTIONS = 0x80045704
+WDIOC_SETTIMEOUT = 0xc0045706
+WDIOC_GETTIMEOUT = 0x80045707
+WDIOC_SETPRETIMEOUT = 0xc0045708
+WDIOC_GETPRETIMEOUT = 0x80045709
+WDIOF_CARDRESET = 0x20
+WATCHDOG_PENDING = Path('/var/lib/spx-boot-diagnostics/watchdog-reset-pending.json')
+
+
+def watchdog_ioctl(fd, request, value=0):
+    data = bytearray(struct.pack('=i', value))
+    fcntl.ioctl(fd, request, data, True)
+    return struct.unpack('=i', data)[0]
+
+
+def watchdog_reset_test(ops, marker):
+    """Own one fd until reset; every returning path disarms and restores PID1."""
+    fd, saved = None, None
+    result = dict(marker, complete=False, status='fail', armed=False)
+    try:
+        saved = ops.release_manager()
+        result['runtime_watchdog_usec'] = saved
+        fd = ops.open()
+        result['pre_bootstatus'] = ops.ioctl(fd, WDIOC_GETBOOTSTATUS)
+        assert not result['pre_bootstatus'] & WDIOF_CARDRESET, 'pretrial CARDRESET already set; reset cause would be ambiguous'
+        if ops.ioctl(fd, WDIOC_GETPRETIMEOUT):
+            ops.ioctl(fd, WDIOC_SETPRETIMEOUT, 0)
+        assert ops.ioctl(fd, WDIOC_GETPRETIMEOUT) == 0, 'pretimeout not zero'
+        assert ops.ioctl(fd, WDIOC_SETTIMEOUT, 10) == 10, 'timeout was rounded away from 10 seconds'
+        assert ops.ioctl(fd, WDIOC_GETTIMEOUT) == 10, '10 second timeout not effective'
+        result.update(armed=True, timeout_seconds=10, pretimeout_seconds=0, status='armed')
+        ops.save_pending(result)  # fsync file AND directory before withholding pings.
+        ops.sync()
+        ops.wait(20)  # Retain fd; never write, ping, or close during this window.
+        raise RuntimeError('still alive after 20 seconds; watchdog reset failed')
+    except Exception as error:
+        result.update(complete=False, status='fail', error=str(error))
+    finally:
+        # On an actual reset this finally block is never reached.
+        try:
+            if fd is not None:
+                ops.disarm_close(fd)
+        except Exception as error:
+            result['cleanup_error'] = 'watchdog disarm: ' + str(error)
+        finally:
+            if saved is not None:
+                try:
+                    ops.restore_manager(saved)
+                except Exception as error:
+                    result['cleanup_error'] = 'PID1 watchdog restore: ' + str(error)
+    result['armed'] = False
+    ops.save_failure(result)
+    ops.remove_pending()
+    return result
+
+
+def watchdog_collect_test(ops, marker, boot, previous):
+    """A consumed nonce is useful only on the immediately following boot."""
+    result = dict(boot_id=boot, release=ops.release, marker=marker,
+                  previous_boot_id=previous, consumed=True, complete=False, status='blocked',
+                  runtime_watchdog_restored=False)
+    if marker.get('boot_id') == boot:
+        return None  # Boot hook retry on the arming boot must not consume it.
+    if not (marker.get('nonce') and marker.get('armed') is True and
+            marker.get('timeout_seconds') == 10 and marker.get('pretimeout_seconds') == 0):
+        result['reason'] = 'marker does not prove a successfully armed 10 second watchdog'
+    elif not previous or previous != marker.get('boot_id'):
+        result['reason'] = 'journal cannot link marker to the immediately previous boot'
+    else:
+        fd, saved = None, None
+        try:
+            saved = ops.release_manager()
+            result['runtime_watchdog_usec'] = saved
+            fd = ops.open()
+            result['bootstatus'] = ops.ioctl(fd, WDIOC_GETBOOTSTATUS)
+            if marker.get('pre_bootstatus', WDIOF_CARDRESET) & WDIOF_CARDRESET:
+                result['reason'] = 'CARDRESET was already set before the trial; cause ambiguous'
+            elif result['bootstatus'] & WDIOF_CARDRESET:
+                result.update(complete=True, status='pass', reason='new WDIOF_CARDRESET on the immediately following boot')
+            else:
+                result['reason'] = 'WDIOC_GETBOOTSTATUS lacks WDIOF_CARDRESET; reset reason lost/unverified'
+        except Exception as error:
+            result.update(complete=False, status='blocked', reason='watchdog bootstatus unavailable: ' + str(error))
+        finally:
+            try:
+                if fd is not None:
+                    ops.disarm_close(fd)
+            except Exception as error:
+                result.update(complete=False, status='fail', reason='collector disarm failed: ' + str(error))
+            finally:
+                if saved is not None:
+                    try:
+                        ops.restore_manager(saved)
+                        result['runtime_watchdog_restored'] = True
+                    except Exception as error:
+                        result.update(complete=False, status='fail', reason='PID1 watchdog restoration failed: ' + str(error))
+    ops.save_collection(result)  # Durable result before unlink; retries reuse it.
+    ops.remove_pending()
+    return result
+
+
+class WatchdogLive:
+    manager = ('org.freedesktop.systemd1', '/org/freedesktop/systemd1',
+               'org.freedesktop.systemd1.Manager', 'RuntimeWatchdogUSec')
+
+    def __init__(self, output, base=Path('/var/lib/spx-boot-diagnostics')):
+        self.output, self.base = output, base
+        self.pending = base / 'watchdog-reset-pending.json'
+        self.release = os.uname().release
+
+    @staticmethod
+    def durable(path, record):
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        temporary = path.with_name(path.name + '.new')
+        with temporary.open('w') as stream:
+            os.chmod(temporary, 0o600)
+            json.dump(record, stream, indent=2)
+            stream.write('\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+        fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    def property(self):
+        words = subprocess.check_output(['busctl', 'get-property', *self.manager], text=True, timeout=5).split()
+        assert len(words) == 2 and words[0] == 't'
+        return int(words[1])
+
+    def set_property(self, value):
+        subprocess.run(['busctl', 'set-property', *self.manager, 't', str(value)], check=True, timeout=5)
+        assert self.property() == value, 'PID1 watchdog property readback mismatch'
+
+    def release_manager(self):
+        nowayout = Path('/sys/class/watchdog/watchdog0/nowayout')
+        # CONFIG_WATCHDOG_SYSFS is disabled on this board. Absence is not a
+        # driver failure; QCOM supports stop/magic-close in the owned ioctl path.
+        if nowayout.exists():
+            assert nowayout.read_text().strip() == '0', 'nowayout prevents safe ownership transfer'
+        saved = self.property()
+        try:
+            self.set_property(0)
+            devices = {os.stat('/dev/watchdog').st_rdev, os.stat('/dev/watchdog0').st_rdev}
+            end = time.monotonic() + 2
+            while True:
+                held = False
+                for path in Path('/proc/1/fd').iterdir():
+                    try:
+                        info = path.stat()
+                        held |= stat.S_ISCHR(info.st_mode) and info.st_rdev in devices
+                    except FileNotFoundError:
+                        pass
+                if not held:
+                    return saved
+                assert time.monotonic() < end, 'PID1 watchdog fd was not released'
+                time.sleep(.05)
+        except BaseException:
+            self.restore_manager(saved)
+            raise
+
+    def restore_manager(self, saved):
+        self.set_property(saved)
+
+    def open(self):
+        return os.open('/dev/watchdog', os.O_WRONLY | os.O_CLOEXEC)
+
+    ioctl = staticmethod(watchdog_ioctl)
+
+    def disarm_close(self, fd):
+        try:
+            try:
+                self.ioctl(fd, WDIOC_SETOPTIONS, 1)  # WDIOS_DISABLECARD
+            except OSError:
+                os.write(fd, b'V')  # Standard magic close fallback.
+        finally:
+            os.close(fd)
+
+    sync = staticmethod(os.sync)
+    wait = staticmethod(time.sleep)
+
+    def save_pending(self, result):
+        self.durable(self.pending, result)
+
+    def remove_pending(self):
+        self.pending.unlink(missing_ok=True)
+        fd = os.open(self.pending.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+    def save_failure(self, result):
+        self.durable(self.output / 'result.json', result)
+        self.durable(self.base / 'boots' / result['boot_id'] / 'watchdog-reset/result.json', result)
+
+    def save_collection(self, result):
+        self.durable(self.base / 'boots' / result['boot_id'] / 'watchdog-reset/result.json', result)
+
+
+def watchdog_reset(args):
+    assert os.geteuid() == 0
+    require_automatic_validation()
+    recovery()  # Verified default, recovery payloads and no pending one-shot.
+    assert persistent_default() == 'spx-mainline'
+    boot = audio_boot() if 'spx_audio=parked' in Path('/proc/cmdline').read_text().split() else Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    assert os.uname().release == RELEASE and boot != BOOT_ID
+    assert 'spx_attempt=' + ATTEMPT in Path('/proc/cmdline').read_text().split()
+    assert not WATCHDOG_PENDING.exists(), 'collect the pending watchdog marker first'
+    stop_desktop_audio(args)
+    lock, owner = str(REPO / 'tools/spx/spx-lock'), 'watchdog-' + ATTEMPT
+    subprocess.run([lock, 'acquire', 'device', owner], check=True)
+    try:
+        assert all(p.read_text().strip() == 'closed' for p in Path('/proc/asound').glob('card*/pcm*/sub*/status')), 'audio PCM still owned'
+        if Path('/sys/module/soundwire_qcom').exists():
+            import audio
+            _, master = audio.codec_paths()
+            snapshot = audio.inventory(master)
+            assert snapshot['state'] is not None and snapshot['state']['GPIO_VAL'] & 0x06 == 0, 'amplifiers must be verified parked'
+        shutdown = prepare_shutdown_ramfs()
+        assert shutdown['ready'], 'shutdown ramfs not ready'
+        marker = dict(attempt=ATTEMPT, boot_id=boot, release=RELEASE,
+                      nonce=os.urandom(16).hex(), utc=datetime.now(timezone.utc).isoformat())
+        # Persist intent before opening; only the later armed record admits a pass.
+        live = WatchdogLive(OUT / 'watchdog-reset')
+        live.save_pending(dict(marker, armed=False))
+        live.sync()
+        assert Path('/proc/sys/kernel/random/boot_id').read_text().strip() == boot
+        recovery()  # Recheck boot selection immediately before intentional reset.
+        result = watchdog_reset_test(live, marker)
+        raise RuntimeError(result.get('error', 'watchdog test returned without reset'))
+    finally:
+        subprocess.run([lock, 'release', 'device', owner], check=True)
+
+
+def watchdog_collect(args):
+    assert os.geteuid() == 0
+    if not WATCHDOG_PENDING.exists():
+        return
+    marker = json.loads(WATCHDOG_PENDING.read_text())
+    boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    output = WATCHDOG_PENDING.parent / 'boots' / boot / 'watchdog-reset/result.json'
+    if output.exists():
+        recorded = json.loads(output.read_text())
+        if recorded.get('consumed') and recorded.get('marker', {}).get('nonce') == marker.get('nonce'):
+            WatchdogLive(output.parent).remove_pending()
+            return
+    previous = None
+    try:
+        records = subprocess.check_output(['journalctl', '-b', '-1', '-n', '1', '-o', 'json', '--no-pager'], text=True, timeout=5)
+        previous = json.loads(records)['_BOOT_ID']
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+        pass  # Missing preceding-boot identity blocks attribution.
+    lock, owner = str(REPO / 'tools/spx/spx-lock'), 'watchdog-collect-' + boot
+    subprocess.run([lock, 'acquire', 'device', owner], check=True)
+    try:
+        watchdog_collect_test(WatchdogLive(output.parent), marker, boot, previous)
+    finally:
+        subprocess.run([lock, 'release', 'device', owner], check=True)
+
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'promote', 'check', 'return', 'extend', 'audio', 'arm-audio', 'enable-desktop-audio', 'stop-audio', 'usbc-reload', 'wifi-band', 'display-power', 'srtc-timer', 'power-measure', 'sensors-lifecycle', 'thermal', 'cdsp-capabilities', 'tpm-sign', 'systemd-suspend', 'bluetooth-power'))
+    parser.add_argument('command', choices=('prepare', 'install', 'boot', 'promote', 'check', 'return', 'extend', 'audio', 'arm-audio', 'enable-desktop-audio', 'stop-audio', 'usbc-reload', 'wifi-band', 'display-power', 'srtc-timer', 'power-measure', 'sensors-lifecycle', 'thermal', 'cdsp-capabilities', 'tpm-sign', 'systemd-suspend', 'bluetooth-power', 'watchdog-reset', 'watchdog-collect'))
     parser.add_argument('attempt')
     parser.add_argument('--build', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bg/work-build'))
     parser.add_argument('--parent', type=Path, default=Path('/var/tmp/spx-mainline-trial-20261004bf'))
@@ -2461,8 +2740,8 @@ def main():
     parser.add_argument('--sensors-ready', type=Path, default=Path('/var/tmp/spx-sensors-ready'))
     parser.add_argument('--cpu-passive-cooling', action='store_true',
                         help='stage board Linux75C/5C passive CPU policy into the retained DTB')
-    parser.add_argument('--cpu-passive-trip', type=int, choices=(55000, 75000),
-                        help='prepare-only CPU trip in millidegrees;55C is a temporary Linux policy test')
+    parser.add_argument('--cpu-passive-trip', type=int, choices=(50000, 55000, 75000),
+                        help='prepare-only CPU trip in millidegrees;50/55C are temporary Linux policy tests')
     parser.add_argument('--thermal-combined', action='store_true',
                         help='opt in to300s AC-only CPU+GPU load with80C ceiling; prepare queues it after baseline')
     parser.add_argument('--thermal-gpu-fixture', type=Path,
@@ -2605,6 +2884,9 @@ def main():
     PARENT = args.parent
     OLD = args.recovery.parent
     RECOVERY = args.recovery
+    if args.command == 'watchdog-collect':
+        watchdog_collect(args)
+        return
     if args.command == 'prepare':
         assert not args.sensors_ssc_library or args.sensors, '--sensors-ssc-library requires --sensors'
         assert args.address, '--address must name this installation, never a shared board address'
@@ -2645,9 +2927,10 @@ def main():
                 cdsp_capabilities(args)
             dispatch_tpm_sign(args, record)
             dispatch_sensors_crash(args, record)
+            # The queued reopen must be the first playback owner on this boot.
+            dispatch_audio(args)
             dispatch_thermal(args, record)
             dispatch_live_audio_resume(args, record)
-            dispatch_audio(args)
             if record.get('qca_setup_trace') and not record.get('live_audio_resume') and not (OUT / 'bluetooth-power').exists():
                 # A failed Bluetooth step must not cost the boot its capture.
                 try:
@@ -2661,7 +2944,7 @@ def main():
             {'install': install, 'boot': boot, 'promote': promote, 'return': return_to_default,
              'extend': extend_window, 'audio': audio_check, 'arm-audio': arm_audio,
              'usbc-reload': usbc_reload, 'wifi-band': wifi_band, 'display-power': display_power,
-             'enable-desktop-audio': enable_desktop_audio, 'stop-audio': stop_desktop_audio, 'power-measure': power_measure, 'sensors-lifecycle': sensors_lifecycle, 'thermal': thermal_check, 'cdsp-capabilities': cdsp_capabilities, 'tpm-sign': tpm_sign, 'systemd-suspend': systemd_suspend, 'bluetooth-power': bluetooth_power}[args.command](args)
+             'enable-desktop-audio': enable_desktop_audio, 'stop-audio': stop_desktop_audio, 'power-measure': power_measure, 'sensors-lifecycle': sensors_lifecycle, 'thermal': thermal_check, 'cdsp-capabilities': cdsp_capabilities, 'tpm-sign': tpm_sign, 'systemd-suspend': systemd_suspend, 'bluetooth-power': bluetooth_power, 'watchdog-reset': watchdog_reset}[args.command](args)
 
 
 if __name__ == '__main__':

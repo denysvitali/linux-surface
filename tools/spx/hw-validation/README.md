@@ -416,3 +416,55 @@ a private upstream build in `/var/tmp/spx-glmark2/prefix` (flavours
 The check does not pass `--off-screen`: that FBO path makes `--validate` read
 an empty buffer and fail even on llvmpipe. The GBM flavour opens only the
 render node and never sets a mode.
+
+### Authorized trial evidence
+
+The audio speaker/acoustic/microphone/lifecycle, CPU thermal response, normal
+suspend recovery, combined firmware stability and watchdog recovery rows read
+helper evidence. They never start playback, capture, load, sleep or reset.
+Every result must match `/proc/sys/kernel/random/boot_id` and the running kernel
+release. A trial cmdline selects its attempt; otherwise results are found by
+current boot identity. Earlier reports cannot satisfy these rows.
+
+Evidence lives under `/var/lib/spx-boot-diagnostics/functional/<attempt>/`:
+
+- `audio/reopen-result.json`: quiet channel phases, advancing native stereo
+  hardware pointer, two distinct playback owners, continuous DMIC1 and parking.
+  The PCM helper now records `running_status`, `consumed_status` and
+  `dsp_consumed`. Full DSP UNMAP/AFE STOP and DMIC0 independence remain outside
+  this retained reopen scope.
+- `audio/feedback-result.json`: supplies the amps-off crosstalk control absent
+  from reopen. Acoustic requires successful phases plus physical park readback
+  and rejection of the same tones with the amplifiers off. Reopen alone leaves
+  acoustic blocked. Feedback `--microphone-array` tests DMIC1/DMIC0 separately.
+- `combined-thermal/result.json` or `cpu-thermal/result.json`: both clusters
+  must cross the recorded trip, automatically reduce their maximum via cooling,
+  then naturally recover below trip minus 5°C with original limits/state zero.
+  `complete` alone never passes thermal response. The 50°C combined test needs
+  verified native FP workers and witnessed CPU/GPU overlap, stops on both
+  responses or at 75°C, and permits 180 seconds idle recovery.
+- `systemd-suspend/result.json`, `systemd-suspend-recovery/result.json` or
+  `audio-resume/result.json`: current-boot RTC/kernel/service proof, same fresh
+  sensor owners, network/storage checks and restored masks. These prove the
+  stated powered s2idle subset; display/BT/camera/decoder resume is additional
+  coverage, and no energy-saving claim follows.
+- `audio-resume/result.json`: failed retained audio/resume oracles fail firmware
+  stability. A successful retained subset stays blocked for full combined
+  firmware coverage. The admission contract for future `combined_firmware`
+  evidence is `seconds >= 30`, `owners_preserved`, `clean_teardown`, an explicit
+  empty `faults` array, and `before`/`after` maps containing `status: pass` for
+  audio, sensors, wifi, bluetooth, gl, vulkan, decoder, tpm and cdsp. **The
+  current helper does not produce this full combined workload.** Missing CDSP
+  transport/loader and other workloads must not be replaced with inventory.
+
+`trial.py watchdog-reset ATTEMPT` is a separate explicit abrupt-reset test.
+It saves and releases PID1's runtime watchdog property, opens once, verifies
+10-second timeout/zero pretimeout, fsyncs a nonce and keeps the descriptor
+without pings. Surviving 20 seconds disarms/restores PID1 and records failure.
+The boot wrapper invokes `trial.py watchdog-collect ATTEMPT` only when the
+pending marker exists. Collection briefly releases PID1, reads bootstatus,
+disarms and restores its property. Its durable consumed result is
+`boots/<current-boot>/watchdog-reset/result.json`. Only a marker linked to the
+journal's immediately previous boot with newly set `WDIOF_CARDRESET` passes;
+missing reset cause blocks attribution. A consumed marker cannot pass another
+boot, and a same-boot hook retry leaves an armed marker untouched.

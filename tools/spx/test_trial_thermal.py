@@ -41,7 +41,7 @@ class QueuedThermalTests(unittest.TestCase):
 
     def test_manual_and_queued_runs_use_prepared_actual_trip_and_old_record_default(self):
         for combined in (False, True):
-            for trip in (55000, 75000, 'old'):
+            for trip in (50000, 55000, 75000, 'old'):
                 with self.subTest(combined=combined, trip=trip), tempfile.TemporaryDirectory() as directory:
                     output = Path(directory)
                     prepared = dict(thermal_combined=True, thermal_gpu_fixture='/retained/fixture')
@@ -64,6 +64,23 @@ class QueuedThermalTests(unittest.TestCase):
                     constructor = module.CombinedLive if combined else module.Live
                     self.assertEqual(constructor.call_args.kwargs['passive_trip'], 75000 if trip == 'old' else trip)
                     live.exercise.assert_called_once()
+
+    def test_50c_staging_preserves_hysteresis_and_critical_trips(self):
+        spec = importlib.util.spec_from_file_location('thermal', Path(__file__).with_name('thermal.py'))
+        module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+        self.assertEqual(module.validate_trip(50000), 50000)
+        self.assertEqual(module.HYSTERESIS, 5000)
+        layout = [dict(existing=True, trip='/cluster0/passive'),
+                  dict(existing=True, trip='/cluster1/passive')]
+        with patch.dict(sys.modules, thermal=module), \
+             patch.object(module, 'policy_layout', return_value=layout), \
+             patch.object(module, 'policy_trip', return_value=50000), \
+             patch.object(module.subprocess, 'run') as put:
+            args = SimpleNamespace(cpu_passive_cooling=True, cpu_passive_trip=50000)
+            self.assertEqual(trial.stage_cpu_policy(args, Path('/fake.dtb')), 50000)
+        self.assertEqual(put.call_count, 2)
+        for call in put.call_args_list:
+            self.assertEqual(call.args[0][-2:], ['temperature', '50000'])
 
     def test_opt_in_is_required(self):
         with patch.object(trial, 'thermal_check') as run:

@@ -22,7 +22,7 @@ CEILING = 80000
 
 
 def validate_trip(value):
-    assert type(value) is int and value in (55000, PASSIVE), 'unsupported CPU passive trip'
+    assert type(value) is int and value in (50000, 55000, PASSIVE), 'unsupported CPU passive trip'
     return value
 
 
@@ -132,6 +132,10 @@ def response_evidence(samples, before, index, passive_trip=PASSIVE):
 
 
 class Live:
+    @property
+    def ceiling(self):
+        return 75000 if self.passive_trip == 50000 else CEILING
+
     def __init__(self, output, attempt, release, passive_trip=PASSIVE):
         self.passive_trip = validate_trip(passive_trip)
         self.output, self.attempt, self.release = output, attempt, release
@@ -147,7 +151,7 @@ class Live:
                            policy=f'Linux{passive_trip // 1000}C passive/5C hysteresis; real temperatures only',
                            cpu_passive_trip_mc=passive_trip, temporary_test_policy=passive_trip != PASSIVE,
                            full_thermal_acceptance=False,
-                           limits='Temporary55C scope is Linux CPU governor/cooling binding; no75C, OEM, GPU, enclosure or battery acceptance.' if passive_trip != PASSIVE else 'Linux CPU policy only; OEM, GPU, enclosure and battery acceptance remain open.',
+                           limits=f'Temporary{passive_trip // 1000}C scope is Linux CPU governor/cooling binding; no75C, OEM, GPU, enclosure or battery acceptance.' if passive_trip != PASSIVE else 'Linux CPU policy only; OEM, GPU, enclosure and battery acceptance remain open.',
                            samples=[])
 
     def save(self):
@@ -186,7 +190,7 @@ class Live:
             assert cpus == list(range(cpu, cpu + 4))
             self.clusters[str(index)] = dict(zone=zone, cooling=bindings[0], policy=policy, cpus=cpus, trip=live_trip)
         before = self.sample('baseline')
-        assert before['maximum'] < CEILING, '80C all-zone ceiling at baseline'
+        assert before['maximum'] < self.ceiling, f'{self.ceiling // 1000}C all-zone ceiling at baseline'
         assert all(c['temperature'] < self.clusters[i]['trip'] - HYSTERESIS
                    for i, c in before['clusters'].items()), 'governed CPU clusters must start below trip hysteresis'
         assert all(c['state'] == 0 for c in before['clusters'].values()), 'baseline must be naturally unthrottled'
@@ -234,8 +238,8 @@ class Live:
                 assert self.ac(), 'AC disconnected; stop workload'
                 assert all(p.poll() is None for p in self.workers), 'CPU worker exited unexpectedly'
                 sample = self.sample('load')
-                if sample['maximum'] >= CEILING:
-                    self.result['stop_reason'] = '80C ceiling'
+                if sample['maximum'] >= self.ceiling:
+                    self.result['stop_reason'] = f'{self.ceiling // 1000}C ceiling'
                     break
                 if all(response_proven(self.result['samples'], self.result['before'], i, self.clusters[str(i)]['trip']) for i in (0, 1)):
                     self.result['stop_reason'] = 'both clusters responded'
@@ -248,7 +252,7 @@ class Live:
             while time.monotonic() < deadline:
                 assert self.ac(), 'AC disconnected during recovery'
                 sample = self.sample('recovery')
-                assert sample['maximum'] < CEILING, '80C ceiling during recovery'
+                assert sample['maximum'] < self.ceiling, 'all-zone ceiling during recovery'
                 recovered = all(c['temperature'] < self.clusters[i]['trip'] - HYSTERESIS and c['state'] == 0
                                 and c['limit'] == self.result['before']['clusters'][i]['limit']
                                 for i, c in sample['clusters'].items())
@@ -398,10 +402,11 @@ class CombinedLive(Live):
         self.load_stopped = False
         self.result.update(scope='bounded AC CPU+GPU load and real CPU passive response',
                            combined_seconds=COMBINED_SECONDS,
+                           ceiling_mc=self.ceiling,
                            cpu_workload='verified native doublemul' if cpu_stress_ng else 'Python integer LCG',
                            gpu_automatic_response_proven=False,
                            full_thermal_acceptance=False,
-                           limits=self.result['limits'] + ' 80C abort is below the existing85C GPU trip; full GPU automatic response, skin/enclosure and sustained envelope remain unverified.')
+                           limits=self.result['limits'] + f' {self.ceiling // 1000}C abort is below the existing85C GPU trip; full GPU automatic response, skin/enclosure and sustained envelope remain unverified.')
 
     def gate(self):
         cooling = [p for p in Path('/sys/class/thermal').glob('cooling_device*')
@@ -633,11 +638,11 @@ class CombinedLive(Live):
 
     def recover(self):
         recovered = False
-        deadline = time.monotonic() + 120
+        deadline = time.monotonic() + (180 if self.passive_trip == 50000 else 120)
         while time.monotonic() < deadline:
             assert self.ac(), 'AC disconnected during recovery'
             sample = self.sample('recovery')
-            assert sample['maximum'] < CEILING, '80C ceiling during recovery'
+            assert sample['maximum'] < self.ceiling, 'all-zone ceiling during recovery'
             recovered = all(c['temperature'] < self.clusters[i]['trip'] - HYSTERESIS and c['state'] == 0
                             and c['limit'] == self.result['before']['clusters'][i]['limit']
                             for i, c in sample['clusters'].items())
@@ -662,11 +667,17 @@ class CombinedLive(Live):
                 assert time.monotonic() < self.return_deadline - 180, 'automatic-return recovery reserve exhausted'
                 assert all(w.poll() is None for w in self.workers), 'CPU worker exited unexpectedly'
                 sample = self.sample('load')
-                if sample['maximum'] >= CEILING:
-                    self.result['stop_reason'] = '80C ceiling'
+                if sample['maximum'] >= self.ceiling:
+                    self.result['stop_reason'] = f'{self.ceiling // 1000}C ceiling'
                     break
                 sample['workload'] = self.workload()
                 sample['workload']['load_seconds'] = round(time.monotonic() - started, 3)
+                if self.passive_trip == 50000 and all(response_proven(
+                        self.result['samples'], self.result['before'], i, self.passive_trip)
+                        for i in (0, 1)):
+                    self.result['stop_reason'] = 'both clusters responded'
+                    self.save()
+                    break
                 # Flushed completed rows reject software/failing scenes live.
                 if self.gpu_xml.exists():
                     self.result['gpu_completed_rows'] = gpu_rows(self.gpu_xml)
@@ -691,6 +702,12 @@ class CombinedLive(Live):
             self.result['complete'] = (self.result['stop_reason'] == '300s combined workload bound'
                                        and self.result['combined_load_witnessed'] and recovered
                                        and len(self.result['gpu_completed_rows']) >= 2)
+            if self.passive_trip == 50000:
+                self.result['response_load_witnessed'] = overlap_proven(self.result['samples'])
+                self.result['complete'] = (self.result['automatic_cpu_response_proven']
+                    and self.result['stop_reason'] == 'both clusters responded'
+                    and self.result.get('native_arithmetic_passed') is True
+                    and self.result['response_load_witnessed'])
         except Exception as error:
             self.result['error'] = str(error)
         finally:

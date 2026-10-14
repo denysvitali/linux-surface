@@ -33,9 +33,7 @@ func automaticPlatformChecks() []AutoCheck {
 		{ID: "storage.fsync-checksum", Title: "Disposable filesystem write/fsync/checksum (4 MiB)", Area: "Storage", Kind: "functional", Boxes: []string{"B02"}, Run: platformStorage},
 		{ID: "fw.remoteproc", Title: "Remote processor states (no startup)", Area: "Firmware", Kind: "inventory", Boxes: []string{"B04"}, Run: platformRemoteproc},
 		{ID: "fw.services", Title: "Firmware service states", Area: "Firmware", Kind: "inventory", Boxes: []string{"B04"}, Run: platformFirmwareServices},
-		{ID: "fw.stability", Title: "Combined-use/resume firmware stability", Area: "Firmware", Kind: "functional", Boxes: []string{"B04"}, Run: func(c *AutoContext) AutoResult {
-			return platformBlocked("fw.stability", "Combined firmware-use/resume fixture is not supplied; this safe boot suite does not start parked DSPs or suspend the device")
-		}},
+		{ID: "fw.stability", Title: "Combined-use/resume firmware stability", Area: "Firmware", Kind: "functional", Boxes: []string{"B04"}, Run: trialFirmwareStability},
 		{ID: "accel.cdsp-fastrpc", Title: "CDSP/FastRPC interface inventory (no startup)", Area: "Firmware", Kind: "inventory", Boxes: []string{"B07"}, Run: platformFastRPC},
 		{ID: "accel.cdsp-workload", Title: "Supported CDSP workload", Area: "Firmware", Kind: "functional", Boxes: []string{"B07"}, Run: func(c *AutoContext) AutoResult {
 			return platformBlocked("accel.cdsp-workload", "CDSP startup/workload remains parked; no supported workload fixture or authorization to start the disabled path")
@@ -46,21 +44,15 @@ func automaticPlatformChecks() []AutoCheck {
 		{ID: "security.tpm-signing", Title: "TPM signing workflow", Area: "Security", Kind: "functional", Boxes: []string{"B06"}, Run: platformTPMSigning},
 		{ID: "security.secureboot", Title: "EFI Secure Boot state inventory", Area: "Security", Kind: "inventory", Boxes: []string{"B06"}, Run: platformSecureBoot},
 		{ID: "thermal.metadata", Title: "Thermal temperatures, trips and cooling states (no load)", Area: "Thermal", Kind: "inventory", Boxes: []string{"P05"}, Run: platformThermal},
-		{ID: "thermal.response", Title: "Automatic thermal response under load", Area: "Thermal", Kind: "functional", Boxes: []string{"P05"}, Run: func(c *AutoContext) AutoResult {
-			return platformBlocked("thermal.response", "Thermal-response workload is parked; this suite does not heat the device or change thermal policy")
-		}},
+		{ID: "thermal.response", Title: "Automatic thermal response under load", Area: "Thermal", Kind: "functional", Boxes: []string{"P05"}, Run: trialThermalResponse},
 		{ID: "pwr.supplies", Title: "Battery and external-power metadata (no discharge/load)", Area: "Power", Kind: "inventory", Boxes: []string{"P01", "P02"}, Run: platformPowerSupplies},
 		{ID: "pwr.support", Title: "Sleep interfaces and masked service states (no suspend)", Area: "Power", Kind: "inventory", Boxes: []string{"P03", "P04"}, Run: platformPowerSupport},
-		{ID: "pwr.suspend-recovery", Title: "Device suspend/resume recovery", Area: "Power", Kind: "functional", Boxes: []string{"P03"}, Run: func(c *AutoContext) AutoResult {
-			return platformBlocked("pwr.suspend-recovery", "Suspend/resume is excluded from the safe boot suite; no sleep masks or driver states are changed")
-		}},
+		{ID: "pwr.suspend-recovery", Title: "Device suspend/resume recovery", Area: "Power", Kind: "functional", Boxes: []string{"P03"}, Run: trialSuspendRecovery},
 		{ID: "pwr.hibernate-recovery", Title: "Device hibernate/resume recovery", Area: "Power", Kind: "functional", Boxes: []string{"P04"}, Run: func(c *AutoContext) AutoResult {
 			return platformBlocked("pwr.hibernate-recovery", "Hibernation/reboot recovery is excluded from the safe boot suite; no sleep masks or boot state are changed")
 		}},
 		{ID: "diag.watchdog", Title: "Watchdog interface inventory (no device open)", Area: "Diagnostics", Kind: "inventory", Boxes: []string{"R02"}, Run: platformWatchdog},
-		{ID: "diag.watchdog-recovery", Title: "Watchdog reset/recovery", Area: "Diagnostics", Kind: "functional", Boxes: []string{"R02"}, Run: func(c *AutoContext) AutoResult {
-			return platformBlocked("diag.watchdog-recovery", "No reset/recovery fixture or authorization in this boot suite; watchdog devices are never opened or armed")
-		}},
+		{ID: "diag.watchdog-recovery", Title: "Watchdog reset/recovery", Area: "Diagnostics", Kind: "functional", Boxes: []string{"R02"}, Run: trialWatchdogRecovery},
 		{ID: "diag.boot", Title: "Boot identity and retained fault-record inventory", Area: "Diagnostics", Kind: "inventory", Boxes: []string{"B01", "R01"}, Run: platformBoot},
 		{ID: "diag.kernel-faults", Title: "Current boot warning-priority kernel fault scan", Area: "Diagnostics", Kind: "functional", Boxes: []string{"R01", "B02", "B03", "B04", "P05"}, Run: platformKernelFaults},
 		{ID: "diag.taint", Title: "Kernel taint inventory", Area: "Diagnostics", Kind: "inventory", Boxes: []string{"R01", "F02"}, Run: platformTaint},

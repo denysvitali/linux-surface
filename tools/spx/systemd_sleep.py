@@ -91,9 +91,14 @@ class ParkedAudio:
                            firmware_sessions_proven_absent=False, restored=False)
 
     def idle(self):
-        for name in ('audio-request.json', 'audio-started.json', 'desktop-audio.json'):
+        for name in ('audio-request.json', 'desktop-audio.json'):
             assert not (self.output / name).exists(), 'audio request/start/persistent policy present'
-        assert not (self.output / 'audio-started-boots' / (self.boot + '.json')).exists()
+        if (self.output / 'audio-started-boots' / (self.boot + '.json')).exists():
+            # A queued reopen may precede parked retention in this same trial.
+            result = json.loads((self.output / 'audio/reopen-result.json').read_text())
+            assert result.get('boot_id', result.get('before', {}).get('boot_id')) == self.boot
+            assert result.get('success') is True and result.get('parked') is True
+            assert not result.get('cleanup_errors') and not result.get('error')
         self.audio.assert_desktop_paused(self.desktop_user)
         statuses = {str(p): self.audio.read_text(p)
                     for p in Path('/proc/asound').glob('card*/pcm*/sub*/status')}
@@ -568,6 +573,8 @@ class Live:
         self.armed = not r['alarm_disabled']
         log = self.run('sleep-kernel', ['journalctl', '-b', '-k', '--after-cursor=' + cursor, '--no-pager', '-o', 'short-monotonic'])
         (self.output / 'sleep-kernel.log').write_text(log)
+        r['new_kernel_faults'] = [line for line in log.splitlines() if FAULTS.search(line)]
+        assert not r['new_kernel_faults'], 'fresh suspend kernel faults'
         r['kernel_entered'] = 'PM: suspend entry (s2idle)' in log
         r['kernel_exited'] = 'PM: suspend exit' in log and log.find('PM: suspend exit') > log.find('PM: suspend entry (s2idle)')
         r['boot_unchanged'] = Path('/proc/sys/kernel/random/boot_id').read_text().strip() == self.boot

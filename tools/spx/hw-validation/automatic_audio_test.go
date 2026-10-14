@@ -256,12 +256,12 @@ func TestAutomaticAudioCameraOptInDoesNotAllowMicrophones(t *testing.T) {
 		return "", nil
 	}}
 	result := autoAudioMicrophones(c)
-	if result.Status != "blocked" || !strings.Contains(result.Detail, "--capture-microphone") {
+	if result.Status != "blocked" || !strings.Contains(result.Detail, "arm-audio") {
 		t.Fatal(result)
 	}
 	c.Options.CaptureMicrophone = true
 	result = autoAudioMicrophones(c)
-	if result.Status != "blocked" || !strings.Contains(result.Detail, "parked audio-testing scope") {
+	if result.Status != "blocked" || !strings.Contains(result.Detail, "arm-audio") {
 		t.Fatal(result)
 	}
 }

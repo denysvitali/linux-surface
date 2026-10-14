@@ -128,6 +128,19 @@ def run_once(base, runner, repo, boot_id, kernel, execute=subprocess.run, media=
     if not repo or not repo.is_dir():
         runner_status(out, boot_id, kernel, 'blocked', 'Validator repository configuration is missing or unavailable.')
         return 1
+    # Only an explicit reset request permits the next-boot bootstatus collector.
+    # It owns the device lock separately and never rearms the reset experiment.
+    pending = base / 'watchdog-reset-pending.json'
+    if pending.is_file():
+        helper = HERE / 'trial.py'
+        if not helper.is_file():
+            helper = repo / 'tools/spx/trial.py'
+        try:
+            attempt = json.loads(pending.read_text())['attempt']
+            execute(['/usr/bin/python3', '-B', str(helper), 'watchdog-collect', attempt],
+                    check=False, timeout=20)
+        except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+            pass  # The row stays blocked; preserve the pending marker for collection.
     waited, route_ready = wait_for_network(network_wait_seconds, clock, sleep, route_reader)
     print(f'Automatic validator network readiness: waited {waited:.3f}s; '
           f'default route at suite start: {"present" if route_ready else "absent"}.', flush=True)
