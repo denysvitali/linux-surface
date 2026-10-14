@@ -13,16 +13,18 @@ PROPS = "org.freedesktop.DBus.Properties"
 
 def main():
     compass_mode = sys.argv[1:] == ["--compass"]
-    sensor_path = PATH + "/Compass" if compass_mode else PATH
-    sensor_interface = NAME + ".Compass" if compass_mode else NAME
-    capability_name = "HasCompass" if compass_mode else "HasAccelerometer"
+    light_mode = sys.argv[1:] == ["--light"]
+    sensor_path = PATH + ("/Compass" if compass_mode else "")
+    sensor_interface = NAME + (".Compass" if compass_mode else "")
+    capability_name = "HasCompass" if compass_mode else ("HasAmbientLight" if light_mode else "HasAccelerometer")
     value_name = "CompassHeading" if compass_mode else "AccelerometerOrientation"
-    claim_name = "ClaimCompass" if compass_mode else "ClaimAccelerometer"
-    release_name = "ReleaseCompass" if compass_mode else "ReleaseAccelerometer"
+    claim_name = "ClaimCompass" if compass_mode else ("ClaimLight" if light_mode else "ClaimAccelerometer")
+    release_name = "ReleaseCompass" if compass_mode else ("ReleaseLight" if light_mode else "ReleaseAccelerometer")
     result = dict(status="error", reason="helper_error", has_compass=None,
                   orientation_before=None, orientation_after=None, signal=False,
                   claimed=False, released=False, window_complete=False,
-                  compass_signal_count=0, compass_min=None, compass_max=None)
+                  compass_signal_count=0, compass_min=None, compass_max=None,
+                  light_level_unit=None, light_level=None, read_after_claim=False)
     try:
         from gi.repository import Gio, GLib
     except (ImportError, ValueError):
@@ -72,6 +74,12 @@ def main():
                     result["compass_min"] = value if result["compass_min"] is None else min(result["compass_min"], value)
                     result["compass_max"] = value if result["compass_max"] is None else max(result["compass_max"], value)
             return
+        if light_mode and "LightLevel" in changed:
+            value = changed.get("LightLevel")
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                result["signal"] = True
+                result["light_level"] = value
+            return
         if "AccelerometerOrientation" in changed or "AccelerometerTilt" in changed:
             result["signal"] = True
         value = changed.get(value_name)
@@ -102,10 +110,38 @@ def main():
             if compass_mode and isinstance(has_accel, bool):
                 result["has_compass"] = has_accel
             if has_accel is False:
-                result.update(status="blocked", reason="no_compass" if compass_mode else "no_accelerometer")
+                result.update(status="blocked", reason="no_compass" if compass_mode else ("no_ambient_light" if light_mode else "no_accelerometer"))
                 return
             if has_accel is not True:
                 raise ValueError("Invalid capability type")
+            if light_mode:
+                subscription = connection.signal_subscribe(
+                    owner, PROPS, "PropertiesChanged", sensor_path, sensor_interface,
+                    Gio.DBusSignalFlags.NONE, signal, None)
+                claim_attempted = True
+                claim_time = time.monotonic()
+                try:
+                    yield call(owner, sensor_path, sensor_interface, "ClaimLight", None)
+                except GLib.Error as error:
+                    if Gio.DBusError.is_remote_error(error):
+                        result.update(status="blocked", reason="claim_refused")
+                        return
+                    raise
+                result["claimed"] = True
+                unit = (yield prop(sensor_path, sensor_interface, "LightLevelUnit"))[0]
+                level = (yield prop(sensor_path, sensor_interface, "LightLevel"))[0]
+                result["light_level_unit"] = unit if isinstance(unit, str) else None
+                if isinstance(level, (int, float)) and not isinstance(level, bool):
+                    result["light_level"] = level
+                result["read_after_claim"] = True
+                if unit != "lux":
+                    result.update(status="fail", reason="invalid_unit")
+                elif (isinstance(level, bool) or not isinstance(level, (int, float)) or
+                      not math.isfinite(level) or level < 0):
+                    result.update(status="fail", reason="invalid_level")
+                else:
+                    result.update(status="pass", reason="signal" if result["signal"] else "read_after_claim")
+                return
             before = (yield prop(sensor_path, sensor_interface, value_name))[0]
             if compass_mode:
                 if isinstance(before, bool) or not isinstance(before, (int, float)):

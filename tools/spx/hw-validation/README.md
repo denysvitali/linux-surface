@@ -314,6 +314,23 @@ after values. A no-signal run fails only when the value remained at its initial
 value or was non-finite through the complete window. This proves fresh desktop
 compass delivery only, not calibration, true-north accuracy or tilt compensation.
 
+`sensors.light-lux` finds the IIO device whose `name` is `tcs3430`, requires
+`/sys/module/tcs3430/parameters/surface_unit_calibration` to be `Y`, and reads
+`in_illuminance_input` twice as finite non-negative processed lux. The report
+includes both values and the available gain and integration-time attributes.
+It then invokes `sensorproxy_probe.py --light` on one persistent system-bus
+connection, without activation. The probe checks `HasAmbientLight`, subscribes
+to `PropertiesChanged` before `ClaimLight`, reads `LightLevelUnit` and
+`LightLevel` after claiming, and releases in a finally path. A post-claim
+`LightLevel` signal or read is sufficient; an unchanged proxy reading in a
+stationary dim room is acceptable because the two kernel reads already prove a
+fresh conversion. Missing device/calibration/proxy, false capability and
+refused claims are blocked. An unreadable/non-finite kernel lux value, or a
+successful proxy claim with non-lux units or a non-finite level, fails.
+Calibration is this unit's factory Type_3 data applied with the Windows
+driver's formula; it does not establish absolute accuracy against a reference
+lux meter, colour temperature, or brightness-control behaviour.
+
 The helper emits one JSON object on stdout (exit zero for recorded outcomes):
 `status` (pass/blocked/fail/error), `reason` (signal, transition, stationary,
 undefined, no_heading, no_service, no_compass, no_accelerometer, access_denied,

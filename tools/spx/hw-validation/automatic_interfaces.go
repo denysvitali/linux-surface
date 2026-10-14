@@ -42,9 +42,7 @@ func automaticInterfacesChecks() []AutoCheck {
 		{ID: "sensors.channels", Title: "Light and motion channel capabilities", Area: "Sensors", Kind: "inventory", Boxes: []string{"S01", "S02"}, Run: interfacesSensorChannels},
 		{ID: "sensors.backend", Title: "SDSP sensor backend and startup services", Area: "Sensors", Kind: "inventory", Boxes: []string{"S02", "B07"}, Run: interfacesSensorBackend},
 		{ID: "sensors.desktop", Title: "Already-running SensorProxy cached properties", Area: "Sensors", Kind: "inventory", Boxes: []string{"S01", "S02"}, Run: interfacesSensorDesktop},
-		{ID: "sensors.light-lux", Title: "Calibrated ambient-light report delivery", Area: "Sensors", Kind: "functional", Boxes: []string{"S01"}, Run: func(c *AutoContext) AutoResult {
-			return interfacesResult("sensors.light-lux", "blocked", "No verified TCS3430 lux conversion or desktop ambient-light source is implemented; raw XYZ/IR reads do not establish calibrated light delivery. No stimulus or brightness change requested")
-		}},
+		{ID: "sensors.light-lux", Title: "Calibrated ambient-light report delivery", Area: "Sensors", Kind: "functional", Boxes: []string{"S01"}, Run: interfacesSensorLightLux},
 		{ID: "sensors.desktop-motion", Title: "Fresh desktop accelerometer delivery", Area: "Sensors", Kind: "functional", Boxes: []string{"S02"}, Run: interfacesSensorDesktopDelivery},
 		{ID: "sensors.desktop-compass", Title: "Fresh desktop compass delivery", Area: "Sensors", Kind: "functional", Boxes: []string{"S02"}, Run: interfacesSensorDesktopCompass},
 	}
@@ -66,6 +64,55 @@ func automaticInterfacesChecks() []AutoCheck {
 		checks = append(checks, AutoCheck{ID: "sensors." + group.id + "-read", Title: group.title, Area: "Sensors", Kind: "functional", Boxes: []string{group.box}, Run: func(c *AutoContext) AutoResult { return interfacesSensorRead(c, group.id) }})
 	}
 	return checks
+}
+
+func interfacesSensorLightLux(c *AutoContext) AutoResult {
+	const id = "sensors.light-lux"
+	devices, _ := c.Glob("/sys/bus/iio/devices/iio:device*")
+	var device string
+	for _, path := range devices {
+		if name, err := c.Read(path + "/name"); err == nil && name == "tcs3430" {
+			device = path
+			break
+		}
+	}
+	if device == "" {
+		return interfacesResult(id, "blocked", "No tcs3430 IIO device found; calibrated ambient-light source unavailable")
+	}
+	calibration, err := c.Read("/sys/module/tcs3430/parameters/surface_unit_calibration")
+	if err != nil || calibration != "Y" {
+		return interfacesResult(id, "blocked", "tcs3430 unit calibration not enabled (surface_unit_calibration is missing or not Y)")
+	}
+	readLux := func() (float64, error) {
+		value, err := c.Read(device + "/in_illuminance_input")
+		if err != nil {
+			return 0, err
+		}
+		v, err := strconv.ParseFloat(value, 64)
+		if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+			return 0, errors.New("invalid lux")
+		}
+		return v, nil
+	}
+	first, e1 := readLux()
+	second, e2 := readLux()
+	if e1 != nil || e2 != nil {
+		return interfacesResult(id, "fail", "surface_unit_calibration=Y but in_illuminance_input was unreadable, non-finite or negative")
+	}
+	readOptional := func(path string) string {
+		value, err := c.Read(path)
+		if err != nil || value == "" {
+			return "unavailable"
+		}
+		return value
+	}
+	gain := readOptional(device + "/in_illuminance_gain")
+	integration := readOptional(device + "/in_illuminance_integration_time")
+	desktop := interfacesSensorDesktopLight(c)
+	if desktop.Status != "pass" {
+		return interfacesResult(id, desktop.Status, fmt.Sprintf("Kernel processed lux reads=%.6g,%.6g; surface_unit_calibration=Y; gain=%s; integration_time=%s; %s", first, second, gain, integration, desktop.Detail))
+	}
+	return interfacesResult(id, "pass", fmt.Sprintf("Kernel processed lux reads=%.6g,%.6g; surface_unit_calibration=Y; gain=%s; integration_time=%s; %s; calibration is this unit's factory Type_3 data applied with the Windows driver's formula; this does not establish absolute accuracy against a reference lux meter, colour temperature, or brightness-control behaviour. A stationary dim room may leave the proxy value unchanged: the two kernel reads prove fresh conversion while the proxy polls the processed channel", first, second, gain, integration, desktop.Detail))
 }
 
 func interfacesResult(id, status, detail string) AutoResult {
@@ -923,6 +970,64 @@ func interfacesSensorDesktopCompass(c *AutoContext) AutoResult {
 		}
 	}
 	return interfacesResult(id, status, detail)
+}
+
+func interfacesSensorDesktopLight(c *AutoContext) AutoResult {
+	const id = "sensors.light-lux"
+	if c.Fixture || (c.Root != "" && filepath.Clean(c.Root) != "/") {
+		return interfacesResult(id, "blocked", "Fixture root: SensorProxy helper disabled")
+	}
+	if c.Repo == "" {
+		return interfacesResult(id, "blocked", "Repository helper path unavailable")
+	}
+	helper := filepath.Join(c.Repo, "tools/spx/hw-validation/sensorproxy_probe.py")
+	if info, err := os.Stat(helper); err != nil || !info.Mode().IsRegular() {
+		return interfacesResult(id, "blocked", "SensorProxy repository helper unavailable")
+	}
+	out, err := c.Command("python3", "-B", helper, "--light")
+	if err != nil {
+		var execErr *exec.Error
+		if errors.As(err, &execErr) || errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) {
+			return interfacesResult(id, "blocked", "Python/helper unavailable or inaccessible")
+		}
+		return interfacesResult(id, "error", "SensorProxy light helper command failed; raw output discarded")
+	}
+	var probe struct {
+		Status    string   `json:"status"`
+		Reason    string   `json:"reason"`
+		Unit      string   `json:"light_level_unit"`
+		Level     *float64 `json:"light_level"`
+		Signal    bool     `json:"signal"`
+		Claimed   bool     `json:"claimed"`
+		Released  bool     `json:"released"`
+		ReadAfter bool     `json:"read_after_claim"`
+	}
+	if json.Unmarshal([]byte(out), &probe) != nil {
+		return interfacesResult(id, "error", "Invalid SensorProxy light helper JSON; raw output discarded")
+	}
+	switch probe.Reason {
+	case "signal", "read_after_claim":
+		if probe.Status == "pass" && probe.Claimed && probe.Released && (probe.Signal || probe.ReadAfter) && probe.Unit == "lux" && compassFinite(probe.Level) && *probe.Level >= 0 {
+			return interfacesResult(id, "pass", fmt.Sprintf("SensorProxy LightLevelUnit=lux, LightLevel=%.6g after ClaimLight; %s; claim released on the same connection", *probe.Level, map[bool]string{true: "PropertiesChanged carried LightLevel after the claim", false: "LightLevel was read after the claim"}[probe.Signal]))
+		}
+	case "no_service", "no_ambient_light", "claim_refused", "unavailable", "bus_unavailable":
+		if probe.Status == "blocked" {
+			return interfacesResult(id, "blocked", map[string]string{"no_service": "SensorProxy service not running; NameHasOwner false; no activation", "no_ambient_light": "SensorProxy HasAmbientLight false", "claim_refused": "SensorProxy ClaimLight refused", "unavailable": "SensorProxy helper or Python PyGObject (Gio/GLib) unavailable", "bus_unavailable": "System bus connection unavailable; no activation"}[probe.Reason])
+		}
+	case "invalid_unit":
+		if probe.Status == "fail" && probe.Claimed && probe.Released {
+			return interfacesResult(id, "fail", "ClaimLight succeeded but LightLevelUnit was not lux; claim released")
+		}
+	case "invalid_level":
+		if probe.Status == "fail" && probe.Claimed && probe.Released {
+			return interfacesResult(id, "fail", "ClaimLight succeeded but LightLevel was non-finite, negative or unavailable; claim released")
+		}
+	case "helper_error", "timeout", "release_error", "close_error":
+		if probe.Status == "error" {
+			return interfacesResult(id, "error", "SensorProxy light helper error ("+probe.Reason+"); raw output discarded")
+		}
+	}
+	return interfacesResult(id, "error", "Invalid SensorProxy light helper outcome; raw output discarded")
 }
 
 func compassValue(value *float64) string {

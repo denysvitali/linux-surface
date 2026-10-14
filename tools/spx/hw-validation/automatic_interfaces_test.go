@@ -53,6 +53,51 @@ func TestDesktopMotionAndCompassCatalog(t *testing.T) {
 	}
 }
 
+func TestLightLuxFakeOutcomes(t *testing.T) {
+	// The fixture exercises the kernel prerequisite without touching live sysfs.
+	for _, test := range []struct{ name, calibration, channel, status, detail string }{
+		{"calibration disabled", "N", "12.5", "blocked", "unit calibration not enabled"},
+		{"nonfinite", "Y", "NaN", "fail", "non-finite"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c := interfacesFixture(t, map[string]string{
+				"/sys/bus/iio/devices/iio:device0/name":                   "tcs3430",
+				"/sys/bus/iio/devices/iio:device0/in_illuminance_input":   test.channel,
+				"/sys/module/tcs3430/parameters/surface_unit_calibration": test.calibration,
+			})
+			got := interfacesSensorLightLux(c)
+			if got.ID != "sensors.light-lux" || got.Status != test.status || !strings.Contains(got.Detail, test.detail) {
+				t.Fatalf("%+v", got)
+			}
+		})
+	}
+	repo, err := filepath.Abs("../../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct{ name, output, status, detail string }{
+		{"pass", `{"status":"pass","reason":"read_after_claim","light_level_unit":"lux","light_level":12.5,"read_after_claim":true,"claimed":true,"released":true}`, "pass", "LightLevelUnit=lux"},
+		{"no proxy", `{"status":"blocked","reason":"no_service"}`, "blocked", "not running"},
+		{"nonfinite", `{"status":"fail","reason":"invalid_level","claimed":true,"released":true}`, "fail", "non-finite"},
+		{"wrong unit", `{"status":"fail","reason":"invalid_unit","claimed":true,"released":true}`, "fail", "not lux"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c := &AutoContext{Root: "/", Repo: repo}
+			c.Run = func(args ...string) (string, error) {
+				want := []string{"python3", "-B", filepath.Join(repo, "tools/spx/hw-validation/sensorproxy_probe.py"), "--light"}
+				if strings.Join(args, "\n") != strings.Join(want, "\n") {
+					t.Fatalf("helper invocation: %v", args)
+				}
+				return test.output, nil
+			}
+			got := interfacesSensorDesktopLight(c)
+			if got.ID != "sensors.light-lux" || got.Status != test.status || !strings.Contains(got.Detail, test.detail) {
+				t.Fatalf("%+v", got)
+			}
+		})
+	}
+}
+
 func TestDesktopCompassHelperOutcomes(t *testing.T) {
 	repo, err := filepath.Abs("../../..")
 	if err != nil {
