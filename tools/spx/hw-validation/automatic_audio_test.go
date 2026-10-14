@@ -47,7 +47,7 @@ const autoAudioFixtureSources = `[
 
 func TestAutomaticAudioInventoryAndScope(t *testing.T) {
 	c := autoAudioContext(t)
-	c.Options.Capture = true
+	c.Options.CaptureMicrophone = true
 	autoAudioFixture(t, c.Root, "/proc/asound/cards", autoAudioFixtureCards)
 	autoAudioFixture(t, c.Root, "/proc/asound/pcm", "00-00: USB Audio : playback 1 : capture 1\n01-00: MultiMedia1 : playback 1 : capture 1\n01-01: MultiMedia2 : playback 1 : capture 1\n")
 	autoAudioFixture(t, c.Root, "/sys/bus/soundwire/devices/sdw:0:1:0217:2110:00:3/status", "Unattached")
@@ -247,5 +247,21 @@ func TestAutomaticAudioFailedServicesAreFailures(t *testing.T) {
 		if result.Status != "fail" || strings.Contains(result.Detail, "PRIVATE") {
 			t.Fatalf("known service failure mislabeled or private output retained: %+v", result)
 		}
+	}
+}
+
+func TestAutomaticAudioCameraOptInDoesNotAllowMicrophones(t *testing.T) {
+	c := &AutoContext{Options: AutoOptions{CaptureCamera: true}, Run: func(args ...string) (string, error) {
+		t.Fatalf("unauthorized microphone command %q", args)
+		return "", nil
+	}}
+	result := autoAudioMicrophones(c)
+	if result.Status != "blocked" || !strings.Contains(result.Detail, "--capture-microphone") {
+		t.Fatal(result)
+	}
+	c.Options.CaptureMicrophone = true
+	result = autoAudioMicrophones(c)
+	if result.Status != "blocked" || !strings.Contains(result.Detail, "parked audio-testing scope") {
+		t.Fatal(result)
 	}
 }

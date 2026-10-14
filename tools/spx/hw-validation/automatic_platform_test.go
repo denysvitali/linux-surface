@@ -3,8 +3,11 @@ package main
 import (
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -405,5 +408,237 @@ func TestPlatformKernelFaultsPrivacyAndAccess(t *testing.T) {
 				t.Fatalf("private kernel log exposed: %+v", result)
 			}
 		}
+	}
+}
+
+func platformFrequencyFixture(t *testing.T, count int) *AutoContext {
+	t.Helper()
+	files := map[string]string{}
+	for i := 0; i < count; i++ {
+		base := fmt.Sprintf("/sys/devices/system/cpu/cpufreq/policy%d", i)
+		for key, value := range map[string]string{"scaling_min_freq": "300000", "scaling_max_freq": "1800000", "scaling_cur_freq": "300000", "scaling_governor": "schedutil", "related_cpus": fmt.Sprintf("%d %d", i, i+2), "stats/total_trans": "10", "stats/time_in_state": "300000 100"} {
+			files[base+"/"+key] = value
+		}
+	}
+	return platformFixture(t, files)
+}
+
+func TestPlatformFrequencyTransitions(t *testing.T) {
+	for _, tc := range []struct {
+		name, status             string
+		peak, after, transitions int
+	}{
+		{"rise-recover", "pass", 1800000, 300000, 10},
+		{"rise-no-stats", "pass", 1800000, 300000, 10},
+		{"stats-evidence", "pass", 300000, 300000, 12},
+		{"stuck", "fail", 300000, 300000, 10},
+		{"no-recovery", "fail", 1800000, 1800000, 10},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := platformFrequencyFixture(t, 2)
+			if tc.name == "rise-no-stats" {
+				for i := 0; i < 2; i++ {
+					if err := os.RemoveAll(filepath.Join(c.Root, fmt.Sprintf("sys/devices/system/cpu/cpufreq/policy%d/stats", i))); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			started := make(chan string, 2)
+			release := make(chan struct{})
+			c.Run = func(args ...string) (string, error) {
+				if args[0] == "sh" {
+					if strings.Join(args, " ") != "sh -c command -v taskset >/dev/null && command -v timeout >/dev/null && command -v sh >/dev/null" {
+						return "", errors.New("unexpected tool probe")
+					}
+					return "", nil
+				}
+				if strings.Join(args, " ") != "taskset -c "+args[2]+" timeout -k 0.2 1.5 sh -c while :; do :; done" {
+					return "", errors.New("unexpected workload")
+				}
+				started <- args[2]
+				<-release
+				return "", platformTimeoutExit{}
+			}
+			calls := 0
+			var elapsed time.Duration
+			result := platformCPUTransitionsWithSleep(c, func(d time.Duration) {
+				elapsed += d
+				calls++
+				if calls == 1 {
+					cpus := map[string]bool{<-started: true, <-started: true}
+					if !cpus["0"] || !cpus["1"] {
+						t.Fatal(cpus)
+					}
+				}
+				freq := tc.peak
+				if calls > 6 {
+					freq = tc.after
+				}
+				for i := 0; i < 2; i++ {
+					base := filepath.Join(c.Root, fmt.Sprintf("sys/devices/system/cpu/cpufreq/policy%d", i))
+					if err := os.WriteFile(filepath.Join(base, "scaling_cur_freq"), []byte(strconv.Itoa(freq)), 0600); err != nil {
+						t.Fatal(err)
+					}
+					if tc.name != "rise-no-stats" {
+						if err := os.WriteFile(filepath.Join(base, "stats/total_trans"), []byte(strconv.Itoa(tc.transitions)), 0600); err != nil {
+							t.Fatal(err)
+						}
+					}
+				}
+				if calls == 6 {
+					close(release)
+				}
+			})
+			if result.Status != tc.status || elapsed != 4500*time.Millisecond || !strings.Contains(result.Detail, "policy0 min/idle/peak/after=") || !strings.Contains(result.Detail, "policy1 min/idle/peak/after=") {
+				t.Fatalf("%+v; delay=%v", result, elapsed)
+			}
+		})
+	}
+}
+
+type platformTimeoutExit struct{}
+
+func (platformTimeoutExit) Error() string { return "exit status 124" }
+func (platformTimeoutExit) ExitCode() int { return 124 }
+
+func TestPlatformFrequencyBlocked(t *testing.T) {
+	for _, reason := range []string{"no-policies", "fixture", "fixed-governor", "fixed-limits", "unreadable", "tools", "affinity"} {
+		t.Run(reason, func(t *testing.T) {
+			c := platformFrequencyFixture(t, 1)
+			base := filepath.Join(c.Root, "sys/devices/system/cpu/cpufreq/policy0")
+			switch reason {
+			case "no-policies":
+				os.RemoveAll(base)
+			case "fixture":
+				c.Fixture = true
+			case "fixed-governor":
+				os.WriteFile(filepath.Join(base, "scaling_governor"), []byte("performance"), 0600)
+			case "fixed-limits":
+				os.WriteFile(filepath.Join(base, "scaling_max_freq"), []byte("300000"), 0600)
+			case "unreadable":
+				os.Remove(filepath.Join(base, "related_cpus"))
+			case "tools", "affinity":
+				c.Run = func(args ...string) (string, error) {
+					if reason == "affinity" && args[0] == "sh" {
+						return "", nil
+					}
+					return "", errors.New("unavailable")
+				}
+			}
+			if result := platformCPUTransitionsWithSleep(c, func(time.Duration) {}); result.Status != "blocked" {
+				t.Fatal(result)
+			}
+		})
+	}
+}
+
+func TestPlatformTPMSigning(t *testing.T) {
+	for _, tc := range []struct{ name, failure, algorithms, status string }{
+		{"ecc-pass", "", "ecc:\n  value: 0x23\nrsa:\n", "pass"},
+		{"rsa-pass", "", "rsa:\n", "pass"},
+		{"tools", "sh", "ecc:\n", "blocked"},
+		{"transport", "tpm2_getcap", "ecc:\n", "blocked"},
+		{"algorithms", "", "sha256:\n", "blocked"},
+		{"creation", "tpm2_createprimary", "ecc:\n", "blocked"},
+		{"sign", "tpm2_sign", "ecc:\n", "fail"},
+		{"verify", "tpm2_verifysignature", "ecc:\n", "fail"},
+		{"cleanup", "tpm2_flushcontext", "ecc:\n", "error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := platformFixture(t, map[string]string{"/dev/tpmrm0": ""})
+			var calls []string
+			var dir, context, digestFile, signature string
+			c.Run = func(args ...string) (string, error) {
+				calls = append(calls, args[0])
+				if args[0] != "sh" && args[1] != "--tcti=device:/dev/tpmrm0" {
+					t.Fatal(args)
+				}
+				switch args[0] {
+				case "sh":
+					if len(args) != 3 || !strings.Contains(args[2], "command -v tpm2_flushcontext >/dev/null") {
+						t.Fatal(args)
+					}
+				case "tpm2_getcap":
+					if args[2] != "algorithms" {
+						t.Fatal(args)
+					}
+				case "tpm2_createprimary":
+					context = args[len(args)-1]
+					dir = filepath.Dir(context)
+					digestFile, signature = filepath.Join(dir, "digest"), filepath.Join(dir, "signature")
+					algorithm := "ecc"
+					if tc.name == "rsa-pass" {
+						algorithm = "rsa"
+					}
+					want := []string{"tpm2_createprimary", "--tcti=device:/dev/tpmrm0", "-C", "n", "-G", algorithm, "-g", "sha256", "-a", "sign|fixedtpm|fixedparent|sensitivedataorigin|userwithauth", "-c", context}
+					if !reflect.DeepEqual(args, want) {
+						t.Fatal(args)
+					}
+					info, err := os.Stat(dir)
+					if err != nil || info.Mode().Perm() != 0700 {
+						t.Fatal(info, err)
+					}
+					data, err := os.ReadFile(digestFile)
+					expected := sha256.Sum256([]byte("Surface Pro X automatic TPM signing smoke v1"))
+					if err != nil || string(data) != string(expected[:]) {
+						t.Fatal("wrong digest", err)
+					}
+					if err := os.WriteFile(context, []byte("fake transient"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				case "tpm2_sign":
+					want := []string{"tpm2_sign", "--tcti=device:/dev/tpmrm0", "-c", context, "-g", "sha256", "-d", "-f", "tss", "-o", signature, digestFile}
+					if !reflect.DeepEqual(args, want) {
+						t.Fatal(args)
+					}
+				case "tpm2_verifysignature":
+					want := []string{"tpm2_verifysignature", "--tcti=device:/dev/tpmrm0", "-c", context, "-d", digestFile, "-s", signature}
+					if !reflect.DeepEqual(args, want) {
+						t.Fatal(args)
+					}
+				case "tpm2_flushcontext":
+					if strings.Join(args, " ") != "tpm2_flushcontext --tcti=device:/dev/tpmrm0 -t" {
+						t.Fatal(args)
+					}
+				default:
+					t.Fatal(args)
+				}
+				if args[0] == tc.failure {
+					return "private TPM error", errors.New("failed")
+				}
+				return tc.algorithms, nil
+			}
+			result := platformCheck(t, c, "security.tpm-signing")
+			if result.Status != tc.status || strings.Contains(result.Detail, "private TPM error") {
+				t.Fatal(result)
+			}
+			if dir != "" {
+				if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+					t.Fatal("files retained", err)
+				}
+				if calls[len(calls)-1] != "tpm2_flushcontext" {
+					t.Fatal("flush omitted", calls)
+				}
+			}
+			if tc.failure == "tpm2_sign" && strings.Contains(strings.Join(calls, " "), "tpm2_verifysignature") {
+				t.Fatal(calls)
+			}
+		})
+	}
+}
+
+func TestPlatformTPMSigningFixtureAndMissingDevice(t *testing.T) {
+	c := platformFixture(t, nil)
+	if result := platformTPMSigning(c); result.Status != "blocked" {
+		t.Fatal(result)
+	}
+	c = platformFixture(t, map[string]string{"/dev/tpmrm0": ""})
+	c.Fixture = true
+	if result := platformTPMSigning(c); result.Status != "blocked" {
+		t.Fatal(result)
+	}
+	c.Root = "/"
+	if result := platformTPMSigning(c); result.Status != "blocked" {
+		t.Fatal(result)
 	}
 }

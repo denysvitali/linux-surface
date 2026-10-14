@@ -28,9 +28,7 @@ func automaticPlatformChecks() []AutoCheck {
 		{ID: "cpu.memory", Title: "Memory capacity inventory", Area: "Platform", Kind: "inventory", Boxes: []string{"B03"}, Run: platformMemory},
 		{ID: "cpu.cpufreq", Title: "CPU frequency policy inventory", Area: "Platform", Kind: "inventory", Boxes: []string{"B03", "P02"}, Run: platformCPUFreq},
 		{ID: "cpu.workload", Title: "AC-only bounded CPU/memory consistency", Area: "Platform", Kind: "functional", Boxes: []string{"B03"}, Run: platformCPUWorkload},
-		{ID: "cpu.frequency-transitions", Title: "Loaded frequency transitions and idle recovery", Area: "Platform", Kind: "functional", Boxes: []string{"B03", "P02"}, Run: func(c *AutoContext) AutoResult {
-			return platformBlocked("cpu.frequency-transitions", "Frequency-transition/idle-recovery workload is deferred; policy metadata alone cannot validate transitions")
-		}},
+		{ID: "cpu.frequency-transitions", Title: "Loaded frequency transitions and idle recovery", Area: "Platform", Kind: "functional", Boxes: []string{"B03", "P02"}, Run: platformCPUTransitions},
 		{ID: "storage.nvme", Title: "NVMe controller inventory", Area: "Storage", Kind: "inventory", Boxes: []string{"B02"}, Run: platformNVMe},
 		{ID: "storage.fsync-checksum", Title: "Disposable filesystem write/fsync/checksum (4 MiB)", Area: "Storage", Kind: "functional", Boxes: []string{"B02"}, Run: platformStorage},
 		{ID: "fw.remoteproc", Title: "Remote processor states (no startup)", Area: "Firmware", Kind: "inventory", Boxes: []string{"B04"}, Run: platformRemoteproc},
@@ -45,9 +43,7 @@ func automaticPlatformChecks() []AutoCheck {
 		{ID: "rtc.read-time", Title: "RTC accessible time agrees with system clock", Area: "Platform", Kind: "functional", Boxes: []string{"B05"}, Run: func(c *AutoContext) AutoResult { return platformRTC(c, time.Now()) }},
 		{ID: "security.tpm", Title: "TPM interface inventory", Area: "Security", Kind: "inventory", Boxes: []string{"B06"}, Run: platformTPM},
 		{ID: "security.tpm-capability", Title: "Read-only TPM2 fixed-capability response", Area: "Security", Kind: "functional", Boxes: []string{"B06"}, Run: platformTPMCapability},
-		{ID: "security.tpm-signing", Title: "TPM signing workflow", Area: "Security", Kind: "functional", Boxes: []string{"B06"}, Run: func(c *AutoContext) AutoResult {
-			return platformBlocked("security.tpm-signing", "No authorized signing fixture supplied; this boot suite makes no TPM key creation, provisioning or key changes")
-		}},
+		{ID: "security.tpm-signing", Title: "TPM signing workflow", Area: "Security", Kind: "functional", Boxes: []string{"B06"}, Run: platformTPMSigning},
 		{ID: "security.secureboot", Title: "EFI Secure Boot state inventory", Area: "Security", Kind: "inventory", Boxes: []string{"B06"}, Run: platformSecureBoot},
 		{ID: "thermal.metadata", Title: "Thermal temperatures, trips and cooling states (no load)", Area: "Thermal", Kind: "inventory", Boxes: []string{"P05"}, Run: platformThermal},
 		{ID: "thermal.response", Title: "Automatic thermal response under load", Area: "Thermal", Kind: "functional", Boxes: []string{"P05"}, Run: func(c *AutoContext) AutoResult {
@@ -168,6 +164,118 @@ func platformCPUFreq(c *AutoContext) AutoResult {
 	}
 	return platformResult(id, "observed", strings.Join(parts, "; ")+"; no transitions or idle recovery exercised")
 }
+
+// All policies share one load/idle window, rather than multiplying the runtime.
+func platformCPUTransitions(c *AutoContext) AutoResult {
+	return platformCPUTransitionsWithSleep(c, time.Sleep)
+}
+func platformCPUTransitionsWithSleep(c *AutoContext, sleep func(time.Duration)) AutoResult {
+	const id = "cpu.frequency-transitions"
+	if c.Fixture || (c.Run == nil && c.Root != "" && filepath.Clean(c.Root) != "/") {
+		return platformBlocked(id, "Frequency workload disabled for fixture root")
+	}
+	paths, err := c.Glob("/sys/devices/system/cpu/cpufreq/policy*")
+	if err != nil || len(paths) == 0 {
+		return platformBlocked(id, "No readable cpufreq policies")
+	}
+	type policy struct {
+		path, cpu                           string
+		min, idle, peak, after, transitions int64
+		hasTransitions                      bool
+	}
+	policies := make([]policy, 0, len(paths))
+	for _, path := range paths {
+		low, e1 := platformInt(c, path+"/scaling_min_freq")
+		high, e2 := platformInt(c, path+"/scaling_max_freq")
+		idle, e3 := platformInt(c, path+"/scaling_cur_freq")
+		cpus, e4 := c.Read(path + "/related_cpus")
+		governor, e5 := c.Read(path + "/scaling_governor")
+		if errors.Join(e1, e2, e3, e4, e5) != nil || low <= 0 || high < low || idle <= 0 || len(strings.Fields(cpus)) == 0 {
+			return platformBlocked(id, filepath.Base(path)+" frequency/CPU/governor attributes unreadable or invalid")
+		}
+		if governor == "performance" || governor == "powersave" || low == high {
+			return platformBlocked(id, filepath.Base(path)+" governor or frequency limits fixed; no policy changed")
+		}
+		cpu := strings.Fields(cpus)[0]
+		n, err := strconv.Atoi(cpu)
+		if err != nil || n < 0 || n > 65535 {
+			return platformBlocked(id, filepath.Base(path)+" related_cpus does not identify a valid CPU")
+		}
+		transitions, err := platformInt(c, path+"/stats/total_trans")
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return platformBlocked(id, filepath.Base(path)+" transition statistics unreadable")
+		}
+		if _, err := c.Read(path + "/stats/time_in_state"); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return platformBlocked(id, filepath.Base(path)+" time-in-state statistics unreadable")
+		}
+		policies = append(policies, policy{path: path, cpu: cpu, min: low, idle: idle, peak: idle, after: idle, transitions: transitions, hasTransitions: err == nil})
+	}
+	if _, err := c.Command("sh", "-c", "command -v taskset >/dev/null && command -v timeout >/dev/null && command -v sh >/dev/null"); err != nil {
+		return platformBlocked(id, "taskset/timeout/sh tools unavailable; no load started")
+	}
+	finished := make(chan error, len(policies))
+	for _, p := range policies {
+		go func(cpu string) {
+			_, err := c.Command("taskset", "-c", cpu, "timeout", "-k", "0.2", "1.5", "sh", "-c", "while :; do :; done")
+			// GNU timeout normally ends this deliberately infinite workload with 124.
+			var exit interface{ ExitCode() int }
+			if errors.As(err, &exit) && exit.ExitCode() == 124 {
+				err = nil
+			}
+			finished <- err
+		}(p.cpu)
+	}
+	unreadable := false
+	for sample := 0; sample < 6; sample++ {
+		sleep(250 * time.Millisecond)
+		for i := range policies {
+			freq, err := platformInt(c, policies[i].path+"/scaling_cur_freq")
+			if err != nil || freq <= 0 {
+				unreadable = true
+			} else if freq > policies[i].peak {
+				policies[i].peak = freq
+			}
+		}
+	}
+	// Drain all workers even when one fails; no load is left behind on return.
+	loadFailed := false
+	for range policies {
+		loadFailed = (<-finished != nil) || loadFailed
+	}
+	if loadFailed {
+		return platformBlocked(id, "Bounded pinned workload could not run for every policy (tool/affinity prerequisite); all workers exited")
+	}
+	for sample := 0; sample < 6; sample++ {
+		sleep(500 * time.Millisecond)
+		for i := range policies {
+			freq, err := platformInt(c, policies[i].path+"/scaling_cur_freq")
+			if err != nil || freq <= 0 {
+				unreadable = true
+			} else if sample == 0 || freq < policies[i].after {
+				policies[i].after = freq
+			}
+		}
+	}
+	status := "pass"
+	var details []string
+	for _, p := range policies {
+		transitions, err := platformInt(c, p.path+"/stats/total_trans")
+		increased := p.hasTransitions && err == nil && transitions > p.transitions
+		if p.hasTransitions && err != nil {
+			unreadable = true
+		}
+		if !increased && !(p.peak > p.idle && p.after < p.peak) {
+			status = "fail"
+		}
+		details = append(details, fmt.Sprintf("%s min/idle/peak/after=%d/%d/%d/%d kHz; total_trans increased=%t", filepath.Base(p.path), p.min, p.idle, p.peak, p.after, increased))
+	}
+	if unreadable {
+		status = "blocked"
+		details = append(details, "frequency sample or previously available transition statistics became unreadable/invalid")
+	}
+	return platformResult(id, status, strings.Join(details, "; ")+"; 1.5s pinned load per policy in parallel, 3s idle sampling; no sysfs writes, governor/limit changes, thermal or battery test")
+}
+
 func platformCPUWorkload(c *AutoContext) AutoResult {
 	const id = "cpu.workload"
 	if c.Fixture {
@@ -508,6 +616,76 @@ func platformTPMCapability(c *AutoContext) AutoResult {
 	}
 	return platformResult(id, "pass", "TPM2 GetCapability returned fixed properties with family 2.0; no keys, PCRs or firmware settings changed")
 }
+func platformTPMSigning(c *AutoContext) (result AutoResult) {
+	const id = "security.tpm-signing"
+	const tcti = "--tcti=device:/dev/tpmrm0"
+	const scope = "; only a transient unrestricted signing primary under NULL, public fixed SHA-256 digest and disposable private files; no persistent handles, NV writes, hierarchy/auth changes, PCR extends or owner/endorsement use"
+	if c.Fixture || (c.Run == nil && c.Root != "" && filepath.Clean(c.Root) != "/") {
+		return platformBlocked(id, "TPM signing disabled for fixture root; no TPM state changed")
+	}
+	path, err := c.path("/dev/tpmrm0")
+	if err != nil || c.withinRoot(path) != nil {
+		return platformBlocked(id, "TPM resource-manager device unavailable; no TPM state changed")
+	}
+	device, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return platformBlocked(id, "/dev/tpmrm0 inaccessible; no TPM state changed")
+	}
+	device.Close()
+	if _, err := c.Command("sh", "-c", "command -v tpm2_getcap >/dev/null && command -v tpm2_createprimary >/dev/null && command -v tpm2_sign >/dev/null && command -v tpm2_verifysignature >/dev/null && command -v tpm2_flushcontext >/dev/null"); err != nil {
+		return platformBlocked(id, "Required tpm2-tools unavailable; no TPM state changed")
+	}
+	algorithms, err := c.Command("tpm2_getcap", tcti, "algorithms")
+	if err != nil {
+		return platformBlocked(id, "TPM algorithm capability query unavailable; no TPM state changed")
+	}
+	algorithm := "ecc"
+	if !regexp.MustCompile(`(?m)^ecc:[ \t]*\r?$`).MatchString(algorithms) {
+		if !regexp.MustCompile(`(?m)^rsa:[ \t]*\r?$`).MatchString(algorithms) {
+			return platformBlocked(id, "No ECC/RSA signing algorithm advertised; no TPM state changed")
+		}
+		algorithm = "rsa"
+	}
+	dir, err := os.MkdirTemp("", "spx-tpm-sign-*")
+	if err != nil {
+		return platformResult(id, "error", "Cannot create private TPM signing directory; no TPM state changed")
+	}
+	defer func() {
+		if err := os.RemoveAll(dir); err != nil {
+			result.Status = "error"
+			result.Detail += "; disposable file cleanup failed"
+		}
+	}()
+	context := filepath.Join(dir, "primary.ctx")
+	digestFile := filepath.Join(dir, "digest")
+	signature := filepath.Join(dir, "signature")
+	digest := sha256.Sum256([]byte("Surface Pro X automatic TPM signing smoke v1"))
+	if err := os.WriteFile(digestFile, digest[:], 0600); err != nil {
+		return platformResult(id, "error", "Cannot write fixed public digest; no TPM state changed")
+	}
+	// Linux tpmrm releases each connection's transient objects on close.
+	// 5.8 flushcontext accepts handles/session files, not saved object contexts.
+	// -t through tpmrm is scoped to this connection, never other clients or tpm0.
+	defer func() {
+		if _, err := c.Command("tpm2_flushcontext", tcti, "-t"); err != nil {
+			result.Status = "error"
+			result.Detail += "; resource-manager transient flush failed (device-close cleanup still applies)"
+		} else {
+			result.Detail += "; resource-manager transient flush succeeded; command connections closed, private files removed"
+		}
+	}()
+	if _, err := c.Command("tpm2_createprimary", tcti, "-C", "n", "-G", algorithm, "-g", "sha256", "-a", "sign|fixedtpm|fixedparent|sensitivedataorigin|userwithauth", "-c", context); err != nil {
+		return platformBlocked(id, "NULL-hierarchy signing primary creation refused/unavailable"+scope)
+	}
+	if _, err := c.Command("tpm2_sign", tcti, "-c", context, "-g", "sha256", "-d", "-f", "tss", "-o", signature, digestFile); err != nil {
+		return platformResult(id, "fail", "TPM "+algorithm+" primary created but fixed-digest signing failed"+scope)
+	}
+	if _, err := c.Command("tpm2_verifysignature", tcti, "-c", context, "-d", digestFile, "-s", signature); err != nil {
+		return platformResult(id, "fail", "TPM "+algorithm+" signature created but verification with the same context failed"+scope)
+	}
+	return platformResult(id, "pass", "TPM "+algorithm+" signed fixed SHA-256 digest and verified signature with the same context"+scope)
+}
+
 func platformSecureBoot(c *AutoContext) AutoResult {
 	const id = "security.secureboot"
 	paths, err := c.Glob("/sys/firmware/efi/efivars/SecureBoot-*")

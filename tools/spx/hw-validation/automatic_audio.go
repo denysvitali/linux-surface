@@ -359,8 +359,8 @@ func autoAudioFeeder(c *AutoContext) AutoResult {
 }
 
 func autoAudioMicrophones(c *AutoContext) AutoResult {
-	if !c.Options.Capture {
-		return autoAudioResult("audio.microphones", "blocked", "Microphone capture is opt-in (--capture) and disabled. New audio/microphone variations remain parked; no private recording or PCM started.")
+	if !c.Options.CaptureMicrophone {
+		return autoAudioResult("audio.microphones", "blocked", "Microphone capture is opt-in (--capture-microphone) and disabled. New audio/microphone variations remain parked; no private recording or PCM started.")
 	}
 	return autoAudioResult("audio.microphones", "blocked", "Capture opt-in does not override the parked audio-testing scope. A separately authorized known-stimulus run with safe MM2/DMIC routing is required; no microphone samples captured or retained.")
 }

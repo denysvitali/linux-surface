@@ -35,7 +35,9 @@ Keep report basenames distinct when keeping multiple runs.
 | `--checklist` | Generate checklist only. No tests, commands, locks or hardware reads. Without `--output`, every row is marked not run. |
 | `--checklist-path PATH` | Override `<repo>/AUTO-HW-CHECKLIST.md`. |
 | `--root PATH` | Fixture filesystem root; disables all external commands and live locking, even for `--root /`. |
-| `--capture` | Allow minimal bounded camera/microphone capture. An announcement is printed; data is discarded. Does not authorize speaker playback. |
+| `--capture-camera` | Allow three processed frames per camera, discarded in memory; no IR emitter activation. An announcement is printed. |
+| `--capture-microphone` | Allow bounded microphone capture subject to parked audio restrictions; samples discarded. Does not authorize sound. |
+| `--capture` | Compatibility alias enabling both capture opt-ins. Does not authorize speaker playback. |
 | `--media PATH` | Existing media fixture for bounded decoder-only checks; takes precedence over directory fixtures of the same codec. No encoder trials. |
 | `--media-dir PATH` | Absolute directory of verified public video fixtures; regular files are probed in lexical order, without recursion. |
 | `--dns-name NAME` | Deliberate public DNS fixture hostname; default `example.com`. System resolver lookup has a three-second total deadline. |
@@ -137,13 +139,82 @@ an empty scan remains blocked for reception, without requesting a human action.
 Static Vulkan compares all 4,096 public-fixture pixels; it still does not close
 the separate unresolved scrolling/partial-damage requirement.
 
-Boot checks keep capture disabled and do not play sound. Cameras therefore
-remain blocked without explicit capture authorization. Native microphone
+Boot camera capture defaults to disabled. `install --camera-capture` persists
+`"camera_capture": true` in `/etc/spx/hw-validation.json`; `install --no-camera-capture`
+disables it. Reinstallation without either option retains the previous boolean.
+`run` forwards only `--capture-camera` when enabled and announces both classes
+in runner status. Persisted boot settings cannot enable microphone capture or sound.
+
+Camera rows run sequentially, checking each sensor's test pattern is off before
+requesting three BGR888 viewfinder frames with no file/display sink. Frames stay
+in memory and are discarded; only parsed frame counts/sequence evidence is reported.
+Capture uses `timeout --signal=INT --kill-after=2s 15s`. The private `cam` build
+uses explicit `LD_LIBRARY_PATH` entries for its `build/src/libcamera` and
+`build/src/libcamera/base`, `LIBCAMERA_SOFTISP_MODE=cpu` and
+`LIBCAMERA_LOG_LEVELS=*:ERROR`; its normal build-tree discovery supplies IPA paths.
+Other inherited `LIBCAMERA_*` settings are not overridden. Camera commands run as
+the validator account (root in the boot service), not the `--user` desktop account.
+No IR-emitter controls are requested; physical driver behaviour remains untested
+by these offline fixtures. A camera absent from the libcamera list stays blocked.
+
+Native microphone
 stimulus, speaker output and parked audio lifecycle checks can remain blocked
 even with `--capture`: that flag does not supply a stimulus, authorize playback,
 or remove the parked DSP restrictions. Encoder trials remain blocked. Missing
 `cam`, `ffmpeg`, `eglinfo`, `vulkaninfo`, GL/GLES render tools, `gtk4-rendernode-tool`,
 `pactl`, or other feature tools are concrete blockers, not hardware absence.
+
+## CPU transitions and transient TPM signing
+
+`cpu.frequency-transitions` reads each policy's current/min/max frequency,
+related CPUs, governor and optional transition/time-in-state statistics. It
+runs one fixed 1.5-second busy loop on one CPU per policy concurrently, samples
+frequency every 250 ms for six samples, then samples idle frequency every
+500 ms for three seconds. All policies share this approximately 4.5-second
+window (timeout's kill grace is 0.2 seconds). Each policy needs a loaded peak
+above its starting frequency followed by a lower idle sample, or an increased
+`stats/total_trans`. Details retain per-policy min/idle/peak/after kHz. Fixed
+performance/powersave governors or equal limits, missing attributes/tools and
+fixture runs stay blocked. No sysfs writes or governor/limit changes occur;
+this short transition smoke is not thermal or battery/endurance validation.
+
+Exact external commands (CPU is the first numeric `related_cpus` member):
+
+```sh
+sh -c 'command -v taskset >/dev/null && command -v timeout >/dev/null && command -v sh >/dev/null'
+taskset -c CPU timeout -k 0.2 1.5 sh -c 'while :; do :; done'
+```
+
+`security.tpm-signing` requires accessible `/dev/tpmrm0` and tpm2-tools. It
+selects ECC from read-only algorithm capabilities, falling back to RSA when
+ECC is not advertised. It creates an unrestricted signing primary explicitly
+under the NULL hierarchy, signs the SHA-256 digest of the public fixed string
+`Surface Pro X automatic TPM signing smoke v1`, and verifies using the same
+saved context. A mode-0700 `os.MkdirTemp` directory holds the mode-0600 digest,
+context, signature and verification ticket, then is removed on every exit.
+Creation refusal is blocked; sign/verify failure after creation fails; cleanup
+failure is an error. Fixture runs never open the TPM or execute commands.
+
+Exact external commands (`DIR` is the private temporary directory, `ALG` is
+`ecc` or `rsa`):
+
+```sh
+sh -c 'command -v tpm2_getcap >/dev/null && command -v tpm2_createprimary >/dev/null && command -v tpm2_sign >/dev/null && command -v tpm2_verifysignature >/dev/null && command -v tpm2_flushcontext >/dev/null'
+tpm2_getcap --tcti=device:/dev/tpmrm0 algorithms
+tpm2_createprimary --tcti=device:/dev/tpmrm0 -C n -G ALG -g sha256 -a 'sign|fixedtpm|fixedparent|sensitivedataorigin|userwithauth' -c DIR/primary.ctx
+tpm2_sign --tcti=device:/dev/tpmrm0 -c DIR/primary.ctx -g sha256 -d -f tss -o DIR/signature DIR/digest
+tpm2_verifysignature --tcti=device:/dev/tpmrm0 -c DIR/primary.ctx -g sha256 -d DIR/digest -s DIR/signature -t DIR/verification.ticket
+tpm2_flushcontext --tcti=device:/dev/tpmrm0 -t
+```
+
+Cleanup attempts flush even when creation/sign/verification fails. Linux's
+resource manager releases each command connection's transient objects on
+close. The final `-t` flush is restricted to its resource-manager connection;
+it cannot flush other clients' objects. tpm2-tools 5.8 does not accept saved
+object-context files as flush arguments (only transient handles/session files).
+No raw `/dev/tpm0` fallback, persistent handles, NV writes, hierarchy/auth
+changes, PCR extends or owner/endorsement hierarchy use occur. TPM output and
+raw errors are discarded; results describe only the workflow and its scope.
 
 ## Outcomes
 
@@ -177,24 +248,48 @@ run parked encoders. Sound is not authorized by these flags.
 
 ## Sensor delivery
 
-`sensors.desktop-delivery` remains blocked by a validator dependency: the module
-has no vendored Go D-Bus client, and separate `busctl`/`gdbus` call and monitor
-commands cannot claim, receive signals and release on one persistent connection.
-SensorProxy tracks claims by the caller's unique bus name; a short-lived claim
-command cannot supply that session. No claim or service activation is attempted.
-This is distinct from missing sensor hardware or backend support. Desktop
-compass support and fresh compass delivery remain separately unverified.
+`sensors.desktop-motion` invokes repository-relative `sensorproxy_probe.py` using
+`python3 -B` through the normal command runner. Python PyGObject (`Gio`, `GLib`)
+is required. It works as root on the system bus, uses one private persistent
+connection, checks NameHasOwner first and disables activation on all calls.
+It pins the existing service owner, reads HasAccelerometer and the orientation
+before claiming, subscribes to PropertiesChanged before ClaimAccelerometer,
+reads the orientation after claiming and observes for up to six seconds.
+A finally path attempts ReleaseAccelerometer on the same connection, including
+refused/lost claim replies and errors, then unsubscribes and closes. Async calls
+have bounded timeouts; a GLib work deadline at 9.5 seconds cancels pending work
+and enters cleanup, and a hard GLib deadline at 11.5 seconds terminates the
+helper with an error result. Fixture-root runs never execute the helper.
 
-A future client must use the already-owned system bus name
-`net.hadess.SensorProxy`, root path `/net/hadess/SensorProxy` and compass path
-`/net/hadess/SensorProxy/Compass`, disable activation, require HasAccelerometer,
-subscribe before claiming and release on every path. Only a fresh
-PropertiesChanged carrying AccelerometerOrientation within five seconds can
-establish orientation delivery; cached properties cannot. No rotation or other
-physical stimulus is requested. A stationary device may legitimately produce
-no orientation change: require a fresh raw-reading path if exposed, otherwise
-report blocked (`no stimulus; fresh delivery cannot be distinguished from a
-stationary device`), never infer a delivery failure from silence alone.
+A pass requires a post-claim PropertiesChanged carrying AccelerometerOrientation
+or AccelerometerTilt, or orientation changing from undefined/empty before the
+claim to a defined value afterward. The detail identifies the evidence.
+An already-defined orientation with no signal is blocked: the device is
+stationary and the property was already defined before the claim so freshness
+cannot be distinguished. A successful claim with orientation undefined/empty
+throughout the complete six-second window fails because the proxy obtained no
+reading. Missing service, HasAccelerometer=false, claim refusal and unavailable
+Python/helper/PyGObject remain blocked; runner/protocol/cleanup faults are errors.
+No physical stimulus, service start, raw IIO reading or calibration is attempted.
+
+The former combined `sensors.desktop-delivery` row is split into functional
+`sensors.desktop-motion` and `sensors.desktop-compass`, increasing the functional
+catalog total by one. A motion pass cannot establish compass delivery. The motion
+detail reports HasCompass (true, false or unreadable) queried on
+`/net/hadess/SensorProxy/Compass`, interface `net.hadess.SensorProxy.Compass`.
+Compass stays blocked: ClaimCompass is normally restricted to geoclue; no policy
+bypass or positioning session is attempted. Cached capabilities are not delivery.
+
+The helper emits one JSON object on stdout (exit zero for recorded outcomes):
+`status` (pass/blocked/fail/error), `reason` (signal, transition, stationary,
+undefined, no_service, no_accelerometer, claim_refused, unavailable,
+bus_unavailable, helper_error, timeout, release_error or close_error),
+`has_compass` (boolean or null), `orientation_before` and `orientation_after`
+(string or null), `signal`, `claimed`, `released`, and `window_complete`
+(booleans). Orientation strings remain in command memory; the Go report records
+only controlled evidence summaries and compass capability. A pass or hardware
+failure requires acknowledged claim release; incomplete observation is an error,
+never a hardware failure. Raw errors and other command output are discarded.
 
 `sensors.motion-read` uses the existing `ssccli` client against an already
 running SensorsPD provider. It samples accelerometer, gyroscope and magnetometer
@@ -253,7 +348,7 @@ match catalog order and IDs. Markdown is derived from these fields, for example:
 
 ```markdown
 - [x] **storage.io — Disposable-file integrity** (functional; pass): read/write/fsync checksum matched
-- [ ] **camera.capture — Bounded capture** (functional; blocked): --capture not enabled
+- [ ] **camera.capture — Bounded capture** (functional; blocked): --capture-camera not enabled
 - **network.inventory — Network interfaces** (inventory; observed): wireless interfaces=1
 ```
 

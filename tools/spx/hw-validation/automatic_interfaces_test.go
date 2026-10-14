@@ -13,28 +13,98 @@ import (
 	"testing"
 )
 
-func TestDesktopDeliveryBlockedWithoutPersistentDBusClient(t *testing.T) {
-	c := interfacesFixture(t, nil)
-	c.Run = func(args ...string) (string, error) {
-		t.Fatalf("dependency block must not claim, activate or monitor: %v", args)
-		return "", nil
+func TestDesktopMotionFixtureDoesNotExecuteHelper(t *testing.T) {
+	for _, c := range []*AutoContext{interfacesFixture(t, nil), {Root: "/", Fixture: true}} {
+		c.Run = func(args ...string) (string, error) {
+			t.Fatalf("fixture must not run helper: %v", args)
+			return "", nil
+		}
+		if got := interfacesSensorDesktopDelivery(c); got.Status != "blocked" {
+			t.Fatal(got)
+		}
 	}
+}
+
+func TestDesktopMotionAndCompassCatalog(t *testing.T) {
+	found := map[string]bool{}
 	for _, check := range automaticInterfacesChecks() {
-		if check.ID != "sensors.desktop-delivery" {
+		if check.ID == "sensors.desktop-delivery" {
+			t.Fatal("combined row would overclaim compass delivery")
+		}
+		if check.ID != "sensors.desktop-motion" && check.ID != "sensors.desktop-compass" {
 			continue
 		}
+		found[check.ID] = true
+		if check.Kind != "functional" {
+			t.Fatal(check)
+		}
+		c := interfacesFixture(t, nil)
+		c.Run = func(args ...string) (string, error) { t.Fatalf("unexpected command %v", args); return "", nil }
 		got := check.Run(c)
 		if got.ID != check.ID || got.Status != "blocked" {
 			t.Fatal(got)
 		}
-		for _, reason := range []string{"one persistent D-Bus connection", "no Go D-Bus client is vendored", "Compass delivery separately blocked", "stationary device", "no stimulus; fresh delivery cannot be distinguished from a stationary device"} {
-			if !strings.Contains(got.Detail, reason) {
-				t.Fatalf("missing reason %q: %+v", reason, got)
-			}
+		if check.ID == "sensors.desktop-compass" && !strings.Contains(got.Detail, "restricted to geoclue") {
+			t.Fatal(got)
 		}
-		return
 	}
-	t.Fatal("desktop delivery requirement missing from catalog")
+	if len(found) != 2 {
+		t.Fatal(found)
+	}
+}
+
+func TestDesktopMotionHelperOutcomes(t *testing.T) {
+	repo, err := filepath.Abs("../../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name, output, status, detail string
+		err                          error
+	}{
+		{"signal", `{"status":"pass","reason":"signal","has_compass":true,"orientation_before":"normal","orientation_after":"normal","signal":true,"claimed":true,"released":true}`, "pass", "Fresh PropertiesChanged", nil},
+		{"transition", `{"status":"pass","reason":"transition","has_compass":false,"orientation_before":"undefined","orientation_after":"normal","claimed":true,"released":true}`, "pass", "transitioned from undefined/empty", nil},
+		{"empty transition", `{"status":"pass","reason":"transition","orientation_before":"","orientation_after":"normal","claimed":true,"released":true}`, "pass", "transitioned from undefined/empty", nil},
+		{"stationary", `{"status":"blocked","reason":"stationary","has_compass":true,"orientation_before":"normal","orientation_after":"normal","claimed":true,"released":true,"window_complete":true}`, "blocked", "Device is stationary and the property was already defined before the claim so freshness cannot be distinguished", nil},
+		{"no service", `{"status":"blocked","reason":"no_service"}`, "blocked", "NameHasOwner false", nil},
+		{"no accelerometer", `{"status":"blocked","reason":"no_accelerometer","has_compass":false}`, "blocked", "HasAccelerometer false", nil},
+		{"refused", `{"status":"blocked","reason":"claim_refused"}`, "blocked", "ClaimAccelerometer refused", nil},
+		{"undefined", `{"status":"fail","reason":"undefined","orientation_before":"undefined","orientation_after":"undefined","claimed":true,"released":true,"window_complete":true}`, "fail", "never obtained a reading", nil},
+		{"cached then undefined", `{"status":"fail","reason":"undefined","orientation_before":"normal","orientation_after":"undefined","claimed":true,"released":true,"window_complete":true}`, "fail", "never obtained a reading", nil},
+		{"missing PyGObject", `{"status":"blocked","reason":"unavailable"}`, "blocked", "PyGObject", nil},
+		{"helper error", `{"status":"error","reason":"helper_error"}`, "error", "helper error", nil},
+		{"timeout", `{"status":"error","reason":"timeout","claimed":true,"released":true}`, "error", "timeout", nil},
+		{"release error", `{"status":"error","reason":"release_error","claimed":true,"signal":true}`, "error", "release_error", nil},
+		{"missing release", `{"status":"pass","reason":"signal","claimed":true,"signal":true}`, "error", "Invalid", nil},
+		{"cached cannot pass", `{"status":"pass","reason":"transition","orientation_before":"normal","orientation_after":"normal","claimed":true,"released":true}`, "error", "Invalid", nil},
+		{"short window cannot fail", `{"status":"fail","reason":"undefined","orientation_before":"undefined","orientation_after":"undefined","claimed":true,"released":true}`, "error", "Invalid", nil},
+		{"malformed", `PRIVATE`, "error", "Invalid", nil},
+		{"command error", `PRIVATE`, "error", "command failed", errors.New("exit status 1")},
+		{"missing Python", `PRIVATE`, "blocked", "unavailable", os.ErrNotExist},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			calls := 0
+			c := &AutoContext{Root: "/", Repo: repo}
+			c.Run = func(args ...string) (string, error) {
+				calls++
+				want := []string{"python3", "-B", filepath.Join(repo, "tools/spx/hw-validation/sensorproxy_probe.py")}
+				if strings.Join(args, "\n") != strings.Join(want, "\n") {
+					t.Fatalf("helper invocation: %v", args)
+				}
+				return test.output, test.err
+			}
+			got := interfacesSensorDesktopDelivery(c)
+			if calls != 1 || got.ID != "sensors.desktop-motion" || got.Status != test.status || !strings.Contains(got.Detail, test.detail) || strings.Contains(got.Detail, "PRIVATE") || !strings.Contains(got.Detail, "compass not covered") {
+				t.Fatalf("%+v calls=%d", got, calls)
+			}
+			if strings.Contains(test.output, `"has_compass":true`) && !strings.Contains(got.Detail, "HasCompass=true") {
+				t.Fatal(got)
+			}
+			if strings.Contains(test.output, `"has_compass":false`) && !strings.Contains(got.Detail, "HasCompass=false") {
+				t.Fatal(got)
+			}
+		})
+	}
 }
 
 func TestExposedSensorFailuresAreNotMissingPrerequisites(t *testing.T) {

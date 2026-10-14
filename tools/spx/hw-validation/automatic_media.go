@@ -346,7 +346,13 @@ func autoMediaCamArgs(c *AutoContext) ([]string, string) {
 	if err == nil && len(paths) == 1 {
 		app, origin = autoMediaPrivateCam, "verified private libcamera/CPU ISP (not distro integration)"
 	}
-	return []string{"env", "LIBCAMERA_SOFTISP_MODE=cpu", "LIBCAMERA_LOG_LEVELS=*:ERROR", app}, origin
+	args := []string{"env", "LIBCAMERA_SOFTISP_MODE=cpu", "LIBCAMERA_LOG_LEVELS=*:ERROR"}
+	if app == autoMediaPrivateCam {
+		// Override an inherited library path which takes precedence over RUNPATH.
+		build := "/var/tmp/spx-libcamera-0.7.2/build"
+		args = append(args, "LD_LIBRARY_PATH="+build+"/src/libcamera:"+build+"/src/libcamera/base")
+	}
+	return append(args, app), origin
 }
 
 func autoMediaCameras(c *AutoContext) ([]string, string, map[string]autoMediaCamera, AutoResult) {
@@ -415,8 +421,8 @@ func autoMediaCameraMetadata(c *AutoContext) AutoResult {
 }
 
 func autoMediaCameraFrames(c *AutoContext, role string) AutoResult {
-	if !c.Options.Capture {
-		return AutoResult{Status: "blocked", Detail: role + " camera capture requires explicit --capture opt-in; three processed frames would be discarded in memory, no IR emitter or retained images"}
+	if !c.Options.CaptureCamera {
+		return AutoResult{Status: "blocked", Detail: role + " camera capture requires explicit --capture-camera opt-in; three processed frames would be discarded in memory, no IR emitter or retained images"}
 	}
 	args, origin, cameras, problem := autoMediaCameras(c)
 	if problem.Status != "" {
@@ -447,10 +453,14 @@ func autoMediaCameraFrames(c *AutoContext, role string) AutoResult {
 	if err != nil {
 		return autoMediaCommandProblem(role+" sensor test-pattern state", output, err)
 	}
-	if !regexp.MustCompile(`(?m)^\s*test_pattern:\s*0\s*$`).MatchString(output) {
+	if !regexp.MustCompile(`(?m)^\s*test_pattern:\s*0(\s*\([^)]*\))?\s*$`).MatchString(output) {
 		return AutoResult{Status: "blocked", Detail: role + " native test pattern is active or its state is unreadable; no synthetic camera frames or control writes attempted"}
 	}
-	output, err = c.Command(append(append([]string{}, args...), "--camera", camera.id, "--info", "--stream", "role=viewfinder,width=1280,height=960,pixelformat=BGR888", "--capture=3", "--metadata")...)
+	// No file/display sink: cam only reports metadata and recycles memory buffers.
+	// cam handles SIGINT for orderly stop; force-kill a stalled teardown after 2s.
+	// Bound a stalled sensor without relying on the generic cam command budget.
+	captureArgs := append([]string{"timeout", "--signal=INT", "--kill-after=2s", "15s"}, args...)
+	output, err = c.Command(append(captureArgs, "--camera", camera.id, "--info", "--stream", "role=viewfinder,width=1280,height=960,pixelformat=BGR888", "--capture=3", "--metadata")...)
 	if err != nil {
 		return autoMediaCommandProblem(role+" processed capture", output, err)
 	}

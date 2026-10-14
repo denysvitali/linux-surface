@@ -32,13 +32,14 @@ type AutoResult struct {
 }
 
 type AutoOptions struct {
-	Capture     bool
-	Media       string
-	MediaDir    string
-	DNSName     string
-	NoDNSLookup bool
-	StorageDir  string
-	User        string
+	CaptureCamera     bool
+	CaptureMicrophone bool
+	Media             string
+	MediaDir          string
+	DNSName           string
+	NoDNSLookup       bool
+	StorageDir        string
+	User              string
 }
 
 type AutoContext struct {
@@ -720,6 +721,14 @@ func automaticFailure(report AutoReport) error {
 	return nil
 }
 
+// automaticCaptureFlags keeps the legacy opt-in as an alias for both classes.
+func automaticCaptureFlags(flags *flag.FlagSet) func() (bool, bool) {
+	both := flags.Bool("capture", false, "allow minimal bounded camera/microphone capture; samples discarded")
+	camera := flags.Bool("capture-camera", false, "allow minimal bounded camera capture; frames discarded in memory")
+	microphone := flags.Bool("capture-microphone", false, "allow minimal bounded microphone capture; samples discarded")
+	return func() (bool, bool) { return *both || *camera, *both || *microphone }
+}
+
 // automaticMain is independent of the historical acceptance parser.
 func automaticMain(args []string) (err error) {
 	flags := flag.NewFlagSet("hw-validation", flag.ContinueOnError)
@@ -733,7 +742,7 @@ func automaticMain(args []string) (err error) {
 	requireCurrent := flags.Bool("require-current-boot", false, "require a saved live report matching current boot/kernel before checklist generation")
 	generate := flags.Bool("checklist", false, "generate checklist only; no tests, locks or hardware reads")
 	checklistPath := flags.String("checklist-path", "", "active checklist path (default <repo>/AUTO-HW-CHECKLIST.md)")
-	capture := flags.Bool("capture", false, "allow minimal bounded camera/microphone capture; samples discarded")
+	captureOptions := automaticCaptureFlags(flags)
 	media := flags.String("media", "", "existing media fixture for bounded decoder-only checks")
 	mediaDir := flags.String("media-dir", "", "directory of per-codec local decoder fixtures")
 	dnsName := flags.String("dns-name", "example.com", "public DNS lookup fixture name")
@@ -810,7 +819,8 @@ func automaticMain(args []string) (err error) {
 		fmt.Printf("checklist: %s\n", path)
 		return nil
 	}
-	c := &AutoContext{Root: "/", Repo: absRepo, Options: AutoOptions{Capture: *capture, Media: *media, MediaDir: *mediaDir, DNSName: *dnsName, NoDNSLookup: *noDNSLookup, StorageDir: *storageDir, User: *desktopUser}, Run: automaticCommand}
+	captureCamera, captureMicrophone := captureOptions()
+	c := &AutoContext{Root: "/", Repo: absRepo, Options: AutoOptions{CaptureCamera: captureCamera, CaptureMicrophone: captureMicrophone, Media: *media, MediaDir: *mediaDir, DNSName: *dnsName, NoDNSLookup: *noDNSLookup, StorageDir: *storageDir, User: *desktopUser}, Run: automaticCommand}
 	fixture := *root != ""
 	if fixture {
 		c.Root, err = filepath.Abs(*root)
@@ -837,8 +847,8 @@ func automaticMain(args []string) (err error) {
 			}
 		}()
 	}
-	if *capture {
-		fmt.Fprintln(os.Stderr, "Capture enabled: bounded camera/microphone checks may capture data; samples are discarded. No speaker playback is authorized by this flag.")
+	if captureCamera || captureMicrophone {
+		fmt.Fprintf(os.Stderr, "Capture opt-ins: camera=%t, microphone=%t; bounded samples are discarded. No speaker playback is authorized.\n", captureCamera, captureMicrophone)
 	}
 	meta := AutoMetadata{Date: time.Now().Format(time.RFC3339), Fixture: fixture, Mode: "run"}
 	report := automaticCollect(c, checks, meta)

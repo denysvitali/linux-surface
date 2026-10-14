@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -242,9 +243,13 @@ cam0: Capture 3 frames
 func TestAutomaticMediaCaptureGatesAndRealFrames(t *testing.T) {
 	c := autoMediaTestContext(t, nil, func(args ...string) (string, error) { t.Fatalf("capture without opt-in %q", args); return "", nil })
 	for _, sensor := range autoMediaSensors {
-		if result := autoMediaCameraFrames(c, sensor.role); result.Status != "blocked" {
+		if result := autoMediaCameraFrames(c, sensor.role); result.Status != "blocked" || !strings.Contains(result.Detail, "--capture-camera") {
 			t.Fatal(result)
 		}
+	}
+	c.Options.CaptureMicrophone = true
+	if result := autoMediaCameraFrames(c, "front"); result.Status != "blocked" {
+		t.Fatal(result)
 	}
 	var captured []string
 	c = autoMediaTestContext(t, autoMediaTestCameraFiles(), func(args ...string) (string, error) {
@@ -264,7 +269,7 @@ func TestAutomaticMediaCaptureGatesAndRealFrames(t *testing.T) {
 					t.Fatalf("unsafe capture command %q", args)
 				}
 			}
-			if !strings.Contains(joined, "LIBCAMERA_SOFTISP_MODE=cpu") || !strings.Contains(joined, autoMediaPrivateCam) {
+			if !strings.Contains(joined, "LIBCAMERA_SOFTISP_MODE=cpu") || !strings.Contains(joined, autoMediaPrivateCam) || !strings.Contains(joined, "LD_LIBRARY_PATH=/var/tmp/spx-libcamera-0.7.2/build/src/libcamera:/var/tmp/spx-libcamera-0.7.2/build/src/libcamera/base") || !strings.HasPrefix(joined, "timeout --signal=INT --kill-after=2s 15s env ") {
 				t.Fatalf("wrong ISP path %q", args)
 			}
 			captured = append(captured, joined)
@@ -273,7 +278,7 @@ func TestAutomaticMediaCaptureGatesAndRealFrames(t *testing.T) {
 		t.Fatalf("unexpected %q", args)
 		return "", nil
 	})
-	c.Options.Capture = true
+	c.Options.CaptureCamera = true
 	for _, sensor := range autoMediaSensors {
 		result := autoMediaCameraFrames(c, sensor.role)
 		if result.Status != "pass" {
@@ -315,7 +320,7 @@ func TestAutomaticMediaCameraFrameEvidence(t *testing.T) {
 		}
 		return autoMediaTestCameraListing, nil
 	})
-	c.Options.Capture = true
+	c.Options.CaptureCamera = true
 	if result := autoMediaCameraFrames(c, "ir"); result.Status != "blocked" {
 		t.Fatal(result)
 	}
@@ -529,4 +534,44 @@ func TestAutomaticMediaMPEG2StaysBlockedWithFixture(t *testing.T) {
 		}
 	}
 	t.Fatal("missing MPEG-2 row")
+}
+
+func TestAutomaticCaptureFlags(t *testing.T) {
+	for _, tc := range []struct {
+		args               []string
+		camera, microphone bool
+	}{
+		{nil, false, false},
+		{[]string{"--capture-camera"}, true, false},
+		{[]string{"--capture-microphone"}, false, true},
+		{[]string{"--capture"}, true, true},
+		{[]string{"--capture-camera", "--capture-microphone"}, true, true},
+		{[]string{"--capture", "--capture-camera=false", "--capture-microphone=false"}, true, true},
+	} {
+		flags := flag.NewFlagSet("capture", flag.ContinueOnError)
+		options := automaticCaptureFlags(flags)
+		if err := flags.Parse(tc.args); err != nil {
+			t.Fatal(err)
+		}
+		camera, microphone := options()
+		if camera != tc.camera || microphone != tc.microphone {
+			t.Fatalf("%q: camera=%t microphone=%t", tc.args, camera, microphone)
+		}
+	}
+}
+
+func TestAutomaticMediaMissingCameraBlocked(t *testing.T) {
+	c := autoMediaTestContext(t, autoMediaTestCameraFiles(), func(args ...string) (string, error) {
+		if !strings.Contains(strings.Join(args, " "), "--list") {
+			t.Fatalf("absent camera queried/captured: %q", args)
+		}
+		return "Available cameras:\n", nil
+	})
+	c.Options.CaptureCamera = true
+	for _, sensor := range autoMediaSensors {
+		result := autoMediaCameraFrames(c, sensor.role)
+		if result.Status != "blocked" || !strings.Contains(result.Detail, "not exposed by libcamera") {
+			t.Fatal(result)
+		}
+	}
 }

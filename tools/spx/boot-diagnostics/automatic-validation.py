@@ -29,7 +29,9 @@ def atomic_text(path, text, mode=0o600):
 
 
 def runner_status(out, boot_id, kernel, status, detail, exit_code=None,
-                  network_wait_seconds=None, network_default_route=None):
+                  network_wait_seconds=None, network_default_route=None, capture_detail=None):
+    if capture_detail is not None:
+        detail += " " + capture_detail
     record = dict(boot_id=boot_id, kernel=kernel,
                   utc=datetime.now(timezone.utc).isoformat(), status=status,
                   detail=detail, exit_code=exit_code)
@@ -109,7 +111,7 @@ def wait_for_network(seconds=DEFAULT_NETWORK_WAIT_SECONDS, clock=time.monotonic,
 
 def run_once(base, runner, repo, boot_id, kernel, execute=subprocess.run, media=None, storage_dir=None, user=None, media_dir=None,
              network_wait_seconds=DEFAULT_NETWORK_WAIT_SECONDS, clock=time.monotonic,
-             sleep=time.sleep, route_reader=Path.read_text):
+             sleep=time.sleep, route_reader=Path.read_text, camera_capture=False):
     """The Go runner owns the device lock; exit 75 schedules a deferred retry."""
     out = base / 'boots' / boot_id / 'hw-validation'
     out.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -130,10 +132,15 @@ def run_once(base, runner, repo, boot_id, kernel, execute=subprocess.run, media=
     print(f'Automatic validator network readiness: waited {waited:.3f}s; '
           f'default route at suite start: {"present" if route_ready else "absent"}.', flush=True)
     status_args = dict(network_wait_seconds=waited, network_default_route=route_ready)
-    runner_status(out, boot_id, kernel, 'running', 'Safe automatic checks started; capture is disabled.', **status_args)
+    capture_detail = f'Camera capture {"enabled" if camera_capture is True else "disabled"}; microphone capture disabled; no sound authorized.'
+    # Include opt-ins in the final status too, not only the transient running record.
+    status_args['capture_detail'] = capture_detail
+    runner_status(out, boot_id, kernel, 'running', 'Safe automatic checks started.', **status_args)
     try:
         command = [str(runner), '--repo', str(repo), '--output', str(out / 'report'),
                    '--checklist-path', str(out / 'checklist.md')]
+        if camera_capture is True:
+            command += ['--capture-camera']
         if media is not None:
             command += ['--media', str(media)]
         fixture_dir = media_dir if media_dir is not None else base / 'fixtures/media'
@@ -241,7 +248,7 @@ def replace_asset(source, target, mode):
     temporary.replace(target)
 
 
-def install(repo, binary=None, root=Path('/'), control=subprocess.run, media=None, storage_dir=None, user=None, media_dir=None):
+def install(repo, binary=None, root=Path('/'), control=subprocess.run, media=None, storage_dir=None, user=None, media_dir=None, camera_capture=None):
     """Stage prebuilt userspace only. Enable for later boots; never start tests."""
     repo = repo.resolve()
     if not (repo / 'tools/spx/hw-validation/go.mod').is_file():
@@ -266,9 +273,12 @@ def install(repo, binary=None, root=Path('/'), control=subprocess.run, media=Non
         retained_storage = retained.get('storage_dir')
         retained_user = retained.get('user')
         retained_network_wait = retained.get('network_wait_seconds', DEFAULT_NETWORK_WAIT_SECONDS)
+        retained_camera_capture = retained.get('camera_capture') is True
     except (OSError, ValueError, AttributeError):
         retained_media, retained_storage, retained_user, retained_media_dir = None, None, None, None
         retained_network_wait = DEFAULT_NETWORK_WAIT_SECONDS
+        retained_camera_capture = False
+    settings['camera_capture'] = retained_camera_capture if camera_capture is None else camera_capture is True
     settings['storage_dir'] = str(storage_dir) if storage_dir else retained_storage or str(BASE)
     settings['network_wait_seconds'] = max(0, min(MAX_NETWORK_WAIT_SECONDS,
         int(retained_network_wait) if str(retained_network_wait).lstrip('-').isdigit()
@@ -310,7 +320,10 @@ def main(argv=None):
     stage.add_argument('--storage-dir', type=Path, help='bounded disposable I/O directory; default persistent diagnostic directory')
     stage.add_argument('--user', help='explicit user account for user-session checks; root probes remain root')
     stage.add_argument('--root', type=Path, default=Path('/'), help='fixture/staging root; no systemctl when not /')
-    run = sub.add_parser('run', help='run once on the current boot (capture remains disabled)')
+    capture = stage.add_mutually_exclusive_group()
+    capture.add_argument('--camera-capture', dest='camera_capture', action='store_true', default=None, help='enable discarded camera frames on future boot checks; no microphone or sound')
+    capture.add_argument('--no-camera-capture', dest='camera_capture', action='store_false', help='disable camera capture on future boot checks')
+    run = sub.add_parser('run', help='run once on the current boot (camera capture follows settings; microphone disabled)')
     run.add_argument('--config', type=Path, default=CONFIG)
     run.add_argument('--base', type=Path, default=BASE)
     run.add_argument('--runner', type=Path, default=PRIVATE / 'spx-hw-validation')
@@ -324,7 +337,7 @@ def main(argv=None):
     if args.action == 'install':
         if args.root == Path('/') and os.geteuid() != 0:
             parser.error('installation needs root')
-        install(args.repo, args.binary, args.root, media=args.media, storage_dir=args.storage_dir, user=args.user, media_dir=args.media_dir)
+        install(args.repo, args.binary, args.root, media=args.media, storage_dir=args.storage_dir, user=args.user, media_dir=args.media_dir, camera_capture=args.camera_capture)
         return 0
     boot_id = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
     kernel = Path('/proc/sys/kernel/osrelease').read_text().strip()
@@ -338,6 +351,7 @@ def main(argv=None):
         return 0
     media, storage_dir, user, media_dir = None, args.base, None, None
     network_wait_seconds = DEFAULT_NETWORK_WAIT_SECONDS
+    camera_capture = False
     try:
         settings = json.loads(args.config.read_text())
         repo = Path(settings['repo'])
@@ -350,6 +364,7 @@ def main(argv=None):
         if settings.get('user'):
             user = settings['user']
         network_wait_seconds = settings.get('network_wait_seconds', DEFAULT_NETWORK_WAIT_SECONDS)
+        camera_capture = settings.get('camera_capture') is True
     except (OSError, ValueError, KeyError, TypeError):
         repo = None
     try:
@@ -357,7 +372,7 @@ def main(argv=None):
             return verify(args.base, args.runner, repo, boot_id)
         return run_once(args.base, args.runner, repo, boot_id, kernel,
                         media=media, storage_dir=storage_dir, user=user, media_dir=media_dir,
-                        network_wait_seconds=network_wait_seconds)
+                        network_wait_seconds=network_wait_seconds, camera_capture=camera_capture)
     except OSError as exc:
         # A report-directory permission/storage failure is still explicit in the journal.
         print(f'Automatic validator: failed to write boot {boot_id} status '

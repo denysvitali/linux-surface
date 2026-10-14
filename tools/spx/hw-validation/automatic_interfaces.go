@@ -45,7 +45,10 @@ func automaticInterfacesChecks() []AutoCheck {
 		{ID: "sensors.light-lux", Title: "Calibrated ambient-light report delivery", Area: "Sensors", Kind: "functional", Boxes: []string{"S01"}, Run: func(c *AutoContext) AutoResult {
 			return interfacesResult("sensors.light-lux", "blocked", "No verified TCS3430 lux conversion or desktop ambient-light source is implemented; raw XYZ/IR reads do not establish calibrated light delivery. No stimulus or brightness change requested")
 		}},
-		{ID: "sensors.desktop-delivery", Title: "Fresh desktop motion and compass delivery", Area: "Sensors", Kind: "functional", Boxes: []string{"S02"}, Run: interfacesSensorDesktopDelivery},
+		{ID: "sensors.desktop-motion", Title: "Fresh desktop accelerometer delivery", Area: "Sensors", Kind: "functional", Boxes: []string{"S02"}, Run: interfacesSensorDesktopDelivery},
+		{ID: "sensors.desktop-compass", Title: "Fresh desktop compass delivery", Area: "Sensors", Kind: "functional", Boxes: []string{"S02"}, Run: func(c *AutoContext) AutoResult {
+			return interfacesResult("sensors.desktop-compass", "blocked", "Compass delivery not exercised: SensorProxy ClaimCompass on /net/hadess/SensorProxy/Compass is normally restricted to geoclue; no policy bypass or positioning session attempted. HasCompass exposure is reported by sensors.desktop-motion; capability is not delivery")
+		}},
 	}
 	for _, feature := range []struct{ id, title, box string }{
 		{"touch", "Touchscreen direct multi-touch capabilities", "I02"},
@@ -776,13 +779,83 @@ func interfacesSensorBackend(c *AutoContext) AutoResult {
 	return interfacesResult("sensors.backend", "observed", detail+"; endpoint/service metadata only, not sensor delivery or CDSP workload")
 }
 
-// SensorProxy claims belong to the caller's unique bus name. Separate busctl
-// call/monitor processes cannot retain that owner, and monitor mode cannot make
-// method calls. gdbus likewise offers no combined claim/monitor/release command.
-// This dependency-free module has no vendored Go D-Bus client; do not pretend
-// that a cached property or another client's signal validates our claim.
+// The helper owns a private system-bus connection through claim and release.
 func interfacesSensorDesktopDelivery(c *AutoContext) AutoResult {
-	return interfacesResult("sensors.desktop-delivery", "blocked", "Fresh desktop accelerometer delivery workload unavailable: busctl/gdbus cannot ClaimAccelerometer, monitor PropertiesChanged and ReleaseAccelerometer on one persistent D-Bus connection; no Go D-Bus client is vendored and new dependencies are excluded. Compass delivery separately blocked: desktop compass support/fresh delivery remains unverified. No service activation, claim or physical stimulus attempted. A stationary device may legitimately emit no AccelerometerOrientation change in 5 s; without a fresh raw-reading path, no stimulus; fresh delivery cannot be distinguished from a stationary device (blocked, not fail). Cached SensorProxy properties and native SSC samples are not fresh desktop delivery")
+	const id = "sensors.desktop-motion"
+	if c.Fixture || (c.Root != "" && filepath.Clean(c.Root) != "/") {
+		return interfacesResult(id, "blocked", "Fixture root: SensorProxy helper disabled; compass not covered")
+	}
+	if c.Repo == "" {
+		return interfacesResult(id, "blocked", "Repository helper path unavailable; compass not covered")
+	}
+	helper := filepath.Join(c.Repo, "tools/spx/hw-validation/sensorproxy_probe.py")
+	if info, err := os.Stat(helper); err != nil || !info.Mode().IsRegular() {
+		return interfacesResult(id, "blocked", "SensorProxy repository helper unavailable; compass not covered")
+	}
+	out, err := c.Command("python3", "-B", helper)
+	if err != nil {
+		var execErr *exec.Error
+		if errors.As(err, &execErr) || errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist) || errors.Is(err, os.ErrPermission) {
+			return interfacesResult(id, "blocked", "Python/helper unavailable or inaccessible; compass not covered")
+		}
+		return interfacesResult(id, "error", "SensorProxy helper command failed; raw output discarded; compass not covered")
+	}
+	var probe struct {
+		Status         string  `json:"status"`
+		Reason         string  `json:"reason"`
+		HasCompass     *bool   `json:"has_compass"`
+		Before         *string `json:"orientation_before"`
+		After          *string `json:"orientation_after"`
+		Signal         bool    `json:"signal"`
+		Claimed        bool    `json:"claimed"`
+		Released       bool    `json:"released"`
+		WindowComplete bool    `json:"window_complete"`
+	}
+	if json.Unmarshal([]byte(out), &probe) != nil {
+		return interfacesResult(id, "error", "Invalid SensorProxy helper JSON; raw output discarded; compass not covered")
+	}
+	compass := "unknown (not readable)"
+	if probe.HasCompass != nil {
+		compass = strconv.FormatBool(*probe.HasCompass)
+	}
+	suffix := "; HasCompass=" + compass + "; compass not covered: delivery not exercised (ClaimCompass normally restricted to geoclue)"
+	undefined := func(value *string) bool { return value != nil && (*value == "" || *value == "undefined") }
+	transition := undefined(probe.Before) && probe.After != nil && !undefined(probe.After)
+	status, detail := "error", "Invalid SensorProxy helper outcome; raw output discarded"
+	switch probe.Reason {
+	case "signal":
+		if probe.Status == "pass" && probe.Claimed && probe.Released && probe.Signal {
+			status, detail = "pass", "Fresh PropertiesChanged carrying AccelerometerOrientation or AccelerometerTilt after ClaimAccelerometer; claim released on the same connection"
+		}
+	case "transition":
+		if probe.Status == "pass" && probe.Claimed && probe.Released && transition {
+			status, detail = "pass", "AccelerometerOrientation transitioned from undefined/empty before claim to defined after claim: fresh reading; claim released on the same connection"
+		}
+	case "stationary":
+		if probe.Status == "blocked" && probe.Claimed && probe.Released && probe.WindowComplete && !probe.Signal && probe.Before != nil && !undefined(probe.Before) && !transition {
+			status, detail = "blocked", "Device is stationary and the property was already defined before the claim so freshness cannot be distinguished; no accelerometer PropertiesChanged in 6 s; claim released"
+		}
+	case "undefined":
+		if probe.Status == "fail" && probe.Claimed && probe.Released && probe.WindowComplete && !probe.Signal && undefined(probe.After) {
+			status, detail = "fail", "Claim accepted, AccelerometerOrientation stayed undefined/empty for the whole 6 s window: proxy never obtained a reading from the driver; claim released"
+		}
+	case "no_service", "no_accelerometer", "claim_refused", "unavailable", "bus_unavailable":
+		if probe.Status == "blocked" {
+			status = "blocked"
+			detail = map[string]string{
+				"no_service":       "SensorProxy service not running; NameHasOwner false; no activation",
+				"no_accelerometer": "SensorProxy HasAccelerometer false",
+				"claim_refused":    "SensorProxy ClaimAccelerometer refused; release attempted on the same connection",
+				"unavailable":      "SensorProxy helper or Python PyGObject (Gio/GLib) unavailable",
+				"bus_unavailable":  "System bus connection unavailable; no activation",
+			}[probe.Reason]
+		}
+	case "helper_error", "timeout", "release_error", "close_error":
+		if probe.Status == "error" {
+			detail = "SensorProxy helper error (" + probe.Reason + "); fresh delivery not established; raw output discarded"
+		}
+	}
+	return interfacesResult(id, status, detail+suffix)
 }
 
 func interfacesSensorDesktop(c *AutoContext) AutoResult {

@@ -28,6 +28,15 @@ class AutomaticBootTests(unittest.TestCase):
         self.binary.write_text('fixture executable')
         self.binary.chmod(0o755)
         self.out = self.base / 'boots' / 'fixture-boot' / 'hw-validation'
+        # Never inspect the host's network when a wrapper test uses defaults.
+        original_wait = hook.wait_for_network
+        def fixture_wait(seconds=90, clock=hook.time.monotonic,
+                         sleep=hook.time.sleep, route_reader=Path.read_text):
+            if route_reader is Path.read_text:
+                route_reader = lambda path: 'eth0 00000000 00000000 0001 0 0 0 00000000' if str(path) == '/proc/net/route' else ''
+            return original_wait(seconds, clock, sleep, route_reader)
+        self.addCleanup(patch.stopall)
+        patch.object(hook, 'wait_for_network', side_effect=fixture_wait).start()
 
     def run_hook(self, execute=None, runner=None, repo=None):
         if execute is None:
@@ -307,6 +316,63 @@ class AutomaticBootTests(unittest.TestCase):
         self.assertEqual(config['media_dir'], str(self.root / 'media-dir'))
         self.assertEqual(config['storage_dir'], '/var/lib/spx-boot-diagnostics')
         self.assertEqual(config['user'], 'fixtureuser')
+
+    def test_camera_capture_setting_default_enable_retain_disable(self):
+        module = self.repo / 'tools/spx/hw-validation/go.mod'
+        module.parent.mkdir(parents=True)
+        module.write_text('module fixture\ngo 1.22\n')
+        root = self.root / 'stage'
+        config = root / 'etc/spx/hw-validation.json'
+        def install(*flags):
+            self.assertEqual(hook.main(['install', '--repo', str(self.repo),
+                                        '--root', str(root), *flags]), 0)
+            return json.loads(config.read_text())
+        self.assertIs(install()['camera_capture'], False)
+        self.assertIs(install('--camera-capture')['camera_capture'], True)
+        self.assertIs(install()['camera_capture'], True)
+        self.assertIs(install('--no-camera-capture')['camera_capture'], False)
+        self.assertIs(install()['camera_capture'], False)
+        config.write_text('{"camera_capture": "true"}')
+        self.assertIs(install()['camera_capture'], False)
+        with self.assertRaises(SystemExit):
+            install('--camera-capture', '--no-camera-capture')
+        with self.assertRaises(SystemExit):
+            install('--capture-microphone')
+
+    def test_camera_capture_forwarded_without_microphone_or_sound(self):
+        for enabled in (False, True, 'true', 1):
+            with self.subTest(enabled=enabled):
+                def completed(args, **kwargs):
+                    self.assertNotIn('--capture', args)
+                    self.assertNotIn('--capture-microphone', args)
+                    if '--checklist' in args:
+                        self.assertNotIn('--capture-camera', args)
+                    else:
+                        self.assertEqual('--capture-camera' in args, enabled is True)
+                        running = self.status()['detail']
+                        self.assertIn('Camera capture ' + ('enabled' if enabled is True else 'disabled'), running)
+                        self.assertIn('microphone capture disabled', running)
+                        (self.out / 'report.json').write_text('{"results": []}')
+                        (self.out / 'report.md').write_text('# Fixture results')
+                    return subprocess.CompletedProcess(args, 0)
+                self.assertEqual(hook.run_once(self.base, self.binary, self.repo,
+                    'fixture-boot', 'fixture-kernel', completed, camera_capture=enabled), 0)
+                self.assertIn('microphone capture disabled', self.status()['detail'])
+
+    def test_run_reads_only_boolean_camera_setting(self):
+        config = self.root / 'settings.json'
+        for value in (True, False, 'true', 1, None):
+            config.write_text(json.dumps(dict(repo=str(self.repo), camera_capture=value,
+                                             microphone_capture=True, capture=True)))
+            # Fake boot identity as well as the runner; no live boot reads.
+            def read(path):
+                if path == config:
+                    return config.read_bytes().decode()
+                return 'fixture-identity'
+            with patch.object(Path, 'read_text', read), patch.object(hook, 'run_once', return_value=0) as run:
+                self.assertEqual(hook.main(['run', '--config', str(config)]), 0)
+                self.assertIs(run.call_args.kwargs['camera_capture'], value is True)
+                self.assertNotIn('microphone_capture', run.call_args.kwargs)
 
     def test_trial_install_and_promotion_only_install_hook(self):
         trial_path = HERE.parent / 'trial.py'
