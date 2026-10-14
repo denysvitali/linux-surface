@@ -527,7 +527,7 @@ func TestAutomaticMediaMPEG2StaysBlockedWithFixture(t *testing.T) {
 	c.Options.MediaDir = "/fixtures"
 	for _, check := range automaticMediaChecks() {
 		if check.ID == "media.decode.mpeg2video" {
-			if r := check.Run(c); r.Status != "blocked" || !strings.Contains(r.Detail, "Known unsafe") {
+			if r := check.Run(c); r.Status != "blocked" || !strings.Contains(r.Detail, "Unsupported by this firmware") {
 				t.Fatalf("%+v", r)
 			}
 			return

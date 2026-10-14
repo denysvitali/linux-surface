@@ -40,7 +40,7 @@ func automaticMediaChecks() []AutoCheck {
 			if codec.name == "mpeg2video" {
 				// Boot 45bccac9: firmware rejects the split output mode and loops on
 				// session errors past close; only a reboot restores the power domain.
-				return AutoResult{Status: "blocked", Detail: "Known unsafe: MPEG-2 decode makes Iris1 firmware reject OPB mode and storm session errors after close, leaving vcodec0_gdsc stuck off until reboot; needs the Venus MPEG-2 output-mode and error-containment fix. No decode attempted"}
+				return AutoResult{Status: "blocked", Detail: "Unsupported by this firmware for linear output: VIDEO.IR.1.2 rejects a separate MPEG-2 output buffer (OPB) and, in single-output mode, a linear DPB (SM8150 downstream recipe tested 2026-10-14); only UBWC output would remain, which ffmpeg/browsers cannot consume. The driver hides MPEG-2; no decode attempted"}
 			}
 			return autoMediaDecode(c, codec.name)
 		}})

@@ -1,6 +1,6 @@
 # Automatic hardware checklist
 
-Date: 2026-10-14T03:08:58+02:00
+Date: 2026-10-14T08:50:39+02:00
 Boot: `95e14bba-f6b5-4400-8091-b43fe585069f`
 Kernel: `7.3.0-rc2-spx-mainline-20261004bg+`
 Mode: run; fixture: false
@@ -16,10 +16,10 @@ All catalog rows remain visible, including unsupported or blocked checks. This a
 ## Platform
 
 - **cpu.cores — CPU online/present inventory** (inventory; observed): online=8; present=8; enumeration only; no CPU load or frequency-transition test
-- **cpu.memory — Memory capacity inventory** (inventory; observed): total=15373 MiB; available=13543 MiB; no memory load test
-- **cpu.cpufreq — CPU frequency policy inventory** (inventory; observed): policy0 driver=qcom-cpufreq-hw governor=schedutil min/current/max=300000/1766400/1766400 kHz; policy4 driver=qcom-cpufreq-hw governor=schedutil min/current/max=825600/3148800/3148800 kHz; no transitions or idle recovery exercised
+- **cpu.memory — Memory capacity inventory** (inventory; observed): total=15373 MiB; available=13625 MiB; no memory load test
+- **cpu.cpufreq — CPU frequency policy inventory** (inventory; observed): policy0 driver=qcom-cpufreq-hw governor=schedutil min/current/max=300000/1113600/1766400 kHz; policy4 driver=qcom-cpufreq-hw governor=schedutil min/current/max=825600/1286400/3148800 kHz; no transitions or idle recovery exercised
 - [x] **cpu.workload — AC-only bounded CPU/memory consistency** (functional; pass): External power online; 8 concurrent workers, 1 MiB private buffer each, 512 total consistency rounds; &lt;=64 rounds/worker and one-second work deadline; no affinity/clock changes; not frequency, thermal, sustained or all-core placement validation
-- [x] **cpu.frequency-transitions — Loaded frequency transitions and idle recovery** (functional; pass): policy0 min/idle/peak/after=300000/768000/1766400/300000 kHz; total_trans increased=true; policy4 min/idle/peak/after=825600/3148800/3148800/825600 kHz; total_trans increased=true; 1.5s pinned load per policy in parallel, 3s idle sampling; no sysfs writes, governor/limit changes, thermal or battery test
+- [x] **cpu.frequency-transitions — Loaded frequency transitions and idle recovery** (functional; pass): policy0 min/idle/peak/after=300000/1766400/1766400/300000 kHz; total_trans increased=true; policy4 min/idle/peak/after=825600/3148800/3148800/825600 kHz; total_trans increased=true; 1.5s pinned load per policy in parallel, 3s idle sampling; no sysfs writes, governor/limit changes, thermal or battery test
 - [x] **rtc.read-time — RTC accessible time agrees with system clock** (functional; pass): Surface rtc0 time read; wall-clock difference=0 s (limit 5 s); 1 other RTC(s) not compared; no power-off/suspend retention or independence from network time established
 
 ## Storage
@@ -44,7 +44,7 @@ All catalog rows remain visible, including unsupported or blocked checks. This a
 
 ## Thermal
 
-- **thermal.metadata — Thermal temperatures, trips and cooling states (no load)** (inventory; observed): aoss0-thermal=38700 mC, cpu0-thermal=39500 mC, cpu7-top-thermal=39500 mC, cpu4-bottom-thermal=39900 mC, cpu5-bottom-thermal=39500 mC, cpu6-bottom-thermal=39900 mC, cpu7-bottom-thermal=39900 mC, gpu-top-thermal=38000 mC, aoss1-thermal=39300 mC, wlan-thermal=39000 mC, video-thermal=39000 mC, mem-thermal=38600 mC, cpu1-thermal=39900 mC, q6-hvx-thermal=39000 mC, camera-thermal=39000 mC, compute-thermal=39000 mC, mdm-dsp-thermal=38600 mC, npu-thermal=38200 mC, pmc8180a-thermal=38949 mC, pmc8180c-thermal=39631 mC, pmc8180e-thermal=38495 mC, cpu2-thermal=39100 mC, cpu3-thermal=40300 mC, cluster0-thermal=38700 mC, cluster1-thermal=40300 mC, cpu4-top-thermal=39900 mC, cpu5-top-thermal=39500 mC, cpu6-top-thermal=39500 mC; 38 trip(s), 4 cooling device(s); instantaneous metadata only; no load or policy changes; thermal names do not establish compute capability
+- **thermal.metadata — Thermal temperatures, trips and cooling states (no load)** (inventory; observed): aoss0-thermal=38000 mC, cpu0-thermal=38700 mC, cpu7-top-thermal=38700 mC, cpu4-bottom-thermal=38700 mC, cpu5-bottom-thermal=38700 mC, cpu6-bottom-thermal=38700 mC, cpu7-bottom-thermal=38700 mC, gpu-top-thermal=36800 mC, aoss1-thermal=38200 mC, wlan-thermal=38200 mC, video-thermal=38200 mC, mem-thermal=38200 mC, cpu1-thermal=39100 mC, q6-hvx-thermal=38200 mC, camera-thermal=38200 mC, compute-thermal=38200 mC, mdm-dsp-thermal=37800 mC, npu-thermal=37000 mC, pmc8180a-thermal=38495 mC, pmc8180c-thermal=39144 mC, pmc8180e-thermal=37879 mC, cpu2-thermal=38400 mC, cpu3-thermal=39100 mC, cluster0-thermal=38400 mC, cluster1-thermal=39500 mC, cpu4-top-thermal=39100 mC, cpu5-top-thermal=39100 mC, cpu6-top-thermal=39500 mC; 38 trip(s), 4 cooling device(s); instantaneous metadata only; no load or policy changes; thermal names do not establish compute capability
 - [ ] **thermal.response — Automatic thermal response under load** (functional; blocked): Thermal-response workload is parked; this suite does not heat the device or change thermal policy
 
 ## Power
@@ -77,7 +77,7 @@ All catalog rows remain visible, including unsupported or blocked checks. This a
 ## Bluetooth
 
 - **bluetooth.inventory — Bluetooth paired, connected and service capability counts** (inventory; observed): adapters=1; powered=1; discovering=0; cached peers=1; paired=1; connected=0; cached HID-capable=1; cached audio-capable=0; cached service metadata only; pairing, reconnect and peripheral use are not tested
-- [x] **bluetooth.discovery — Bounded Bluetooth discovery with fresh peer reception** (functional; pass): Bounded 5-second discovery started; owned scanner exited and discovery is inactive; fresh reports=14 from peers=14; prior connections retained; no power, pairing or disconnect changes
+- [x] **bluetooth.discovery — Bounded Bluetooth discovery with fresh peer reception** (functional; pass): Bounded 5-second discovery started; owned scanner exited and discovery is inactive; fresh reports=12 from peers=12; prior connections retained; no power, pairing or disconnect changes
 
 ## Graphics
 
@@ -99,7 +99,7 @@ All catalog rows remain visible, including unsupported or blocked checks. This a
 - [ ] **media.encode — Hardware encoder workload** (functional; blocked): Encoder trials parked: known CVP fault/reset/hang and unresolved protected-buffer/recovery contract; no encoder open, autoload or workload attempted
 - [x] **media.decode.h264 — H.264 hardware decode of supplied real media** (functional; pass): Supplied 1920x1080 fixture: h264_v4l2m2m on Venus; decoded=32 output=30, zero decode errors, complete progress; capped at 2s/30 frames, output discarded. Only this fixture codec/path tested; not encoder, all formats, pixels or sustained playback
 - [x] **media.decode.hevc — HEVC hardware decode of supplied real media** (functional; pass): Supplied 1920x1080 fixture: hevc_v4l2m2m on Venus; decoded=32 output=30, zero decode errors, complete progress; capped at 2s/30 frames, output discarded. Only this fixture codec/path tested; not encoder, all formats, pixels or sustained playback
-- [ ] **media.decode.mpeg2video — MPEG-2 hardware decode of supplied real media** (functional; blocked): Known unsafe: MPEG-2 decode makes Iris1 firmware reject OPB mode and storm session errors after close, leaving vcodec0_gdsc stuck off until reboot; needs the Venus MPEG-2 output-mode and error-containment fix. No decode attempted
+- [ ] **media.decode.mpeg2video — MPEG-2 hardware decode of supplied real media** (functional; blocked): Unsupported by this firmware for linear output: VIDEO.IR.1.2 rejects a separate MPEG-2 output buffer (OPB) and, in single-output mode, a linear DPB (SM8150 downstream recipe tested 2026-10-14); only UBWC output would remain, which ffmpeg/browsers cannot consume. The driver hides MPEG-2; no decode attempted
 - [x] **media.decode.vp8 — VP8 hardware decode of supplied real media** (functional; pass): Supplied 1920x1080 fixture: vp8_v4l2m2m on Venus; decoded=32 output=30, zero decode errors, complete progress; capped at 2s/30 frames, output discarded. Only this fixture codec/path tested; not encoder, all formats, pixels or sustained playback
 - [x] **media.decode.vp9 — VP9 hardware decode of supplied real media** (functional; pass): Supplied 1920x1080 fixture: vp9_v4l2m2m on Venus; decoded=32 output=30, zero decode errors, complete progress; capped at 2s/30 frames, output discarded. Only this fixture codec/path tested; not encoder, all formats, pixels or sustained playback
 
@@ -172,4 +172,4 @@ All catalog rows remain visible, including unsupported or blocked checks. This a
 - [ ] **sensors.desktop-motion — Fresh desktop accelerometer delivery** (functional; blocked): Device is stationary and the property was already defined before the claim so freshness cannot be distinguished; no accelerometer PropertiesChanged in 6 s; claim released; HasCompass=true; compass not covered: delivery not exercised (ClaimCompass normally restricted to geoclue)
 - [ ] **sensors.desktop-compass — Fresh desktop compass delivery** (functional; blocked): Compass delivery not exercised: SensorProxy ClaimCompass on /net/hadess/SensorProxy/Compass is normally restricted to geoclue; no policy bypass or positioning session attempted. HasCompass exposure is reported by sensors.desktop-motion; capability is not delivery
 - [x] **sensors.light-read — One-shot light-channel numeric read** (functional; pass): One-shot finite light-channel reads=4, zero-valued=4; raw values discarded; zero is not a light/stimulus failure; no scale/lux, physical axes, calibration, rotation, proximity or lifecycle claim
-- [x] **sensors.motion-read — Bounded SSC accelerometer/gyro/magnetometer delivery** (functional; pass): Fresh finite XYZ rows: accelerometer=90, gyroscope=69, magnetometer=29; each CLI exit0 with enable/disable ACKs, requested stream=3s, outer TERM=12s/KILL-after=2s; same already-running provider; raw samples/logs discarded; no physical axes, mounting, calibration, rotation or resume claim
+- [x] **sensors.motion-read — Bounded SSC accelerometer/gyro/magnetometer delivery** (functional; pass): Fresh finite XYZ rows: accelerometer=71, gyroscope=69, magnetometer=29; each CLI exit0 with enable/disable ACKs, requested stream=3s, outer TERM=12s/KILL-after=2s; same already-running provider; raw samples/logs discarded; no physical axes, mounting, calibration, rotation or resume claim

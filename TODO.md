@@ -24,6 +24,15 @@ pinned active. See RESULT-20261014ff.md.
    reset state after cci_probe differs from the state after timeout recovery.
 3. Frames from the front camera at boot remain uncaptured (capture needs an
    explicit opt-in); colour/exposure tuning is unchanged.
+**MPEG-2 (2026-10-14, closed as unsupported):** downstream SM8150 recipe
+(single primary output, work route 1) tested by module reload: work route is
+rejected (0x1007) and, without it, the firmware reports "Linear format not
+supported for DPB!". With the earlier "OPB is not supported in MPEG2 Decoder",
+MPEG-2 can only produce UBWC frames on VIDEO.IR.1.2. Driver keeps it hidden;
+patch kept at /var/tmp/spx-codex/venus-mpeg2-primary-final.patch. The 0x1008
+containment held (no storm, no reboot needed).
+**Vulkan GMEM corruption: workaround deployed** (RESULT-20261014-vulkan-gmem.md).
+
 Next candidates, each blocked on the stated prerequisite:
 Parked with briefs in /var/tmp/spx-codex/: IPA (no sourced IPA version/tables),
 Type-C class ports (no firmware initial-state query; ADSP has no PMIC_RTR
