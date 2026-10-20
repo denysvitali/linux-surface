@@ -120,6 +120,8 @@ struct cci_master {
 	bool timeout_recovered;
 	atomic64_t xfer_start;
 	atomic64_t last_xfer_end;
+	atomic64_t irq_events;
+	u32 last_irq_status;
 };
 
 struct cci_data {
@@ -152,9 +154,31 @@ static irqreturn_t cci_isr(int irq, void *dev)
 {
 	struct cci *cci = dev;
 	u32 val, reset = 0;
-	int ret = IRQ_NONE;
+	int m, ret = IRQ_NONE;
 
 	val = readl(cci->base + CCI_IRQ_STATUS_0);
+	/* Retain per-master evidence before acknowledging the status register. */
+	for (m = 0; m < cci->data->num_masters; m++) {
+		u32 events = CCI_IRQ_STATUS_0_RST_DONE_ACK;
+
+		if (m)
+			events |= CCI_IRQ_STATUS_0_I2C_M1_RD_DONE |
+				CCI_IRQ_STATUS_0_I2C_M1_Q0_REPORT |
+				CCI_IRQ_STATUS_0_I2C_M1_Q1_REPORT |
+				CCI_IRQ_STATUS_0_I2C_M1_Q0Q1_HALT_ACK |
+				CCI_IRQ_STATUS_0_I2C_M1_ERROR;
+		else
+			events |= CCI_IRQ_STATUS_0_I2C_M0_RD_DONE |
+				CCI_IRQ_STATUS_0_I2C_M0_Q0_REPORT |
+				CCI_IRQ_STATUS_0_I2C_M0_Q1_REPORT |
+				CCI_IRQ_STATUS_0_I2C_M0_Q0Q1_HALT_ACK |
+				CCI_IRQ_STATUS_0_I2C_M0_ERROR;
+
+		if (val & events) {
+			WRITE_ONCE(cci->master[m].last_irq_status, val);
+			atomic64_inc(&cci->master[m].irq_events);
+		}
+	}
 	writel(val, cci->base + CCI_IRQ_CLEAR_0);
 	writel(0x1, cci->base + CCI_IRQ_GLOBAL_CLEAR_CMD);
 
@@ -430,10 +454,15 @@ static void cci_log_timing(struct cci *cci, u8 master, const char *stage)
 
 static int cci_run_queue(struct cci *cci, u8 master, u8 queue)
 {
-	u32 val;
+	struct cci_master *cci_master = &cci->master[master];
+	s64 irq_events = atomic64_read(&cci_master->irq_events);
+	u32 val, loaded, exec;
 
 	val = readl(cci->base + CCI_I2C_Mm_Qn_CUR_WORD_CNT(master, queue));
+	loaded = val;
 	writel(val, cci->base + CCI_I2C_Mm_Qn_EXEC_WORD_CNT(master, queue));
+	/* Save the programmed count, not just its value after a stalled run. */
+	exec = readl(cci->base + CCI_I2C_Mm_Qn_EXEC_WORD_CNT(master, queue));
 
 	/*
 	 * SPX DEBUG: if the queue words never landed, CUR_WORD_CNT is 0, so
@@ -496,6 +525,13 @@ static int cci_run_queue(struct cci *cci, u8 master, u8 queue)
 
 	if (!wait_for_completion_timeout(&cci->master[master].irq_complete,
 					 CCI_TIMEOUT)) {
+		/* A zero IRQ_STATUS alone cannot rule out an already-acked IRQ. */
+		dev_err(cci->dev,
+			"SPX cci-queue: master=%u queue=%u loaded=%u exec_before_start=%u irq_events=%lld/%lld last_irq=%08x completion=%u (before/after wait)\n",
+			master, queue, loaded, exec, irq_events,
+			atomic64_read(&cci_master->irq_events),
+			READ_ONCE(cci_master->last_irq_status),
+			completion_done(&cci_master->irq_complete));
 		cci_log_timeout(cci, master, queue);
 		cci_log_timing(cci, master, "before-reset");
 		cci->master[master].timeout_recovered = !cci_reset(cci);
@@ -751,6 +787,7 @@ static int cci_probe(struct platform_device *pdev)
 	for (i = 0; i < NUM_MASTERS; i++) {
 		atomic64_set(&cci->master[i].xfer_start, 0);
 		atomic64_set(&cci->master[i].last_xfer_end, 0);
+		atomic64_set(&cci->master[i].irq_events, 0);
 	}
 	platform_set_drvdata(pdev, cci);
 	cci->data = device_get_match_data(dev);
