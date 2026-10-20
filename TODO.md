@@ -2,6 +2,16 @@
 
 ## Current defect: external-display connection failure (2026-10-20)
 
+**2026-10-21 H-retry-exhaustion (offline confirmed; hardware untested):**
+Four failed DP training attempts can return success after the final fallback
+reset overwrites `rc` with zero. The extracted real C control flow reproduces
+success with four failed attempts and no teardown. Exhaustion now uses existing
+failure teardown; eleven offline cases and the incremental controller-object
+build pass. This is not proof of the reported panic's cause or a working display
+fix. Runtime testing needs an already-connected display and attributable retry
+exhaustion; no live MSM reload or fabricated hotplug. Original AUX timeout and
+panic stack remain missing. See `RESULT-20261021-dp-retry.md` in boot-diagnostics.
+
 User reports a panic after connecting the external display. Retained evidence
 shows AUX timeouts, failed DP training and stalled DRM commits, but no retained
 panic stack. A concrete fallback-training bug (unchecked AUX link-status reads

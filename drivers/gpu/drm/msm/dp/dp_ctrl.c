@@ -2436,6 +2436,10 @@ int msm_dp_ctrl_on_link(struct msm_dp_ctrl *msm_dp_ctrl,
 		}
 	}
 
+	/* A successful reset after the last failed attempt is not a trained link. */
+	if (!link_train_max_retries)
+		rc = -ECONNRESET;
+
 	if (ctrl->link->sink_request & DP_TEST_LINK_PHY_TEST_PATTERN)
 		return rc;
 
