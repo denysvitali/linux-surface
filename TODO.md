@@ -1,5 +1,17 @@
 # SPX port: what to do next
 
+## Current defect: external-display connection failure (2026-10-20)
+
+User reports a panic after connecting the external display. Retained evidence
+shows AUX timeouts, failed DP training and stalled DRM commits, but no retained
+panic stack. A concrete fallback-training bug (unchecked AUX link-status reads
+feeding stale/uninitialized bytes into lane/rate decisions) is corrected offline;
+the single DP controller object compiles. This is not a proven panic fix.
+One hypothesis: fail training immediately when the fallback status read fails,
+instead of continuing with invalid status. Runtime validation remains for the
+coordinator; no hardware test, deployment or reboot was performed for this fix.
+See `tools/spx/boot-diagnostics/RESULT-20261020-dp-aux.md`.
+
 ## Current request: automatic hardware coverage (2026-10-13)
 
 **Resolved 2026-10-13: Venus decoder codecs.** H264/HEVC/VP8/VP9 decode
@@ -9,7 +21,7 @@ layout and storms (never decode it until a single-output layout is sourced).
 See `RESULT-20261013-venus-codecs.md`. No automatic failure remains on this
 boot (18/48, 43 blocked). The speaker-feeder EIO has not recurred on this
 boot; its origin logging is installed and waits for the next failure.
-**Current defect: front OV5693 first transfer after power-up stalls
+**Deferred defect: front OV5693 first transfer after power-up stalls
 intermittently (C02/C05).** Baseline is now 20261014ff (front DTB promoted).
 CAMSS links each sensor at bind, so rear/IR survive a failed front (verified
 at boot 7638f0cb). CCI retries once after its timeout recovery (f2917d87cf2b,

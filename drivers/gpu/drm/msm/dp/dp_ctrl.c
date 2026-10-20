@@ -2382,7 +2382,10 @@ int msm_dp_ctrl_on_link(struct msm_dp_ctrl *msm_dp_ctrl,
 			if (!msm_dp_aux_is_link_connected(ctrl->aux))
 				break;
 
-			drm_dp_dpcd_read_link_status(ctrl->aux, link_status);
+			/* AUX failure leaves link_status invalid: stop training. */
+			rc = drm_dp_dpcd_read_link_status(ctrl->aux, link_status);
+			if (rc < 0)
+				break;
 
 			rc = msm_dp_ctrl_link_rate_down_shift(ctrl);
 			if (rc < 0) { /* already in RBR = 1.6G */
@@ -2407,7 +2410,9 @@ int msm_dp_ctrl_on_link(struct msm_dp_ctrl *msm_dp_ctrl,
 			if (!msm_dp_aux_is_link_connected(ctrl->aux))
 				break;
 
-			drm_dp_dpcd_read_link_status(ctrl->aux, link_status);
+			rc = drm_dp_dpcd_read_link_status(ctrl->aux, link_status);
+			if (rc < 0)
+				break;
 
 			if (!drm_dp_clock_recovery_ok(link_status,
 					ctrl->link->link_params.num_lanes))
