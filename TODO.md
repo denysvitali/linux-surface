@@ -19,9 +19,13 @@ pinned active. See RESULT-20261014ff.md.
 1. H-retry-recovers: CONFIRMED on boot 95e14bba (stall at boot, retry ok,
    front+rear+IR registered, 0 fail). Keep watching `dmesg | grep SPX` on
    ordinary boots; a `result=<error>` would reopen this.
-2. Root cause still open (not blocking): the stall is usually the first
-   master-1 transfer after controller probe. Untested idea: master-1 timing/
-   reset state after cci_probe differs from the state after timeout recovery.
+2. H-timing-readback (root cause still open, not blocking): compare master-1
+   SCL/SDA/MISC timing readbacks with their programmed values before and after
+   timeout recovery. Failure-only diagnostics are built, reloaded and installed
+   (2026-10-20); front/rear/IR re-registered and no-capture regression is clean.
+   No timeout occurred, so the hypothesis remains untested until a boot stall.
+   Matching readbacks on both sides would refute stale timing programming,
+   not hidden controller state. See RESULT-20261020-cci-timing.md.
 3. Frames from the front camera at boot remain uncaptured (capture needs an
    explicit opt-in); colour/exposure tuning is unchanged.
 **MPEG-2 (2026-10-14, closed as unsupported):** downstream SM8150 recipe

@@ -405,6 +405,29 @@ static void cci_log_timeout(struct cci *cci, u8 master, u8 queue)
 		pos == sizeof(queues) - 1 ? " [truncated]" : "");
 }
 
+/* Read-only timing registers; never sample the destructive read-data FIFO. */
+static void cci_log_timing(struct cci *cci, u8 master, const char *stage)
+{
+	const struct hw_params *hw = &cci->data->params[cci->master[master].mode];
+	u32 expected[] = {
+		hw->thigh << 16 | hw->tlow,
+		hw->tsu_sto << 16 | hw->tsu_sta,
+		hw->thd_dat << 16 | hw->thd_sta,
+		hw->tbuf,
+		hw->scl_stretch_en << 8 | hw->trdhld << 4 | hw->tsp,
+	};
+
+	/* Keep both sides of timeout recovery to distinguish stale programming. */
+	dev_err(cci->dev,
+		"SPX cci-timing: master=%u stage=%s scl=%08x/%08x sda0=%08x/%08x sda1=%08x/%08x sda2=%08x/%08x misc=%08x/%08x (actual/expected)\n",
+		master, stage,
+		readl(cci->base + CCI_I2C_Mm_SCL_CTL(master)), expected[0],
+		readl(cci->base + CCI_I2C_Mm_SDA_CTL_0(master)), expected[1],
+		readl(cci->base + CCI_I2C_Mm_SDA_CTL_1(master)), expected[2],
+		readl(cci->base + CCI_I2C_Mm_SDA_CTL_2(master)), expected[3],
+		readl(cci->base + CCI_I2C_Mm_MISC_CTL(master)), expected[4]);
+}
+
 static int cci_run_queue(struct cci *cci, u8 master, u8 queue)
 {
 	u32 val;
@@ -474,7 +497,10 @@ static int cci_run_queue(struct cci *cci, u8 master, u8 queue)
 	if (!wait_for_completion_timeout(&cci->master[master].irq_complete,
 					 CCI_TIMEOUT)) {
 		cci_log_timeout(cci, master, queue);
+		cci_log_timing(cci, master, "before-reset");
 		cci->master[master].timeout_recovered = !cci_reset(cci);
+		if (cci->master[master].timeout_recovered)
+			cci_log_timing(cci, master, "after-reset");
 		return -ETIMEDOUT;
 	}
 
