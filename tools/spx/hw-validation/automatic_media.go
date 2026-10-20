@@ -298,7 +298,8 @@ func autoMediaCommandProblem(label, output string, err error) AutoResult {
 }
 
 func autoMediaCameraGraph(c *AutoContext) AutoResult {
-	paths, err := c.Glob("/dev/media*")
+	// udev also creates /dev/media/by-path; only numbered nodes accept ioctls.
+	paths, err := c.Glob("/dev/media[0-9]*")
 	if err != nil || len(paths) == 0 {
 		return AutoResult{Status: "blocked", Detail: "No accessible media-controller nodes; running CAMSS/sensor graph support is needed (hardware absence is not established)"}
 	}

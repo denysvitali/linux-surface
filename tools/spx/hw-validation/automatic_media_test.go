@@ -327,12 +327,17 @@ func TestAutomaticMediaCameraFrameEvidence(t *testing.T) {
 }
 
 func TestAutomaticMediaCameraInventoryNotCapture(t *testing.T) {
-	c := autoMediaTestContext(t, autoMediaTestCameraFiles(), func(args ...string) (string, error) {
+	files := autoMediaTestCameraFiles()
+	files["/dev/media/by-path/platform-camss"] = "fixture alias"
+	c := autoMediaTestContext(t, files, func(args ...string) (string, error) {
 		joined := strings.Join(args, " ")
 		if strings.Contains(joined, "--capture") {
 			t.Fatal("inventory captured")
 		}
 		if args[0] == "media-ctl" {
+			if strings.Join(args, " ") != "media-ctl --device /dev/media0 --print-topology" {
+				t.Fatalf("enumerated a non-node: %q", args)
+			}
 			return "Media controller\ndriver qcom-camss\n- entity 1: ov5693 1-0036 (1 pad, 1 link)\n- entity 2: ov13858 2-0010 (1 pad, 1 link)\n- entity 3: ov7251 3-0060 (1 pad, 1 link)\n [ENABLED,IMMUTABLE]\n", nil
 		}
 		if strings.Contains(joined, "--list-properties") {
@@ -359,6 +364,25 @@ func TestAutomaticMediaCameraInventoryNotCapture(t *testing.T) {
 	}
 	if result := autoMediaCameraMetadata(c); result.Status != "blocked" {
 		t.Fatal(result)
+	}
+}
+
+func TestAutomaticMediaCameraGraphDirectoryOnlyAndNodeError(t *testing.T) {
+	calls := 0
+	c := autoMediaTestContext(t, map[string]string{
+		"/dev/media/by-path/platform-camss": "fixture alias",
+	}, func(args ...string) (string, error) {
+		calls++
+		return "unexpected ioctl failure", errors.New("exit status 1")
+	})
+	if result := autoMediaCameraGraph(c); result.Status != "blocked" || calls != 0 {
+		t.Fatalf("directory is not a media node: %+v, calls=%d", result, calls)
+	}
+	if err := os.WriteFile(filepath.Join(c.Root, "dev/media0"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if result := autoMediaCameraGraph(c); result.Status != "error" || calls != 1 {
+		t.Fatalf("real node errors must remain visible: %+v, calls=%d", result, calls)
 	}
 }
 
