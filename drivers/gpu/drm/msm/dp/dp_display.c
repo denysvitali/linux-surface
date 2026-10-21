@@ -1589,6 +1589,7 @@ int msm_dp_bridge_hpd_irq(struct drm_bridge *bridge)
 {
 	struct msm_dp_display_private *dp;
 	struct msm_dp *display;
+	bool phy_deinit;
 	int idx, ret;
 
 	if (!bridge || !drm_bridge_enter(bridge, &idx))
@@ -1620,7 +1621,14 @@ int msm_dp_bridge_hpd_irq(struct drm_bridge *bridge)
 	if (ret < 0)
 		goto unlock_plugged;
 
+	/* Runtime resume leaves the external AUX PHY off after stream disable. */
+	phy_deinit = msm_dp_display_host_phy_init(dp);
 	ret = msm_dp_irq_hpd_handle(dp);
+	drm_dbg_dp(dp->drm_dev,
+		   "firmware HPD IRQ: temporary AUX PHY=%d power_on=%d ret=%d\n",
+		   phy_deinit, display->power_on, ret);
+	if (phy_deinit)
+		msm_dp_display_host_phy_exit(dp);
 	pm_runtime_put_sync(&display->pdev->dev);
 
 unlock_plugged:

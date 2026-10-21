@@ -2,6 +2,18 @@
 
 ## Current defect: external-display connection failure (2026-10-20)
 
+**Current testable hypothesis H-idle-AUX-PHY:** on baseline5d70b0cc the first
+sink-count timeout occurs at uptime974s, after GNOME's900s idle interval, with
+both CRTCs now inactive and Mutter PowerSaveMode3. Stream disable exits the
+external PHY; runtime resume restores only its controller. Firmware HPD IRQ
+then uses AUX without reinitializing that PHY. Temporarily acquire/release
+the PHY around the existing IRQ handler, preserving an already-initialized PHY,
+PM/lock balance, return codes and ACK behavior. Ten real-C ownership cases
+pass; full module build/MODPOST and matching vermagic pass. Trial20261021ap should observe a naturally
+arriving HPD IRQ after normal idle, with temporary AUX PHY ownership and no
+sink-count timeout. Do not force blank/unblank or synthesize a hotplug. Retain
+the working baseline sensor startup in this trial; no sound/capture.
+
 **2026-10-21 H-prepare-retrain (offline confirmed; hardware trial pending):**
 Stream preparation discarded a retraining error, then returned success and
 allowed video startup on an untrained link. Preserve that error, stop the
