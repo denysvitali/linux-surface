@@ -8,6 +8,78 @@ import unittest
 
 
 class DPTrainingTest(unittest.TestCase):
+    def test_stream_retraining_errors(self):
+        source = (Path(__file__).resolve().parents[2] /
+                  "drivers/gpu/drm/msm/dp/dp_ctrl.c").read_text()
+        match = re.search(r"^int msm_dp_ctrl_prepare_stream_on"
+                          r"\([^{}]*\)\n\{.*?^\}", source, re.M | re.S)
+        self.assertIsNotNone(match)
+        harness = r'''
+#include <assert.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <errno.h>
+#define container_of(p, t, m) ((t *)((char *)(p) - offsetof(t, m)))
+#define drm_dbg_dp(...) ((void)0)
+#define DRM_ERROR(...) ((void)0)
+#define DP_PHY_DPRX 0
+struct msm_dp_ctrl { int unused; };
+struct msm_dp_panel { int unused; };
+struct msm_dp_ctrl_private {
+    struct msm_dp_ctrl msm_dp_ctrl;
+    bool link_clks_on;
+};
+static int retrain_result, clock_result, retrained, cleared, teardown;
+static bool channel_eq;
+static int msm_dp_ctrl_enable_mainlink_clocks(struct msm_dp_ctrl_private *c,
+                                            struct msm_dp_panel *p)
+{ return clock_result; }
+static bool msm_dp_ctrl_channel_eq_ok(struct msm_dp_ctrl_private *c)
+{ return channel_eq; }
+static int msm_dp_ctrl_link_retrain(struct msm_dp_ctrl_private *c,
+                                  struct msm_dp_panel *p)
+{ ++retrained; return retrain_result; }
+static void msm_dp_ctrl_clear_training_pattern(struct msm_dp_ctrl_private *c,
+                                               struct msm_dp_panel *p, int phy)
+{ ++cleared; }
+int msm_dp_ctrl_deinitialize_mainlink(struct msm_dp_ctrl_private *c,
+                                    struct msm_dp_panel *p)
+{ ++teardown; return 0; }
+'''
+        cases = r'''
+static void run(bool force, bool eq, int result)
+{
+    struct msm_dp_ctrl_private ctrl = { .link_clks_on = true };
+    struct msm_dp_panel panel = {0};
+    retrained = cleared = teardown = 0;
+    channel_eq = eq;
+    retrain_result = result;
+    bool needed = force || !eq;
+    int expected = needed ? result : 0;
+    assert(msm_dp_ctrl_prepare_stream_on(&ctrl.msm_dp_ctrl, &panel, force)
+           == expected);
+    assert(retrained == needed);
+    assert(cleared == 1);
+    assert(teardown == (expected != 0));
+}
+int main(void)
+{
+    run(true, true, -ETIMEDOUT);
+    run(false, false, -EIO);
+    run(true, true, 0);
+    run(false, false, 0);
+    run(false, true, -ETIMEDOUT);
+    return 0;
+}
+'''
+        with tempfile.TemporaryDirectory(prefix="spx-dp-retrain-") as temp:
+            c_file = Path(temp) / "retrain.c"
+            binary = Path(temp) / "retrain"
+            c_file.write_text(harness + match.group() + cases)
+            subprocess.run(["cc", "-std=gnu11", "-Wall", "-Werror",
+                            str(c_file), "-o", str(binary)], check=True)
+            subprocess.run([str(binary)], check=True)
+
     def test_retry_results(self):
         source = (Path(__file__).resolve().parents[2] /
                   "drivers/gpu/drm/msm/dp/dp_ctrl.c").read_text()

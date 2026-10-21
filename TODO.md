@@ -2,6 +2,16 @@
 
 ## Current defect: external-display connection failure (2026-10-20)
 
+**2026-10-21 H-prepare-retrain (offline confirmed; hardware trial pending):**
+Stream preparation discarded a retraining error, then returned success and
+allowed video startup on an untrained link. Preserve that error, stop the
+training pattern and use existing mainlink teardown. Five new real-C cases
+pass (sixteen with retry tests); full incremental modules build passes.
+The display is connected again; prepare a one-shot candidate trial with both
+error-propagation fixes and the earlier AUX guard, with sound/capture disabled.
+Active scanout is a regression check, not proof of exercised error branches or
+the reported panic's cause. See `RESULT-20261021-dp-retrain.md`.
+
 **2026-10-21 H-retry-exhaustion (offline confirmed; hardware untested):**
 Four failed DP training attempts can return success after the final fallback
 reset overwrites `rc` with zero. The extracted real C control flow reproduces

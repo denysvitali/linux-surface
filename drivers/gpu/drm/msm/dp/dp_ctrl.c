@@ -2568,10 +2568,13 @@ int msm_dp_ctrl_prepare_stream_on(struct msm_dp_ctrl *msm_dp_ctrl,
 	}
 
 	if (force_link_train || !msm_dp_ctrl_channel_eq_ok(ctrl))
-		msm_dp_ctrl_link_retrain(ctrl, panel);
+		ret = msm_dp_ctrl_link_retrain(ctrl, panel);
 
 	/* stop txing train pattern to end link training */
 	msm_dp_ctrl_clear_training_pattern(ctrl, panel, DP_PHY_DPRX);
+
+	if (ret)
+		msm_dp_ctrl_deinitialize_mainlink(ctrl, panel);
 
 	return ret;
 }
