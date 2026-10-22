@@ -1,3 +1,8 @@
 # Installed iio-sensor-proxy 3.9 tags SDSP only for light/compass.
 # Add the fitted SPX accelerometer on the proven secure sensor DSP endpoint.
 ACTION!="remove", SUBSYSTEM=="misc", KERNEL=="fastrpc-sdsp-secure", ENV{IIO_SENSOR_PROXY_TYPE}+="ssc-accel", TAG+="systemd", ENV{SYSTEMD_WANTS}+="spx-sensors.service iio-sensor-proxy.service"
+# SSC reports Android-frame reaction values (+g on the up axis); the proxy's
+# orientation/tilt code expects x left, y down, z out. That is a 180 degree
+# in-plane rotation: upright landscape otherwise reads bottom-up, and a left
+# tilt reads left-up (CS result). The firmware's own placement matrix is invalid.
+ACTION!="remove", SUBSYSTEM=="misc", KERNEL=="fastrpc-sdsp-secure", ENV{ACCEL_MOUNT_MATRIX}="-1, 0, 0; 0, -1, 0; 0, 0, 1"
