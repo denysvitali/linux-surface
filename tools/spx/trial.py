@@ -396,6 +396,15 @@ def prepare(args):
     if args.cdsp:
         from cdsp.capabilities import stage
         stage(OUT / 'spx.dtb')
+    gmem_acceptance = None
+    if args.gmem_acceptance:
+        from gmem.acceptance import module_build_id
+        msm = [m for m in args.initramfs_module if m.name == 'msm.ko']
+        assert len(msm) == 1, '--gmem-acceptance needs the candidate msm.ko as --initramfs-module'
+        for tool in (args.gmem_test, args.gmem_icd):
+            assert tool.is_file(), 'missing GMEM diagnostic file: ' + str(tool)
+        gmem_acceptance = dict(msm_build_id=module_build_id(msm[0]), test=str(args.gmem_test.resolve()),
+                               icd=str(args.gmem_icd.resolve()))
     previous = json.loads((OLD / 'attempt.json').read_text())
     cmdline = []
     for word in previous['cmdline'].split():
@@ -454,6 +463,7 @@ def prepare(args):
                     thermal_gpu_fixture=str(args.thermal_gpu_fixture),
                     thermal_cpu_stress_ng=str(args.thermal_cpu_stress_ng.resolve()) if args.thermal_cpu_stress_ng else None,
                     tpm_sign=args.tpm_sign, tpm_tools=str(args.tpm_tools.resolve()),
+                    gmem_acceptance=gmem_acceptance,
                     cdsp_capabilities=args.cdsp,
                     usbc_early_load=args.usbc,
                     usbc_dp0_helper=args.usbc,
@@ -579,6 +589,11 @@ def install(args):
         cdsp_helpers.mkdir(parents=True, exist_ok=True)
         shutil.copy2(HERE / 'cdsp/capabilities.py', cdsp_helpers / 'capabilities.py')
         (cdsp_helpers / 'capabilities.py').chmod(0o644)
+    if prepared.get('gmem_acceptance'):
+        gmem_helpers = helper.parent / 'gmem'
+        gmem_helpers.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(HERE / 'gmem/acceptance.py', gmem_helpers / 'acceptance.py')
+        (gmem_helpers / 'acceptance.py').chmod(0o644)
     if prepared.get('tpm_sign'):
         tpm_helpers = helper.parent / 'tpm'
         tpm_helpers.mkdir(parents=True, exist_ok=True)
@@ -2277,6 +2292,29 @@ def thermal_check(args):
         subprocess.run([lock, 'release', 'device', owner], check=True)
 
 
+def dispatch_gmem_acceptance(args, prepared):
+    """Run the opt-in unpatched-driver GMEM tests once, while the trial window is open."""
+    config = prepared.get('gmem_acceptance')
+    if not config or (OUT / 'gmem-acceptance').exists():
+        return
+    import importlib.util
+    assert os.geteuid() == 0
+    spec = importlib.util.spec_from_file_location('spx_gmem_acceptance', HERE / 'gmem/acceptance.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    lock = str(REPO / 'tools/spx/spx-lock')
+    owner = 'gmem-acceptance-' + ATTEMPT
+    subprocess.run([lock, 'acquire', 'device', owner], check=True)
+    try:
+        result = module.exercise(OUT / 'gmem-acceptance', ATTEMPT, RELEASE, config['msm_build_id'],
+                                 Path(config['test']), Path(config['icd']))
+        print(json.dumps(dict(complete=result['complete'], accepted=result['accepted'],
+                             identity_matches=result.get('identity_matches'),
+                             result=str(OUT / 'gmem-acceptance/result.json'), error=result.get('error'))), flush=True)
+    finally:
+        subprocess.run([lock, 'release', 'device', owner], check=True)
+
+
 def dispatch_tpm_sign(args, prepared):
     """Consume one explicit signing request after completed baseline/PMIC checks."""
     if not prepared.get('tpm_sign') or (OUT / 'tpm-sign').exists():
@@ -2721,6 +2759,12 @@ def main():
     parser.add_argument('--parked-audio', action='store_true', help='systemd-suspend: opt in to quiescent loaded-codec powered retention; no playback/capture')
     parser.add_argument('--tpm-sign', action='store_true', help='prepare-only opt in to one transient TPM signing test after baseline')
     parser.add_argument('--tpm-tools', type=Path, default=Path('/var/tmp/spx-tpm2-tools-5.8/usr/bin'), help='private tpm2-tools 5.8 executable directory')
+    parser.add_argument('--gmem-acceptance', action='store_true',
+                        help='prepare-only: after baseline checks, run unpatched-driver A680 GMEM tests and record the loaded msm build ID')
+    parser.add_argument('--gmem-test', type=Path, default=Path('/var/tmp/spx-gmem-map/pls'),
+                        help='diagnostic pixel reproducer used by --gmem-acceptance')
+    parser.add_argument('--gmem-icd', type=Path, default=Path('/var/tmp/spx-mesa-main.wLKfM2/build/src/freedreno/vulkan/freedreno_devenv_icd.aarch64.json'),
+                        help='unworkarounded diagnostic Turnip ICD used by --gmem-acceptance')
     parser.add_argument('--wifi-profile', help='saved Wi-Fi profile ID to clone for the 2.4 GHz test')
     parser.add_argument('--srtc-observe-expiry', action='store_true',
                         help='observe one 30s AC/DC timer expiry while awake; no suspend or wake-policy change')
@@ -2844,6 +2888,8 @@ def main():
         parser.error('--desktop-controls requires audio/arm-audio serve or prepare --audio')
     if args.tpm_sign and (args.command != 'prepare' or args.audio or args.cdsp or args.thermal_combined or args.sensors_crash_recovery):
         parser.error('--tpm-sign requires prepare and excludes audio/CDSP/thermal/sensor-crash experiments')
+    if args.gmem_acceptance and (args.command != 'prepare' or args.audio or args.cdsp or args.thermal_combined or args.sensors_crash_recovery or args.tpm_sign):
+        parser.error('--gmem-acceptance requires prepare and excludes audio/CDSP/thermal/sensor-crash/TPM experiments')
     if args.slim_s2idle_retain and (args.command != 'prepare' or not args.audio or not args.pmic_rtc):
         parser.error('--slim-s2idle-retain requires prepare --audio --pmic-rtc')
     if args.microphone_array and (args.command not in ('audio', 'arm-audio') or
@@ -2925,6 +2971,7 @@ def main():
                     subprocess.run([lock, 'release', 'device', 'pmic-rtc-' + ATTEMPT], check=True)
             if record.get('cdsp_capabilities') and not (OUT / 'cdsp-capabilities').exists():
                 cdsp_capabilities(args)
+            dispatch_gmem_acceptance(args, record)
             dispatch_tpm_sign(args, record)
             dispatch_sensors_crash(args, record)
             # The queued reopen must be the first playback owner on this boot.
