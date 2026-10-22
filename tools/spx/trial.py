@@ -2888,8 +2888,8 @@ def main():
         parser.error('--desktop-controls requires audio/arm-audio serve or prepare --audio')
     if args.tpm_sign and (args.command != 'prepare' or args.audio or args.cdsp or args.thermal_combined or args.sensors_crash_recovery):
         parser.error('--tpm-sign requires prepare and excludes audio/CDSP/thermal/sensor-crash experiments')
-    if args.gmem_acceptance and (args.command != 'prepare' or args.audio or args.cdsp or args.thermal_combined or args.sensors_crash_recovery or args.tpm_sign):
-        parser.error('--gmem-acceptance requires prepare and excludes audio/CDSP/thermal/sensor-crash/TPM experiments')
+    if args.gmem_acceptance and (args.command != 'prepare' or args.cdsp or args.thermal_combined or args.sensors_crash_recovery or args.tpm_sign):
+        parser.error('--gmem-acceptance requires prepare and excludes CDSP/thermal/sensor-crash/TPM experiments')
     if args.slim_s2idle_retain and (args.command != 'prepare' or not args.audio or not args.pmic_rtc):
         parser.error('--slim-s2idle-retain requires prepare --audio --pmic-rtc')
     if args.microphone_array and (args.command not in ('audio', 'arm-audio') or

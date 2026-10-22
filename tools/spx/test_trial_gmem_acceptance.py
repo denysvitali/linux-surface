@@ -78,7 +78,7 @@ class DispatchTests(unittest.TestCase):
                 run.assert_not_called()
 
     def test_opt_in_rejects_conflicting_experiments_before_effects(self):
-        for command, flags in [('check', []), ('prepare', ['--audio']), ('prepare', ['--cdsp']),
+        for command, flags in [('check', []), ('prepare', ['--cdsp']),
                                ('prepare', ['--tpm-sign']), ('prepare', ['--thermal-combined'])]:
             result = subprocess.run([sys.executable, '-B', str(HERE / 'trial.py'), command, '20261007test',
                                      '--gmem-acceptance', *flags], capture_output=True, text=True)
