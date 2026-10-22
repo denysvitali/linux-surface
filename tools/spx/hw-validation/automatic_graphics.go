@@ -356,7 +356,7 @@ func graphicsVulkanDevices(c *AutoContext) AutoResult {
 	if hardware == 0 {
 		return graphicsResult(id, "blocked", fmt.Sprintf("No identified Adreno 680 Vulkan hardware device exposed (%d software devices); hardware ICD/driver support or permissions are needed", software))
 	}
-	return graphicsResult(id, "observed", fmt.Sprintf("Adreno 680 Vulkan hardware devices=%d, software devices=%d, API=%s; enumeration does not establish renderer selection or fix recorded GMEM scrolling corruption", hardware, software, strings.Join(versions, ",")))
+	return graphicsResult(id, "observed", fmt.Sprintf("Adreno 680 Vulkan hardware devices=%d, software devices=%d, API=%s; enumeration does not establish renderer selection or correct rendering", hardware, software, strings.Join(versions, ",")))
 }
 
 func graphicsValue(text, key string) string {
@@ -575,7 +575,7 @@ func graphicsVulkanRender(c *AutoContext) AutoResult {
 			}
 		}
 	}
-	return graphicsResult(id, "pass", "Adreno 680 Vulkan rendered a public 64x64 color fixture windowlessly and matched all 4096 pixels; output discarded. Static path only: recorded GMEM scrolling/partial-damage corruption remains unresolved")
+	return graphicsResult(id, "pass", "Adreno 680 Vulkan rendered a public 64x64 color fixture windowlessly and matched all 4096 pixels; output discarded. Static path only: partial-area GMEM load/store is covered separately by graphics.vulkan.dynamic-damage")
 }
 
 var graphicsVulkanDevice = regexp.MustCompile(`(?m)^Vulkan Device ([0-9]+):\s*\n\s*([^\r\n]+)`)
@@ -640,7 +640,7 @@ func graphicsVulkanDamage(c *AutoContext) AutoResult {
 		// VK_DRIVER_FILES takes precedence over the legacy VK_ICD_FILENAMES.
 		icd = selection[0]
 	}
-	scope := "Partial load/store in GMEM mode regression; ICD=" + icd + "; not general Vulkan conformance. A pass with the patched driver reflects a system-memory rendering workaround for affected passes, not a root-cause fix. "
+	scope := "Partial load/store in GMEM mode regression; ICD=" + icd + "; not general Vulkan conformance. A pass needs the msm A680 GMEM-base fix; with the private sysmem-workaround driver it avoids rather than tests the kernel path. "
 	result := func(status, detail string) AutoResult {
 		return graphicsResult(id, status, scope+detail)
 	}

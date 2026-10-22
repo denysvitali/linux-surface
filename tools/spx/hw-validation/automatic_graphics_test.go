@@ -322,7 +322,7 @@ func TestGraphicsWindowlessVulkanRejectsSelectedCPUAndBadPixels(t *testing.T) {
 		if got.Status != tc.want {
 			t.Fatal(got, tc)
 		}
-		if got.Status == "pass" && !strings.Contains(got.Detail, "remains unresolved") {
+		if got.Status == "pass" && !strings.Contains(got.Detail, "covered separately by graphics.vulkan.dynamic-damage") {
 			t.Fatal("static render masked dynamic corruption", got)
 		}
 		if _, err := os.Stat(resultDir); !os.IsNotExist(err) {
@@ -440,7 +440,7 @@ func TestGraphicsVulkanDamageResults(t *testing.T) {
 			if got.Status != tc.status || !strings.Contains(got.Detail, tc.detail) || strings.Contains(got.Detail, "PRIVATE") {
 				t.Fatal(got)
 			}
-			for _, scope := range []string{"ICD=system default", "Partial load/store in GMEM mode", "not general Vulkan conformance", "workaround", "not a root-cause fix"} {
+			for _, scope := range []string{"ICD=system default", "Partial load/store in GMEM mode", "not general Vulkan conformance", "msm A680 GMEM-base fix", "sysmem-workaround driver"} {
 				if !strings.Contains(got.Detail, scope) {
 					t.Fatal("missing regression scope", got)
 				}

@@ -161,9 +161,9 @@ only the first nonzero pixels-differ count, never raw pixels or hashes.
 A missing binary/user, fixture-root run, unsupported exit 77 or missing device
 witness stays blocked. Exit 2, malformed results and abnormal runner exits are
 errors. This checks the specific partial LOAD/STORE GMEM defect, not general
-Vulkan conformance or visual scrolling acceptance. With the patched A680 driver,
-a pass reflects system-memory rendering for affected passes, a workaround
-rather than a root-cause fix. See [Mesa notes](../mesa/README.md).
+Vulkan conformance or visual scrolling acceptance. A pass needs the msm A680 GMEM-base fix (kernel `fa0a790ad9ed`);
+with the private sysmem-workaround driver it avoids rather than tests that
+kernel path. See [Mesa notes](../mesa/README.md).
 
 Boot camera capture defaults to disabled. `install --camera-capture` persists
 `"camera_capture": true` in `/etc/spx/hw-validation.json`; `install --no-camera-capture`
