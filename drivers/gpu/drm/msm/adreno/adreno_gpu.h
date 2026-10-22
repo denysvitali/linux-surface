@@ -587,6 +587,20 @@ static inline int adreno_is_a7xx(struct adreno_gpu *gpu)
 	       adreno_is_a740_family(gpu);
 }
 
+/*
+ * Base of the GMEM VA range seen through the UCHE. The A680 texture path
+ * decodes GMEM addresses modulo its 2 MiB GMEM, so a 1 MiB base swaps the two
+ * GMEM halves when GMEM is sampled (e.g. Turnip's unaligned tile store).
+ */
+static inline u64 adreno_gmem_range_min(struct adreno_gpu *gpu)
+{
+	if (adreno_is_a740_family(gpu) || adreno_is_a722(gpu))
+		return SZ_16M;
+	if (adreno_is_a680(gpu))
+		return SZ_2M;
+	return SZ_1M;
+}
+
 static inline int adreno_is_a8xx(struct adreno_gpu *gpu)
 {
 	return gpu->info->family >= ADRENO_8XX_GEN1;

@@ -386,7 +386,7 @@ int adreno_get_param(struct msm_gpu *gpu, struct msm_context *ctx,
 		if (adreno_gpu->info->family >= ADRENO_6XX_GEN3)
 			*value = 0;
 		else
-			*value = 0x100000;
+			*value = adreno_gmem_range_min(adreno_gpu);
 		return 0;
 	case MSM_PARAM_CHIP_ID:
 		*value = adreno_gpu->chip_id;
