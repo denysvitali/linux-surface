@@ -9,7 +9,7 @@
  * not establish that GMEM was used. No GPU run was made during development.
  * Diagnostics: --passes N [--stop-first], or --single X Y W H.
  * Single-only: --no-clear, --color RRGGBBAA, --full-rect,
- * --load-clear RRGGBBAA, --draw, --dump-area. See --help.
+ * --load-clear RRGGBBAA, --draw, --dump-area, --dump-raw PREFIX. See --help.
  * --help lists bounds; detailed reports describe the first bad pass.
  * Exit: 0 all pixels match; 1 mismatch; 2 setup/Vulkan error; 77 unsupported.
  *
@@ -52,6 +52,7 @@ static VkPipelineLayout pipeline_layout;
 static VkPipeline pipeline;
 static struct {
     int no_clear, color_set, full_rect, load_clear, draw, dump_area;
+    const char *dump_raw;
     uint8_t color[4], load_color[4];
 } options = { .color = {255, 0, 0, 0} };
 static VkExtent2D granularity;
@@ -964,6 +965,21 @@ static void dump_pixel(const struct target *t, uint32_t x, uint32_t y)
            x, y, g[0], g[1], g[2], g[3], e[0], e[1], e[2], e[3]);
 }
 
+/* Raw RGBA of the pre-pass snapshot and the readback, for offline mapping. */
+static void dump_raw(const char *prefix, const uint8_t *pre, const uint8_t *got, size_t bytes)
+{
+    const char *suffix[] = { ".pre.rgba", ".got.rgba" };
+    const uint8_t *data[] = { pre, got };
+    for (unsigned i = 0; i < 2; ++i) {
+        char path[4096];
+        if (snprintf(path, sizeof(path), "%s%s", prefix, suffix[i]) >= (int)sizeof(path))
+            stop("--dump-raw prefix too long", 2);
+        FILE *f = fopen(path, "wb");
+        if (!f || fwrite(data[i], 1, bytes, f) != bytes || fclose(f))
+            stop("--dump-raw write failed", 2);
+    }
+}
+
 static void dump_area(const struct target *t, VkRect2D area)
 {
     uint32_t x = (uint32_t)area.offset.x, y = (uint32_t)area.offset.y;
@@ -1029,6 +1045,7 @@ int main(int argc, char **argv)
                    "  --load-clear RRGGBBAA: loadOp CLEAR of entire render area.\n"
                    "  --draw: fullscreen triangle pair, push-constant colour.\n"
                    "  --dump-area: actual/expected RGBA bytes and edge neighbours.\n"
+                   "  --dump-raw PREFIX: write PREFIX.pre.rgba and PREFIX.got.rgba (raw RGBA).\n"
                    "--no-clear, --load-clear, --draw are mutually exclusive.\n"
                    "--color and --full-rect may accompany any operation.\n"
                    "--stop-first alone: all 32 diagnostic passes, stop on first mismatch.\n"
@@ -1042,6 +1059,8 @@ int main(int argc, char **argv)
             options.draw = 1;
         } else if (!strcmp(argv[i], "--dump-area")) {
             options.dump_area = 1;
+        } else if (!strcmp(argv[i], "--dump-raw") && i + 1 < argc) {
+            options.dump_raw = argv[++i];
         } else if (!strcmp(argv[i], "--color") && i + 1 < argc) {
             argument_color(argv[++i], options.color); options.color_set = 1;
         } else if (!strcmp(argv[i], "--load-clear") && i + 1 < argc) {
@@ -1063,7 +1082,8 @@ int main(int argc, char **argv)
         } else stop("Invalid options; use --help", 2);
     }
     if (!single && (options.no_clear || options.color_set || options.full_rect ||
-                    options.load_clear || options.draw || options.dump_area))
+                    options.load_clear || options.draw || options.dump_area ||
+                    options.dump_raw))
         stop("New probe options require --single", 2);
     if (options.no_clear + options.load_clear + options.draw > 1)
         stop("--no-clear, --load-clear and --draw are mutually exclusive", 2);
@@ -1114,6 +1134,8 @@ int main(int argc, char **argv)
                 submit_wait();
                 printf("Comparing partial pass=%u (zero-based)\n", pass);
                 int bad = read_and_compare(&t, 0);
+                if (options.dump_raw)
+                    dump_raw(options.dump_raw, pre, t.mapped, t.bytes);
                 if (options.dump_area) {
                     dump_area(&t, area);
                     dump_source_search(&t, pre, area);
