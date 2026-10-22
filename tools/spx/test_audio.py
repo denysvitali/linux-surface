@@ -2184,6 +2184,166 @@ class DesktopMicrophoneServingTests(unittest.TestCase):
 
 
 
+class ProductionMicrophoneTests(unittest.TestCase):
+    """play-desktop publishes the on-demand microphone best effort and never records."""
+
+    def test_only_serve_and_play_desktop_admit_the_microphone(self):
+        for action in ('serve', 'play-desktop'):
+            audio.validate_desktop_microphone(action, True)
+            audio.validate_desktop_microphone(action, False)
+        for action in ('listen', 'feedback', 'desktop', 'desktop-mic', 'reopen', 'capture'):
+            with self.subTest(action=action), self.assertRaisesRegex(
+                    RuntimeError, '--desktop-microphone requires serve or play-desktop'):
+                audio.validate_desktop_microphone(action, True)
+        with self.assertRaises(RuntimeError):
+            audio.validate_desktop_microphone('play-desktop', 1)
+
+    def prepare(self, *, configure=None):
+        report, saved = {}, []
+        with patch.object(audio, 'configure_microphone', side_effect=configure) as mixer, \
+                patch.object(audio, 'restore_microphone_mixer') as restore:
+            audio.prepare_production_microphone(SimpleNamespace(microphone_source='DMIC1'), report, 3, saved)
+        return report['desktop_microphone'], mixer, restore, saved
+
+    def test_route_is_configured_before_playback_and_recorded_as_ready(self):
+        evidence, mixer, restore, saved = self.prepare()
+        mixer.assert_called_once_with(3, evidence, saved, 'DMIC1')
+        self.assertTrue(evidence['mixer_ready'])
+        self.assertFalse(evidence['published'])
+        self.assertIsNone(evidence['recording'])
+        restore.assert_not_called()
+
+    def test_refused_route_is_undone_and_never_raises(self):
+        evidence, mixer, restore, saved = self.prepare(configure=RuntimeError('route refused'))
+        self.assertFalse(evidence['mixer_ready'])
+        self.assertIn('route refused', evidence['error'])
+        restore.assert_called_once_with(evidence, saved)
+
+    def test_preparation_requires_the_restore_list(self):
+        with self.assertRaisesRegex(RuntimeError, 'mixer restore list'):
+            audio.prepare_production_microphone(SimpleNamespace(), {}, 0, None)
+
+    def publish(self, *, ready=True, start=None):
+        graph, saved = Mock(), []
+        report = {'desktop_microphone': dict(mixer_ready=ready, published=False, recording=None)}
+        source = Mock()
+        source.start.side_effect = start
+        with patch.object(audio, 'configured_default_source', return_value=None), \
+                patch.object(audio, 'NativeMicSource', return_value=source) as constructor, \
+                patch.object(audio, 'restore_microphone_mixer') as restore, \
+                patch.object(audio, 'configure_microphone') as mixer, \
+                patch.object(audio.time, 'clock_gettime', return_value=100):
+            audio.publish_production_microphone(SimpleNamespace(), report, 3, graph, saved)
+        mixer.assert_not_called()  # The route is never rewritten under a running stream.
+        return graph, report['desktop_microphone'], source, constructor, restore, saved
+
+    def test_publication_loads_a_desktop_source_without_recording(self):
+        graph, evidence, source, constructor, restore, saved = self.publish()
+        constructor.assert_called_once_with(graph, 3, evidence, 160, None, desktop=True)
+        source.start.assert_called_once()
+        self.assertIs(graph.microphone, source)
+        self.assertTrue(evidence['published'])
+        restore.assert_not_called()
+
+    def test_unrouted_microphone_is_not_published(self):
+        graph, evidence, source, constructor, restore, saved = self.publish(ready=False)
+        constructor.assert_not_called()
+        self.assertFalse(evidence['published'])
+
+    def test_source_failure_unloads_it_and_restores_the_route(self):
+        graph, evidence, source, constructor, restore, saved = self.publish(
+            start=RuntimeError('module load failed'))
+        self.assertFalse(evidence['published'])
+        self.assertIn('module load failed', evidence['error'])
+        self.assertIsNone(graph.microphone)
+        source.close.assert_called_once()
+        restore.assert_called_once_with(evidence, saved)
+
+    def test_cleanup_failure_is_recorded_not_raised(self):
+        with patch.object(audio, 'configured_default_source', return_value=None), \
+                patch.object(audio, 'restore_microphone_mixer'), \
+                patch.object(audio.time, 'clock_gettime', return_value=0), \
+                patch.object(audio, 'NativeMicSource') as constructor:
+            source = constructor.return_value
+            source.start.side_effect = RuntimeError('load failed')
+            source.close.side_effect = RuntimeError('unload failed')
+            report = {'desktop_microphone': dict(mixer_ready=True)}
+            audio.publish_production_microphone(SimpleNamespace(), report, 0, Mock(), [])
+        self.assertIn('unload failed', report['desktop_microphone']['cleanup_error'])
+
+    def serve(self, *, unhealthy=False, fault_at=1, action='play-desktop', times=(0, 1, 120, 120.5)):
+        report = dict(action=action, playback_ready=True, microphone_capture=False,
+                      before=dict(boot_id='boot', release='release'), pcm=dict(card=0))
+        if action == 'serve':
+            report.update(desktop=dict(acoustic_passed=True), public_desktop=dict(acoustic_passed=True),
+                          recording_closed=True)
+        pcm, graph = Mock(), Mock()
+        source = graph.microphone
+        source.name, source.module, source.source_id = 'spx_microphone', '42', 79
+        source.default_selected = True
+        source.report = dict(microphone_client_passed=False)
+        if unhealthy:
+            calls = []
+            def health():
+                calls.append(1)
+                if len(calls) >= fault_at:
+                    raise RuntimeError('microphone PCM fault')
+            source.serve_healthy.side_effect = health
+        pcm.process.pid, pcm.feed_stats = 42, {}
+        pcm.healthy.return_value = 'trigger_time : same'
+        graph.monitor.input_peak, graph.monitor.peak = 0, 0
+        graph.monitor.max_interarrival_seconds = 0
+        times = iter(times)
+        with tempfile.TemporaryDirectory() as temporary:
+            args = SimpleNamespace(output=Path(temporary), serve_seconds=120, desktop_peak=32768,
+                                   desktop_microphone=True, pa_gain_step=0, pa_gain_file=None)
+            with patch.object(audio, 'verify_native_microphone_clients') as verify, \
+                    patch.object(audio, 'check_stereo'), patch.object(audio.signal, 'signal'), \
+                    patch.object(audio.threading, 'Event') as event, \
+                    patch.object(audio, 'set_desktop_pa_gain'), \
+                    patch.object(audio.time, 'monotonic', side_effect=lambda: next(times, 120.5)):
+                event.return_value.wait.return_value = False
+                event.return_value.is_set.return_value = False
+                audio.serve_desktop(args, report, pcm, graph, {}, {})
+            ready = json.loads((Path(temporary) / 'serve-ready.json').read_text())
+        return report, ready, source, graph, verify, pcm
+
+    def test_production_publishes_without_recording_verification(self):
+        report, ready, source, graph, verify, pcm = self.serve()
+        verify.assert_not_called()
+        self.assertEqual(source.report['verification_scope'],
+                         'none: production service publishes the source without recording')
+        source.require_closed.assert_called_once_with('before-ordinary-handoff')
+        self.assertEqual(source.serve_healthy.call_count, 3)
+        source.close.assert_called_once()
+        self.assertEqual(ready['microphone']['source'], 'spx_microphone')
+        self.assertNotIn('microphone_error', ready)
+
+    def test_production_microphone_fault_in_the_loop_keeps_the_speakers_running(self):
+        report, ready, source, graph, verify, pcm = self.serve(unhealthy=True, fault_at=2)
+        self.assertIn('microphone PCM fault', ready['microphone_error'])
+        self.assertIsNone(ready['microphone'])
+        self.assertIsNone(graph.microphone)
+        # Healthy at handoff, dropped once in the loop: no further checks, closed exactly once.
+        self.assertEqual(source.serve_healthy.call_count, 2)
+        self.assertEqual(source.close.call_count, 1)
+        self.assertEqual(report['serve']['stop_reason'], 'deadline')
+
+    def test_serve_mode_microphone_fault_stays_fatal(self):
+        with self.assertRaisesRegex(RuntimeError, 'microphone PCM fault'):
+            self.serve(unhealthy=True, fault_at=1, action='serve')
+
+    def test_microphone_already_failed_at_handoff_never_blocks_playback(self):
+        # Unhealthy from the first check, before any serve loop iteration.
+        report, ready, source, graph, verify, pcm = self.serve(unhealthy=True)
+        self.assertIn('microphone PCM fault', ready['microphone_error'])
+        self.assertEqual(source.serve_healthy.call_count, 1)
+        self.assertEqual(source.close.call_count, 1)
+        self.assertIsNone(ready['microphone'])
+        self.assertEqual(report['serve']['stop_reason'], 'deadline')
+        pcm.set_source.assert_called()
+
+
 class CaptureOwnershipWallClockTests(unittest.TestCase):
     def test_real_helper_process_close_reports_elapsed_ownership_without_deadline(self):
         import sys

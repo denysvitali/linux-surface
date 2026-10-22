@@ -313,8 +313,8 @@ def validate_microphone_array(action, source, enabled):
 
 
 def validate_desktop_microphone(action, enabled):
-    need(type(enabled) is bool and (not enabled or action == 'serve'),
-         '--desktop-microphone requires serve')
+    need(type(enabled) is bool and (not enabled or action in ('serve', 'play-desktop')),
+         '--desktop-microphone requires serve or play-desktop')
 
 
 def validate_native_mic_app_formats(action, microphone, enabled):
@@ -2597,6 +2597,66 @@ class PeriodicStereoHealth:
                 self.stats['journal_suppressed_events'] += 1
 
 
+def prepare_production_microphone(args, report, card, saved):
+    """Route the fitted DMIC before any playback exists, as `serve` always did.
+
+    Best effort: a refused route is recorded, undone, and playback proceeds
+    without a microphone.
+    """
+    need(isinstance(saved, list), 'Production microphone needs the mixer restore list')
+    evidence = report['desktop_microphone'] = dict(
+        microphone_client_passed=False, clients=[], recording=None, maximum_seconds=60,
+        published=False, mixer_ready=False,
+        scope='production on-demand source; no recording or client verification')
+    try:
+        configure_microphone(card, evidence, saved, getattr(args, 'microphone_source', 'DMIC1'))
+        evidence['mixer_ready'] = True
+    except Exception as error:
+        evidence['error'] = type(error).__name__ + ': ' + str(error)
+        restore_microphone_mixer(evidence, saved)
+
+
+def publish_production_microphone(args, report, card, graph, saved):
+    """Publish the on-demand fitted microphone beside production playback.
+
+    Best effort: the speakers are the primary service, so any failure here
+    unloads whatever was created, restores the mixer route and leaves playback
+    running. No audio is recorded; clients alone open the capture PCM.
+    """
+    evidence = report.get('desktop_microphone')
+    if not evidence or not evidence.get('mixer_ready'):
+        return
+    source = None
+    try:
+        graph.default_source_before_test = configured_default_source(graph)
+        source = NativeMicSource(graph, card, evidence, time.clock_gettime(time.CLOCK_BOOTTIME) + 60,
+                                 graph.default_source_before_test, desktop=True)
+        source.start()
+        graph.microphone = source
+        evidence['published'] = True
+    except Exception as error:
+        evidence['error'] = type(error).__name__ + ': ' + str(error)
+        graph.microphone = None
+        if source is not None:
+            try:
+                source.close()
+            except Exception as cleanup:
+                evidence['cleanup_error'] = type(cleanup).__name__ + ': ' + str(cleanup)
+        restore_microphone_mixer(evidence, saved)
+
+
+def drop_production_microphone(graph, ready, error):
+    """Stop offering the microphone after a fault; the speakers keep playing."""
+    microphone, graph.microphone = graph.microphone, None
+    ready['microphone_error'] = type(error).__name__ + ': ' + str(error)
+    ready['microphone'] = None
+    if microphone is not None:
+        try:
+            microphone.close()
+        except Exception as cleanup:
+            ready['microphone_cleanup_error'] = type(cleanup).__name__ + ': ' + str(cleanup)
+
+
 def serve_desktop(args, report, pcm, graph, paths, mapping):
     """Ordinary desktop session with optional stock microphone demand/idle."""
     playback_only = report.get('action') == 'play-desktop'
@@ -2615,7 +2675,17 @@ def serve_desktop(args, report, pcm, graph, paths, mapping):
     graph.monitor.healthy()
     check_stereo(mapping, paths, initialized=True, pa_gain_step=pa_gain_step)
     microphone = getattr(graph, 'microphone', None) if getattr(args, 'desktop_microphone', False) else None
-    if microphone is not None:
+    handoff_fault = {}
+    if microphone is not None and playback_only:
+        # Production: no recording verification, and a fault only costs the microphone.
+        try:
+            microphone.require_closed('before-ordinary-handoff')
+            microphone.report['verification_scope'] = 'none: production service publishes the source without recording'
+            microphone.serve_healthy()
+        except Exception as error:
+            drop_production_microphone(graph, handoff_fault, error)
+            microphone = None
+    elif microphone is not None:
         need(not getattr(args, 'native_mic_app_formats', False) or microphone.default_selected,
              'Application-format verification requires the fitted microphone as default')
         microphone.require_closed('before-ordinary-handoff')
@@ -2658,6 +2728,7 @@ def serve_desktop(args, report, pcm, graph, paths, mapping):
                  if args.desktop_peak == 32768 else
                  'Conservative fixed attenuation; useful listening volume is not yet validated.')}
     health = PeriodicStereoHealth(ready)
+    ready.update(handoff_fault)
     if microphone is not None:
         ready['microphone'] = dict(source=microphone.name, source_index=microphone.source_id,
             module=microphone.module, default_selected=microphone.default_selected,
@@ -2702,11 +2773,22 @@ def serve_desktop(args, report, pcm, graph, paths, mapping):
             if deadline is not None and now >= deadline:
                 break
             if microphone is not None and now >= next_microphone_check:
-                microphone.serve_healthy()
-                trigger = re.search(r'^trigger_time\s*:\s*(.+)$', pcm.healthy(), re.M)
-                need(trigger and trigger[1] == playback_owner, 'Playback trigger changed during serve')
-                ready['microphone_identity_retained_120s'] = now - started >= 120
-                next_microphone_check = now + 1
+                try:
+                    microphone.serve_healthy()
+                except Exception as error:
+                    if not playback_only:
+                        raise
+                    # Production keeps the speakers: stop offering the microphone only.
+                    drop_production_microphone(graph, ready, error)
+                    microphone = None
+                    temporary = args.output / f'.serve-ready.{os.getpid()}'
+                    temporary.write_text(json.dumps(ready, indent=2) + '\n')
+                    temporary.replace(args.output / 'serve-ready.json')
+                else:
+                    trigger = re.search(r'^trigger_time\s*:\s*(.+)$', pcm.healthy(), re.M)
+                    need(trigger and trigger[1] == playback_owner, 'Playback trigger changed during serve')
+                    ready['microphone_identity_retained_120s'] = now - started >= 120
+                    next_microphone_check = now + 1
             if now >= next_hardware_check:
                 if gain_control is not None:
                     # Serialized in this owner: mixer changes cannot race the
@@ -2750,7 +2832,12 @@ def serve_desktop(args, report, pcm, graph, paths, mapping):
                      pcm_feed=dict(pcm.feed_stats),
                      monitor_max_interarrival_seconds=graph.monitor.max_interarrival_seconds)
         if microphone is not None:
-            microphone.serve_healthy()
+            try:
+                microphone.serve_healthy()
+            except Exception as error:
+                if not playback_only:
+                    raise
+                ready['microphone_error'] = type(error).__name__ + ': ' + str(error)
             trigger = re.search(r'^trigger_time\s*:\s*(.+)$', pcm.healthy(), re.M)
             need(trigger and trigger[1] == playback_owner, 'Playback trigger changed during serve')
             ready['microphone_identity_retained_120s'] = ready['seconds'] >= 120
@@ -2823,7 +2910,7 @@ def check_stereo(mapping, paths, initialized=False, observations=None, *, pa_gai
 
 
 def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder=None,
-           before_serve=None, live_resume=None):
+           before_serve=None, live_resume=None, saved_mixer=None):
     need(args.allow_playback, 'listen requires --allow-playback for this requested run')
     mapping = report['stages'][-1]['physical_units_to_addresses']
     paths = {s['unit']: Path('/sys/bus/soundwire/devices') / s['name'] for s in devices()}
@@ -2900,6 +2987,8 @@ def listen(args, report, pcm_holder, capture=None, baseline=None, desktop_holder
         desktop_holder.append(graph)
         graph.start(public_only=True)
         graph.connect_public(pcm, args.desktop_peak, low_latency=True, preserve_volume=True)
+        if getattr(args, 'desktop_microphone', False):
+            publish_production_microphone(args, report, card, graph, saved_mixer)
         # Use the initialization verified on WX without another acoustic test.
         serve_desktop(args, report, pcm, graph, paths, mapping)
         report['pcm']['log'] = pcm.close()
@@ -3236,6 +3325,8 @@ def initialize(args, report, *, live_resume=None):
                  'Command FIFO readback is not empty after parked recovery')
             report['fifo_recovered'] = True
             return
+        if args.action == 'play-desktop' and getattr(args, 'desktop_microphone', False):
+            prepare_production_microphone(args, report, initial['internal_cards'][0], saved_mixer)
         if args.action in ('capture', 'feedback', 'desktop', 'serve', 'reopen', 'desktop-mic'):
             need(args.output is not None, 'Capture requires a private result directory')
             directory = args.output / ('capture-' + report['utc'])
@@ -3324,7 +3415,8 @@ def initialize(args, report, *, live_resume=None):
         if args.action == 'reopen':
             playback_reopen(args, report, pcm_holder, capture, baseline)
         elif args.action in ('listen', 'feedback', 'desktop', 'serve', 'desktop-mic', 'play-desktop'):
-            listen(args, report, pcm_holder, capture, baseline, desktop_holder, release_recording, live_resume)
+            listen(args, report, pcm_holder, capture, baseline, desktop_holder, release_recording, live_resume,
+                   saved_mixer=saved_mixer)
         if args.action == 'feedback':
             # Control for electrical crosstalk: keep the identical capture/PCM
             # routes, disable the physical amps, then send the same digital tones.
@@ -3448,7 +3540,8 @@ def main():
     parser.add_argument('--capture-contract-check', action='store_true',
                         help='desktop-mic capture-reopen only: bounded incompatible contract rejection probes')
     parser.add_argument('--desktop-microphone', action='store_true',
-                        help='serve-only stock fitted microphone available on client demand')
+                        help='serve or play-desktop: stock fitted microphone available on client demand '
+                             '(play-desktop publishes it best effort, without recording verification)')
     parser.add_argument('--native-mic-app-formats', action='store_true',
                         help='serve desktop-microphone only: bounded 44.1kHz mono and 48kHz stereo application clients')
     parser.add_argument('--native-mic-cold-start', action='store_true',
@@ -3487,8 +3580,8 @@ def main():
         parser.error('--pa-gain-step requires play-desktop')
     if args.action == 'play-desktop' and args.output is None:
         parser.error('play-desktop requires --output for runtime status')
-    if args.desktop_microphone and args.action != 'serve':
-        parser.error('--desktop-microphone requires serve')
+    if args.desktop_microphone and args.action not in ('serve', 'play-desktop'):
+        parser.error('--desktop-microphone requires serve or play-desktop')
     if args.native_mic_app_formats and (args.action != 'serve' or not args.desktop_microphone):
         parser.error('--native-mic-app-formats requires serve --desktop-microphone')
     if args.desktop_controls and args.action != 'serve':
