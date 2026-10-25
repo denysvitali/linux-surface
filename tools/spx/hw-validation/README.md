@@ -201,8 +201,13 @@ window (timeout's kill grace is 0.2 seconds). Each policy needs a loaded peak
 above its starting frequency followed by a lower idle sample, or an increased
 `stats/total_trans`. Details retain per-policy min/idle/peak/after kHz. Fixed
 performance/powersave governors or equal limits, missing attributes/tools and
-fixture runs stay blocked. No sysfs writes or governor/limit changes occur;
-this short transition smoke is not thermal or battery/endurance validation.
+fixture runs stay blocked. A policy starting at its maximum without either
+existing transition witness is also blocked: there is no headroom to measure
+a rise, and the starting sample does not establish an idle baseline. This
+is not a pass or proof of a hardware fault. A complete below-ceiling failure
+on another policy still fails the check, even when a policy is blocked.
+No sysfs writes or governor/limit changes occur; this short transition smoke
+is not thermal or battery/endurance validation.
 
 Exact external commands (CPU is the first numeric `related_cpus` member):
 

@@ -425,20 +425,29 @@ func platformFrequencyFixture(t *testing.T, count int) *AutoContext {
 
 func TestPlatformFrequencyTransitions(t *testing.T) {
 	for _, tc := range []struct {
-		name, status             string
-		peak, after, transitions int
+		name, status                   string
+		idle, peak, after, transitions int
 	}{
-		{"rise-recover", "pass", 1800000, 300000, 10},
-		{"rise-no-stats", "pass", 1800000, 300000, 10},
-		{"stats-evidence", "pass", 300000, 300000, 12},
-		{"stuck", "fail", 300000, 300000, 10},
-		{"no-recovery", "fail", 1800000, 1800000, 10},
+		{"rise-recover", "pass", 300000, 1800000, 300000, 10},
+		{"rise-no-stats", "pass", 300000, 1800000, 300000, 10},
+		{"stats-evidence", "pass", 300000, 300000, 300000, 12},
+		{"stuck", "fail", 300000, 300000, 300000, 10},
+		{"no-recovery", "fail", 300000, 1800000, 1800000, 10},
+		{"ceiling", "blocked", 1800000, 1800000, 1800000, 10},
+		{"ceiling-no-stats", "blocked", 1800000, 1800000, 1800000, 10},
+		{"ceiling-drop-only", "blocked", 1800000, 1800000, 300000, 10},
+		{"ceiling-stats", "pass", 1800000, 1800000, 1800000, 12},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := platformFrequencyFixture(t, 2)
-			if tc.name == "rise-no-stats" {
-				for i := 0; i < 2; i++ {
-					if err := os.RemoveAll(filepath.Join(c.Root, fmt.Sprintf("sys/devices/system/cpu/cpufreq/policy%d/stats", i))); err != nil {
+			noStats := strings.HasSuffix(tc.name, "no-stats")
+			for i := 0; i < 2; i++ {
+				base := filepath.Join(c.Root, fmt.Sprintf("sys/devices/system/cpu/cpufreq/policy%d", i))
+				if err := os.WriteFile(filepath.Join(base, "scaling_cur_freq"), []byte(strconv.Itoa(tc.idle)), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if noStats {
+					if err := os.RemoveAll(filepath.Join(base, "stats")); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -479,7 +488,7 @@ func TestPlatformFrequencyTransitions(t *testing.T) {
 					if err := os.WriteFile(filepath.Join(base, "scaling_cur_freq"), []byte(strconv.Itoa(freq)), 0600); err != nil {
 						t.Fatal(err)
 					}
-					if tc.name != "rise-no-stats" {
+					if !noStats {
 						if err := os.WriteFile(filepath.Join(base, "stats/total_trans"), []byte(strconv.Itoa(tc.transitions)), 0600); err != nil {
 							t.Fatal(err)
 						}
@@ -491,6 +500,69 @@ func TestPlatformFrequencyTransitions(t *testing.T) {
 			})
 			if result.Status != tc.status || elapsed != 4500*time.Millisecond || !strings.Contains(result.Detail, "policy0 min/idle/peak/after=") || !strings.Contains(result.Detail, "policy1 min/idle/peak/after=") {
 				t.Fatalf("%+v; delay=%v", result, elapsed)
+			}
+			if tc.status == "blocked" && !strings.Contains(result.Detail, "started at policy maximum") {
+				t.Fatalf("missing measurement prerequisite: %+v", result)
+			}
+		})
+	}
+}
+
+func TestPlatformFrequencyMixedPolicies(t *testing.T) {
+	for _, tc := range []struct {
+		name, status              string
+		blockedCPU                int
+		unreadable, siblingPassed bool
+	}{
+		{"ceiling-first", "fail", 0, false, false},
+		{"ceiling-last", "fail", 1, false, false},
+		{"unreadable-first", "fail", 0, true, false},
+		{"unreadable-last", "fail", 1, true, false},
+		{"stats-before-ceiling", "blocked", 1, false, true},
+		{"stats-after-ceiling", "blocked", 0, false, true},
+		{"stats-before-unreadable", "blocked", 1, true, true},
+		{"stats-after-unreadable", "blocked", 0, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := platformFrequencyFixture(t, 2)
+			base := filepath.Join(c.Root, fmt.Sprintf("sys/devices/system/cpu/cpufreq/policy%d", tc.blockedCPU))
+			if !tc.unreadable {
+				if err := os.WriteFile(filepath.Join(base, "scaling_cur_freq"), []byte("1800000"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.siblingPassed {
+				sibling := filepath.Join(c.Root, fmt.Sprintf("sys/devices/system/cpu/cpufreq/policy%d/scaling_cur_freq", 1-tc.blockedCPU))
+				if err := os.WriteFile(sibling, []byte("1800000"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			c.Run = func(args ...string) (string, error) {
+				if args[0] == "sh" {
+					return "", nil
+				}
+				if args[0] != "taskset" {
+					return "", errors.New("unexpected command")
+				}
+				return "", platformTimeoutExit{}
+			}
+			calls := 0
+			result := platformCPUTransitionsWithSleep(c, func(time.Duration) {
+				calls++
+				if calls == 1 && tc.unreadable {
+					if err := os.Remove(filepath.Join(base, "scaling_cur_freq")); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if calls == 1 && tc.siblingPassed {
+					sibling := filepath.Join(c.Root, fmt.Sprintf("sys/devices/system/cpu/cpufreq/policy%d/stats/total_trans", 1-tc.blockedCPU))
+					if err := os.WriteFile(sibling, []byte("12"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+			})
+			if result.Status != tc.status || calls != 12 {
+				t.Fatalf("wrong mixed-policy outcome: %+v; samples=%d", result, calls)
 			}
 		})
 	}
