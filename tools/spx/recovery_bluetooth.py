@@ -7,7 +7,7 @@ import re
 import subprocess
 import time
 
-PRIVATE = Path('/usr/local/libexec/spx-bluetooth')
+PRIVATE = Path(__file__).resolve().parent
 CONFIG = Path('/etc/spx-bluetooth/address')
 RFKILL = Path('/sys/class/rfkill')
 
