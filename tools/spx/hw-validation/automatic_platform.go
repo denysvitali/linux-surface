@@ -171,9 +171,9 @@ func platformCPUTransitionsWithSleep(c *AutoContext, sleep func(time.Duration)) 
 		return platformBlocked(id, "No readable cpufreq policies")
 	}
 	type policy struct {
-		path, cpu                           string
-		min, idle, peak, after, transitions int64
-		hasTransitions                      bool
+		path, cpu                                string
+		min, max, idle, peak, after, transitions int64
+		hasTransitions, unreadable               bool
 	}
 	policies := make([]policy, 0, len(paths))
 	for _, path := range paths {
@@ -200,7 +200,7 @@ func platformCPUTransitionsWithSleep(c *AutoContext, sleep func(time.Duration)) 
 		if _, err := c.Read(path + "/stats/time_in_state"); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return platformBlocked(id, filepath.Base(path)+" time-in-state statistics unreadable")
 		}
-		policies = append(policies, policy{path: path, cpu: cpu, min: low, idle: idle, peak: idle, after: idle, transitions: transitions, hasTransitions: err == nil})
+		policies = append(policies, policy{path: path, cpu: cpu, min: low, max: high, idle: idle, peak: idle, after: idle, transitions: transitions, hasTransitions: err == nil})
 	}
 	if _, err := c.Command("sh", "-c", "command -v taskset >/dev/null && command -v timeout >/dev/null && command -v sh >/dev/null"); err != nil {
 		return platformBlocked(id, "taskset/timeout/sh tools unavailable; no load started")
@@ -217,13 +217,12 @@ func platformCPUTransitionsWithSleep(c *AutoContext, sleep func(time.Duration)) 
 			finished <- err
 		}(p.cpu)
 	}
-	unreadable := false
 	for sample := 0; sample < 6; sample++ {
 		sleep(250 * time.Millisecond)
 		for i := range policies {
 			freq, err := platformInt(c, policies[i].path+"/scaling_cur_freq")
 			if err != nil || freq <= 0 {
-				unreadable = true
+				policies[i].unreadable = true
 			} else if freq > policies[i].peak {
 				policies[i].peak = freq
 			}
@@ -242,27 +241,39 @@ func platformCPUTransitionsWithSleep(c *AutoContext, sleep func(time.Duration)) 
 		for i := range policies {
 			freq, err := platformInt(c, policies[i].path+"/scaling_cur_freq")
 			if err != nil || freq <= 0 {
-				unreadable = true
+				policies[i].unreadable = true
 			} else if sample == 0 || freq < policies[i].after {
 				policies[i].after = freq
 			}
 		}
 	}
 	status := "pass"
+	unreadable := false
 	var details []string
 	for _, p := range policies {
 		transitions, err := platformInt(c, p.path+"/stats/total_trans")
 		increased := p.hasTransitions && err == nil && transitions > p.transitions
 		if p.hasTransitions && err != nil {
-			unreadable = true
+			p.unreadable = true
 		}
-		if !increased && !(p.peak > p.idle && p.after < p.peak) {
-			status = "fail"
+		if p.unreadable {
+			unreadable = true
+			if status != "fail" {
+				status = "blocked"
+			}
+		} else if !increased && !(p.peak > p.idle && p.after < p.peak) {
+			if p.idle == p.max {
+				if status != "fail" {
+					status = "blocked"
+				}
+				details = append(details, filepath.Base(p.path)+" started at policy maximum; no headroom to measure a frequency rise; idle baseline unavailable")
+			} else {
+				status = "fail"
+			}
 		}
 		details = append(details, fmt.Sprintf("%s min/idle/peak/after=%d/%d/%d/%d kHz; total_trans increased=%t", filepath.Base(p.path), p.min, p.idle, p.peak, p.after, increased))
 	}
 	if unreadable {
-		status = "blocked"
 		details = append(details, "frequency sample or previously available transition statistics became unreadable/invalid")
 	}
 	return platformResult(id, status, strings.Join(details, "; ")+"; 1.5s pinned load per policy in parallel, 3s idle sampling; no sysfs writes, governor/limit changes, thermal or battery test")
