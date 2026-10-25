@@ -12,13 +12,24 @@ import sys
 import time
 
 HERE = Path(__file__).resolve().parent
-PRIVATE = Path('/usr/local/lib/spx-boot-diagnostics')
+LAYOUTS = {
+    'standalone': Path('/usr/local/lib/spx-boot-diagnostics'),
+    'packaged': Path('/usr/lib/spx-boot-tools'),
+}
 CONFIG = Path('/etc/spx/hw-validation.json')
 BASE = Path('/var/lib/spx-boot-diagnostics')
 UNIT = 'spx-hw-validation.service'
 DEFERRED = 75
 DEFAULT_NETWORK_WAIT_SECONDS = 90
 MAX_NETWORK_WAIT_SECONDS = 300
+
+
+def layout_directory(settings, selected=None):
+    layout = selected if selected is not None else settings.get('layout')
+    if not isinstance(layout, str) or layout not in LAYOUTS:
+        raise ValueError('select --layout standalone or packaged explicitly; '
+                         'no installed layout is assumed')
+    return layout, LAYOUTS[layout]
 
 
 def atomic_text(path, text, mode=0o600):
@@ -261,36 +272,58 @@ def replace_asset(source, target, mode):
     temporary.replace(target)
 
 
-def install(repo, binary=None, root=Path('/'), control=subprocess.run, media=None, storage_dir=None, user=None, media_dir=None, camera_capture=None):
-    """Stage prebuilt userspace only. Enable for later boots; never start tests."""
+def install(repo, binary=None, root=Path('/'), control=subprocess.run, media=None, storage_dir=None, user=None, media_dir=None, camera_capture=None, layout=None):
+    """Configure one explicit installed layout; enable later boots, never start tests."""
     repo = repo.resolve()
     if not (repo / 'tools/spx/hw-validation/go.mod').is_file():
         raise ValueError('repo must contain tools/spx/hw-validation/go.mod')
-    if binary is not None and (not binary.is_file() or not os.access(binary, os.X_OK)):
-        raise ValueError('--binary must name a prebuilt executable; the installer does not build it')
-    private = root / PRIVATE.relative_to('/')
-    units = root / 'etc/systemd/system'
-    replace_asset(HERE / 'automatic-validation.py', private / 'automatic-validation.py', 0o755)
-    # Retain the source unit beside the wrapper so an installed copy can reinstall.
-    replace_asset(HERE / UNIT, private / UNIT, 0o644)
-    replace_asset(HERE / UNIT, units / UNIT, 0o644)
-    if binary is not None:
-        replace_asset(binary, private / 'spx-hw-validation', 0o755)
     config = root / CONFIG.relative_to('/')
-    config.parent.mkdir(parents=True, exist_ok=True)
-    settings = dict(repo=str(repo))
     try:
         retained = json.loads(config.read_text())
-        retained_media = retained.get('media')
-        retained_media_dir = retained.get('media_dir')
-        retained_storage = retained.get('storage_dir')
-        retained_user = retained.get('user')
-        retained_network_wait = retained.get('network_wait_seconds', DEFAULT_NETWORK_WAIT_SECONDS)
-        retained_camera_capture = retained.get('camera_capture') is True
-    except (OSError, ValueError, AttributeError):
-        retained_media, retained_storage, retained_user, retained_media_dir = None, None, None, None
-        retained_network_wait = DEFAULT_NETWORK_WAIT_SECONDS
-        retained_camera_capture = False
+        if not isinstance(retained, dict):
+            raise ValueError('validator settings must be an object')
+    except FileNotFoundError:
+        retained = {}
+    selected, directory = layout_directory(retained, layout)
+    private = root / directory.relative_to('/')
+    units = root / 'etc/systemd/system'
+    if selected == 'packaged':
+        if binary is not None:
+            raise ValueError('--binary cannot replace a package-owned validator; rebuild/install spx-boot-tools')
+        if (not (private / 'automatic-validation.py').is_file()
+                or not (private / 'spx-hw-validation').is_file()
+                or not os.access(private / 'spx-hw-validation', os.X_OK)):
+            raise ValueError('install spx-boot-tools before selecting the packaged layout')
+        unit = (units / UNIT).read_text()
+        commands = (f'ExecStart=/usr/bin/python3 -B {directory}/automatic-validation.py run',
+                    f'ExecStopPost=/usr/bin/python3 -B {directory}/automatic-validation.py finalize')
+        if any(command not in unit.splitlines() for command in commands):
+            raise ValueError('migrate the spx-system-config validator unit before selecting the packaged layout')
+    else:
+        if binary is not None and (not binary.is_file() or not os.access(binary, os.X_OK)):
+            raise ValueError('--binary must name a prebuilt executable; the installer does not build it')
+        source_unit = HERE / UNIT
+        unit = source_unit.read_text().replace(str(LAYOUTS['packaged']), str(directory))
+        target_unit = units / UNIT
+        if target_unit.exists() and target_unit.read_text() != unit:
+            raise ValueError('existing validator unit differs; migrate its owning package/config explicitly')
+        replace_asset(HERE / 'automatic-validation.py', private / 'automatic-validation.py', 0o755)
+        # The standalone unit copy is private; the /etc unit may be package-owned.
+        (private / UNIT).parent.mkdir(parents=True, exist_ok=True)
+        atomic_text(private / UNIT, unit, 0o644)
+        if not target_unit.exists():
+            target_unit.parent.mkdir(parents=True, exist_ok=True)
+            atomic_text(target_unit, unit, 0o644)
+        if binary is not None:
+            replace_asset(binary, private / 'spx-hw-validation', 0o755)
+    config.parent.mkdir(parents=True, exist_ok=True)
+    settings = dict(repo=str(repo), layout=selected)
+    retained_media = retained.get('media')
+    retained_media_dir = retained.get('media_dir')
+    retained_storage = retained.get('storage_dir')
+    retained_user = retained.get('user')
+    retained_network_wait = retained.get('network_wait_seconds', DEFAULT_NETWORK_WAIT_SECONDS)
+    retained_camera_capture = retained.get('camera_capture') is True
     settings['camera_capture'] = retained_camera_capture if camera_capture is None else camera_capture is True
     settings['storage_dir'] = str(storage_dir) if storage_dir else retained_storage or str(BASE)
     settings['network_wait_seconds'] = max(0, min(MAX_NETWORK_WAIT_SECONDS,
@@ -327,7 +360,8 @@ def main(argv=None):
     sub = parser.add_subparsers(dest='action', required=True)
     stage = sub.add_parser('install', help='install a prebuilt validator and enable future boot checks')
     stage.add_argument('--repo', type=Path, required=True)
-    stage.add_argument('--binary', type=Path)
+    stage.add_argument('--binary', type=Path, help='prebuilt validator for the standalone layout only')
+    stage.add_argument('--layout', choices=tuple(LAYOUTS), help='explicit installed layout; otherwise retain the configured selection')
     stage.add_argument('--media', type=Path, help='explicit verified decoder fixture, never captured media')
     stage.add_argument('--media-dir', type=Path, help='directory of verified per-codec decoder fixtures')
     stage.add_argument('--storage-dir', type=Path, help='bounded disposable I/O directory; default persistent diagnostic directory')
@@ -339,18 +373,21 @@ def main(argv=None):
     run = sub.add_parser('run', help='run once on the current boot (camera capture follows settings; microphone disabled)')
     run.add_argument('--config', type=Path, default=CONFIG)
     run.add_argument('--base', type=Path, default=BASE)
-    run.add_argument('--runner', type=Path, default=PRIVATE / 'spx-hw-validation')
+    run.add_argument('--runner', type=Path, help='explicit runner override; otherwise use the configured layout')
     check = sub.add_parser('verify', help='require this boot\'s complete canonical report; no tests run')
     check.add_argument('--config', type=Path, default=CONFIG)
     check.add_argument('--base', type=Path, default=BASE)
-    check.add_argument('--runner', type=Path, default=PRIVATE / 'spx-hw-validation')
+    check.add_argument('--runner', type=Path, help='explicit runner override; otherwise use the configured layout')
     final = sub.add_parser('finalize', help='record an interrupted or crashed wrapper without rerunning checks')
     final.add_argument('--base', type=Path, default=BASE)
     args = parser.parse_args(argv)
     if args.action == 'install':
         if args.root == Path('/') and os.geteuid() != 0:
             parser.error('installation needs root')
-        install(args.repo, args.binary, args.root, media=args.media, storage_dir=args.storage_dir, user=args.user, media_dir=args.media_dir, camera_capture=args.camera_capture)
+        try:
+            install(args.repo, args.binary, args.root, media=args.media, storage_dir=args.storage_dir, user=args.user, media_dir=args.media_dir, camera_capture=args.camera_capture, layout=args.layout)
+        except (OSError, ValueError) as exc:
+            parser.error(str(exc))
         return 0
     boot_id = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
     kernel = Path('/proc/sys/kernel/osrelease').read_text().strip()
@@ -365,6 +402,7 @@ def main(argv=None):
     media, storage_dir, user, media_dir = None, args.base, None, None
     network_wait_seconds = DEFAULT_NETWORK_WAIT_SECONDS
     camera_capture = False
+    settings = {}
     try:
         settings = json.loads(args.config.read_text())
         repo = Path(settings['repo'])
@@ -378,12 +416,25 @@ def main(argv=None):
             user = settings['user']
         network_wait_seconds = settings.get('network_wait_seconds', DEFAULT_NETWORK_WAIT_SECONDS)
         camera_capture = settings.get('camera_capture') is True
-    except (OSError, ValueError, KeyError, TypeError):
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
         repo = None
     try:
+        runner = args.runner
+        if runner is None:
+            try:
+                _, directory = layout_directory(settings)
+                runner = directory / 'spx-hw-validation'
+            except (ValueError, AttributeError) as exc:
+                if args.action == 'verify':
+                    print(f'Automatic validator layout is unavailable: {exc}', file=sys.stderr, flush=True)
+                else:
+                    out = args.base / 'boots' / boot_id / 'hw-validation'
+                    out.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    runner_status(out, boot_id, kernel, 'blocked', str(exc))
+                return 1
         if args.action == 'verify':
-            return verify(args.base, args.runner, repo, boot_id)
-        return run_once(args.base, args.runner, repo, boot_id, kernel,
+            return verify(args.base, runner, repo, boot_id)
+        return run_once(args.base, runner, repo, boot_id, kernel,
                         media=media, storage_dir=storage_dir, user=user, media_dir=media_dir,
                         network_wait_seconds=network_wait_seconds, camera_capture=camera_capture)
     except OSError as exc:

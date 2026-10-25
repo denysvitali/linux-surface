@@ -8,8 +8,8 @@ StartLimitIntervalSec=0
 [Service]
 Type=exec
 Environment=PYTHONDONTWRITEBYTECODE=1
-ExecStart=/usr/bin/python3 -B /usr/local/lib/spx-boot-diagnostics/automatic-validation.py run
-ExecStopPost=/usr/bin/python3 -B /usr/local/lib/spx-boot-diagnostics/automatic-validation.py finalize
+ExecStart=/usr/bin/python3 -B /usr/lib/spx-boot-tools/automatic-validation.py run
+ExecStopPost=/usr/bin/python3 -B /usr/lib/spx-boot-tools/automatic-validation.py finalize
 UMask=0077
 Nice=10
 RuntimeMaxSec=15min
