@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 # SPDX-License-Identifier: GPL-2.0-only
 """Guard against rewriting a configured radio or changing its power preference."""
+import runpy
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -17,6 +18,13 @@ hci0: Unconfigured controller
 
 
 class Guards(unittest.TestCase):
+    def test_lock_directory_follows_relocated_helper(self):
+        with TemporaryDirectory() as directory:
+            relocated = Path(directory) / 'recovery.py'
+            relocated.write_text(Path(repair.__file__).read_text())
+            namespace = runpy.run_path(str(relocated))
+            self.assertEqual(namespace['PRIVATE'], relocated.parent)
+
     def test_restores_original_rfkill_even_when_repair_fails(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
