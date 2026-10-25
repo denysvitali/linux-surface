@@ -290,7 +290,7 @@ class AutomaticBootTests(unittest.TestCase):
         def forbidden(*args, **kwargs):
             self.fail('staging root must not invoke systemctl or functional commands')
         media = self.root / 'verified-fixture.h264'
-        hook.install(self.repo, self.binary, root, forbidden, media=media, user="fixtureuser", media_dir=self.root / "media-dir")
+        hook.install(self.repo, self.binary, root, forbidden, media=media, user="fixtureuser", media_dir=self.root / "media-dir", layout="standalone")
         private = root / 'usr/local/lib/spx-boot-diagnostics'
         self.assertEqual((private / 'spx-hw-validation').read_text(), self.binary.read_text())
         self.assertEqual((private / 'spx-hw-validation').stat().st_mode & 0o777, 0o755)
@@ -308,7 +308,11 @@ class AutomaticBootTests(unittest.TestCase):
         self.assertNotIn('ConditionKernelCommandLine', unit['Unit'])
         self.assertEqual(unit['Unit']['Wants'], 'network-online.target')
         self.assertIn('network-online.target', unit['Unit']['After'])
+        unit_path = root / 'etc/systemd/system/spx-hw-validation.service'
+        unit_inode = unit_path.stat().st_ino
         hook.install(self.repo, None, root, forbidden)
+        self.assertEqual(unit_path.stat().st_ino, unit_inode)
+        self.assertIn('/usr/local/lib/spx-boot-diagnostics/automatic-validation.py run', unit_path.read_text())
         self.assertTrue((private / 'spx-hw-validation').is_file())
         config = json.loads((root / 'etc/spx/hw-validation.json').read_text())
         self.assertEqual(config['network_wait_seconds'], 90)
@@ -325,7 +329,7 @@ class AutomaticBootTests(unittest.TestCase):
         config = root / 'etc/spx/hw-validation.json'
         def install(*flags):
             self.assertEqual(hook.main(['install', '--repo', str(self.repo),
-                                        '--root', str(root), *flags]), 0)
+                                        '--root', str(root), '--layout', 'standalone', *flags]), 0)
             return json.loads(config.read_text())
         self.assertIs(install()['camera_capture'], False)
         self.assertIs(install('--camera-capture')['camera_capture'], True)
@@ -362,7 +366,7 @@ class AutomaticBootTests(unittest.TestCase):
     def test_run_reads_only_boolean_camera_setting(self):
         config = self.root / 'settings.json'
         for value in (True, False, 'true', 1, None):
-            config.write_text(json.dumps(dict(repo=str(self.repo), camera_capture=value,
+            config.write_text(json.dumps(dict(repo=str(self.repo), layout='standalone', camera_capture=value,
                                              microphone_capture=True, capture=True)))
             # Fake boot identity as well as the runner; no live boot reads.
             def read(path):
@@ -374,32 +378,156 @@ class AutomaticBootTests(unittest.TestCase):
                 self.assertIs(run.call_args.kwargs['camera_capture'], value is True)
                 self.assertNotIn('microphone_capture', run.call_args.kwargs)
 
-    def test_trial_install_and_promotion_only_install_hook(self):
+    def test_trial_install_and_verify_share_configured_layout(self):
         trial_path = HERE.parent / 'trial.py'
         trial_spec = importlib.util.spec_from_file_location('trial_for_automatic_fixture', trial_path)
         trial = importlib.util.module_from_spec(trial_spec)
         trial_spec.loader.exec_module(trial)
-        source = trial_path.read_text()
-        self.assertEqual(source.count('    ensure_automatic_validation()\n'), 2)
         commands = []
         def capture(args, **kwargs):
             commands.append(args)
             return subprocess.CompletedProcess(args, 0)
-        with patch.object(trial, 'HERE', HERE.parent), patch.object(trial.subprocess, 'run', capture):
+        with patch.object(trial, 'REPO', self.repo), \
+                patch.object(trial, 'HERE', self.root / 'relocated-trial'), \
+                patch.object(trial.subprocess, 'run', capture):
             trial.ensure_automatic_validation()
-        self.assertEqual(len(commands), 1)
-        self.assertEqual(commands[0][3:], ['install', '--repo', str(trial.REPO)])
-        self.assertNotIn('start', commands[0])
-        with patch.object(trial, 'HERE', HERE), patch.object(trial.subprocess, 'run', capture):
-            trial.ensure_automatic_validation()
-        self.assertEqual(commands[1][2], str(HERE / 'automatic-validation.py'))
+            trial.require_automatic_validation()
+        helper = str(self.repo / 'tools/spx/boot-diagnostics/automatic-validation.py')
+        self.assertEqual(commands, [
+            ['/usr/bin/python3', '-B', helper, 'install', '--repo', str(self.repo)],
+            ['/usr/bin/python3', '-B', helper, 'verify']])
+        # Neither action overrides the persisted layout or updates a binary.
+        self.assertTrue(all('--layout' not in command and '--binary' not in command
+                            and '--runner' not in command for command in commands))
+
+    def test_packaged_install_and_reinstall_preserve_owned_files_and_settings(self):
+        module = self.repo / 'tools/spx/hw-validation/go.mod'
+        module.parent.mkdir(parents=True)
+        module.write_text('module fixture\ngo 1.22\n')
+        root = self.root / 'stage'
+        private = root / 'usr/lib/spx-boot-tools'
+        private.mkdir(parents=True)
+        wrapper = private / 'automatic-validation.py'
+        wrapper.write_text('package-owned wrapper')
+        runner = private / 'spx-hw-validation'
+        runner.write_text('package-owned executable')
+        runner.chmod(0o755)
+        unit = root / 'etc/systemd/system' / hook.UNIT
+        unit.parent.mkdir(parents=True)
+        unit.write_text((HERE / hook.UNIT).read_text())
+        owned = {path: (path.read_bytes(), path.stat().st_ino)
+                 for path in (wrapper, runner, unit)}
+        config = root / 'etc/spx/hw-validation.json'
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps(dict(camera_capture=True, user='fixtureuser',
+            media='/fixture.h264', media_dir='/fixtures', storage_dir='/storage',
+            network_wait_seconds=7)))
+        def forbidden(*args, **kwargs):
+            self.fail('staging package configuration must not execute anything')
+        hook.install(self.repo, root=root, control=forbidden, layout='packaged')
+        settings = json.loads(config.read_text())
+        self.assertEqual(settings['layout'], 'packaged')
+        self.assertIs(settings['camera_capture'], True)
+        self.assertEqual(settings['user'], 'fixtureuser')
+        self.assertEqual(settings['media'], '/fixture.h264')
+        self.assertEqual(settings['media_dir'], '/fixtures')
+        self.assertEqual(settings['storage_dir'], '/storage')
+        self.assertEqual(settings['network_wait_seconds'], 7)
+        hook.install(self.repo, root=root, control=forbidden)
+        self.assertEqual(json.loads(config.read_text()), settings)
+        for path, expected in owned.items():
+            self.assertEqual((path.read_bytes(), path.stat().st_ino), expected)
+        self.assertTrue((unit.parent / 'multi-user.target.wants' / hook.UNIT).is_symlink())
+        self.assertFalse((root / 'usr/local').exists())
+        with self.assertRaisesRegex(ValueError, 'package-owned'):
+            hook.install(self.repo, self.binary, root=root, control=forbidden)
+        self.assertEqual(json.loads(config.read_text()), settings)
+
+    def test_layout_selection_is_explicit_and_package_prerequisites_fail_closed(self):
+        module = self.repo / 'tools/spx/hw-validation/go.mod'
+        module.parent.mkdir(parents=True)
+        module.write_text('module fixture\ngo 1.22\n')
+        root = self.root / 'stage'
+        config = root / 'etc/spx/hw-validation.json'
+        def forbidden(*args, **kwargs):
+            self.fail('failed installation must not execute commands')
+        for settings in ({}, {'layout': 'unknown'}, {'layout': None}):
+            config.parent.mkdir(parents=True, exist_ok=True)
+            config.write_text(json.dumps(settings))
+            before = config.read_bytes()
+            with self.assertRaisesRegex(ValueError, 'no installed layout is assumed'):
+                hook.install(self.repo, root=root, control=forbidden)
+            self.assertEqual(config.read_bytes(), before)
+            self.assertFalse((root / 'usr').exists())
+        with self.assertRaisesRegex(ValueError, 'install spx-boot-tools'):
+            hook.install(self.repo, root=root, control=forbidden, layout='packaged')
+        private = root / 'usr/lib/spx-boot-tools'
+        private.mkdir(parents=True)
+        (private / 'automatic-validation.py').write_text('package wrapper')
+        (private / 'spx-hw-validation').write_text('package binary')
+        (private / 'spx-hw-validation').chmod(0o755)
+        unit = root / 'etc/systemd/system' / hook.UNIT
+        unit.parent.mkdir(parents=True)
+        unit.write_text((HERE / hook.UNIT).read_text().replace(
+            '/usr/lib/spx-boot-tools', '/usr/local/lib/spx-boot-diagnostics'))
+        before = config.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'migrate the spx-system-config'):
+            hook.install(self.repo, root=root, control=forbidden, layout='packaged')
+        self.assertEqual(config.read_bytes(), before)
+        self.assertFalse((unit.parent / 'multi-user.target.wants').exists())
+
+    def test_standalone_install_refuses_to_replace_a_packaged_unit(self):
+        module = self.repo / 'tools/spx/hw-validation/go.mod'
+        module.parent.mkdir(parents=True)
+        module.write_text('module fixture\ngo 1.22\n')
+        root = self.root / 'stage'
+        unit = root / 'etc/systemd/system' / hook.UNIT
+        unit.parent.mkdir(parents=True)
+        unit.write_text((HERE / hook.UNIT).read_text())
+        with self.assertRaisesRegex(ValueError, 'owning package'):
+            hook.install(self.repo, self.binary, root=root, layout='standalone')
+        self.assertFalse((root / 'usr/local').exists())
+        self.assertFalse((root / 'etc/spx/hw-validation.json').exists())
+        self.assertEqual(unit.read_text(), (HERE / hook.UNIT).read_text())
+
+    def test_run_and_verify_resolve_the_same_runner_without_host_reads(self):
+        config = self.root / 'settings.json'
+        for layout, directory in hook.LAYOUTS.items():
+            config.write_text(json.dumps(dict(repo=str(self.repo), layout=layout)))
+            def read(path):
+                return config.read_bytes().decode() if path == config else 'fixture-identity'
+            with patch.object(Path, 'read_text', read), \
+                    patch.object(hook, 'run_once', return_value=0) as run, \
+                    patch.object(hook, 'verify', return_value=0) as verify:
+                self.assertEqual(hook.main(['run', '--config', str(config)]), 0)
+                self.assertEqual(hook.main(['verify', '--config', str(config)]), 0)
+                expected = directory / 'spx-hw-validation'
+                self.assertEqual(run.call_args.args[1], expected)
+                self.assertEqual(verify.call_args.args[1], expected)
+                self.assertEqual(run.call_args.args[2], self.repo)
+                self.assertEqual(verify.call_args.args[2], self.repo)
+        # Explicit --runner remains useful for inert package acceptance, without
+        # silently selecting either installed layout when the setting is absent.
+        config.write_text(json.dumps(dict(repo=str(self.repo))))
+        with patch.object(Path, 'read_text', read), \
+                patch.object(hook, 'run_once', return_value=0) as run, \
+                patch.object(hook, 'verify', return_value=0) as verify:
+            flags = ['--config', str(config), '--base', str(self.base)]
+            self.assertEqual(hook.main(['run', *flags]), 1)
+            self.assertEqual(hook.main(['verify', *flags]), 1)
+            run.assert_not_called()
+            verify.assert_not_called()
+            self.assertEqual(hook.main(['verify', *flags, '--runner', str(self.binary)]), 0)
+            self.assertEqual(verify.call_args.args[1], self.binary)
+        status = json.loads((self.base / 'boots/fixture-identity/hw-validation/runner.json').read_text())
+        self.assertEqual(status['status'], 'blocked')
 
     def test_missing_binary_install_preserves_explicit_boot_failure(self):
         module = self.repo / 'tools/spx/hw-validation/go.mod'
         module.parent.mkdir(parents=True)
         module.write_text('module fixture\ngo 1.22\n')
         root = self.root / 'stage'
-        hook.install(self.repo, root=root, control=lambda *a, **kw: self.fail('systemctl'))
+        hook.install(self.repo, root=root, control=lambda *a, **kw: self.fail('systemctl'), layout='standalone')
         binary = root / 'usr/local/lib/spx-boot-diagnostics/spx-hw-validation'
         self.assertFalse(binary.exists())
         self.assertEqual(self.run_hook(runner=binary), 1)

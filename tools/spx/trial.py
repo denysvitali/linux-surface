@@ -489,21 +489,16 @@ def verify_retained_modules(prepared, modules):
 
 
 def ensure_automatic_validation():
-    """Enable one reusable per-boot runner; never start tests during installation."""
-    installer = HERE / 'boot-diagnostics/automatic-validation.py'
-    if not installer.is_file():
-        installer = HERE / 'automatic-validation.py'
+    """Retain the configured validator layout; never replace package-owned assets."""
+    installer = REPO / 'tools/spx/boot-diagnostics/automatic-validation.py'
     subprocess.run(['/usr/bin/python3', '-B', str(installer), 'install',
                     '--repo', str(REPO)], check=True)
 
 
 def require_automatic_validation():
-    """Refuse a new boot selection without this boot's complete hardware report."""
-    helper = HERE / 'boot-diagnostics/automatic-validation.py'
-    if not helper.is_file():
-        helper = HERE / 'automatic-validation.py'
+    """Use the boot runner selected by the same persisted installed-layout setting."""
+    helper = REPO / 'tools/spx/boot-diagnostics/automatic-validation.py'
     subprocess.run(['/usr/bin/python3', '-B', str(helper), 'verify'], check=True)
-
 
 AUDIO_HELPERS = ('audio.py', 'acoustic.py', 'desktop_controls.py')
 
