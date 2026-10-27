@@ -1,5 +1,0 @@
-{
-  "reason": "Whole-text equality also compared AT/AU documentation strings; every pure camera function AST is unchanged",
-  "rejected_before_install": true,
-  "boot_selected": false
-}

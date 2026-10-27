@@ -194,3 +194,6 @@ sphinx_*/
 
 # bc language scripts (not LLVM bitcode)
 !kernel/time/timeconst.bc
+
+# Userspace packaging moved to the spx-linux repository; local build cache only.
+/tools/spx/libcamera/

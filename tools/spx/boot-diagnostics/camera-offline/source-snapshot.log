@@ -1,5 +1,0 @@
-$ rsync -a --from0 --files-from=/var/tmp/spx-camera-config-20260922-6x_9qvel/tracked-files.nul ./ /var/tmp/spx-camera-config-20260922-6x_9qvel/source/
-rsync error: received SIGINT, SIGTERM, or SIGHUP (code 20) at rsync.c(874) [sender=3.5.0-g471e17dc]
-rsync error: received SIGUSR1 (code 19) at main.c(1660) [generator=3.5.0-g471e17dc]
-
-Exit status: 20; seconds: 163.89

@@ -26,6 +26,9 @@
 #define OV7251_SC_MODE_SELECT_SW_STANDBY	0x0
 #define OV7251_SC_MODE_SELECT_STREAMING		0x1
 
+#define OV7251_SC_REG05			0x3005
+#define OV7251_SC_REG05_STROBE_OE	BIT(3)
+
 #define OV7251_CHIP_ID_HIGH		0x300a
 #define OV7251_CHIP_ID_HIGH_BYTE	0x77
 #define OV7251_CHIP_ID_LOW		0x300b
@@ -40,6 +43,11 @@
 #define OV7251_TIMING_FORMAT1_VFLIP	BIT(2)
 #define OV7251_TIMING_FORMAT2		0x3821
 #define OV7251_TIMING_FORMAT2_MIRROR	BIT(2)
+#define OV7251_STROBE_REG81		0x3b81
+#define OV7251_STROBE_REG8B		0x3b8b
+#define OV7251_STROBE_REG8E		0x3b8e
+#define OV7251_STROBE_REG8F		0x3b8f
+#define OV7251_STROBE_REG96		0x3b96
 #define OV7251_PRE_ISP_00		0x5e00
 #define OV7251_PRE_ISP_00_TEST_PATTERN	BIT(7)
 #define OV7251_PLL1_PRE_DIV_REG		0x30b4
@@ -1008,6 +1016,46 @@ static int ov7251_set_test_pattern(struct ov7251 *ov7251, s32 value)
 	return ret;
 }
 
+static int ov7251_set_strobe(struct ov7251 *ov7251, s32 value)
+{
+	/*
+	 * Enabled values come from the Windows configuration for the Surface
+	 * Pro X IR module. Default off preserves behaviour unless userspace
+	 * enables the strobe output.
+	 */
+	const struct reg_value settings[] = {
+		{ OV7251_STROBE_REG81, value ? 0xaa : 0xa5 },
+		{ OV7251_STROBE_REG8B, value ? 0x00 : 0x05 },
+		{ OV7251_STROBE_REG8E, value ? 0x03 : 0x00 },
+		{ OV7251_STROBE_REG8F, value ? 0x08 : 0x1a },
+		{ OV7251_STROBE_REG96, value ? 0xc0 : 0x40 },
+	};
+	u8 val;
+	int ret;
+
+	ret = ov7251_read_reg(ov7251, OV7251_SC_REG05, &val);
+	if (ret < 0)
+		return ret;
+
+	if (!value) {
+		val &= ~OV7251_SC_REG05_STROBE_OE;
+		ret = ov7251_write_reg(ov7251, OV7251_SC_REG05, val);
+		if (ret < 0)
+			return ret;
+	}
+
+	ret = ov7251_set_register_array(ov7251, settings, ARRAY_SIZE(settings));
+	if (ret < 0)
+		return ret;
+
+	if (value) {
+		val |= OV7251_SC_REG05_STROBE_OE;
+		ret = ov7251_write_reg(ov7251, OV7251_SC_REG05, val);
+	}
+
+	return ret;
+}
+
 static const char * const ov7251_test_pattern_menu[] = {
 	"Disabled",
 	"Vertical Pattern Bars",
@@ -1066,6 +1114,9 @@ static int ov7251_s_ctrl(struct v4l2_ctrl *ctrl)
 		break;
 	case V4L2_CID_VBLANK:
 		ret = ov7251_vts_configure(ov7251, ctrl->val);
+		break;
+	case V4L2_CID_FLASH_STROBE_OE:
+		ret = ov7251_set_strobe(ov7251, ctrl->val);
 		break;
 	default:
 		ret = -EINVAL;
@@ -1568,13 +1619,15 @@ static int ov7251_init_ctrls(struct ov7251 *ov7251)
 	s64 pixel_rate;
 	int hblank;
 
-	v4l2_ctrl_handler_init(&ov7251->ctrls, 7);
+	v4l2_ctrl_handler_init(&ov7251->ctrls, 8);
 	ov7251->ctrls.lock = &ov7251->lock;
 
 	v4l2_ctrl_new_std(&ov7251->ctrls, &ov7251_ctrl_ops,
 			  V4L2_CID_HFLIP, 0, 1, 1, 0);
 	v4l2_ctrl_new_std(&ov7251->ctrls, &ov7251_ctrl_ops,
 			  V4L2_CID_VFLIP, 0, 1, 1, 0);
+	v4l2_ctrl_new_std(&ov7251->ctrls, &ov7251_ctrl_ops,
+			  V4L2_CID_FLASH_STROBE_OE, 0, 1, 1, 0);
 	ov7251->exposure = v4l2_ctrl_new_std(&ov7251->ctrls, &ov7251_ctrl_ops,
 					     V4L2_CID_EXPOSURE, 1, 32, 1, 32);
 	ov7251->gain = v4l2_ctrl_new_std(&ov7251->ctrls, &ov7251_ctrl_ops,

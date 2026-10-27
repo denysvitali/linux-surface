@@ -1,4 +1,0 @@
-// SPDX-License-Identifier: GPL-2.0-only
-/* OFFLINE REVIEW ONLY. Not a boot target or an overlay. Camera nodes disabled. */
-#include "sc8180x-surface-pro-x.dts"
-#include "spx-camera-v23-disabled.dtsi"
