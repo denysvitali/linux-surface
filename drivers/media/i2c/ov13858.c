@@ -4,6 +4,7 @@
 #include <linux/acpi.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
+#include <linux/dmi.h>
 #include <linux/gpio/consumer.h>
 #include <linux/i2c.h>
 #include <linux/module.h>
@@ -14,6 +15,12 @@
 #include <media/v4l2-device.h>
 #include <media/v4l2-event.h>
 #include <media/v4l2-fwnode.h>
+
+#include "ov13858-focus.h"
+
+static bool spx_focus = true;
+module_param(spx_focus, bool, 0444);
+MODULE_PARM_DESC(spx_focus, "Enable verified Surface Pro X rear module focus");
 
 #define OV13858_REG_VALUE_08BIT		1
 #define OV13858_REG_VALUE_16BIT		2
@@ -1063,6 +1070,8 @@ struct ov13858 {
 	struct v4l2_ctrl *exposure;
 	struct v4l2_ctrl *hflip;
 	struct v4l2_ctrl *vflip;
+	struct v4l2_ctrl *focus_position;
+	struct ov13858_focus focus;
 
 	/* Current mode */
 	const struct ov13858_mode *cur_mode;
@@ -1382,6 +1391,14 @@ static int ov13858_set_ctrl(struct v4l2_ctrl *ctrl)
 
 	ret = 0;
 	switch (ctrl->id) {
+	case V4L2_CID_FOCUS_ABSOLUTE:
+		if (ov13858->focus.active) {
+			ret = ov13858_focus_move(&ov13858->focus, ctrl->val);
+			if (ret)
+				dev_err(ov13858->dev, "focus target %d readback %d error %d\n",
+					ctrl->val, ov13858->focus.last_position, ret);
+		}
+		break;
 	case V4L2_CID_ANALOGUE_GAIN:
 		ret = ov13858_write_reg(ov13858, OV13858_REG_ANALOG_GAIN,
 					OV13858_REG_VALUE_16BIT, ctrl->val);
@@ -1595,6 +1612,13 @@ static int ov13858_start_streaming(struct ov13858 *ov13858)
 	if (ret)
 		return ret;
 
+	if (ov13858->focus.client) {
+		ret = ov13858_focus_start(&ov13858->focus,
+					 ov13858->focus_position->val);
+		if (ret)
+			return ret;
+	}
+
 	return ov13858_write_reg(ov13858, OV13858_REG_MODE_SELECT,
 				 OV13858_REG_VALUE_08BIT,
 				 OV13858_MODE_STREAMING);
@@ -1603,8 +1627,13 @@ static int ov13858_start_streaming(struct ov13858 *ov13858)
 /* Stop streaming */
 static int ov13858_stop_streaming(struct ov13858 *ov13858)
 {
-	return ov13858_write_reg(ov13858, OV13858_REG_MODE_SELECT,
-				 OV13858_REG_VALUE_08BIT, OV13858_MODE_STANDBY);
+	int ret = ov13858_focus_restore(&ov13858->focus);
+	int sensor_ret;
+
+	sensor_ret = ov13858_write_reg(ov13858, OV13858_REG_MODE_SELECT,
+				      OV13858_REG_VALUE_08BIT,
+				      OV13858_MODE_STANDBY);
+	return ret ? ret : sensor_ret;
 }
 
 static void ov13858_stream_failure(struct ov13858 *ov13858, int error)
@@ -1615,6 +1644,10 @@ static void ov13858_stream_failure(struct ov13858 *ov13858, int error)
 		pm_runtime_put(ov13858->dev);
 		return;
 	}
+
+	ret = ov13858_focus_restore(&ov13858->focus);
+	if (ret)
+		dev_err(ov13858->dev, "actuator restoration failed: %d\n", ret);
 
 	/* A failed write may have left the sensor transmitting. */
 	gpiod_set_value_cansleep(ov13858->reset_gpio, 1);
@@ -1811,6 +1844,11 @@ static int ov13858_init_controls(struct ov13858 *ov13858)
 			  OV13858_ANA_GAIN_MIN, OV13858_ANA_GAIN_MAX,
 			  OV13858_ANA_GAIN_STEP, OV13858_ANA_GAIN_DEFAULT);
 
+	if (ov13858->focus.client)
+		ov13858->focus_position = v4l2_ctrl_new_std(
+			ctrl_hdlr, &ov13858_ctrl_ops, V4L2_CID_FOCUS_ABSOLUTE,
+			350, 800, 1, 512);
+
 	/* Digital gain */
 	v4l2_ctrl_new_std(ctrl_hdlr, &ov13858_ctrl_ops, V4L2_CID_DIGITAL_GAIN,
 			  OV13858_DGTL_GAIN_MIN, OV13858_DGTL_GAIN_MAX,
@@ -1857,6 +1895,11 @@ static void ov13858_free_controls(struct ov13858 *ov13858)
 {
 	v4l2_ctrl_handler_free(ov13858->sd.ctrl_handler);
 	mutex_destroy(&ov13858->mutex);
+}
+
+static void ov13858_focus_unregister(void *data)
+{
+	i2c_unregister_device(data);
 }
 
 static int ov13858_probe(struct i2c_client *client)
@@ -1919,6 +1962,21 @@ static int ov13858_probe(struct i2c_client *client)
 		goto error_power_off;
 	}
 
+	if (spx_focus && dmi_match(DMI_PRODUCT_NAME, "Surface Pro X") &&
+	    ov13858->manages_power) {
+		ov13858->focus.client = i2c_new_dummy_device(client->adapter, 0x0c);
+		if (IS_ERR(ov13858->focus.client)) {
+			ret = PTR_ERR(ov13858->focus.client);
+			ov13858->focus.client = NULL;
+			goto error_power_off;
+		}
+		ret = devm_add_action_or_reset(ov13858->dev,
+					       ov13858_focus_unregister,
+					       ov13858->focus.client);
+		if (ret)
+			goto error_power_off;
+	}
+
 	/* Set default mode to max resolution */
 	ov13858->cur_mode = &supported_modes[0];
 
@@ -1979,6 +2037,11 @@ static void ov13858_quiesce(struct ov13858 *ov13858)
 	pm_runtime_disable(ov13858->dev);
 	mutex_lock(&ov13858->mutex);
 	ov13858->shutting_down = true;
+	if (ov13858->focus.saved_valid && ov13858->powered) {
+		ret = ov13858_focus_restore(&ov13858->focus);
+		if (ret)
+			dev_err(ov13858->dev, "actuator restoration failed: %d\n", ret);
+	}
 	ret = ov13858_power_off(ov13858);
 	if (ret)
 		dev_err(ov13858->dev, "power cleanup incomplete: %d\n", ret);
