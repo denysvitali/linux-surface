@@ -6563,6 +6563,45 @@ static int ath10k_mac_tdls_vif_stations_count(struct ieee80211_hw *hw,
 	return data.num_tdls_stations;
 }
 
+/* The Surface Pro X WCN3990 workaround refuses scans while a station is
+ * connected, with no recorded failure behind it. That leaves location services
+ * and roaming without nearby access points. Allow such scans when set, but
+ * rate-limit them: location services may request one every 15 s, and each
+ * per-band scan takes the radio off channel for seconds.
+ */
+static bool spx_connected_scan;
+module_param(spx_connected_scan, bool, 0644);
+MODULE_PARM_DESC(spx_connected_scan,
+		 "Allow hardware scans on a connected WCN3990 SNOC station (default: refuse)");
+
+static unsigned int spx_connected_scan_interval = 60;
+module_param(spx_connected_scan_interval, uint, 0644);
+MODULE_PARM_DESC(spx_connected_scan_interval,
+		 "Minimum seconds between connected WCN3990 scan bursts (0: no limit)");
+
+/* mac80211 issues one hw_scan per band; let those of one request through. */
+#define SPX_CONNECTED_SCAN_BURST (15 * HZ)
+
+static int ath10k_spx_connected_scan_allowed(void)
+{
+	static unsigned long burst_start;
+	unsigned long interval = READ_ONCE(spx_connected_scan_interval) * HZ;
+	unsigned long now = jiffies;
+
+	if (!READ_ONCE(spx_connected_scan))
+		return -EOPNOTSUPP;
+
+	if (interval && burst_start &&
+	    time_after(now, burst_start + SPX_CONNECTED_SCAN_BURST) &&
+	    time_before(now, burst_start + interval))
+		return -EOPNOTSUPP;
+
+	if (!burst_start || !time_before(now, burst_start + SPX_CONNECTED_SCAN_BURST))
+		burst_start = now ? now : 1;
+
+	return 0;
+}
+
 static int ath10k_hw_scan(struct ieee80211_hw *hw,
 			  struct ieee80211_vif *vif,
 			  struct ieee80211_scan_request *hw_req)
@@ -6578,7 +6617,8 @@ static int ath10k_hw_scan(struct ieee80211_hw *hw,
 	mutex_lock(&ar->conf_mutex);
 
 	if (QCA_REV_WCN3990(ar) && ar->hif.bus == ATH10K_BUS_SNOC &&
-	    vif->type == NL80211_IFTYPE_STATION && arvif->is_up) {
+	    vif->type == NL80211_IFTYPE_STATION && arvif->is_up &&
+	    ath10k_spx_connected_scan_allowed()) {
 		ath10k_info(ar,
 			    "blocking connected-state hw scan on WCN3990 STA vdev=%u ssids=%u channels=%u flags=0x%x\n",
 			    arvif->vdev_id,
