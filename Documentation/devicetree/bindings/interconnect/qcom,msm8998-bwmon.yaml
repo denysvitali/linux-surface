@@ -36,6 +36,7 @@ properties:
               - qcom,sa8775p-cpu-bwmon
               - qcom,sc7180-cpu-bwmon
               - qcom,sc7280-cpu-bwmon
+              - qcom,sc8180x-cpu-bwmon
               - qcom,sc8280xp-cpu-bwmon
               - qcom,sdm845-cpu-bwmon
               - qcom,sm6115-cpu-bwmon
@@ -54,6 +55,7 @@ properties:
               - qcom,qcs8300-llcc-bwmon
               - qcom,sa8775p-llcc-bwmon
               - qcom,sc7180-llcc-bwmon
+              - qcom,sc8180x-llcc-bwmon
               - qcom,sc8280xp-llcc-bwmon
               - qcom,shikra-cpu-bwmon
               - qcom,sm6350-cpu-bwmon
