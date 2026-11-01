@@ -1160,7 +1160,8 @@ static int qcom_slim_ngd_pio_thread(void *data)
 			hb_next = jiffies + 2 * HZ;
 		}
 
-		usleep_range(500, 1500);
+		/* Idle sleep: this poller must not count towards loadavg. */
+		usleep_range_idle(500, 1500);
 	}
 
 	dev_info(ctrl->dev, "SPX: PIO poll thread stopped\n");
@@ -3305,7 +3306,7 @@ static int __maybe_unused qcom_slim_ngd_runtime_suspend(struct device *dev)
 	 * power-off request, and any in-flight register access then wedges
 	 * the CPU on the bus (unrecoverable NoC stall). Keep it powered.
 	 */
-	dev_info(ctrl->dev, "SPX: runtime suspend skipped (keeping core on)\n");
+	dev_dbg(ctrl->dev, "SPX: runtime suspend skipped (keeping core on)\n");
 	return -EBUSY;
 }
 
