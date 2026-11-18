@@ -250,14 +250,14 @@ static void vfe_wm_start(struct vfe_device *vfe, u8 wm, struct vfe_line *line)
 	      MODE_MIPI_RAW << WM_CFG_MODE;
 	writel_relaxed(val, vfe->base + VFE_BUS_WM_CFG(wm));
 
-	dev_info(vfe->camss->dev,
-		 "SPX VFE: wm%u start %ux%u stride=%u cfg=%#x width=%#x height=%#x packer=%#x frame_inc=%#x\n",
-		 wm, pix->width, pix->height, pix->plane_fmt[0].bytesperline,
-		 readl_relaxed(vfe->base + VFE_BUS_WM_CFG(wm)),
-		 readl_relaxed(vfe->base + VFE_BUS_WM_BUFFER_WIDTH_CFG(wm)),
-		 readl_relaxed(vfe->base + VFE_BUS_WM_BUFFER_HEIGHT_CFG(wm)),
-		 readl_relaxed(vfe->base + VFE_BUS_WM_PACKER_CFG(wm)),
-		 readl_relaxed(vfe->base + VFE_BUS_WM_FRAME_INC(wm)));
+	dev_dbg(vfe->camss->dev,
+		"SPX VFE: wm%u start %ux%u stride=%u cfg=%#x width=%#x height=%#x packer=%#x frame_inc=%#x\n",
+		wm, pix->width, pix->height, pix->plane_fmt[0].bytesperline,
+		readl_relaxed(vfe->base + VFE_BUS_WM_CFG(wm)),
+		readl_relaxed(vfe->base + VFE_BUS_WM_BUFFER_WIDTH_CFG(wm)),
+		readl_relaxed(vfe->base + VFE_BUS_WM_BUFFER_HEIGHT_CFG(wm)),
+		readl_relaxed(vfe->base + VFE_BUS_WM_PACKER_CFG(wm)),
+		readl_relaxed(vfe->base + VFE_BUS_WM_FRAME_INC(wm)));
 }
 
 static void vfe_wm_stop(struct vfe_device *vfe, u8 wm)
@@ -276,11 +276,11 @@ static void vfe_wm_update(struct vfe_device *vfe, u8 wm, u32 addr,
 	writel_relaxed(addr, vfe->base + VFE_BUS_WM_IMAGE_ADDR(wm));
 	writel_relaxed(stride * pix->height, vfe->base + VFE_BUS_WM_FRAME_INC(wm));
 
-	dev_info(vfe->camss->dev,
-		 "SPX VFE: wm%u update dma=%#x image_addr=%#x frame_inc=%#x\n",
-		 wm, addr,
-		 readl_relaxed(vfe->base + VFE_BUS_WM_IMAGE_ADDR(wm)),
-		 readl_relaxed(vfe->base + VFE_BUS_WM_FRAME_INC(wm)));
+	dev_dbg(vfe->camss->dev,
+		"SPX VFE: wm%u update dma=%#x image_addr=%#x frame_inc=%#x\n",
+		wm, addr,
+		readl_relaxed(vfe->base + VFE_BUS_WM_IMAGE_ADDR(wm)),
+		readl_relaxed(vfe->base + VFE_BUS_WM_FRAME_INC(wm)));
 }
 
 static void vfe_reg_update(struct vfe_device *vfe, enum vfe_line_id line_id)
@@ -563,10 +563,10 @@ static void vfe_isr_wm_done(struct vfe_device *vfe, u8 wm)
 	ready_buf->vb.sequence = output->sequence++;
 	vaddr = vb2_plane_vaddr(&ready_buf->vb.vb2_buf, 0);
 	if (vaddr)
-		dev_info(vfe->camss->dev,
-			 "SPX VFE: wm%u done dma=%pad first_words=%08x %08x %08x %08x\n",
-			 wm, &ready_buf->addr[0], ((u32 *)vaddr)[0],
-			 ((u32 *)vaddr)[1], ((u32 *)vaddr)[2], ((u32 *)vaddr)[3]);
+		dev_dbg(vfe->camss->dev,
+			"SPX VFE: wm%u done dma=%pad first_words=%08x %08x %08x %08x\n",
+			wm, &ready_buf->addr[0], ((u32 *)vaddr)[0],
+			((u32 *)vaddr)[1], ((u32 *)vaddr)[2], ((u32 *)vaddr)[3]);
 
 	index = 0;
 	output->buf[0] = output->buf[1];
