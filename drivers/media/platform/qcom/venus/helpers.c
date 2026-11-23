@@ -104,6 +104,44 @@ bool venus_helper_check_codec(struct venus_inst *inst, u32 v4l2_pixfmt)
 }
 EXPORT_SYMBOL_GPL(venus_helper_check_codec);
 
+/*
+ * Log the device addresses of every buffer an instance has handed to the
+ * firmware, so that the address reported by a firmware NOC/SMMU fault can be
+ * attributed to a buffer (or shown to belong to none).  Called on a system
+ * error from the HFI interrupt thread with core->lock held; inst->lock may be
+ * held by a thread waiting for that very thread, so only try to take it.
+ */
+void venus_helper_dump_buffers(struct venus_inst *inst)
+{
+	struct device *dev = inst->core->dev;
+	struct venus_buffer *vbuf;
+	struct intbuf *buf;
+
+	if (!mutex_trylock(&inst->lock)) {
+		dev_err(dev, "sys error: inst %p (sid %#x) busy, buffers not dumped\n",
+			inst, inst->session_id);
+		return;
+	}
+
+	dev_err(dev, "sys error: inst %p sid %#x type %u out %ux%u cap %ux%u\n",
+		inst, inst->session_id, inst->session_type,
+		inst->width, inst->height, inst->out_width, inst->out_height);
+
+	list_for_each_entry(buf, &inst->internalbufs, list)
+		dev_err(dev, "  internal type %#x da %pad size %#zx\n",
+			buf->type, &buf->da, buf->size);
+
+	list_for_each_entry(buf, &inst->dpbbufs, list)
+		dev_err(dev, "  dpb tag %u owner %d da %pad size %#zx\n",
+			buf->dpb_out_tag, buf->owned_by, &buf->da, buf->size);
+
+	list_for_each_entry(vbuf, &inst->registeredbufs, reg_list)
+		dev_err(dev, "  registered idx %u da %pad size %#x\n",
+			vbuf->vb.vb2_buf.index, &vbuf->dma_addr, vbuf->size);
+
+	mutex_unlock(&inst->lock);
+}
+
 static void free_dpb_buf(struct venus_inst *inst, struct intbuf *buf)
 {
 	ida_free(&inst->dpb_ids, buf->dpb_out_tag);
