@@ -26,6 +26,7 @@
 
 #include "core.h"
 #include "firmware.h"
+#include "helpers.h"
 #include "pm_helpers.h"
 #include "hfi_venus_io.h"
 
@@ -72,6 +73,8 @@ static void venus_event_notify(struct venus_core *core, u32 event)
 	set_bit(0, &core->sys_error);
 	set_bit(0, &core->dump_core);
 	list_for_each_entry(inst, &core->instances, list)
+		venus_helper_dump_buffers(inst);
+	list_for_each_entry(inst, &core->instances, list)
 		inst->ops->event_notify(inst, EVT_SESSION_ERROR, NULL);
 	mutex_unlock(&core->lock);
 
@@ -84,6 +87,12 @@ static const struct hfi_core_ops venus_core_ops = {
 };
 
 #define RPM_WAIT_FOR_IDLE_MAX_ATTEMPTS 10
+
+static bool venus_codec_dev_active(struct device *dev)
+{
+	/* The decoder or encoder child may be absent or not yet probed. */
+	return dev && pm_runtime_active(dev);
+}
 
 static void venus_sys_error_handler(struct work_struct *work)
 {
@@ -104,7 +113,8 @@ static void venus_sys_error_handler(struct work_struct *work)
 	core->state = CORE_UNINIT;
 
 	for (i = 0; i < max_attempts; i++) {
-		if (!pm_runtime_active(core->dev_dec) && !pm_runtime_active(core->dev_enc))
+		if (!venus_codec_dev_active(core->dev_dec) &&
+		    !venus_codec_dev_active(core->dev_enc))
 			break;
 		msleep(10);
 	}
