@@ -235,6 +235,7 @@ source "drivers/media/test-drivers/Kconfig"
 endif
 
 source "drivers/media/firewire/Kconfig"
+source "drivers/media/v4l2loopback/Kconfig"
 
 # Common driver options
 source "drivers/media/common/Kconfig"

@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-2.0-only
+config VIDEO_V4L2LOOPBACK
+	tristate "V4L2 loopback devices"
+	depends on VIDEO_DEV
+	help
+	  Create virtual V4L2 video devices. A process writes frames to the
+	  output side of a device and ordinary V4L2 clients capture them.
+
+	  The Surface Pro X uses this for /dev/video63, which spx-ir-bridge
+	  feeds from the OV7251 IR camera for face authentication (Howdy).
+
+	  This is upstream v4l2loopback 0.15.4, commit
+	  442d720262e150084e7923068fb3c01acc42a253 of
+	  https://github.com/umlaeute/v4l2loopback, imported unchanged.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called v4l2loopback.
